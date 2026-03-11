@@ -44,7 +44,7 @@ Google Gemini API をベースにした、**多層的記憶システムを持つ
 ### 1. リポジトリのクローン
 
 ```bash
-git clone https://github.com/<your-username>/butly.git
+git clone https://github.com/unagisann/Butly.git
 cd butly
 ```
 
