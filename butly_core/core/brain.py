@@ -767,7 +767,7 @@ class ButlyBrain:
             char_limit = brain_conf["summary_char_limit"]
             
             prompt = prompts.BRAIN_SUMMARIZE_CONVERSATION_PROMPT.format(
-                agent_name=SYSTEM_CONFIG.get("agent", {}).get("agent_name", "ジャービス"),
+                agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
                 char_limit=char_limit,
                 conversation_text=conversation_text
             )
@@ -828,7 +828,7 @@ class ButlyBrain:
             sections = []
 
             # 1. SYSTEM INSTRUCTION (性格設定)
-            agent_name = SYSTEM_CONFIG.get("agent", {}).get("agent_name", "ジャービス")
+            agent_name = SYSTEM_CONFIG["agent"]["agent_name"]
             sys_inst = memory_manager.get_system_instruction() if memory_manager else f"あなたは{agent_name}です。"
             sections.append(f"=== SYSTEM INSTRUCTION ===\n{sys_inst}")
 

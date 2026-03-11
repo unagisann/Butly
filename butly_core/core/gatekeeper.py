@@ -1,7 +1,7 @@
 """
 gatekeeper.py
 -------------
-ジャービスの「前頭葉（ゲートキーパー）」モジュール。
+Butly の「前頭葉（ゲートキーパー）」モジュール。
 
 役割:
   1. Ollama gemma3:1b へユーザー発言を送信し、
@@ -52,7 +52,7 @@ VALID_TIERS = {"reflex", "mid", "cortex"}
 
 # ゲートキーパー用プロンプトテンプレート
 GATEKEEPER_PROMPT_TEMPLATE = """\
-あなたはAI執事ジャービスの「前頭葉（ゲートキーパー）」です。
+あなたはAIアシスタントの「前頭葉（ゲートキーパー）」です。
 最新のユーザー発言を、以下の3つの階層のいずれかに厳格に分類してください。
 
 【現在の話題（Context）】
@@ -398,7 +398,7 @@ class Gatekeeper:
             text = parts[0] if parts else ""
             if isinstance(text, str) and len(text) > 80:
                 text = text[:80] + "…"
-            label = "ユーザー" if role == "user" else "ジャービス"
+            label = "ユーザー" if role == "user" else SYSTEM_CONFIG["agent"]["agent_name"]
             lines.append(f"{label}: {text}")
 
         return "\n".join(lines) if lines else "（履歴なし）"

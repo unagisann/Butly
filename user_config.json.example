@@ -1,0 +1,73 @@
+{
+    "AI_CONFIG": {
+        "chat": {
+            "model_name": "gemini-3-flash-preview",
+            "generation_config": {
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "top_k": 64,
+                "max_output_tokens": 8192
+            },
+            "safety_settings": [
+                { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
+            ]
+        },
+        "summary": {
+            "model_name": "gemini-3.1-flash-lite-preview",
+            "generation_config": { "temperature": 0.7 },
+            "safety_settings": [
+                { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
+            ]
+        },
+        "knowledge": {
+            "model_name": "gemini-3.1-pro-preview",
+            "generation_config": { "temperature": 1.0 },
+            "safety_settings": [
+                { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
+            ]
+        },
+        "embedding": {
+            "model_name": "models/gemini-embedding-001"
+        }
+    },
+    "SYSTEM_CONFIG": {
+        "agent": {
+            "agent_name": "Butly",
+            "user_name": "ユーザー"
+        },
+        "paths": {
+            "db_name": "butly_memory.db",
+            "system_instruction": "system_instruction.txt",
+            "key_memory": "Key_Memory.txt",
+            "mid_term": "mid_term.txt"
+        },
+        "memory": {
+            "max_mid_term_chars": 30000,
+            "short_term_limit": 6
+        },
+        "brain": {
+            "search_limit": 3,
+            "keyword_hit_threshold": 5,
+            "fallback_fetch_limit": 50,
+            "cache_ttl_hours": 3,
+            "summary_char_limit": 200,
+            "use_context_cache": false,
+            "filter_memory_by_type": true,
+            "dynamic_threshold": 0.6,
+            "default_use_google_search": false
+        },
+        "backup": {
+            "generations": 7,
+            "dir_name": "db_backups"
+        }
+    }
+}

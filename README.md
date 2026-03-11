@@ -1,7 +1,17 @@
-# Butly
+# Butly 🤵
 
 Google Gemini API をベースにした、**多層的記憶システムを持つパーソナルAIアシスタント**プラットフォームです。
 複数のAIインスタンス（ペルソナ）を管理でき、過去の会話から知識を蓄積・検索（RAG）する機能を備えています。
+
+---
+
+## 特徴
+
+- 🧠 **5層記憶システム** — 短期・浮動要約・中期・長期(RAG)・根幹記憶
+- 🎭 **マルチインスタンス** — 複数のAIペルソナを作成・切り替え
+- 🔍 **RAG検索** — Embedding + コサイン類似度による知識検索
+- 🧹 **Housekeeper** — 記憶の自動整理・ナレッジ化バッチ処理
+- 🧬 **Gatekeeper** — ユーザー発言をtier判定し、必要な記憶のみを注入
 
 ---
 
@@ -31,7 +41,14 @@ Google Gemini API をベースにした、**多層的記憶システムを持つ
 
 ## セットアップ
 
-### 1. 環境構築
+### 1. リポジトリのクローン
+
+```bash
+git clone https://github.com/<your-username>/butly.git
+cd butly
+```
+
+### 2. 環境構築
 
 ```bash
 python -m venv venv
@@ -39,15 +56,27 @@ source venv/bin/activate       # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### 2. APIキーの設定
+### 3. APIキーの設定
 
-`APIkey.env` に Google Gemini の APIキーを記入します。
+```bash
+cp .env.example .env
+```
+
+`.env` を編集し、Google Gemini の API キーを記入します：
 
 ```
 GOOGLE_API_KEY=AIza...
 ```
 
-### 3. 起動
+### 4. 設定ファイルの準備
+
+```bash
+cp user_config.json.example user_config.json
+```
+
+`user_config.json` でAIモデル名やパラメータ、エージェント名を自由にカスタマイズできます。
+
+### 5. 起動
 
 **バックエンド（FastAPI）を起動：**
 
@@ -85,13 +114,10 @@ python housekeeper.py
 |---|---|
 | `main.py` | FastAPI バックエンドサーバー |
 | `app.py` | Streamlit フロントエンド |
-| `gatekeeper.py` | Tier 判定ロジック (Gatekeeper) |
 | `housekeeper.py` | 記憶整理バッチ処理 |
 | `user_config.json` | ユーザー設定（AIモデル・閾値など） |
 | `user_prompts.json` | プロンプトカスタマイズ |
-| `system_config.json` | サーバー設定（コンテキストキャッシュ等） |
 | `requirements.txt` | Python 依存パッケージ |
-| `memory_structure_guide.md` | 記憶システムの詳細解説 |
 
 ```
 butly_core/
@@ -101,6 +127,7 @@ butly_core/
     ├── brain.py       ← LLM呼び出し / RAG / 要約
     ├── memory.py      ← 記憶の読み書き管理
     ├── database.py    ← SQLite操作（知識カード）
+    ├── gatekeeper.py  ← Tier判定（Gatekeeper）
     ├── instance_manager.py ← インスタンスの作成・管理
     └── chronos.py     ← 時刻コンテキスト生成
 
@@ -132,8 +159,6 @@ butly_core/instances/{instance_name}/
 | 4 | **長期記憶** | SQLite | 発言に応じてRAG検索 |
 | 5 | **根幹記憶** | TXT | 常にシステムプロンプトに注入 |
 
-詳細は [`memory_structure_guide.md`](./memory_structure_guide.md) を参照してください。
-
 ---
 
 ## 技術スタック
@@ -143,3 +168,9 @@ butly_core/instances/{instance_name}/
 - **フロントエンド**: Streamlit
 - **DB**: SQLite（ベクトル検索: Cosine Similarity + Numpy）
 - **Embedding**: `models/gemini-embedding-001`
+
+---
+
+## ライセンス
+
+MIT License

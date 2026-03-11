@@ -138,9 +138,9 @@ class ButlyHousekeeper:
         return f"{prefix}001"
 
     def ask_gemini_to_summarize(self, session_text, db_type):
-        """ジャービス（00_master）の視点でナレッジカードを生成する。
-        他インスタンスの会話ログも同様に処理するが、
-        ナレッジ化はジャービスの人格・記憶で行い、DBへのTypeのみ各インスタンス名を使用する。
+        """各インスタンスの視点でナレッジカードを生成する。
+        各インスタンス固有の人格・記憶を使用してナレッジ化を行い、
+        DBへのTypeには各インスタンス名を使用する。
         """
         
         # トークン節約のアドバイス：
@@ -148,13 +148,13 @@ class ButlyHousekeeper:
         # 現状は1日1回のバッチ処理により、呼び出し回数自体を抑えています。
         
         # ナレッジカード化は各インスタンス固有の人格・記憶で行う
-        jarvis_instruction = self.get_instance_instruction(db_type)
-        jarvis_key_memory = self.get_instance_key_memory(db_type)
+        agent_instruction = self.get_instance_instruction(db_type)
+        agent_key_memory = self.get_instance_key_memory(db_type)
         
         prompt = prompts.HOUSEKEEPER_SUMMARIZE_PROMPT.format(
             agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
-            system_instruction=jarvis_instruction,
-            key_memory=jarvis_key_memory,
+            system_instruction=agent_instruction,
+            key_memory=agent_key_memory,
             session_text=session_text
         )
         try:
@@ -292,7 +292,7 @@ class ButlyHousekeeper:
                     ts_raw = data.get('timestamp', 'Unknown')
                     ts = ts_raw.split('.')[0].replace('T', ' ')
                     for msg in data.get("messages", []):
-                        role_label = "主人" if msg["role"] == "user" else "Jarvis"
+                        role_label = SYSTEM_CONFIG["agent"]["user_name"] if msg["role"] == "user" else SYSTEM_CONFIG["agent"]["agent_name"]
                         content = msg.get("parts", [""])[0]
                         if isinstance(content, dict): content = content.get("text", "")
                         new_text += f"[{ts}] {role_label}: {content}\n"
@@ -646,7 +646,7 @@ class ButlyHousekeeper:
                 combined_text += f"\n--- Source: {f_path.name} ({ts}) ---\n"
                 
                 for msg in data.get("messages", []):
-                    role_label = "主人" if msg["role"] == "user" else "Jarvis"
+                    role_label = SYSTEM_CONFIG["agent"]["user_name"] if msg["role"] == "user" else SYSTEM_CONFIG["agent"]["agent_name"]
                     content = msg.get("parts", [""])[0]
                     if isinstance(content, dict): content = content.get("text", "")
                     combined_text += f"[{ts}] {role_label}: {content}\n"

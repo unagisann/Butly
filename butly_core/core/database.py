@@ -28,7 +28,7 @@ class ButlyDatabase:
                 ai_importance INTEGER,      -- 1-10
                 humanity_importance INTEGER, -- 1-10
                 summary TEXT,
-                episode TEXT,               -- ジャービスの所感
+                episode TEXT,               -- AIの所感
                 count INTEGER DEFAULT 1,    -- 累積回数
                 raw_reference TEXT,         -- 元のJSONファイル名
                 embedding_blob BLOB,        -- Embedding Vector (float32 bytes)
