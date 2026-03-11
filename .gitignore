@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+
+# Environment variables (Sensitive)
+.env
+APIkey.env
+*.env
+
+# Database
+*.db
+!butly_memory.db.example # 例として残す場合は除外
+
+# Local config
+user_config.json
+user_prompts.json
+system_config.json
+
+# Instance data (Personal/Private history)
+butly_core/instances/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+housekeeper.log
+build_pyinstaller/
+old/
+old_migration_backup/
+server.spec
