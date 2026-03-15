@@ -1,6 +1,5 @@
-# Butly 
-本プロジェクトは開発中です。
-
+# Butly 🤵
+⚠ This project is currently under active development. / 本プロジェクトは開発中です。
 Google Gemini API をベースにした、**多層的記憶システムを持つパーソナルAIアシスタント**プラットフォームです。
 複数のAIインスタンス（ペルソナ）を管理でき、過去の会話から知識を蓄積・検索（RAG）する機能を備えています。
 

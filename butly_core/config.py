@@ -84,7 +84,8 @@ SYSTEM_CONFIG = {
         "short_term_limit": 6,
         "generate_mid_term_summaries": True,   # Phase 3: 二層要約の生成を有効化
         "max_digest_chars": 8000,              # Phase 3: digest上限（超過分はアーカイブ）
-        "relationship_update_interval_days": 7 # Phase 3: 関係性スナップショットの更新間隔（日数）
+        "relationship_update_interval_days": 7, # Phase 3: 関係性スナップショットの更新間隔（日数）
+        "use_summarized_mid_term": True,  # ★NEW: True=要約注入 / False=RAW注入
     },
     "brain": {
         "search_limit": 3,

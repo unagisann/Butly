@@ -338,7 +338,10 @@ class ButlyHousekeeper:
         # --- 6. ★NEW: 二層要約の日次生成 ---
         if new_text.strip():
             self._generate_daily_digest(instance_path, new_text)
-            self._update_relationship_if_due(instance_path)
+
+        # 関係性更新は新規ログの有無に関わらず常時チェック
+        # （7日インターバルで制御されるため、毎日呼んでも問題ない）
+        self._update_relationship_if_due(instance_path)
 
     # --- Mid-term Summaries (Phase 3) ---
     def _get_genai_client(self):
@@ -536,7 +539,7 @@ class ButlyHousekeeper:
                 contents=rel_prompt,
                 config=genai_types.GenerateContentConfig(
                     temperature=temp,
-                    max_output_tokens=1024,
+                    max_output_tokens=4096,  # 1024→4096に増加（プロンプトが~4000トークン消費するため不足していた）
                     safety_settings=safety,
                 ),
             )

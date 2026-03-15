@@ -473,9 +473,33 @@ class MemoryBlockBuilder:
             return blocks
 
         # --- mid 以上: mid_term を追加 ---
-        mid_term = memory_manager.get_mid_term_text_content()
-        blocks["mid_term"] = mid_term
-        print(f"[Gatekeeper] MemoryBlock: {tier}（+ mid_term {len(mid_term)}文字）")
+        from butly_core.config import SYSTEM_CONFIG
+        use_summary = SYSTEM_CONFIG.get("memory", {}).get("use_summarized_mid_term", False)
+        
+        if use_summary:
+            # 要約モード: digest + relationship を使用
+            digest = memory_manager.get_mid_term_digest()
+            relationship = memory_manager.get_mid_term_relationship()
+            
+            if digest or relationship:
+                blocks["mid_term_digest"] = digest
+                blocks["mid_term_relationship"] = relationship
+                blocks["mid_term"] = ""  # RAWは空にする
+                blocks["mid_term_mode"] = "summary"
+                total_chars = len(digest) + len(relationship)
+                print(f"[Gatekeeper] MemoryBlock: {tier}（+ digest {len(digest)}文字 + relationship {len(relationship)}文字 = {total_chars}文字）")
+            else:
+                # 要約ファイルが存在しない → RAWにフォールバック
+                mid_term = memory_manager.get_mid_term_text_content()
+                blocks["mid_term"] = mid_term
+                blocks["mid_term_mode"] = "raw_fallback"
+                print(f"[Gatekeeper] MemoryBlock: {tier}（要約なし → RAWフォールバック {len(mid_term)}文字）")
+        else:
+            # RAWモード: 従来通り
+            mid_term = memory_manager.get_mid_term_text_content()
+            blocks["mid_term"] = mid_term
+            blocks["mid_term_mode"] = "raw"
+            print(f"[Gatekeeper] MemoryBlock: {tier}（+ mid_term RAW {len(mid_term)}文字）")
 
         if tier == "mid":
             return blocks
@@ -554,8 +578,31 @@ def build_system_instruction_from_blocks(
         sections.append(f"=== KEY MEMORY (根幹記憶) ===\n{key_mem}")
 
     # 3. MID-TERM MEMORY（中期記憶）— mid 以上
-    if tier in ("mid", "cortex") and blocks.get("mid_term"):
-        sections.append(f"=== MID-TERM MEMORY (中期記憶) ===\n{blocks['mid_term']}")
+    if tier in ("mid", "cortex"):
+        mid_term_mode = blocks.get("mid_term_mode", "raw")
+        
+        if mid_term_mode == "summary":
+            # 要約モード: digest + relationship を個別セクションで注入
+            digest = blocks.get("mid_term_digest", "")
+            relationship = blocks.get("mid_term_relationship", "")
+            
+            if digest:
+                sections.append(
+                    f"=== MID-TERM DIGEST (中期記憶・事実ダイジェスト) ===\n"
+                    f"※以下はAIの主観的な記憶です。直近の会話と矛盾する場合は、直近の会話を優先してください。\n"
+                    f"{digest}"
+                )
+            if relationship:
+                sections.append(
+                    f"=== RELATIONSHIP SNAPSHOT (関係性スナップショット) ===\n"
+                    f"※以下は現在の関係性のステータスです。Key Memoryの根幹を補完する参考情報として扱ってください。\n"
+                    f"{relationship}"
+                )
+        else:
+            # RAWモード（raw / raw_fallback）: 従来通り
+            mid_term = blocks.get("mid_term", "")
+            if mid_term:
+                sections.append(f"=== MID-TERM MEMORY (中期記憶) ===\n{mid_term}")
 
     # 4. CURRENT TIME（現在時刻）— 全 tier 共通
     current_time = ButlyChronos().get_system_note()

@@ -91,6 +91,28 @@ class ButlyMemory:
         except:
             return ""
 
+    def get_mid_term_digest(self):
+        """エピソード付き事実ダイジェスト (mid_term_digest.txt) を読み込んで返す"""
+        digest_file = self.instance_dir / "mid_term_digest.txt"
+        try:
+            if digest_file.exists():
+                text = digest_file.read_text(encoding="utf-8").strip()
+                return text if text else ""
+        except Exception as e:
+            print(f"[Memory] Failed to read mid_term_digest: {e}")
+        return ""
+
+    def get_mid_term_relationship(self):
+        """関係性スナップショット (mid_term_relationship.txt) を読み込んで返す"""
+        rel_file = self.instance_dir / "mid_term_relationship.txt"
+        try:
+            if rel_file.exists():
+                text = rel_file.read_text(encoding="utf-8").strip()
+                return text if text else ""
+        except Exception as e:
+            print(f"[Memory] Failed to read mid_term_relationship: {e}")
+        return ""
+
     def load_recent_sessions(self, limit=None):
         """
         最新の履歴をロードする。

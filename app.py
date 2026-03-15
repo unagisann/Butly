@@ -380,6 +380,9 @@ def render_settings_screen():
             memory_s['max_mid_term_chars'] = st.slider( 
                 "長期記憶最大文字数", 5000, 100000, int(memory_s.get('max_mid_term_chars', 30000)), step=5000, key="adv_mmt"
             )
+            memory_s['use_summarized_mid_term'] = st.toggle(
+                "中期記憶の二層要約注入を有効化", value=memory_s.get('use_summarized_mid_term', True), key="adv_umt", help="RAWテキストの代わりに生成された要約をプロンプトに注入します。"
+            )
 
         brain_s['dynamic_threshold'] = st.slider( 
             "Google動的閾値 (dynamic_threshold)", 0.0, 1.0,
