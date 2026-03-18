@@ -9,3 +9,4 @@ uvicorn
 # Optional (for development/testing)
 # pandas
 # pillow
+psutil

@@ -7,6 +7,44 @@ import os
 import argparse
 import threading
 import contextlib
+import psutil
+import platform
+import time as time_module
+from fastapi import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocketState
+
+# =====================================================================
+# Phase 5: WebSocket Connection Manager
+# =====================================================================
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        if getattr(websocket, "application_state", None) != WebSocketState.CONNECTED:
+            await websocket.accept()
+        if websocket not in self.active_connections:
+            self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                print(f"[WebSocket] Error broadcasting to client: {e}")
+
+ws_manager = ConnectionManager()
+
+# Phase 5: brain.py 等の外部から AI ステータスを broadcast するヘルパー
+async def notify_ai_status(status: str):
+    """
+    AIステータスを全クライアントに broadcast する。
+    """
+    await ws_manager.broadcast({"type": "ai_status", "payload": status})
 
 # =====================================================================
 # 起動引数のパース（--parent-pid, --port）
@@ -331,6 +369,100 @@ def set_api_key(request: ApiKeyRequest):
     print(f"[Server] API key updated and saved to {env_path}")
     return {"message": "APIキーを保存しました"}
 
+
+# --- Phase 4 & 5 UI Dashboard Endpoints ---
+
+@app.get("/status")
+def get_system_status():
+    cpu_temp = None
+    try:
+        temps = psutil.sensors_temperatures()
+        if temps:
+            for key in ['cpu_thermal', 'coretemp', 'k10temp']:
+                if key in temps:
+                    cpu_temp = round(temps[key][0].current, 1)
+                    break
+    except Exception:
+        pass
+
+    net_connected = False
+    try:
+        import socket
+        socket.create_connection(("8.8.8.8", 53), timeout=1)
+        net_connected = True
+    except Exception:
+        pass
+
+    return {
+        "cpu_temp": cpu_temp,
+        "cpu_percent": psutil.cpu_percent(interval=0.1),
+        "memory_percent": psutil.virtual_memory().percent,
+        "net_connected": net_connected,
+        "platform": platform.system(),
+        "uptime_seconds": int(time_module.time() - psutil.boot_time()),  # elapsed seconds since boot
+    }
+
+@app.get("/devices")
+def get_device_status():
+    # Placeholder: expand as actual device integrations are added
+    return {
+        "fire_tv": {"status": "standby"},      # "active" | "standby" | "offline"
+        "speaker": {"status": "connected"},    # "connected" | "offline"
+        "mic": {"status": "off"},              # "on" | "off"
+    }
+
+@app.get("/discovery")
+def get_discovery_items():
+    # Placeholder: expand with real RSS parsing in Phase 6
+    return {
+        "items": []
+    }
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """
+    Phase 5: Real-time UI connection.
+    ダッシュボードのアニメーションステータスや即時反映のモック・将来のbrain連携の受け口。
+    """
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            # ToDo Phase 5 後半: 音声バイナリは receive_bytes() に切り替え
+            try:
+                data = await websocket.receive_json()
+            except Exception:
+                # JSON パース失敗は切断せず無視して次のメッセージを待つ
+                continue
+
+            msg_type = data.get("type")
+
+            if msg_type == "mic_control":
+                status = data.get("payload")
+                print(f"[WebSocket] mic_control: {status}")
+                await ws_manager.broadcast({
+                    "type": "ai_status",
+                    "payload": "listening" if status == "on" else "idle"
+                })
+
+            elif msg_type == "chat_message":
+                # ToDo: brain.py に渡して応答を broadcast する
+                text = data.get("payload", "")
+                print(f"[WebSocket] chat_message: {text}")
+                # モックエコー（brain.py 結合前の動作確認用）
+                await ws_manager.broadcast({
+                    "type": "ai_status", "payload": "thinking"
+                })
+                # 仮の応答エコー
+                await ws_manager.broadcast({
+                    "type": "chat_response",
+                    "payload": f"[mock] received: {text}"
+                })
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+        print("[WebSocket] Client disconnected")
+    except Exception as e:
+        ws_manager.disconnect(websocket)
+        print(f"[WebSocket] Unexpected exception: {e}")
 
 
 @app.post("/chat", response_model=ChatResponse)
