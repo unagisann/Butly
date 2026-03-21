@@ -137,6 +137,14 @@ from butly_core.core.chronos import ButlyChronos
 from butly_core.core.instance_manager import InstanceManager
 from butly_core.core.gatekeeper import Gatekeeper, MemoryBlockBuilder, SessionState
 
+# Fire TV モジュールの import（try で囲む: ADB 未インストール環境でも起動できるように）
+try:
+    from butly_core.core.fire_tv import get_status as tv_get_status, send_key, launch_app, KEYCODES, APPS
+    FIRE_TV_AVAILABLE = True
+except Exception as e:
+    print(f"[FireTV] Module unavailable: {e}")
+    FIRE_TV_AVAILABLE = False
+
 # Gatekeeper / MemoryBlockBuilder のシングルトン
 _gatekeeper = Gatekeeper(base_dir=DATA_DIR)
 _mem_block_builder = MemoryBlockBuilder()
@@ -404,19 +412,90 @@ def get_system_status():
 
 @app.get("/devices")
 def get_device_status():
-    # Placeholder: expand as actual device integrations are added
+    """接続デバイスのリアルタイム状態を返す"""
+    fire_tv = {"status": "offline", "current_app": None}
+    if FIRE_TV_AVAILABLE:
+        try:
+            fire_tv = tv_get_status()
+        except Exception as e:
+            print(f"[FireTV] Status error: {e}")
+
     return {
-        "fire_tv": {"status": "standby"},      # "active" | "standby" | "offline"
-        "speaker": {"status": "connected"},    # "connected" | "offline"
-        "mic": {"status": "off"},              # "on" | "off"
+        "fire_tv": fire_tv,
+        "speaker": {"status": "connected"},  # 将来: スピーカー連携
+        "mic": {"status": "off"},
     }
+
+# Fire TV コントロールエンドポイント（新規追加）
+class TvKeyRequest(BaseModel):
+    key: str  # "home" | "back" | "play_pause" | etc.
+
+class TvLaunchRequest(BaseModel):
+    app: str  # "youtube" | "twitch" | etc.
+
+@app.post("/tv/key")
+def tv_send_key(request: TvKeyRequest):
+    """Fire TV にキー入力を送信する"""
+    if not FIRE_TV_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Fire TV module unavailable")
+    keycode = KEYCODES.get(request.key)
+    if not keycode:
+        raise HTTPException(status_code=400, detail=f"Unknown key: {request.key}. Valid: {list(KEYCODES.keys())}")
+    ok = send_key(keycode)
+    return {"success": ok, "key": request.key, "keycode": keycode}
+
+@app.post("/tv/launch")
+def tv_launch_app(request: TvLaunchRequest):
+    """Fire TV でアプリを起動する"""
+    if not FIRE_TV_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Fire TV module unavailable")
+    package = APPS.get(request.app)
+    if not package:
+        raise HTTPException(status_code=400, detail=f"Unknown app: {request.app}. Valid: {list(APPS.keys())}")
+    ok = launch_app(package)
+    return {"success": ok, "app": request.app, "package": package}
+
+DISCOVERY_CACHE_PATH = BASE_DIR / "discovery_cache.json"
 
 @app.get("/discovery")
 def get_discovery_items():
-    # Placeholder: expand with real RSS parsing in Phase 6
-    return {
-        "items": []
-    }
+    """
+    discovery_agent.py が生成したキャッシュを返す。
+    キャッシュがない場合は空データを返す（ダッシュボードが落ちないように）。
+    """
+    if not DISCOVERY_CACHE_PATH.exists():
+        return {
+            "updated_at": None,
+            "sections": [],
+            "jarvis_comment": "",
+        }
+    try:
+        data = json.loads(DISCOVERY_CACHE_PATH.read_text(encoding="utf-8"))
+        return data
+    except Exception as e:
+        print(f"[Discovery] Cache read error: {e}")
+        return {"updated_at": None, "sections": [], "jarvis_comment": ""}
+
+NEWS_CACHE_PATH = BASE_DIR / "news_cache.json"
+
+@app.get("/news")
+def get_news_items():
+    """
+    news_agent.py が生成したキャッシュを返す。
+    キャッシュがない場合は空データを返す。
+    """
+    if not NEWS_CACHE_PATH.exists():
+        return {
+            "updated_at": None,
+            "sections": [],
+            "jarvis_comment": "",
+        }
+    try:
+        data = json.loads(NEWS_CACHE_PATH.read_text(encoding="utf-8"))
+        return data
+    except Exception as e:
+        print(f"[News] Cache read error: {e}")
+        return {"updated_at": None, "sections": [], "jarvis_comment": ""}       
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -430,6 +509,8 @@ async def websocket_endpoint(websocket: WebSocket):
             # ToDo Phase 5 後半: 音声バイナリは receive_bytes() に切り替え
             try:
                 data = await websocket.receive_json()
+            except WebSocketDisconnect:
+                raise
             except Exception:
                 # JSON パース失敗は切断せず無視して次のメッセージを待つ
                 continue
@@ -445,18 +526,99 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
             elif msg_type == "chat_message":
-                # ToDo: brain.py に渡して応答を broadcast する
-                text = data.get("payload", "")
-                print(f"[WebSocket] chat_message: {text}")
-                # モックエコー（brain.py 結合前の動作確認用）
-                await ws_manager.broadcast({
-                    "type": "ai_status", "payload": "thinking"
-                })
-                # 仮の応答エコー
-                await ws_manager.broadcast({
-                    "type": "chat_response",
-                    "payload": f"[mock] received: {text}"
-                })
+                text = data.get("payload", "").strip()
+                if not text:
+                    continue
+
+                print(f"[WebSocket] chat_message: {text[:50]}")
+
+                # thinking 状態を通知
+                await ws_manager.broadcast({"type": "ai_status", "payload": "thinking"})
+
+                try:
+                    # デフォルトインスタンスで応答生成
+                    INSTANCE = "00_master"
+                    components = get_instance_components(INSTANCE)
+                    memory = components["memory"]
+                    brain = components["brain"]
+                    chronos = components["chronos"]
+                    cached_content = components["cache"]
+
+                    # 時刻コンテキスト
+                    last_ts = memory.get_last_interaction_time()
+                    sys_note = chronos.get_system_note(is_holiday=False, last_interaction_time=last_ts)
+                    full_prompt = f"{sys_note}\n\n{text}"
+
+                    # インスタンス設定
+                    instance_config = instance_manager.get_instance_config(INSTANCE)
+
+                    # Gatekeeper + RAG
+                    history, _ = memory.load_recent_sessions(limit=6)
+                    history_fmt = []
+                    for m in history:
+                        content = m.get("parts", [""])[0]
+                        if isinstance(content, dict):
+                            content = content.get("text", "")
+                        history_fmt.append({"role": m.get("role"), "parts": [content]})
+
+                    instance_dir = INSTANCES_DIR / INSTANCE
+                    session_state = SessionState(instance_dir)
+
+                    try:
+                        gk_result = _gatekeeper.classify(
+                            user_input=text,
+                            history_msgs=history_fmt,
+                            session_state=session_state.to_dict(),
+                        )
+                        tier = gk_result.get("tier", "mid")
+                    except Exception as e:
+                        print(f"[WebSocket] Gatekeeper エラー、フォールバック: {e}")
+                        gk_result = {"tier": "mid", "topic": "", "need": None, "search_targets": None, "state_delta": {}}
+                        tier = "mid"
+
+                    # SessionState の更新
+                    state_delta = gk_result.get("state_delta", {})
+                    session_state.apply_delta(state_delta)
+                    session_state.increment_turn(tier)
+
+                    memory_blocks = _mem_block_builder.build(
+                        tier=tier,
+                        memory_manager=memory,
+                        brain=brain if tier == "cortex" else None,
+                        user_input=text,
+                        instance_name=INSTANCE,
+                        override_config=instance_config,
+                        gatekeeper_output=gk_result,
+                    )
+
+                    # 応答生成（RAG モード）
+                    response_text, keywords, refs, sources = await brain.generate_response_with_rag(
+                        user_input=full_prompt,
+                        memory_manager=memory,
+                        history=history_fmt,
+                        cached_content=cached_content,
+                        override_config=instance_config,
+                        memory_blocks=memory_blocks,
+                    )
+
+                    # 会話保存
+                    memory.save_single_turn(text, response_text)
+                    memory.maintain_memory(brain)
+
+                    # speaking 状態 → 応答送信
+                    await ws_manager.broadcast({"type": "ai_status", "payload": "speaking"})
+                    await ws_manager.broadcast({"type": "chat_response", "payload": response_text})
+
+                    # idle に戻す
+                    await ws_manager.broadcast({"type": "ai_status", "payload": "idle"})
+
+                except Exception as e:
+                    print(f"[WebSocket] chat error: {e}")
+                    await ws_manager.broadcast({"type": "ai_status", "payload": "idle"})
+                    await ws_manager.broadcast({
+                        "type": "chat_response",
+                        "payload": f"[エラー] 応答の生成に失敗しました: {str(e)[:100]}"
+                    })
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
         print("[WebSocket] Client disconnected")

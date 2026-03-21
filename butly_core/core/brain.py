@@ -426,7 +426,7 @@ class ButlyBrain:
                         except Exception as e:
                             print(f"[Brain] Image decode error: {e}")
                             
-                response = await chat_session.send_message(prompt_parts)
+                print("[Brain] Sending message to Gemini API..."); response = await chat_session.send_message(prompt_parts); print("[Brain] Got response from Gemini API!")
                 response_text, sources, _ = self._extract_response(response)
             
             return response_text, keywords, knowledge_list, sources
@@ -467,7 +467,7 @@ class ButlyBrain:
                         prompt_parts.append(part)
                     except: pass
                     
-            response = await chat_session.send_message(prompt_parts)
+            print("[Brain] Sending message to Gemini API..."); response = await chat_session.send_message(prompt_parts); print("[Brain] Got response from Gemini API!")
             response_text, sources, finish_reason = self._extract_response(response)
             
             # MALFORMED_FUNCTION_CALL チェック
@@ -506,7 +506,7 @@ class ButlyBrain:
                         prompt_parts.append(part)
                     except: pass
                     
-            response = await chat_session.send_message(prompt_parts)
+            print("[Brain] Sending message to Gemini API..."); response = await chat_session.send_message(prompt_parts); print("[Brain] Got response from Gemini API!")
             response_text, sources, finish_reason = self._extract_response(response)
             
             if finish_reason and "MALFORMED" in str(finish_reason):
@@ -541,7 +541,7 @@ class ButlyBrain:
                     prompt_parts.append(part)
                 except: pass
                 
-        response = await chat_session.send_message(prompt_parts)
+        print("[Brain] Sending message to Gemini API..."); response = await chat_session.send_message(prompt_parts); print("[Brain] Got response from Gemini API!")
         response_text, sources, _ = self._extract_response(response)
         
         # エラー注釈を先頭に追加
