@@ -351,7 +351,7 @@ class ButlyBrain:
 
         return response_text, sources, finish_reason
 
-    async def generate_response_with_rag(self, user_input, memory_manager, history, cached_content=None, override_config=None, use_google_search=False, images=None, memory_blocks=None):
+    async def generate_response_with_rag(self, user_input, memory_manager, history, cached_content=None, override_config=None, use_google_search=False, memory_blocks=None):
         """Web UIから呼ばれるメインメソッド (Async)
 
         memory_blocks が指定された場合は Gatekeeper の tier 別記憶ブロックを使用する。
@@ -359,6 +359,8 @@ class ButlyBrain:
           1. First Try: 通常の検索付きリクエスト
           2. Retry 1: MALFORMED_FUNCTION_CALL時、修正指示を追加して再試行
           3. Fallback: それでもダメなら検索なしで回答 + エラー注釈
+
+        ※ 画像入力は GeminiProvider 側で処理するため、このメソッドではテキストのみを扱う。
         """
         current_instance = memory_manager.instance_dir.name
         tier = memory_blocks.get("tier", "mid") if memory_blocks else "mid"
@@ -402,7 +404,7 @@ class ButlyBrain:
             if use_google_search:
                 response_text, sources = await self._try_search_with_retry(
                     full_prompt, cached_content, history, memory_manager,
-                    override_config, images=images, memory_blocks=memory_blocks
+                    override_config, memory_blocks=memory_blocks
                 )
             else:
                 # 検索無効時: 通常のチャット
@@ -416,16 +418,7 @@ class ButlyBrain:
                 )
                 
                 prompt_parts = [full_prompt]
-                if images:
-                    import base64
-                    for b64 in images:
-                        try:
-                            img_bytes = base64.b64decode(b64)
-                            part = types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
-                            prompt_parts.append(part)
-                        except Exception as e:
-                            print(f"[Brain] Image decode error: {e}")
-                            
+                    
                 print("[Brain] Sending message to Gemini API..."); response = await chat_session.send_message(prompt_parts); print("[Brain] Got response from Gemini API!")
                 response_text, sources, _ = self._extract_response(response)
             
@@ -435,12 +428,14 @@ class ButlyBrain:
             traceback.print_exc()
             return f"Error: {e}", keywords, knowledge_list, []
 
-    async def _try_search_with_retry(self, full_prompt, cached_content, history, memory_manager, override_config, images=None, memory_blocks=None):
+    async def _try_search_with_retry(self, full_prompt, cached_content, history, memory_manager, override_config, memory_blocks=None):
         """Google検索付きリクエストの3段階リトライ/フォールバック
         
         1. First Try: 通常の検索付きリクエスト
         2. Retry 1: MALFORMED_FUNCTION_CALL時、修正指示を追加して再試行
         3. Fallback: それでもダメなら検索なしで回答 + エラー注釈
+
+        ※ 画像入力は GeminiProvider 側で処理するため、このメソッドではテキストのみを扱う。
         """
         
         # =====================================================================
@@ -458,14 +453,6 @@ class ButlyBrain:
             )
             
             prompt_parts = [full_prompt]
-            if images:
-                import base64
-                for b64 in images:
-                    try:
-                        img_bytes = base64.b64decode(b64)
-                        part = types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
-                        prompt_parts.append(part)
-                    except: pass
                     
             print("[Brain] Sending message to Gemini API..."); response = await chat_session.send_message(prompt_parts); print("[Brain] Got response from Gemini API!")
             response_text, sources, finish_reason = self._extract_response(response)
@@ -497,14 +484,6 @@ class ButlyBrain:
             )
             
             prompt_parts = [corrected_prompt]
-            if images:
-                import base64
-                for b64 in images:
-                    try:
-                        img_bytes = base64.b64decode(b64)
-                        part = types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
-                        prompt_parts.append(part)
-                    except: pass
                     
             print("[Brain] Sending message to Gemini API..."); response = await chat_session.send_message(prompt_parts); print("[Brain] Got response from Gemini API!")
             response_text, sources, finish_reason = self._extract_response(response)
@@ -532,14 +511,6 @@ class ButlyBrain:
         )
         
         prompt_parts = [full_prompt]
-        if images:
-            import base64
-            for b64 in images:
-                try:
-                    img_bytes = base64.b64decode(b64)
-                    part = types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
-                    prompt_parts.append(part)
-                except: pass
                 
         print("[Brain] Sending message to Gemini API..."); response = await chat_session.send_message(prompt_parts); print("[Brain] Got response from Gemini API!")
         response_text, sources, _ = self._extract_response(response)

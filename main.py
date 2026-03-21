@@ -149,13 +149,24 @@ except Exception as e:
 _gatekeeper = Gatekeeper(base_dir=DATA_DIR)
 _mem_block_builder = MemoryBlockBuilder()
 
-# --- Pydantic Models ---
+# --- Chat Service / DTO ---
+from butly_core.chat.types import (
+    ChatRequest as _InternalChatRequest,
+    ChatResponse as _InternalChatResponse,
+    normalize_ws_payload,
+    validate_attachments,
+    Attachment,
+)
+from butly_core.chat.service import ChatService
+
+# --- Pydantic Models (REST API 用 — 旧互換) ---
 class ChatRequest(BaseModel):
+    """REST /chat 用リクエスト（旧互換）"""
     message: str
     instance_name: str = "00_master"
     use_rag: bool = True
     use_google_search: bool = False
-    images: List[str] = [] # list of base64 encoded strings
+    attachments: List[Dict[str, Any]] = []  # 新形式: Attachment 互換 dict リスト
 
 class ChatResponse(BaseModel):
     response: str
@@ -163,7 +174,6 @@ class ChatResponse(BaseModel):
     references: List[Dict[str, Any]] = []
     sources: List[Dict[str, Any]] = []
     tier: str = ""  # Gatekeeper の判定結果（reflex / mid / cortex）
-    # Phase 2 追加
     need: Optional[str] = None
     search_targets: Optional[List[str]] = None
     session_state: Optional[Dict[str, Any]] = None
@@ -526,88 +536,39 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
 
             elif msg_type == "chat_message":
-                text = data.get("payload", "").strip()
-                if not text:
+                raw_payload = data.get("payload", "")
+
+                # payload を共通 DTO に正規化
+                try:
+                    chat_request = normalize_ws_payload(raw_payload)
+                except Exception as e:
+                    print(f"[WebSocket] payload 正規化エラー: {e}")
                     continue
 
-                print(f"[WebSocket] chat_message: {text[:50]}")
+                if not chat_request.text and not chat_request.attachments:
+                    continue
+
+                att_info = f", attachments={len(chat_request.attachments)}" if chat_request.attachments else ""
+                print(f"[WebSocket] chat_message: {chat_request.text[:50]}{att_info}")
 
                 # thinking 状態を通知
                 await ws_manager.broadcast({"type": "ai_status", "payload": "thinking"})
 
                 try:
-                    # デフォルトインスタンスで応答生成
-                    INSTANCE = "00_master"
-                    components = get_instance_components(INSTANCE)
-                    memory = components["memory"]
-                    brain = components["brain"]
-                    chronos = components["chronos"]
-                    cached_content = components["cache"]
-
-                    # 時刻コンテキスト
-                    last_ts = memory.get_last_interaction_time()
-                    sys_note = chronos.get_system_note(is_holiday=False, last_interaction_time=last_ts)
-                    full_prompt = f"{sys_note}\n\n{text}"
-
-                    # インスタンス設定
-                    instance_config = instance_manager.get_instance_config(INSTANCE)
-
-                    # Gatekeeper + RAG
-                    history, _ = memory.load_recent_sessions(limit=6)
-                    history_fmt = []
-                    for m in history:
-                        content = m.get("parts", [""])[0]
-                        if isinstance(content, dict):
-                            content = content.get("text", "")
-                        history_fmt.append({"role": m.get("role"), "parts": [content]})
-
-                    instance_dir = INSTANCES_DIR / INSTANCE
-                    session_state = SessionState(instance_dir)
-
-                    try:
-                        gk_result = _gatekeeper.classify(
-                            user_input=text,
-                            history_msgs=history_fmt,
-                            session_state=session_state.to_dict(),
-                        )
-                        tier = gk_result.get("tier", "mid")
-                    except Exception as e:
-                        print(f"[WebSocket] Gatekeeper エラー、フォールバック: {e}")
-                        gk_result = {"tier": "mid", "topic": "", "need": None, "search_targets": None, "state_delta": {}}
-                        tier = "mid"
-
-                    # SessionState の更新
-                    state_delta = gk_result.get("state_delta", {})
-                    session_state.apply_delta(state_delta)
-                    session_state.increment_turn(tier)
-
-                    memory_blocks = _mem_block_builder.build(
-                        tier=tier,
-                        memory_manager=memory,
-                        brain=brain if tier == "cortex" else None,
-                        user_input=text,
-                        instance_name=INSTANCE,
-                        override_config=instance_config,
-                        gatekeeper_output=gk_result,
+                    # ChatService に委譲
+                    result = await ChatService.execute(
+                        request=chat_request,
+                        get_instance_components=get_instance_components,
+                        instance_manager=instance_manager,
+                        instances_dir=INSTANCES_DIR,
+                        gatekeeper=_gatekeeper,
+                        mem_block_builder=_mem_block_builder,
+                        ws_manager=ws_manager,
                     )
-
-                    # 応答生成（RAG モード）
-                    response_text, keywords, refs, sources = await brain.generate_response_with_rag(
-                        user_input=full_prompt,
-                        memory_manager=memory,
-                        history=history_fmt,
-                        cached_content=cached_content,
-                        override_config=instance_config,
-                        memory_blocks=memory_blocks,
-                    )
-
-                    # 会話保存
-                    memory.save_single_turn(text, response_text)
-                    memory.maintain_memory(brain)
 
                     # speaking 状態 → 応答送信
                     await ws_manager.broadcast({"type": "ai_status", "payload": "speaking"})
-                    await ws_manager.broadcast({"type": "chat_response", "payload": response_text})
+                    await ws_manager.broadcast({"type": "chat_response", "payload": result.text})
 
                     # idle に戻す
                     await ws_manager.broadcast({"type": "ai_status", "payload": "idle"})
@@ -629,118 +590,42 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
-    """Interactions APIを使ってメッセージを送信し、応答を取得する。"""
-    instance_name = request.instance_name
-    components = get_instance_components(instance_name)
-    
-    memory = components["memory"]
-    brain = components["brain"]
-    chronos = components["chronos"]
-    cached_content = components["cache"]
+    """チャットメッセージを送信し、応答を取得する（ChatService に委譲）。"""
+    # REST リクエストを内部 DTO に変換
+    attachments = []
+    for att_data in request.attachments:
+        try:
+            attachments.append(Attachment(**att_data))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"添付データの形式が不正です: {e}")
 
-    # Time context
-    last_ts = memory.get_last_interaction_time()
-    sys_note = chronos.get_system_note(is_holiday=False, last_interaction_time=last_ts)
-    full_prompt = f"{sys_note}\n\n{request.message}"
-
-    # Instance config override
-    instance_config = instance_manager.get_instance_config(instance_name)
-
-    # -----------------------------------------------------------------
-    # Gatekeeper V2: 構造化分類 + SessionState
-    # -----------------------------------------------------------------
-    # 直近履歴をロード（Gatekeeper の history_3_lines 用）
-    history_for_gk, _ = memory.load_recent_sessions(limit=6)
-    history_for_gemini = []
-    for msg in history_for_gk:
-        content = msg.get("parts", [""])[0]
-        if isinstance(content, dict):
-            content = content.get("text", "")
-        history_for_gemini.append({"role": msg.get("role"), "parts": [content]})
-
-    # ★ SessionState の読み込み
-    instance_dir = INSTANCES_DIR / instance_name
-    session_state = SessionState(instance_dir)
-
-    # ★ Gatekeeper で構造化分類
-    try:
-        gk_result = _gatekeeper.classify(
-            user_input=request.message,
-            history_msgs=history_for_gemini,
-            session_state=session_state.to_dict(),
-        )
-        tier = gk_result.get("tier", "mid")
-    except Exception as e:
-        print(f"[Chat] Gatekeeper エラー、フォールバック: {e}")
-        gk_result = {"tier": "mid", "topic": "", "need": None, "search_targets": None, "state_delta": {}}
-        tier = "mid"
-
-    # ★ SessionState の更新
-    state_delta = gk_result.get("state_delta", {})
-    session_state.apply_delta(state_delta)
-    session_state.increment_turn(tier)
-
-    # tier に応じた記憶ブロックを構築（★ gatekeeper_output を追加）
-    memory_blocks = _mem_block_builder.build(
-        tier=tier,
-        memory_manager=memory,
-        brain=brain if tier == "cortex" else None,
-        user_input=request.message,
-        instance_name=instance_name,
-        override_config=instance_config,
-        gatekeeper_output=gk_result,
+    internal_request = _InternalChatRequest(
+        text=request.message,
+        attachments=attachments,
+        instance_name=request.instance_name,
+        use_rag=request.use_rag,
+        use_google_search=request.use_google_search,
     )
 
     try:
-        response_text = ""
-        keywords = []
-        refs = []
-        sources = []
-
-        if request.use_rag:
-            # RAG モード: memory_blocks を start_chat へ渡す
-            # cortex では RAG はすでに memory_blocks 内に含まれるため
-            # generate_response_with_rag の内部 RAG は tier != cortex 時のみ意味を持つ
-            response_text, keywords, refs, sources = await brain.generate_response_with_rag(
-                user_input=full_prompt,
-                memory_manager=memory,
-                history=history_for_gemini,
-                cached_content=cached_content,
-                override_config=instance_config,
-                use_google_search=request.use_google_search,
-                images=request.images,
-                memory_blocks=memory_blocks,
-            )
-        else:
-            # Interactions API: ステートフルセッション方式
-            previous_id = memory.load_interaction_id()
-            print(f"[Chat] Instance: {instance_name}, tier: {tier}, prev_interaction_id: {previous_id}")
-
-            response_text, new_interaction_id, sources = brain.chat_with_interactions(
-                user_input=full_prompt,
-                memory_manager=memory,
-                override_config=instance_config,
-                use_google_search=request.use_google_search,
-                previous_interaction_id=previous_id,
-                memory_blocks=memory_blocks,
-            )
-            memory.save_interaction_id(new_interaction_id)
-            print(f"[Chat] Saved new interaction_id: {new_interaction_id}")
-
-        # 会話をローカルに保存（将来の RAG / ナレッジ化用）
-        memory.save_single_turn(request.message, response_text)
-        memory.maintain_memory(brain)
+        result = await ChatService.execute(
+            request=internal_request,
+            get_instance_components=get_instance_components,
+            instance_manager=instance_manager,
+            instances_dir=INSTANCES_DIR,
+            gatekeeper=_gatekeeper,
+            mem_block_builder=_mem_block_builder,
+        )
 
         return ChatResponse(
-            response=response_text,
-            keywords=keywords if keywords else [],
-            references=refs if refs else [],
-            sources=sources if sources else [],
-            tier=tier,
-            # ★ Phase 2 追加
-            need=gk_result.get("need"),
-            search_targets=gk_result.get("search_targets"),
-            session_state=session_state.to_dict(),
+            response=result.text,
+            keywords=result.keywords if result.keywords else [],
+            references=result.refs if result.refs else [],
+            sources=result.sources if result.sources else [],
+            tier=result.tier,
+            need=result.need,
+            search_targets=result.search_targets,
+            session_state=result.session_state,
         )
 
     except Exception as e:
