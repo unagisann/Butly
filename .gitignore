@@ -39,6 +39,12 @@ user_config.json
 user_prompts.json
 system_config.json
 
+#Dashbord用
+discovery_agent.py
+discovery_cache.json
+news_agent.py
+news_cache.json
+
 # Instance data (Personal/Private history)
 butly_core/instances/
 
