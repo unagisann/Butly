@@ -15,6 +15,7 @@ Butlyは、高度な記憶管理機能（短期記憶・中期記憶・長期記
   - `housekeeper.py`: バックグラウンドでの記憶の抽象化（事実ダイジェスト・関係性のスナップショット生成）
 
 ## 現在のフェーズとステータス
+- **Raspi V2 (画像チャット対応) 完了**: DTOの共通化、GeminiProviderへの画像処理の隠蔽化、`ChatService`の導入による責務分離アーキテクチャへのリファクタリングが完了。
 - **Phase 4完了**: 中期記憶の二層要約（事実ダイジェスト＋関係性スナップショット）の動的プロンプト注入機能が完成。UIからの要約モードトグルにも対応。
 - **マルチインスタンス対応完了**: インスタンスごとに独立したディレクトリ (`butly_core/instances/[name]`) で記憶DB・設定・プロンプトを管理。
 
@@ -22,3 +23,4 @@ Butlyは、高度な記憶管理機能（短期記憶・中期記憶・長期記
 - **設定の優先順位**: `butly_core/config.py` がグローバルのデフォルト設定ですが、ユーザー設定は `user_config.json` でオーバーライドされ、さらにインスタンス固有の設定は `instances/[name]/config.json` に保存されます。
 - **プロンプトの構成**: 記憶ブロックは一括で渡されるのではなく、Gatekeeper (`butly_core/core/gatekeeper.py` 内の `build_system_instruction_from_blocks`) によって適切なセクション（根幹記憶、ダイジェスト、RAG、現在時刻など）ごとに論理立てて組み立てられ、Brainに渡されます。
 - **バックグラウンド処理**: `housekeeper.py` (記憶整理プロセス) は重いLLM呼び出しを伴うため、メインの `app.py` UI側からFastAPIのエンドポイントを叩き、別スレッドで非同期に実行する構成になっています。
+- **Provider抽象化層**: チャットのリクエストは `ChatService` でオーケストレーションされ、`ProviderFactory` 経由で Gemini などのプロバイダーに委譲されます。画像エンコードなどの固有処理は `main.py` や `brain.py` ではなく、プロバイダー層 (`butly_core/llm/providers/`) で完結します。

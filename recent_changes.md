@@ -1,13 +1,13 @@
 # Recent Changes
 
-## 最新の実装：Phase 4 中期記憶要約の動的注入切替 (2026-03-15)
-- **Gatekeeper改修**: `gatekeeper.py` の `build_system_instruction_from_blocks` にて、生の `mid_term.txt` だけでなく、Housekeeperが作成した「事実ダイジェスト (`mid_term_digest.txt`)」と「関係性スナップショット (`mid_term_relationship.txt`)」を個別の論理セクションとしてプロンプトへ注入する機能を追加。
-- **メモリI/O**: `memory.py` に `get_mid_term_digest()` および `get_mid_term_relationship()` を実装。
-- **設定の追加**: `butly_core/config.py` に `use_summarized_mid_term` （要約モードトグル）を追加し、要約ファイル不在時は自動的にRAWへフォールバックする安全機構を導入。
-- **UIの更新**: `app.py` の詳細設定画面に、要約注入モードのOn/Offを直感的に切り替えられるトグルを追加。
-- **プロンプト微調整**: `prompts.py` の `MIDTERM_DIGEST_PROMPT` と `MIDTERM_RELATIONSHIP_PROMPT` を最適化し、事実ダイジェストをより簡潔な索引に、関係性をより端的なステータス記録になるようにプロンプト命令を修正。
+## 最新の実装：Raspi V2 画像付きチャット対応と責務分離 (2026-03-21)
+- **DTOの導入**: `butly_core/chat/types.py` を作成し、`ChatRequest`, `ChatResponse`, `Attachment` の標準モデルを定義。WebSocketとRESTからの入力を正規化する処理を追加。
+- **Provider抽象化**: `butly_core/llm/` に Provider 抽象層を作成し、`GeminiProvider` を実装。これまで `main.py` や `brain.py` に点在していた Gemini 固有の画像処理（inline送信 / Files API 分岐）を Provider 内に隠蔽化。
+- **ChatService導入**: チャットのオーケストレーションを担うステートレスな `ChatService` (`butly_core/chat/service.py`) を実装し、`main.py` から LLM 依存コードを排除。
+- **brain.py のクリーンアップ**: 画像変換ロジックを Provider 側に移行し、`brain.py` の画像関連引数 (`images`) を削除。※記憶注入ロジックは変更なし。
 
 ## 直近の主要な実装履歴
+1. **Phase 4 中期記憶要約の動的注入切替**:
 1. **Phase 3 二層要約パイプラインの実装**:
    - `housekeeper.py` における中期記憶の整理機能を拡張し、出来事と決定事項をまとめた「事実ダイジェスト」と、AIとユーザーの距離感を示す「関係性スナップショット」の二層ファイル生成パイプラインを構築。
 2. **OSS向けオープン化準備 / リファクタリング**:
