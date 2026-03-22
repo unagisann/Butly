@@ -294,7 +294,8 @@ butly_core/
     ├── database.py    ← SQLite操作（知識カード）
     ├── gatekeeper.py  ← Gatekeeper（メタ認知エンジン）+ SessionState + MemoryBlockBuilder
     ├── instance_manager.py ← インスタンスの作成・管理
-    └── chronos.py     ← 時刻コンテキスト生成
+    ├── chronos.py     ← 時刻コンテキスト生成
+    └── fire_tv.py     ← Fire TV 連携（ADB over TCP）
 
 butly_core/instances/{instance_name}/
 ├── config.json                ← インスタンス固有設定
@@ -339,11 +340,11 @@ Gemini APIではsystem_instructionが「絶対的な前提」として扱われ�
 
 ## 技術スタック
 
-- **LLM**: Google Gemini API (`google-genai`)
+- **LLM**: Google Gemini (`google-genai`) / OpenAI (`openai`) / Ollama（ローカル）— マルチプロバイダー対応
 - **バックエンド**: FastAPI + Uvicorn
 - **フロントエンド**: Streamlit
 - **DB**: SQLite（ベクトル検索: Cosine Similarity + Numpy）
-- **Embedding**: `gemini-embedding-001`
+- **Embedding**: プロバイダー依存（デフォルト: `gemini-embedding-001` / `text-embedding-3-small`）
 
 ---
 
