@@ -1,5 +1,6 @@
 # Butly - Core Dependencies
 google-genai
+openai
 numpy
 python-dotenv
 streamlit

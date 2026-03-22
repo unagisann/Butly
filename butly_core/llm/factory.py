@@ -31,12 +31,15 @@ class ProviderFactory:
         NotImplementedError
             未対応のプロバイダーが指定された場合。
         """
-        if model_name.startswith("gemini"):
+        if model_name.startswith("gemini") or model_name.startswith("models/gemini"):
             from butly_core.llm.providers.gemini import GeminiProvider
             return GeminiProvider()
 
-        # 将来拡張: OpenAI, Ollama 等
+        if model_name.startswith(("gpt-", "o1", "o3", "o4")):
+            from butly_core.llm.providers.openai import OpenAIProvider
+            return OpenAIProvider()
+
         raise NotImplementedError(
             f"未対応のモデルです: {model_name}。"
-            f"現在対応しているプロバイダー: Gemini（gemini-* モデル）"
+            f"対応プロバイダー: Gemini（gemini-*）, OpenAI（gpt-* / o1 / o3 / o4）"
         )
