@@ -119,11 +119,12 @@ class SessionState:
                     # 欠損キーをデフォルトで補完
                     for k, v in self.DEFAULT_STATE.items():
                         if k not in data:
-                            data[k] = v
+                            data[k] = copy.deepcopy(v)
                     return data
             except Exception as e:
                 print(f"[SessionState] 状態ファイルの読み込みエラー: {e}")
-        return self.DEFAULT_STATE.copy()
+        import copy
+        return copy.deepcopy(self.DEFAULT_STATE)
     
     def _save(self):
         """現在の状態をファイルに書き出す。"""
@@ -196,7 +197,8 @@ class SessionState:
     
     def reset(self):
         """セッションリセット。"""
-        self.state = self.DEFAULT_STATE.copy()
+        import copy
+        self.state = copy.deepcopy(self.DEFAULT_STATE)
         self._save()
 
 
@@ -370,7 +372,7 @@ class Gatekeeper:
             # Merge with default to ensure keys exist
             for k, v in default.items():
                 if k not in data:
-                    data[k] = v
+                    data[k] = copy.deepcopy(v)
                     
             if data["tier"] != "cortex":
                 data["need"] = None
