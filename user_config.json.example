@@ -9,8 +9,17 @@
         "  Ollama  → ollama/*                       (ローカル実行)",
         "",
         "■ 各ロールで異なるプロバイダーを混在させることも可能です。",
-        "  例: chat=OpenAI, embedding=Gemini, gatekeeper=Ollama"
+        "  例: chat=OpenAI, embedding=Gemini, gatekeeper=Ollama",
+        "",
+        "■ APIキーは設定画面(LLMプロバイダー タブ)から保存できます。",
+        "■ Ollama接続先はLLM_PROVIDERS.ollama.base_urlで変更可能です。"
     ],
+
+    "LLM_PROVIDERS": {
+        "ollama": {
+            "base_url": "http://localhost:11434"
+        }
+    },
 
     "AI_CONFIG": {
         "chat": {

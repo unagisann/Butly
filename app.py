@@ -164,8 +164,8 @@ if "use_google_search" not in st.session_state:
     st.session_state.use_google_search = False
 if "input_key_counter" not in st.session_state:
     st.session_state.input_key_counter = 0 # チャット入力欄クリア用
-# デフォルトAPI接続先（ラズパイ固定アドレス）
-DEFAULT_API_URL = "http://192.168.10.109:8000"
+# デフォルトAPI接続先
+DEFAULT_API_URL = "http://127.0.0.1:8000"
 if "api_base_url" not in st.session_state:
     st.session_state.api_base_url = DEFAULT_API_URL
 # テーマカラー (Butlyアプリ対応)
@@ -254,7 +254,7 @@ def render_settings_screen():
     with col2:
         st.markdown('<h1 class="app-title">⚙️ 設定</h1>', unsafe_allow_html=True)
 
-    tab1, tab2, tab3 = st.tabs(["🏠 基本設定", "📝 プロンプト", "🔧 詳細設定"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🏠 基本設定", "📝 プロンプト", "🤖 LLMプロバイダー", "🔧 詳細設定"])
 
     # ========================
     # タブ1: 基本設定
@@ -262,29 +262,10 @@ def render_settings_screen():
     with tab1:
         st.subheader("🔗 API接続先 (サーバーアドレス)")
         st.caption("ラズパイなどのバックエンドサーバのアドレスを入力してください。")
-        new_url = st.text_input("サーバアドレス (URL)", value=st.session_state.api_base_url, placeholder="http://192.168.10.109:8000")
+        new_url = st.text_input("サーバアドレス (URL)", value=st.session_state.api_base_url, placeholder="http://127.0.0.1:8000")
         if st.button("💾 接続先を保存", key="save_url"):
             st.session_state.api_base_url = new_url
             st.success(f"接続先を {new_url} に変更しました。")
-
-        st.divider()
-        st.subheader("🔑 Gemini APIキー")
-        st.caption("新しいAPIキーを入力して保存してください。保存後、再起動は不要です。")
-        api_key = st.text_input("API Key", type="password", placeholder="AIza...")
-        if st.button("💾 APIキーを保存", key="save_api_key"):
-            if api_key:
-                import requests
-                api_url = st.session_state.api_base_url
-                try:
-                    resp = requests.post(f"{api_url}/settings/api_key", json={"api_key": api_key}, timeout=5)
-                    if resp.ok:
-                        st.success("✅ APIキーをバックエンドに保存しました。")
-                    else:
-                        st.error(f"保存エラー: {resp.text}")
-                except Exception as e:
-                    st.error(f"サーバー接続エラー: {e}")
-            else:
-                st.warning("キーが入力されていません。")
 
         st.divider()
         st.subheader("🏖️ Holiday Mode (休暇設定)")
@@ -326,9 +307,212 @@ def render_settings_screen():
             st.error(f"サーバー接続エラー: {e}")
 
     # ========================
-    # タブ3: 詳細設定 (AIモデル/システム)
+    # タブ3: LLMプロバイダー設定
     # ========================
     with tab3:
+        import requests
+        api_url = st.session_state.api_base_url
+
+        # --- プロバイダー判定ヘルパー ---
+        def get_provider_label(model_name: str) -> str:
+            if model_name.startswith("gemini") or model_name.startswith("models/gemini"):
+                return "🟦 Gemini"
+            elif model_name.startswith(("gpt-", "o1-", "o3-", "o4-", "text-embedding")):
+                return "🟩 OpenAI"
+            elif model_name in ("llama3.2", "mistral", "qwen2.5", "nomic-embed-text") or model_name.startswith("ollama/"):
+                return "🟧 Ollama"
+            else:
+                return "❓ 不明"
+
+        # --- セクション1: APIキー管理 ---
+        st.subheader("🔑 APIキー設定")
+
+        # ステータス取得
+        key_status = {"gemini": False, "openai": False}
+        try:
+            status_resp = requests.get(f"{api_url}/settings/api_key_status", timeout=5)
+            if status_resp.ok:
+                key_status = status_resp.json()
+        except Exception:
+            pass
+
+        gemini_status = "✅ 設定済み" if key_status.get("gemini") else "❌ 未設定"
+        openai_status = "✅ 設定済み" if key_status.get("openai") else "❌ 未設定"
+        st.caption(f"Gemini: {gemini_status} / OpenAI: {openai_status}")
+
+        col_k1, col_k2 = st.columns(2)
+        with col_k1:
+            gemini_key = st.text_input("Google Gemini API Key", type="password", placeholder="AIza...", key="provider_gemini_key")
+            if st.button("💾 保存", key="save_gemini_key"):
+                if gemini_key:
+                    try:
+                        resp = requests.post(f"{api_url}/settings/api_key", json={"api_key": gemini_key, "key_type": "gemini"}, timeout=5)
+                        if resp.ok:
+                            st.success("✅ Gemini APIキーを保存しました。")
+                            st.rerun()
+                        else:
+                            st.error(f"保存エラー: {resp.text}")
+                    except Exception as e:
+                        st.error(f"サーバー接続エラー: {e}")
+                else:
+                    st.warning("キーが入力されていません。")
+        with col_k2:
+            openai_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...", key="provider_openai_key")
+            if st.button("💾 保存", key="save_openai_key"):
+                if openai_key:
+                    try:
+                        resp = requests.post(f"{api_url}/settings/api_key", json={"api_key": openai_key, "key_type": "openai"}, timeout=5)
+                        if resp.ok:
+                            st.success("✅ OpenAI APIキーを保存しました。")
+                            st.rerun()
+                        else:
+                            st.error(f"保存エラー: {resp.text}")
+                    except Exception as e:
+                        st.error(f"サーバー接続エラー: {e}")
+                else:
+                    st.warning("キーが入力されていません。")
+
+        st.divider()
+
+        # --- セクション2: Ollama接続設定 ---
+        st.subheader("🖥️ Ollama (ローカルLLM)")
+
+        # 現在の設定を取得
+        try:
+            cfg_resp = requests.get(f"{api_url}/config", timeout=5)
+            provider_cfg = cfg_resp.json() if cfg_resp.ok else {"AI_CONFIG": {}, "SYSTEM_CONFIG": {}}
+        except Exception:
+            provider_cfg = {"AI_CONFIG": {}, "SYSTEM_CONFIG": {}}
+
+        ollama_url = st.text_input(
+            "接続先URL",
+            value="http://localhost:11434",
+            placeholder="http://localhost:11434",
+            key="ollama_url",
+        )
+        if st.button("🔍 接続テスト", key="test_ollama"):
+            try:
+                resp = requests.post(f"{api_url}/settings/ollama_test", json={"url": ollama_url}, timeout=10)
+                if resp.ok:
+                    result = resp.json()
+                    if result.get("status") == "ok":
+                        models = ", ".join(result.get("models", [])) or "(なし)"
+                        st.success(f"✅ Ollama 接続OK (利用可能モデル: {models})")
+                    else:
+                        st.error(f"❌ 接続失敗: {result.get('message', '')}")
+                else:
+                    st.error(f"サーバーエラー: {resp.text}")
+            except Exception as e:
+                st.error(f"接続エラー: {e}")
+
+        st.divider()
+
+        # --- セクション3: 各ロールのモデル選択 ---
+        st.subheader("🧠 モデル割り当て")
+
+        MODEL_PRESETS = {
+            "chat": [
+                "gemini-3.1-pro-preview",
+                "gemini-3-flash-preview",
+                "gemini-3.1-flash-lite-preview",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash",
+                "gpt-4o",
+                "gpt-4o-mini",
+                "o3-mini",
+                "llama3.2",
+                "mistral",
+                "qwen2.5",
+            ],
+            "summary": [
+                "gemini-3.1-flash-lite-preview",
+                "gemini-2.5-flash",
+                "gpt-4o-mini",
+                "llama3.2",
+                "mistral",
+            ],
+            "gatekeeper": [
+                "gemini-3.1-flash-lite-preview",
+                "gemini-2.5-flash-lite",
+                "gpt-4o-mini",
+                "llama3.2",
+            ],
+            "embedding": [
+                "models/gemini-embedding-001",
+                "text-embedding-3-small",
+                "text-embedding-3-large",
+                "nomic-embed-text",
+            ],
+        }
+
+        ROLE_LABELS = {
+            "chat": "Chat (メイン応答)",
+            "summary": "Summary (要約)",
+            "gatekeeper": "Gatekeeper (Tier判定)",
+            "embedding": "Embedding (ベクトル化)",
+        }
+
+        provider_ai_cfg = provider_cfg.get("AI_CONFIG", {})
+        model_selections = {}
+
+        for role in ["chat", "summary", "gatekeeper", "embedding"]:
+            current_model = provider_ai_cfg.get(role, {}).get("model_name", MODEL_PRESETS[role][0])
+            opts = list(MODEL_PRESETS[role])
+            if current_model not in opts:
+                opts.append(current_model)
+            selected = st.selectbox(
+                ROLE_LABELS[role],
+                opts,
+                index=opts.index(current_model),
+                key=f"provider_model_{role}",
+            )
+            st.caption(f"プロバイダー: {get_provider_label(selected)}")
+            model_selections[role] = selected
+
+        if st.button("💾 モデル設定を保存", type="primary", key="save_provider_models"):
+            # provider_cfg のAI_CONFIGを更新
+            for role, model_name in model_selections.items():
+                provider_ai_cfg.setdefault(role, {})["model_name"] = model_name
+            provider_cfg["AI_CONFIG"] = provider_ai_cfg
+            try:
+                save_resp = requests.post(f"{api_url}/config", json=provider_cfg, timeout=5)
+                if save_resp.ok:
+                    st.success("モデル設定を保存しました。")
+                else:
+                    st.error(f"保存エラー: {save_resp.text}")
+            except Exception as e:
+                st.error(f"サーバー接続エラー: {e}")
+
+        st.divider()
+
+        # --- セクション4: Embedding再生成 ---
+        st.subheader("🔄 Embeddingの再生成")
+        st.caption("Embeddingモデルを変更した場合、既存の記憶データベースのベクトルを再生成する必要があります。")
+
+        reindex_target = st.selectbox(
+            "対象インスタンス",
+            ["__all__"] + available_instances,
+            format_func=lambda x: "全インスタンス" if x == "__all__" else x,
+            key="reindex_target",
+        )
+        if st.button("🔄 再生成を実行", key="run_reindex"):
+            try:
+                resp = requests.post(
+                    f"{api_url}/settings/reindex_embeddings",
+                    json={"instance_name": reindex_target},
+                    timeout=10,
+                )
+                if resp.ok:
+                    st.success(f"Embedding再生成を開始しました。(対象: {reindex_target})")
+                else:
+                    st.error(f"エラー: {resp.text}")
+            except Exception as e:
+                st.error(f"サーバー接続エラー: {e}")
+
+    # ========================
+    # タブ4: 詳細設定 (AIモデル/システム)
+    # ========================
+    with tab4:
         import requests
         api_url = st.session_state.api_base_url
         try:
@@ -344,7 +528,7 @@ def render_settings_screen():
         CHAT_MODELS = ['gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']
 
         st.subheader("🤖 AIモデル設定")
-        st.caption("チャット/性格設定は各インスタンスの設定画面から変更できます。")
+        st.caption("チャット/性格設定は各インスタンスの設定画面から変更できます。※メインのモデル設定は「LLMプロバイダー」タブで変更できます。")
 
         for model_key in ['summary', 'knowledge']:
             mc = ai_cfg.get(model_key, {})

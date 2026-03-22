@@ -372,23 +372,82 @@ def update_settings(request: SettingsRequest):
 
 class ApiKeyRequest(BaseModel):
     api_key: str
+    key_type: str = "gemini"  # "gemini" | "openai"
 
 @app.post("/settings/api_key")
 def set_api_key(request: ApiKeyRequest):
-    """Gemini APIキーをDATA_DIR/.envに書き込み、即座にos.environに反映する"""
+    """APIキーをDATA_DIR/.envに書き込み、即座にos.environに反映する"""
     key = request.api_key.strip()
     if not key:
         raise HTTPException(status_code=400, detail="APIキーが空です")
 
-    # DATA_DIR/.env に書き込む
     env_path = DATA_DIR / ".env"
-    env_path.write_text(f"GEMINI_API_KEY={key}\n", encoding="utf-8")
 
-    # os.environ を即座に更新（サーバー再起動不要）
-    os.environ["GEMINI_API_KEY"] = key
+    # 既存の .env を読み込み、該当キーのみ更新
+    env_vars = {}
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                k, _, v = line.partition('=')
+                env_vars[k.strip()] = v.strip()
 
-    print(f"[Server] API key updated and saved to {env_path}")
-    return {"message": "APIキーを保存しました"}
+    if request.key_type == "openai":
+        env_vars["OPENAI_API_KEY"] = key
+        os.environ["OPENAI_API_KEY"] = key
+    else:
+        env_vars["GOOGLE_API_KEY"] = key
+        os.environ["GOOGLE_API_KEY"] = key
+
+    # .env を書き直す
+    lines = [f"{k}={v}" for k, v in env_vars.items()]
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    print(f"[Server] {request.key_type} API key updated and saved to {env_path}")
+    return {"message": f"{request.key_type} APIキーを保存しました"}
+
+@app.get("/settings/api_key_status")
+def get_api_key_status():
+    """各プロバイダーのAPIキー設定状況を返す"""
+    return {
+        "gemini": bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")),
+        "openai": bool(os.getenv("OPENAI_API_KEY")),
+    }
+
+@app.post("/settings/ollama_test")
+def test_ollama_connection(url: str = Body(..., embed=True)):
+    """Ollama の接続テストを行う"""
+    import urllib.request
+    try:
+        req = urllib.request.Request(f"{url.rstrip('/')}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+            models = [m["name"] for m in data.get("models", [])]
+            return {"status": "ok", "models": models}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/settings/reindex_embeddings")
+async def reindex_embeddings(
+    instance_name: str = Body("__all__", embed=True),
+    background_tasks: BackgroundTasks = None,
+):
+    """Embedding再生成をバックグラウンドで実行"""
+    from migrate_embeddings import migrate_instance as _migrate_inst
+
+    def _run_reindex(target: str):
+        if target == "__all__":
+            instances_dir = BASE_DIR / "butly_core" / "instances"
+            for d in sorted(instances_dir.iterdir()):
+                if d.is_dir():
+                    db_p = d / SYSTEM_CONFIG["paths"]["db_name"]
+                    if db_p.exists():
+                        _migrate_inst(d.name)
+        else:
+            _migrate_inst(target)
+
+    background_tasks.add_task(run_in_threadpool, _run_reindex, instance_name)
+    return {"message": "Embedding再生成を開始しました", "target": instance_name}
 
 
 # --- Phase 4 & 5 UI Dashboard Endpoints ---
