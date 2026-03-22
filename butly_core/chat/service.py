@@ -132,84 +132,68 @@ class ChatService:
             gatekeeper_output=gk_result,
         )
 
-        # --- 6. Provider 選択と vision チェック ---
+        # --- 6. Provider 選択と応答生成 ---
         model_name = request.model_name or AI_CONFIG["chat"]["model_name"]
+        provider = ProviderFactory.create(model_name)
         has_attachments = bool(request.attachments)
 
-        if has_attachments:
-            # Provider 経由で画像付きリクエストを処理
-            provider = ProviderFactory.create(model_name)
-
-            if not provider.supports_vision(model_name):
-                return ChatResponse(
-                    text="[エラー] 選択中のモデルは画像入力に対応していません",
-                    tier=tier,
-                    need=gk_result.get("need"),
-                    search_targets=gk_result.get("search_targets"),
-                    session_state=session_state.to_dict(),
-                )
-
-            print(f"[ChatService] Provider: GeminiProvider, attachments={len(request.attachments)}")
-
-            context = {
-                "brain": brain,
-                "memory_manager": memory,
-                "history": history_fmt,
-                "cached_content": cached_content,
-                "override_config": instance_config,
-                "memory_blocks": memory_blocks,
-                "use_google_search": request.use_google_search,
-            }
-
-            result = await provider.generate(
-                text=full_prompt,
-                attachments=request.attachments,
-                context=context,
-            )
-
-            # tier / gatekeeper 情報を付与
-            result.tier = tier
-            result.need = gk_result.get("need")
-            result.search_targets = gk_result.get("search_targets")
-            result.session_state = session_state.to_dict()
-
-        else:
-            # テキストのみ: 従来通り brain の既存メソッドを直接呼ぶ
-            if request.use_rag:
-                response_text, keywords, refs, sources = await brain.generate_response_with_rag(
-                    user_input=full_prompt,
-                    memory_manager=memory,
-                    history=history_fmt,
-                    cached_content=cached_content,
-                    override_config=instance_config,
-                    use_google_search=request.use_google_search,
-                    memory_blocks=memory_blocks,
-                )
-            else:
-                # Interactions API
-                previous_id = memory.load_interaction_id()
-                response_text, new_interaction_id, sources = brain.chat_with_interactions(
-                    user_input=full_prompt,
-                    memory_manager=memory,
-                    override_config=instance_config,
-                    use_google_search=request.use_google_search,
-                    previous_interaction_id=previous_id,
-                    memory_blocks=memory_blocks,
-                )
-                memory.save_interaction_id(new_interaction_id)
-                keywords = []
-                refs = []
-
-            result = ChatResponse(
-                text=response_text,
-                keywords=keywords if keywords else [],
-                refs=[dict(r) for r in refs] if refs else [],
-                sources=sources if sources else [],
+        # vision 非対応チェック
+        if has_attachments and not provider.supports_vision(model_name):
+            return ChatResponse(
+                text="[エラー] 選択中のモデルは画像入力に対応していません",
                 tier=tier,
                 need=gk_result.get("need"),
                 search_targets=gk_result.get("search_targets"),
                 session_state=session_state.to_dict(),
             )
+
+        # RAG コンテキストを ChatService 側で構築
+        rag_results = []
+        if request.use_rag:
+            keyword_data = brain.extract_keywords(request.text, instance_config)
+            keywords = keyword_data.get("keywords", [])
+            current_instance = memory.instance_dir.name
+
+            # cortex で Gatekeeper 済み RAG がある場合は流用
+            if memory_blocks and tier == "cortex" and memory_blocks.get("rag_context"):
+                print("[ChatService] RAG: cortex モード、Gatekeeper 済み RAG を流用")
+            else:
+                from butly_core.config import SYSTEM_CONFIG as _SC
+                limit = _SC["brain"]["search_limit"]
+                rag_results = brain.search_knowledge(
+                    keywords, request.text,
+                    instance_name=current_instance,
+                    limit=limit,
+                    override_config=instance_config,
+                )
+                print(f"[ChatService] RAG Search: keywords={keywords}, hits={len(rag_results)}")
+
+        context = {
+            "brain": brain,
+            "memory_manager": memory,
+            "history": history_fmt,
+            "cached_content": cached_content,
+            "override_config": instance_config,
+            "memory_blocks": memory_blocks,
+            "use_google_search": request.use_google_search,
+            "rag_results": rag_results,
+            "use_rag": request.use_rag,
+        }
+
+        if has_attachments:
+            print(f"[ChatService] Provider: {type(provider).__name__}, attachments={len(request.attachments)}")
+
+        result = await provider.generate(
+            text=full_prompt,
+            attachments=request.attachments if has_attachments else [],
+            context=context,
+        )
+
+        # tier / gatekeeper 情報を付与
+        result.tier = tier
+        result.need = gk_result.get("need")
+        result.search_targets = gk_result.get("search_targets")
+        result.session_state = session_state.to_dict()
 
         # --- 7. 会話保存 ---
         memory.save_single_turn(request.text, result.text)
