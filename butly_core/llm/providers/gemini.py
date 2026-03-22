@@ -43,6 +43,15 @@ class GeminiProvider(BaseProvider):
         """
         return model_name not in VISION_UNSUPPORTED_MODELS
 
+    async def summarize(self, conversation_text: str, config: dict) -> str:
+        raise NotImplementedError("GeminiProvider.summarize() は Step 4 で実装予定")
+
+    async def embed(self, text: str):
+        raise NotImplementedError("GeminiProvider.embed() は Step 4 で実装予定")
+
+    def classify(self, prompt: str, config: dict) -> str:
+        raise NotImplementedError("GeminiProvider.classify() は Step 4 で実装予定")
+
     async def generate(
         self,
         text: str,

@@ -6,7 +6,7 @@ LLM プロバイダーの抽象基底クラス。
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from butly_core.chat.types import Attachment, ChatResponse
 
@@ -63,4 +63,19 @@ class BaseProvider(ABC):
         -------
         bool
         """
+        ...
+
+    @abstractmethod
+    async def summarize(self, conversation_text: str, config: dict) -> str:
+        """会話ログの要約生成。"""
+        ...
+
+    @abstractmethod
+    async def embed(self, text: str) -> Optional[List[float]]:
+        """ベクトル埋め込み生成。RAG 検索のインデックス化に使用。"""
+        ...
+
+    @abstractmethod
+    def classify(self, prompt: str, config: dict) -> str:
+        """Gatekeeper の tier 判定用。軽量モデルを使う想定。同期メソッド。"""
         ...
