@@ -1,6 +1,7 @@
 # Butly 🤵
 ⚠ This project is currently under active development. / 本プロジェクトは開発中です。
-Google Gemini API をベースにした、**多層的記憶システムを持つパーソナルAIアシスタント**プラットフォームです。
+**多層的記憶システムを持つパーソナルAIアシスタント**プラットフォームです。
+**マルチプロバイダー対応**（Google Gemini / OpenAI / Ollama）で、
 複数のAIインスタンス（ペルソナ）を管理でき、過去の会話から知識を蓄積・検索（RAG）する機能を備えています。
 
 ---
@@ -159,16 +160,28 @@ timeline
             : 人格の記憶からの自律再構成
 ```
 
-### 使用モデル
+### 使用モデル（デフォルト: Gemini）
 
-| 役割 | モデル | 用途 | 呼び出し頻度 |
+| 役割 | デフォルトモデル | 用途 | 呼び出し頻度 |
 |------|-------|------|-------------|
 | Gatekeeper | gemini-3.1-flash-lite-preview | tier判定・メタ認知 | 1回/ターン |
-| Brain (Chat) | gemini-3.1-flash-preview | 最終応答生成 | 1回/ターン |
+| Brain (Chat) | gemini-3-flash-preview | 最終応答生成 | 1回/ターン |
 | Summary/Digest | gemini-3.1-flash-lite-preview | 要約・digest・relationship | 日次バッチ |
 | Knowledge | gemini-3.1-pro-preview | ナレッジカード生成 | 日次バッチ |
 | Embedding | gemini-embedding-001 | ベクトル検索 | カード生成時 |
 | Floating要約 | gemini-3.1-flash-lite-preview | 短期記憶の溢れ圧縮 | リアルタイム |
+
+#### 対応プロバイダー
+
+`user_config.json` の `model_name` プレフィックスでプロバイダーが自動判定されます:
+
+| プロバイダー | model_name プレフィックス | 必要な環境変数 | 例 |
+|---|---|---|---|
+| **Gemini** | `gemini-*` / `models/gemini-*` | `GOOGLE_API_KEY` | `gemini-3-flash-preview` |
+| **OpenAI** | `gpt-*` / `o1` / `o3` / `o4` | `OPENAI_API_KEY` | `gpt-4o`, `gpt-4o-mini` |
+| **Ollama** | `ollama/*` | （不要・ローカル実行） | `ollama/llama3.1:8b` |
+
+各ロールで異なるプロバイダーを混在させることも可能です（例: chat=OpenAI, embedding=Gemini）。
 
 ---
 
@@ -192,13 +205,20 @@ pip install -r requirements.txt
 ### 3. APIキーの設定
 
 ```bash
-cp .env.example .env
+cp .env.example APIkey.env
 ```
 
-`.env` を編集し、Google Gemini の API キーを記入します：
+使用するプロバイダーに応じて必要なキーを設定します：
 
-```
+```env
+# Google Gemini（デフォルト）
 GOOGLE_API_KEY=AIza...
+
+# OpenAI を使う場合
+OPENAI_API_KEY=sk-...
+
+# Ollama はローカル実行のためキー不要
+# OLLAMA_BASE_URL=http://localhost:11434/v1  （デフォルト）
 ```
 
 ### 4. 設定ファイルの準備
@@ -208,6 +228,13 @@ cp user_config.json.example user_config.json
 ```
 
 `user_config.json` でAIモデル名やパラメータ、エージェント名を自由にカスタマイズできます。
+`user_config.json.example` に Gemini / OpenAI / Ollama の設定例が含まれています。
+
+> **注意**: プロバイダーを切り替えた場合、Embedding の次元が異なるため
+> RAG 検索の精度が低下します。以下のコマンドで埋め込みを再生成してください：
+> ```bash
+> python migrate_embeddings.py --all
+> ```
 
 ### 5. 起動
 

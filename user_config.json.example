@@ -1,4 +1,17 @@
 {
+    "_comment": [
+        "Butly ユーザー設定ファイル",
+        "config.py のデフォルト値をオーバーライドします。",
+        "",
+        "■ プロバイダー自動判定（model_name のプレフィックスで決定）:",
+        "  Gemini  → gemini-* / models/gemini-*   (GOOGLE_API_KEY 必要)",
+        "  OpenAI  → gpt-* / o1 / o3 / o4         (OPENAI_API_KEY 必要)",
+        "  Ollama  → ollama/*                       (ローカル実行)",
+        "",
+        "■ 各ロールで異なるプロバイダーを混在させることも可能です。",
+        "  例: chat=OpenAI, embedding=Gemini, gatekeeper=Ollama"
+    ],
+
     "AI_CONFIG": {
         "chat": {
             "model_name": "gemini-3-flash-preview",
@@ -37,8 +50,65 @@
         },
         "embedding": {
             "model_name": "models/gemini-embedding-001"
+        },
+        "gatekeeper": {
+            "model_name": "gemini-3.1-flash-lite-preview",
+            "generation_config": { "temperature": 0.0, "max_output_tokens": 512 },
+            "safety_settings": [
+                { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
+                { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
+            ]
         }
     },
+
+    "_AI_CONFIG_openai_example": {
+        "_comment": "OpenAI を使う場合の設定例（このキーを AI_CONFIG にリネームして使用）",
+        "chat": {
+            "model_name": "gpt-4o",
+            "generation_config": { "temperature": 1.0, "max_output_tokens": 8192 }
+        },
+        "summary": {
+            "model_name": "gpt-4o-mini",
+            "generation_config": { "temperature": 0.7 }
+        },
+        "knowledge": {
+            "model_name": "gpt-4o",
+            "generation_config": { "temperature": 1.0 }
+        },
+        "embedding": {
+            "model_name": "gpt-4o-mini"
+        },
+        "gatekeeper": {
+            "model_name": "gpt-4o-mini",
+            "generation_config": { "temperature": 0.0, "max_output_tokens": 512 }
+        }
+    },
+
+    "_AI_CONFIG_ollama_example": {
+        "_comment": "Ollama（ローカル）を使う場合の設定例（このキーを AI_CONFIG にリネームして使用）",
+        "chat": {
+            "model_name": "ollama/llama3.1:8b",
+            "generation_config": { "temperature": 1.0, "max_output_tokens": 8192 }
+        },
+        "summary": {
+            "model_name": "ollama/llama3.1:8b",
+            "generation_config": { "temperature": 0.7 }
+        },
+        "knowledge": {
+            "model_name": "ollama/llama3.1:8b",
+            "generation_config": { "temperature": 1.0 }
+        },
+        "embedding": {
+            "model_name": "ollama/nomic-embed-text"
+        },
+        "gatekeeper": {
+            "model_name": "ollama/llama3.1:8b",
+            "generation_config": { "temperature": 0.0, "max_output_tokens": 512 }
+        }
+    },
+
     "SYSTEM_CONFIG": {
         "agent": {
             "agent_name": "Butly",
