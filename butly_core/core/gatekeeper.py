@@ -15,6 +15,7 @@ tier ごとの記憶注入ルール:
   cortex  → 上記 + RAG（butly_memory.db 検索結果）
 """
 
+import copy
 import json
 import urllib.request
 import urllib.error
@@ -123,7 +124,6 @@ class SessionState:
                     return data
             except Exception as e:
                 print(f"[SessionState] 状態ファイルの読み込みエラー: {e}")
-        import copy
         return copy.deepcopy(self.DEFAULT_STATE)
     
     def _save(self):
@@ -197,7 +197,6 @@ class SessionState:
     
     def reset(self):
         """セッションリセット。"""
-        import copy
         self.state = copy.deepcopy(self.DEFAULT_STATE)
         self._save()
 
