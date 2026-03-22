@@ -1,5 +1,7 @@
 # Butly — アーキテクチャ図集
 
+🌐 **日本語** | [English](DIAGRAMS.en.md)
+
 このファイルには Butly のシステム設計を可視化した Mermaid 図をまとめています。
 
 ---
