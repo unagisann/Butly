@@ -9,8 +9,6 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import numpy as np
-from google import genai
-from google.genai import types
 
 # ★設定ファイルのインポート
 try:
@@ -30,26 +28,8 @@ BASE_DIR = Path(__file__).resolve().parent
 INSTANCES_DIR = BASE_DIR / "butly_core" / "instances"
 MAX_MID_TERM_CHARS = SYSTEM_CONFIG["memory"]["max_mid_term_chars"]
 
-def load_api_key():
-    # Try APIkey.env first, then .env
-    env_path = BASE_DIR / "APIkey.env"
-    if env_path.exists():
-        load_dotenv(dotenv_path=env_path, override=True)
-    else:
-        env_path = BASE_DIR / ".env"
-        if env_path.exists():
-            load_dotenv(dotenv_path=env_path, override=True)
-            
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        raise ValueError("API Keyが見つかりません。")
-    return api_key
-
 class ButlyHousekeeper:
     def __init__(self):
-        self.api_key = load_api_key()
-        self.client = genai.Client(api_key=self.api_key)
-        
         # Configからナレッジモデル設定を使用
         self.k_conf = AI_CONFIG["knowledge"]
         
@@ -104,21 +84,16 @@ class ButlyHousekeeper:
 
     def generate_embedding(self, text):
         try:
-            # ConfigからEmbeddingモデルを取得
+            import asyncio
+            from butly_core.llm.factory import ProviderFactory
             model_name = AI_CONFIG["embedding"]["model_name"]
-            
+            provider = ProviderFactory.create(model_name)
+
             def _call():
-                return self.client.models.embed_content(
-                    model=model_name,
-                    contents=text,
-                    config=types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT")
-                )
-            
+                return asyncio.run(provider.embed(text))
+
             result = self._robust_api_call(_call)
-            
-            if result and result.embeddings:
-                return result.embeddings[0].values
-            return None
+            return result
         except Exception as e:
             print(f"[Embedding Error] {e}")
             return None
@@ -158,25 +133,15 @@ class ButlyHousekeeper:
             session_text=session_text
         )
         try:
+            from butly_core.llm.factory import ProviderFactory
+            provider = ProviderFactory.create(self.k_conf["model_name"])
+
             def _call():
-                return self.client.models.generate_content(
-                    model=self.k_conf["model_name"],
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=self.k_conf["generation_config"].get("temperature"),
-                        safety_settings=self.k_conf.get("safety_settings")
-                    )
-                )
-            
-            response = self._robust_api_call(_call)
-            
-            # Check response.text or candidates
-            if not response:
+                return provider.classify(prompt, self.k_conf)
+
+            text = self._robust_api_call(_call)
+            if not text:
                 return None
-            
-            text = response.text if response.text else ""
-            if not text and response.candidates and response.candidates[0].content.parts:
-                text = response.candidates[0].content.parts[0].text
                 
             json_match = re.search(r'\[.*\]', text, re.DOTALL)
             if json_match:
@@ -344,27 +309,10 @@ class ButlyHousekeeper:
         self._update_relationship_if_due(instance_path)
 
     # --- Mid-term Summaries (Phase 3) ---
-    def _get_genai_client(self):
-        """Gemini APIクライアントを取得する。"""
-        import os
-        from dotenv import load_dotenv
-        from google import genai
-        
-        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-        
-        if not api_key:
-            env_files = [BASE_DIR / "APIkey.env", BASE_DIR / ".env"]
-            for env_file in env_files:
-                if env_file.exists():
-                    load_dotenv(dotenv_path=env_file, override=True)
-                    api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
-                    if api_key:
-                        break
-        
-        if not api_key:
-            return None
-        
-        return genai.Client(api_key=api_key)
+    def _get_provider(self, model_name=None):
+        """指定モデル名の Provider を取得する。"""
+        from butly_core.llm.factory import ProviderFactory
+        return ProviderFactory.create(model_name or AI_CONFIG["summary"]["model_name"])
 
     def _generate_daily_digest(self, instance_path: Path, new_text: str):
         """
@@ -386,20 +334,11 @@ class ButlyHousekeeper:
         
         print(f"[Housekeeper] Daily digest: Generating from {len(new_text)} chars of today's raw text...")
         
-        from google import genai
-        from google.genai import types as genai_types
         from butly_core.prompts import MIDTERM_DIGEST_PROMPT
         
         try:
-            client = self._get_genai_client()
-            if not client:
-                print("[Housekeeper] Daily digest: API client not available, skipping.")
-                return
-            
             summary_conf = AI_CONFIG.get("summary", {})
             model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite-preview")
-            safety = summary_conf.get("safety_settings")
-            temp = summary_conf.get("generation_config", {}).get("temperature", 0.3)
             
             digest_file = instance_path / "mid_term_digest.txt"
             archive_digest_file = instance_path / "memory_archive" / "3_log" / "archive_digest.txt"
@@ -417,16 +356,9 @@ class ButlyHousekeeper:
                 key_memory=key_memory,
                 raw_text=new_text,
             )
-            digest_response = client.models.generate_content(
-                model=model_name,
-                contents=digest_prompt,
-                config=genai_types.GenerateContentConfig(
-                    temperature=temp,
-                    max_output_tokens=2048,
-                    safety_settings=safety,
-                ),
-            )
-            digest_new = digest_response.text.strip() if digest_response.text else ""
+            provider = self._get_provider(model_name)
+            digest_new = provider.classify(digest_prompt, summary_conf)
+            digest_new = digest_new.strip() if digest_new else ""
             
             if digest_new:
                 # 既存digestに追記
@@ -508,20 +440,11 @@ class ButlyHousekeeper:
             print("[Housekeeper] Relationship: digest too short, skipping.")
             return
         
-        from google import genai
-        from google.genai import types as genai_types
         from butly_core.prompts import MIDTERM_RELATIONSHIP_PROMPT
         
         try:
-            client = self._get_genai_client()
-            if not client:
-                print("[Housekeeper] Relationship: API client not available, skipping.")
-                return
-            
             k_conf = AI_CONFIG.get("knowledge", {})
             model_name = k_conf.get("model_name", "gemini-3.1-pro-preview")
-            safety = k_conf.get("safety_settings")
-            temp = k_conf.get("generation_config", {}).get("temperature", 0.7)
             
             # インスタンス固有の system_instruction と key_memory を取得
             instance_name = instance_path.name
@@ -534,16 +457,9 @@ class ButlyHousekeeper:
                 key_memory=key_memory,
                 digest_text=digest_text,
             )
-            rel_response = client.models.generate_content(
-                model=model_name,
-                contents=rel_prompt,
-                config=genai_types.GenerateContentConfig(
-                    temperature=temp,
-                    max_output_tokens=4096,  # 1024→4096に増加（プロンプトが~4000トークン消費するため不足していた）
-                    safety_settings=safety,
-                ),
-            )
-            rel_text = rel_response.text.strip() if rel_response.text else ""
+            provider = self._get_provider(model_name)
+            rel_text = provider.classify(rel_prompt, k_conf)
+            rel_text = rel_text.strip() if rel_text else ""
             
             if rel_text:
                 rel_file.write_text(rel_text, encoding="utf-8")
