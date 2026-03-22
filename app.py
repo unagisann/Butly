@@ -525,21 +525,14 @@ def render_settings_screen():
         ai_cfg = cfg.get("AI_CONFIG", {})
         sys_cfg = cfg.get("SYSTEM_CONFIG", {})
 
-        CHAT_MODELS = ['gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-3.1-flash-lite-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']
-
         st.subheader("🤖 AIモデル設定")
-        st.caption("チャット/性格設定は各インスタンスの設定画面から変更できます。※メインのモデル設定は「LLMプロバイダー」タブで変更できます。")
+        st.caption("モデルの選択は「🤖 LLMプロバイダー」タブで変更できます。ここではTemperature等の生成パラメータのみ設定します。")
 
         for model_key in ['summary', 'knowledge']:
             mc = ai_cfg.get(model_key, {})
             with st.expander(f"**{model_key.upper()}** ({mc.get('model_name', '(unset)')})", expanded=False):
-                curr = mc.get('model_name', 'gemini-3.1-flash-lite-preview')
-                opts = CHAT_MODELS if curr in CHAT_MODELS else CHAT_MODELS + [curr]
-                ai_cfg.setdefault(model_key, {})['model_name'] = st.selectbox( 
-                    "モデル名", opts, index=opts.index(curr), key=f"adv_model_{model_key}"
-                )
                 gen = mc.get('generation_config', {})
-                ai_cfg[model_key]['generation_config'] = ai_cfg[model_key].get('generation_config', {})
+                ai_cfg.setdefault(model_key, {})['generation_config'] = ai_cfg.get(model_key, {}).get('generation_config', {})
                 ai_cfg[model_key]['generation_config']['temperature'] = st.slider(
                     "Temperature", 0.0, 2.0, step=0.1,
                     value=float(gen.get('temperature', 0.7)), key=f"adv_temp_{model_key}"
