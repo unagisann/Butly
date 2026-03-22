@@ -132,7 +132,10 @@ def initialize_system(base_dir, instance_name):
     memory = ButlyMemory(base_dir, instance_name=instance_name)
     brain = ButlyBrain(base_dir) 
     chronos = ButlyChronos()
-    cached_content = brain.prepare_cache(memory, ttl_hours=3)
+    from butly_core.llm.factory import ProviderFactory
+    from butly_core.config import AI_CONFIG
+    provider = ProviderFactory.create(AI_CONFIG["chat"]["model_name"])
+    cached_content = provider.prepare_cache(memory, ttl_hours=3) if hasattr(provider, "prepare_cache") else None
     return memory, brain, chronos, cached_content
 
 # --- 初期化・ディレクトリ作成 ---

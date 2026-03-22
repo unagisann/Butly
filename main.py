@@ -251,7 +251,10 @@ def get_instance_components(instance_name: str):
     chronos = ButlyChronos()
     
     instance_config = instance_manager.get_instance_config(instance_name)
-    cached_content = brain.prepare_cache(memory, ttl_hours=3, override_config=instance_config)
+    from butly_core.llm.factory import ProviderFactory
+    from butly_core.config import AI_CONFIG
+    provider = ProviderFactory.create(AI_CONFIG["chat"]["model_name"])
+    cached_content = provider.prepare_cache(memory, ttl_hours=3, override_config=instance_config) if hasattr(provider, "prepare_cache") else None
     
     components = {
         "memory": memory,
