@@ -41,8 +41,6 @@ class TestGatekeeperIntegration:
         from butly_core.core.gatekeeper import Gatekeeper
 
         gk = Gatekeeper(base_dir=PROJECT_ROOT)
-        if not gk.client:
-            pytest.skip("API クライアント未構成")
 
         result = gk.classify(
             user_input="おはようございます",
@@ -58,8 +56,6 @@ class TestGatekeeperIntegration:
         from butly_core.core.gatekeeper import Gatekeeper
 
         gk = Gatekeeper(base_dir=PROJECT_ROOT)
-        if not gk.client:
-            pytest.skip("API クライアント未構成")
 
         result = gk.classify(
             user_input="Pythonでasyncioを使ったWebSocketサーバーの実装方法を教えて",
@@ -74,8 +70,6 @@ class TestGatekeeperIntegration:
         from butly_core.core.gatekeeper import Gatekeeper
 
         gk = Gatekeeper(base_dir=PROJECT_ROOT)
-        if not gk.client:
-            pytest.skip("API クライアント未構成")
 
         result = gk.classify(
             user_input="前に話したプロジェクトのアーキテクチャの件、あの後どうなった？",
@@ -96,8 +90,6 @@ class TestGatekeeperIntegration:
         from butly_core.core.gatekeeper import Gatekeeper
 
         gk = Gatekeeper(base_dir=PROJECT_ROOT)
-        if not gk.client:
-            pytest.skip("API クライアント未構成")
 
         result = gk.classify(
             user_input="新しくダッシュボード機能を作りたいんだけど",
@@ -165,8 +157,6 @@ class TestEndToEndFlow:
         )
 
         gk = Gatekeeper(base_dir=PROJECT_ROOT)
-        if not gk.client:
-            pytest.skip("API クライアント未構成")
 
         # 1. Gatekeeper 分類
         result = gk.classify(
