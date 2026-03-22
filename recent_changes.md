@@ -1,6 +1,20 @@
 # Recent Changes
 
-## 最新の実装：Raspi V2 画像付きチャット対応と責務分離 (2026-03-21)
+## 最新の実装：マルチプロバイダー対応リファクタリング (2026-03-22)
+Gemini 専用だったアーキテクチャを **プロバイダー非依存** に改修し、OpenAI / Ollama をサポート。
+
+- **BaseProvider 拡張**: `summarize()`, `embed()`, `classify()` 抽象メソッドを追加。
+- **brain.py 刷新**: 全 `google.genai` 依存を除去し、ProviderFactory 経由の純粋 RAG エンジンに縮小（~861行 → ~253行）。
+- **ChatService 統一**: RAG 検索を ChatService 側に移動、全パスを `Provider.generate()` 経由に統一。
+- **GeminiProvider 完成**: brain.py から移管した Gemini 固有ロジック（検索リトライ、コンテキストキャッシュ、Interactions API、ハルシネーションフィルタ）を集約。
+- **OpenAIProvider 追加**: GPT-4o 等対応。Vision、embed（text-embedding-3-small）、classify を実装。
+- **OllamaProvider 追加**: ローカル LLM 対応。OpenAI 互換 API（`localhost:11434/v1`）経由。
+- **Gatekeeper / Housekeeper**: `google.genai` 依存を除去し、Provider.classify() / embed() 経由に切り替え。
+- **埋め込みマイグレーション**: プロバイダー切り替え時に embedding_blob を再生成する `migrate_embeddings.py` を追加。
+- **設定ファイル整理**: `.env.example` に全プロバイダーのキーテンプレート、`user_config.json.example` に OpenAI / Ollama の設定例を追加。
+- **app.py / main.py**: `brain.prepare_cache()` を Provider 経由に修正（hasattr チェックで非 Gemini 対応）。
+
+## Raspi V2 画像付きチャット対応と責務分離 (2026-03-21)
 - **DTOの導入**: `butly_core/chat/types.py` を作成し、`ChatRequest`, `ChatResponse`, `Attachment` の標準モデルを定義。WebSocketとRESTからの入力を正規化する処理を追加。
 - **Provider抽象化**: `butly_core/llm/` に Provider 抽象層を作成し、`GeminiProvider` を実装。これまで `main.py` や `brain.py` に点在していた Gemini 固有の画像処理（inline送信 / Files API 分岐）を Provider 内に隠蔽化。
 - **ChatService導入**: チャットのオーケストレーションを担うステートレスな `ChatService` (`butly_core/chat/service.py`) を実装し、`main.py` から LLM 依存コードを排除。

@@ -21,7 +21,7 @@
 
 ```mermaid
 flowchart TD
-    A((ユーザー発言)) --> B["⧫ Gatekeeper<br/>Gemini Flash-Lite"]
+    A((ユーザー発言)) --> B["⧫ Gatekeeper<br/>Provider.classify()"]
     B --> C["構造化出力<br/>tier / need / search_targets / state_delta"]
     C -.->|state_delta| D["◈ Session State<br/>topic / mood / goals / unresolved"]
     D -.->|参照| B
@@ -30,7 +30,7 @@ flowchart TD
     E -->|mid| G["◎ mid<br/>注入記憶あり"]
     E -->|cortex| H["⌕ 不足前提検索<br/>need-driven retrieval"]
     H --> I[("⛁ 統合記憶DB<br/>episode / reflection<br/>generalization / self_model")]
-    F --> J["◆ Brain<br/>Gemini 3.1"]
+    F --> J["◆ ChatService<br/>Provider.generate()"]
     G --> J
     I -->|検索結果| J
     J --> K((返答))
@@ -144,10 +144,14 @@ timeline
                 : エピソード付きDigest（日次）
                 : 関係性Snapshot（週次）
                 : sys_inst+key_memory参照
-    Phase 4 : 要約注入切替
+    Phase 4 ✅ : 要約注入切替
              : build_system_instruction改修
              : RAW→要約の切替スイッチ
              : 品質検証
+    Multi-Provider ✅ : マルチプロバイダー対応
+             : OpenAI / Ollama 追加
+             : google.genai 隔離
+             : 埋め込みマイグレーション
     Phase 5 : 統合記憶生成
              : Housekeeper Stage3
              : reflection / generalization
@@ -274,8 +278,18 @@ python housekeeper.py
 butly_core/
 ├── config.py          ← AI/システム設定のデフォルト値
 ├── prompts.py         ← プロンプトテンプレート
+├── chat/
+│   ├── service.py     ← チャットオーケストレーション（ChatService）
+│   └── types.py       ← DTO（ChatRequest / ChatResponse / Attachment）
+├── llm/
+│   ├── base.py        ← プロバイダー抽象基底クラス（BaseProvider）
+│   ├── factory.py     ← モデル名→プロバイダー自動ルーティング
+│   └── providers/
+│       ├── gemini.py   ← Google Gemini（検索リトライ、キャッシュ、Interactions API）
+│       ├── openai.py   ← OpenAI（GPT-4o 等、Vision 対応）
+│       └── ollama.py   ← Ollama（ローカル LLM、OpenAI 互換 API）
 └── core/
-    ├── brain.py       ← LLM呼び出し / RAG / 要約
+    ├── brain.py       ← RAG検索エンジン（キーワード抽出 + ベクトルリランキング）
     ├── memory.py      ← 記憶の読み書き管理
     ├── database.py    ← SQLite操作（知識カード）
     ├── gatekeeper.py  ← Gatekeeper（メタ認知エンジン）+ SessionState + MemoryBlockBuilder
