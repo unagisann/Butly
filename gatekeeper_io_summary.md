@@ -1,5 +1,7 @@
 # Gatekeeper 入出力仕様・プロンプト注入まとめ
 
+🌐 **日本語** | [English](gatekeeper_io_summary.en.md)
+
 現在の `butly_core/core/gatekeeper.py` などの実装に基づく、Gatekeeper（前頭葉）モジュールでの入出力データと、判定された各Tier（階層）に応じてメインのAI（Brain）へ最終的に渡される情報の一覧です。
 
 ---
