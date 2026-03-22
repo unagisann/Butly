@@ -23,9 +23,6 @@ import os
 from pathlib import Path
 from typing import Callable, Optional
 
-from google import genai
-from google.genai import types
-
 try:
     from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
     from butly_core.prompts import GATEKEEPER_CLASSIFY_PROMPT
@@ -207,43 +204,25 @@ class SessionState:
 
 class Gatekeeper:
     """
-    Gemini API (2.5 Flash-Lite) を使って階層・不足前提・状態を判定するクラス。
+    Provider 経由で階層（reflex / mid / cortex）・状態を判定するクラス。
     """
 
     def __init__(self, base_dir: Path = None):
         self.base_dir = base_dir or Path(__file__).resolve().parent.parent.parent
-        self.client = self._configure_api(self.base_dir)
         try:
             self.model_name = AI_CONFIG["gatekeeper"]["model_name"]
             self.gatekeeper_config = AI_CONFIG["gatekeeper"]
         except KeyError:
-            # Fallback
             self.model_name = "gemini-3.1-flash-lite-preview"
             self.gatekeeper_config = {
+                "model_name": "gemini-3.1-flash-lite-preview",
                 "generation_config": {"temperature": 0.0, "max_output_tokens": 512},
-                "safety_settings": []
+                "safety_settings": [],
             }
 
-    def _configure_api(self, base_dir: Path):
-        from dotenv import load_dotenv
-        env_files = ["APIkey.env", ".env"]
-        api_key = None
-        for f in env_files:
-            env_path = base_dir / f
-            if env_path.exists():
-                load_dotenv(dotenv_path=env_path, override=True)
-                api_key = os.getenv("GOOGLE_API_KEY")
-                if api_key: break
-        
-        if not api_key:
-            api_key = os.getenv("GOOGLE_API_KEY")
-        
-        if not api_key:
-            print("[Gatekeeper] Warning: API Keyが見つかりません。")
-            # fallback for now, maybe it'll use ollama
-            return None
-            
-        return genai.Client(api_key=api_key)
+    def _get_provider(self):
+        from butly_core.llm.factory import ProviderFactory
+        return ProviderFactory.create(self.model_name)
 
     # ------------------------------------------------------------------
     # 公開メソッド
@@ -267,11 +246,10 @@ class Gatekeeper:
         Returns:
             dict: 構造化JSON（tier, topic, need, search_targets, state_delta）
         """
-        if not self.client:
-             print("[Gatekeeper] APIクライアント未構成 → デフォルト: mid")
+        if not self.gatekeeper_config:
+             print("[Gatekeeper] 設定未構成 → デフォルト: mid")
              return self._get_default_output()
 
-        start_time = os.times().elapsed if hasattr(os, 'times') else 0 # simple tracking
         import time
         t0 = time.time()
 
@@ -280,7 +258,6 @@ class Gatekeeper:
         # Format Session State
         state_text = ""
         if isinstance(session_state, dict):
-            # SessionState obj.to_dict() is passed
             topic = session_state.get('topic', current_topic)
             lines = [
                 f"Topic: {topic or '(未設定)'}",
@@ -301,16 +278,8 @@ class Gatekeeper:
         )
 
         try:
-             response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=self.gatekeeper_config["generation_config"].get("temperature", 0.0),
-                    max_output_tokens=self.gatekeeper_config["generation_config"].get("max_output_tokens", 512),
-                    safety_settings=self.gatekeeper_config.get("safety_settings")
-                )
-             )
-             raw_text = response.text if response.text else ""
+             provider = self._get_provider()
+             raw_text = provider.classify(prompt, self.gatekeeper_config)
              result_dict = self._parse_response(raw_text)
         except Exception as e:
              print(f"[Gatekeeper] API呼び出しエラー: {e}")
@@ -678,7 +647,7 @@ if __name__ == "__main__":
     print("\\n[Test 2] Gatekeeper classify テスト")
     gk = Gatekeeper(base_dir=base_dir)
     
-    if not gk.client:
+    if not gk.gatekeeper_config:
         print("APIキーが設定されていないため、LLMテストをスキップします。")
     else:
         test_cases = [
