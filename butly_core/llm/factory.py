@@ -39,7 +39,11 @@ class ProviderFactory:
             from butly_core.llm.providers.openai import OpenAIProvider
             return OpenAIProvider()
 
+        if model_name.startswith("ollama/"):
+            from butly_core.llm.providers.ollama import OllamaProvider
+            return OllamaProvider()
+
         raise NotImplementedError(
             f"未対応のモデルです: {model_name}。"
-            f"対応プロバイダー: Gemini（gemini-*）, OpenAI（gpt-* / o1 / o3 / o4）"
+            f"対応プロバイダー: Gemini（gemini-*）, OpenAI（gpt-* / o1 / o3 / o4）, Ollama（ollama/*）"
         )
