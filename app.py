@@ -594,40 +594,29 @@ def render_housekeeper_screen():
 
     col1, col2 = st.columns([1, 8])
     with col1:
-        if st.button("＜ 戻る", key="hk_back"): navigate_to("instance_settings")
+        if st.button("＜ 戻る", key="hk_back"): navigate_to("chat")
     with col2:
         st.markdown(f'<h1 class="app-title">🧹 記憶の整理: {instance_name}</h1>', unsafe_allow_html=True)
     st.divider()
 
-    # 推定情報の取得
+    # 実行中かどうかをまずサーバーに確認
+    is_running = st.session_state.get("hk_running", False)
     try:
-        resp = requests.get(f"{api_url}/housekeeper/estimate/{instance_name}", timeout=5)
-        est = resp.json() if resp.ok else {}
-    except Exception:
-        est = {}
-
-    group_count = est.get("group_count", "?") 
-    est_seconds = est.get("estimated_seconds", "?")
-
-    st.metric("未処理の記憶グループ", group_count)
-    st.metric("予測所要時間", f"約 {est_seconds} 秒")
-    st.divider()
-
-    if st.button("▶ 整理を開始する", type="primary", use_container_width=True):
-        try:
-            r = requests.post(f"{api_url}/housekeeper/run/{instance_name}", timeout=5)
-            if r.ok:
+        status_resp = requests.get(f"{api_url}/housekeeper/status/{instance_name}", timeout=5)
+        if status_resp.ok:
+            server_status = status_resp.json()
+            if server_status.get("state") == "running":
+                is_running = True
                 st.session_state["hk_running"] = True
-                st.rerun()
-            else:
-                st.error(f"エラー: {r.text}")
-        except Exception as e:
-            st.error(f"サーバー接続エラー: {e}")
+    except Exception:
+        pass
 
-    if st.session_state.get("hk_running"):
+    if is_running:
+        # --- 実行中UI ---
+        st.warning("⚠️ 記憶の整理を実行中です。完了するまでチャットは控えてください。")
         status_placeholder = st.empty()
         progress_bar = st.progress(0)
-        for _ in range(120):  # 最大2分ポーリング
+        for _ in range(600):  # 最大10分ポーリング
             try:
                 r = requests.get(f"{api_url}/housekeeper/status/{instance_name}", timeout=5)
                 status = r.json() if r.ok else {}
@@ -636,16 +625,59 @@ def render_housekeeper_screen():
             state = status.get("state", "running")
             msg = status.get("message", "処理中...")
             prog = int(status.get("progress", 0))
-            status_placeholder.markdown(f"**{msg}**")
-            progress_bar.progress(prog / 100.0)
+            status_placeholder.markdown(f"**🔄 {msg}**")
+            progress_bar.progress(min(prog / 100.0, 1.0))
             if state in ("completed", "error"):
                 st.session_state["hk_running"] = False
                 if state == "completed":
-                    st.success("整理が完了しました！")
+                    st.success("✅ 記憶の整理が完了しました！")
+                    st.balloons()
                 else:
                     st.error(f"エラー: {msg}")
                 break
             time.sleep(1)
+    else:
+        # --- 待機中UI ---
+        # 推定情報の取得
+        try:
+            resp = requests.get(f"{api_url}/housekeeper/estimate/{instance_name}", timeout=5)
+            est = resp.json() if resp.ok else {}
+        except Exception:
+            est = {}
+
+        group_count = est.get("group_count", "?")
+        est_seconds = est.get("estimated_seconds", "?")
+
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            st.metric("未処理の記憶グループ", group_count)
+        with col_m2:
+            if isinstance(est_seconds, (int, float)) and est_seconds > 0:
+                minutes = est_seconds // 60
+                secs = est_seconds % 60
+                time_str = f"{int(minutes)}分 {int(secs)}秒" if minutes > 0 else f"約 {int(secs)} 秒"
+            else:
+                time_str = f"約 {est_seconds} 秒"
+            st.metric("予測所要時間", time_str)
+
+        st.divider()
+
+        st.caption("短期記憶のログを整理し、知識カードとして長期記憶データベースに保存します。")
+        st.info("💡 実行中はチャットを控えてください。記憶データへの同時アクセスで不整合が起きる可能性があります。")
+
+        if group_count == 0:
+            st.success("整理する記憶はありません。すべて最新の状態です。")
+        else:
+            if st.button("▶ 整理を開始する", type="primary", use_container_width=True):
+                try:
+                    r = requests.post(f"{api_url}/housekeeper/run", json={"instance_name": instance_name}, timeout=5)
+                    if r.ok:
+                        st.session_state["hk_running"] = True
+                        st.rerun()
+                    else:
+                        st.error(f"エラー: {r.text}")
+                except Exception as e:
+                    st.error(f"サーバー接続エラー: {e}")
 
 # ==========================================
 # 🗋 DBブラウザ (Database Browser Screen)
@@ -901,6 +933,14 @@ def render_instance_settings_screen():
         max_tokens = st.number_input("最大出力トークン数", min_value=1, value=int(gen_config.get("max_output_tokens", 8192)))
 
     st.divider()
+
+    # Housekeeper Button
+    if st.button("🧹 記憶の整理 (Housekeeper)", use_container_width=True):
+        st.session_state.housekeeper_instance = instance_name
+        navigate_to("housekeeper")
+    st.caption("短期記憶を整理し、知識カードとして長期記憶に保存します。")
+
+    st.divider()
     
     # Action Buttons
     col_a1, col_a2, col_a3 = st.columns([6, 2, 2])
@@ -969,7 +1009,7 @@ def render_chat_screen():
     api_url = st.session_state.api_base_url
 
     # --- チャットヘッダー ---
-    col1, col2, col3, col4, col5 = st.columns([1, 6, 1, 1, 1])
+    col1, col2, col3, col4, col5, col6 = st.columns([1, 5, 1, 1, 1, 1])
     with col1:
         if st.button("＜", help="戻る"): navigate_to("home")
     with col2:
@@ -978,12 +1018,16 @@ def render_chat_screen():
         if st.button("⚙️", help="インスタンス設定"):
             navigate_to("instance_settings")
     with col4:
+        if st.button("🧹", help="記憶の整理 (Housekeeper)"):
+            st.session_state.housekeeper_instance = instance_name
+            navigate_to("housekeeper")
+    with col5:
         if st.button("🔄", help="履歴をリロード"):
             st.session_state.messages = []
             if "last_interaction_time" in st.session_state:
                 del st.session_state.last_interaction_time
             st.rerun()
-    with col5:
+    with col6:
         # Google Search toggle: 押すたびにON/OFF切り替え
         gs_on = st.session_state.get("use_google_search", False)
         gs_label = "🌐 ON" if gs_on else "🌐"
