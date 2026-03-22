@@ -2,14 +2,19 @@
 gemini.py
 ---------
 Gemini LLM プロバイダー。
-attachments → Gemini parts への変換をここで完結し、
-brain.py には画像を渡さない設計。
+brain.py から移管された Gemini 固有ロジック（チャット / 検索リトライ / 要約 / 埋め込み等）を一元管理する。
+attachments → Gemini parts への変換もここで完結。
 """
 
 import base64
 import os
+import re
 import tempfile
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from google import genai
+from google.genai import types
+from dotenv import load_dotenv
 
 from butly_core.chat.types import (
     Attachment,
@@ -26,6 +31,21 @@ VISION_UNSUPPORTED_MODELS = {
 }
 
 
+def _get_client() -> genai.Client:
+    """Gemini API クライアントを取得する（API キー自動解決）。"""
+    from pathlib import Path
+    env_files = ["APIkey.env", ".env"]
+    for env_name in env_files:
+        env_path = Path(__file__).resolve().parents[3] / env_name
+        if env_path.exists():
+            load_dotenv(env_path)
+            break
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError("Gemini API キーが見つかりません。APIkey.env に GEMINI_API_KEY を設定してください。")
+    return genai.Client(api_key=api_key)
+
+
 class GeminiProvider(BaseProvider):
     """
     Gemini API を使った LLM プロバイダー。
@@ -35,22 +55,81 @@ class GeminiProvider(BaseProvider):
       - 大きい画像: Files API 経由
     """
 
+    def __init__(self):
+        self._client = None
+
+    @property
+    def client(self) -> genai.Client:
+        if self._client is None:
+            self._client = _get_client()
+        return self._client
+
     @staticmethod
     def supports_vision(model_name: str) -> bool:
-        """
-        非対応モデルリストに含まれていなければ vision 対応とみなす。
-        新モデルはデフォルトで対応扱い。非対応が判明したら追加する。
-        """
         return model_name not in VISION_UNSUPPORTED_MODELS
 
-    async def summarize(self, conversation_text: str, config: dict) -> str:
-        raise NotImplementedError("GeminiProvider.summarize() は Step 4 で実装予定")
+    # ==================================================================
+    # BaseProvider 必須メソッド
+    # ==================================================================
 
-    async def embed(self, text: str):
-        raise NotImplementedError("GeminiProvider.embed() は Step 4 で実装予定")
+    async def summarize(self, conversation_text: str, config: dict) -> str:
+        """会話ログの要約を生成する。"""
+        from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
+        from butly_core import prompts
+
+        summary_conf = AI_CONFIG["summary"]
+        char_limit = config.get("summary_char_limit", SYSTEM_CONFIG["brain"]["summary_char_limit"])
+
+        prompt = prompts.BRAIN_SUMMARIZE_CONVERSATION_PROMPT.format(
+            agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
+            char_limit=char_limit,
+            conversation_text=conversation_text,
+        )
+
+        try:
+            response = self.client.models.generate_content(
+                model=summary_conf["model_name"],
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=summary_conf["generation_config"].get("temperature"),
+                    safety_settings=summary_conf.get("safety_settings"),
+                ),
+            )
+            return response.text.strip() if response.text else "要約なし"
+        except Exception as e:
+            print(f"[GeminiProvider] Summarize Error: {e}")
+            return "（要約作成に失敗）"
+
+    async def embed(self, text: str) -> Optional[List[float]]:
+        """Gemini Embedding API でベクトルを生成する。"""
+        from butly_core.config import AI_CONFIG
+        model_name = AI_CONFIG["embedding"]["model_name"]
+        try:
+            response = self.client.models.embed_content(
+                model=model_name,
+                contents=text,
+            )
+            return response.embeddings[0].values
+        except Exception as e:
+            print(f"[GeminiProvider] Embed Error: {e}")
+            return None
 
     def classify(self, prompt: str, config: dict) -> str:
-        raise NotImplementedError("GeminiProvider.classify() は Step 4 で実装予定")
+        """軽量モデルでテキスト分類 / キーワード抽出を行う（同期）。"""
+        try:
+            response = self.client.models.generate_content(
+                model=config["model_name"],
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=config["generation_config"].get("temperature", 0.0),
+                    max_output_tokens=config["generation_config"].get("max_output_tokens", 512),
+                    safety_settings=config.get("safety_settings"),
+                ),
+            )
+            return response.text if response.text else ""
+        except Exception as e:
+            print(f"[GeminiProvider] Classify Error: {e}")
+            return ""
 
     async def generate(
         self,
@@ -59,16 +138,14 @@ class GeminiProvider(BaseProvider):
         context: Dict[str, Any],
     ) -> ChatResponse:
         """
-        テキスト + 添付画像を Gemini API で処理する。
+        テキスト（+ 添付画像）を Gemini API で処理する。
 
-        フロー:
-          1. attachments → Gemini parts に変換（ここで完結）
-          2. brain.start_chat() でセッション取得
-          3. テキスト + parts を send_message() で送信
-          4. brain._extract_response() で結果を抽出
+        context に含まれるキー:
+          - brain, memory_manager, history, cached_content, override_config
+          - memory_blocks, use_google_search
+          - rag_results: ChatService が構築した RAG 検索結果リスト
+          - use_rag: bool
         """
-        from google.genai import types
-
         brain = context["brain"]
         memory_manager = context["memory_manager"]
         history = context.get("history", [])
@@ -76,60 +153,50 @@ class GeminiProvider(BaseProvider):
         override_config = context.get("override_config")
         memory_blocks = context.get("memory_blocks")
         use_google_search = context.get("use_google_search", False)
+        rag_results = context.get("rag_results", [])
+        use_rag = context.get("use_rag", True)
 
-        # --- 1. 画像 parts の構築 ---
+        # --- 画像 parts ---
         image_parts = []
         if attachments:
-            image_parts = self._convert_attachments_to_parts(
-                attachments, brain, types
-            )
+            image_parts = self._convert_attachments_to_parts(attachments)
             print(f"[GeminiProvider] 画像 parts 構築完了: {len(image_parts)}枚")
 
-        # --- 2. RAG コンテキスト構築（brain の既存ロジックを活用）---
+        # --- RAG コンテキスト文字列を構築 ---
+        rag_context = ""
         tier = memory_blocks.get("tier", "mid") if memory_blocks else "mid"
 
-        keyword_data = brain.extract_keywords(text, override_config)
-        keywords = keyword_data.get("keywords", [])
-        current_instance = memory_manager.instance_dir.name
-
-        if memory_blocks and tier == "cortex" and memory_blocks.get("rag_context"):
-            knowledge_list = []
-            rag_context = memory_blocks["rag_context"]
-            print("[GeminiProvider] RAG: cortex モード、Gatekeeper 済み RAG を流用")
-        else:
-            from butly_core.config import SYSTEM_CONFIG
-            limit = SYSTEM_CONFIG["brain"]["search_limit"]
-            knowledge_list = brain.search_knowledge(
-                keywords, text,
-                instance_name=current_instance,
-                limit=limit,
-                override_config=override_config,
-            )
-            rag_context = ""
-            print(f"[GeminiProvider] RAG Search: keywords={keywords}, hits={len(knowledge_list)}")
-            if knowledge_list:
+        if use_rag:
+            if memory_blocks and tier == "cortex" and memory_blocks.get("rag_context"):
+                rag_context = memory_blocks["rag_context"]
+            elif rag_results:
                 rag_context = "\n\n[過去の記憶]\n"
-                for k in knowledge_list:
+                for k in rag_results:
                     rag_context += f"・{k['title']}: {k['summary']}\n"
                     if k.get("episode"):
                         rag_context += f"  (補足: {k['episode']})\n"
                 rag_context += "\n"
 
-        full_prompt = f"{rag_context}\nユーザー: {text}"
+        full_prompt = f"{rag_context}\nユーザー: {text}" if rag_context else text
         if use_google_search and rag_context:
             full_prompt += "\n\n(Note: Prioritize the local database information above. Use Google Search only if the database lacks sufficient information or for checking the latest facts.)"
 
-        # --- 3. チャット実行 ---
+        # --- キーワード（レスポンス用） ---
+        keywords = []
+        if use_rag and rag_results:
+            # extract_keywords の結果は ChatService 側で呼ばれているが、
+            # ここでは refs 用に rag_results を流用
+            pass
+
+        # --- チャット実行 ---
         try:
             if use_google_search:
-                # Google検索付きリトライ: 画像 parts 付きで実行
-                response_text, sources = await self._try_search_with_retry_visual(
-                    brain, full_prompt, image_parts,
-                    cached_content, history, memory_manager,
-                    override_config, memory_blocks, types,
+                response_text, sources = await self._try_search_with_retry(
+                    full_prompt, image_parts, cached_content, history,
+                    memory_manager, override_config, memory_blocks,
                 )
             else:
-                chat_session = await brain.start_chat(
+                chat_session = await self._start_chat(
                     cached_content=cached_content,
                     history=history,
                     memory_manager=memory_manager,
@@ -137,51 +204,392 @@ class GeminiProvider(BaseProvider):
                     use_google_search=False,
                     memory_blocks=memory_blocks,
                 )
-
-                # テキスト + 画像 parts を組み立てて送信
                 prompt_parts = [full_prompt] + image_parts
-
                 print("[GeminiProvider] Sending message to Gemini API...")
                 response = await chat_session.send_message(prompt_parts)
                 print("[GeminiProvider] Got response from Gemini API!")
-                response_text, sources, _ = brain._extract_response(response)
+                response_text, sources, _ = self._extract_response(response)
 
             return ChatResponse(
                 text=response_text,
                 keywords=keywords,
-                refs=[dict(k) for k in knowledge_list] if knowledge_list else [],
+                refs=[dict(k) for k in rag_results] if rag_results else [],
                 sources=sources if sources else [],
             )
-
         except Exception as e:
             import traceback
             traceback.print_exc()
             return ChatResponse(
                 text=f"Error: {e}",
                 keywords=keywords,
-                refs=[dict(k) for k in knowledge_list] if knowledge_list else [],
+                refs=[dict(k) for k in rag_results] if rag_results else [],
                 sources=[],
             )
 
+    # ==================================================================
+    # Gemini 固有ユーティリティ
+    # ==================================================================
+
+    def _filter_hallucinations(self, text: str) -> str:
+        """Gemini が誤って出力する内部注釈テキストを除外する。"""
+        if not text:
+            return text
+        unwanted_patterns = [
+            r"No citation needed( as it's a personal response)?\.?",
+            r"\[No citation needed\]",
+            r"Citation not needed\.?",
+        ]
+        filtered = text
+        for pattern in unwanted_patterns:
+            filtered = re.sub(pattern, "", filtered, flags=re.IGNORECASE)
+        return filtered.strip()
+
+    def _extract_response(self, response):
+        """レスポンスからテキストとソースを抽出する。"""
+        sources = []
+        response_text = ""
+        finish_reason = None
+
+        if response.candidates:
+            finish_reason = response.candidates[0].finish_reason
+
+        # Grounding Metadata
+        try:
+            if response.candidates and response.candidates[0].grounding_metadata:
+                metadata = response.candidates[0].grounding_metadata
+                if metadata.grounding_chunks:
+                    for chunk in metadata.grounding_chunks:
+                        if chunk.web:
+                            sources.append({
+                                "title": chunk.web.title or "Google Search",
+                                "url": chunk.web.uri,
+                            })
+        except Exception as e:
+            print(f"[GeminiProvider] Grounding Extraction Error: {e}")
+
+        # テキスト抽出
+        try:
+            if response.text:
+                response_text = response.text
+        except (ValueError, AttributeError):
+            pass
+
+        if not response_text and response.candidates:
+            try:
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, "text") and part.text:
+                        response_text += part.text
+            except (AttributeError, IndexError):
+                pass
+
+        response_text = self._filter_hallucinations(response_text)
+        return response_text, sources, finish_reason
+
+    def _merge_config(self, base_conf, override_conf):
+        """設定辞書のディープマージ。"""
+        if not override_conf:
+            return base_conf
+        merged = base_conf.copy()
+        for key, value in override_conf.items():
+            if isinstance(value, dict) and key in merged and isinstance(merged[key], dict):
+                merged[key] = self._merge_config(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+
     # ------------------------------------------------------------------
-    # 内部メソッド: 画像変換
+    # チャットセッション管理
     # ------------------------------------------------------------------
 
-    def _convert_attachments_to_parts(
+    async def _start_chat(
         self,
-        attachments: List[Attachment],
-        brain,
-        types_module,
-    ) -> list:
-        """
-        Attachment リストを Gemini の Part リストに変換する。
+        cached_content=None,
+        history=None,
+        memory_manager=None,
+        override_config=None,
+        use_google_search=False,
+        memory_blocks=None,
+    ):
+        """キャッシュ有無に関わらずチャットセッションを開始する。"""
+        from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
 
-        - 小さい画像: inline data（Part.from_bytes）
-        - 大きい画像: Files API 経由でアップロード
-        """
+        if history is None:
+            history = []
+
+        floating_summary = ""
+        if memory_manager:
+            raw_summary = memory_manager.get_floating_summary()
+            if raw_summary:
+                floating_summary = f"\n\n========================================\n【直近の未整理記憶（浮動要約）】\n{raw_summary}"
+
+        chat_conf = AI_CONFIG["chat"]
+        if override_config and "chat" in override_config:
+            chat_conf = self._merge_config(chat_conf, override_config["chat"])
+
+        # History → types.Content 変換
+        history_contents = []
+        for h in history:
+            if isinstance(h, dict):
+                role = h.get("role")
+                parts = [
+                    types.Part(text=p) if isinstance(p, str) else types.Part(text=str(p))
+                    for p in h.get("parts", [])
+                ]
+                history_contents.append(types.Content(role=role, parts=parts))
+            else:
+                history_contents.append(h)
+
+        # Tools
+        tools_config = None
+        if use_google_search:
+            tools_config = [{"google_search": {}}]
+
+        generate_config = types.GenerateContentConfig(
+            temperature=chat_conf["generation_config"].get("temperature"),
+            top_p=chat_conf["generation_config"].get("top_p"),
+            top_k=chat_conf["generation_config"].get("top_k"),
+            max_output_tokens=chat_conf["generation_config"].get("max_output_tokens"),
+            safety_settings=chat_conf.get("safety_settings"),
+            tools=tools_config,
+            system_instruction=None,
+        )
+
+        model_name = chat_conf["model_name"]
+
+        if cached_content:
+            generate_config.cached_content = cached_content.name
+        else:
+            if memory_blocks is not None:
+                from butly_core.core.gatekeeper import build_system_instruction_from_blocks
+                base_instruction = build_system_instruction_from_blocks(
+                    blocks=memory_blocks,
+                    memory_manager=memory_manager,
+                    use_google_search=use_google_search,
+                )
+            else:
+                sections = []
+                agent_name = SYSTEM_CONFIG["agent"]["agent_name"]
+                sys_inst = memory_manager.get_system_instruction() if memory_manager else f"あなたは{agent_name}です。"
+                sections.append(f"=== SYSTEM INSTRUCTION ===\n{sys_inst}")
+
+                if memory_manager:
+                    key_mem = memory_manager.get_key_memory()
+                    if key_mem:
+                        sections.append(f"=== KEY MEMORY (根幹記憶) ===\n{key_mem}")
+
+                if memory_manager:
+                    mid_term = memory_manager.get_mid_term_text_content()
+                    if mid_term:
+                        sections.append(f"=== MID-TERM MEMORY (中期記憶) ===\n{mid_term}")
+
+                from butly_core.core.chronos import ButlyChronos
+                current_time = ButlyChronos().get_system_note()
+                sections.append(
+                    f"=== CURRENT TIME (現在時刻) ===\n{current_time}\n"
+                    "※上記の時刻情報は文脈理解のための参考情報です。随時日付や時間を読み上げる必要はありません。あくまで自然な対話を最優先してください。"
+                )
+
+                if floating_summary:
+                    sections.append(f"=== FLOATING SUMMARY (未整理記憶) ===\n{floating_summary.strip()}")
+
+                if not use_google_search:
+                    sections.append("")
+
+                base_instruction = "\n\n".join(sections)
+
+            generate_config.system_instruction = base_instruction
+
+        chat = self.client.aio.chats.create(
+            model=model_name,
+            config=generate_config,
+            history=history_contents,
+        )
+        return chat
+
+    def prepare_cache(self, memory_manager, ttl_hours=None, override_config=None):
+        """中期記憶をコンテキストキャッシュ化する。"""
+        from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
+
+        if ttl_hours is None:
+            ttl_hours = SYSTEM_CONFIG["brain"]["cache_ttl_hours"]
+
+        use_cache = True
+        if override_config and "brain" in override_config and "use_context_cache" in override_config["brain"]:
+            use_cache = override_config["brain"]["use_context_cache"]
+        else:
+            use_cache = SYSTEM_CONFIG["brain"].get("use_context_cache", True)
+
+        if not use_cache:
+            return None
+
+        system_instruction = memory_manager.get_system_instruction()
+        mid_term_text = memory_manager.get_mid_term_text_content()
+        combined_context = f"【中期記憶（過去の重要な記録）】\n{mid_term_text}"
+
+        cache_id_file = memory_manager.instance_dir / "current_cache_id.txt"
+
+        if cache_id_file.exists():
+            cached_name = cache_id_file.read_text(encoding="utf-8").strip()
+            if cached_name:
+                try:
+                    cache = self.client.caches.get(name=cached_name)
+                    return cache
+                except Exception:
+                    pass
+
+        try:
+            if len(combined_context) < 1000:
+                return None
+
+            contents = [types.Content(parts=[types.Part(text=combined_context)])]
+            model_name = AI_CONFIG["chat"]["model_name"]
+
+            new_cache = self.client.caches.create(
+                model=model_name,
+                config=types.CreateCachedContentConfig(
+                    system_instruction=types.Content(parts=[types.Part(text=system_instruction)]),
+                    contents=contents,
+                    ttl=f"{int(ttl_hours * 3600)}s",
+                ),
+            )
+            cache_id_file.write_text(new_cache.name, encoding="utf-8")
+            return new_cache
+        except Exception as e:
+            if "too small" in str(e) or "400" in str(e):
+                return None
+            print(f"[GeminiProvider] Cache Error: {e}")
+            return None
+
+    def chat_with_interactions(
+        self,
+        user_input: str,
+        memory_manager=None,
+        override_config: dict = None,
+        use_google_search: bool = False,
+        previous_interaction_id: str = None,
+        memory_blocks: dict = None,
+    ):
+        """Interactions API（ステートフルセッション）で 1 ターン応答を生成する。"""
+        from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
+
+        chat_conf = AI_CONFIG["chat"].copy()
+        if override_config:
+            if "AI_CONFIG" in override_config and "chat" in override_config["AI_CONFIG"]:
+                chat_conf.update(override_config["AI_CONFIG"]["chat"])
+            elif "chat" in override_config:
+                chat_conf.update(override_config["chat"])
+
+        model_name = chat_conf["model_name"]
+
+        # system_instruction を構築
+        if memory_blocks is not None:
+            from butly_core.core.gatekeeper import build_system_instruction_from_blocks
+            system_instruction = build_system_instruction_from_blocks(
+                blocks=memory_blocks,
+                memory_manager=memory_manager,
+                use_google_search=use_google_search,
+            )
+        else:
+            sections = []
+            agent_name = SYSTEM_CONFIG["agent"]["agent_name"]
+            sys_inst = memory_manager.get_system_instruction() if memory_manager else f"あなたは{agent_name}です。"
+            sections.append(f"=== SYSTEM INSTRUCTION ===\n{sys_inst}")
+
+            if memory_manager:
+                key_mem = memory_manager.get_key_memory()
+                if key_mem:
+                    sections.append(f"=== KEY MEMORY (根幹記憶) ===\n{key_mem}")
+            if memory_manager:
+                mid_term = memory_manager.get_mid_term_text_content()
+                if mid_term:
+                    sections.append(f"=== MID-TERM MEMORY (中期記憶) ===\n{mid_term}")
+
+            from butly_core.core.chronos import ButlyChronos
+            current_time = ButlyChronos().get_system_note()
+            sections.append(
+                f"=== CURRENT TIME (現在時刻) ===\n{current_time}\n"
+                "※上記の時刻情報は文脈理解のための参考情報です。随時日付や時間を読み上げる必要はありません。あくまで自然な対話を最優先してください。"
+            )
+
+            if memory_manager:
+                floating_summary = memory_manager.get_floating_summary()
+                if floating_summary:
+                    sections.append(f"=== FLOATING SUMMARY (未整理記憶) ===\n{floating_summary.strip()}")
+
+            system_instruction = "\n\n".join(sections)
+
+        tools_config = None
+        if use_google_search:
+            tools_config = [{"google_search": {}}]
+
+        try:
+            call_kwargs = {
+                "model": model_name,
+                "input": user_input,
+                "generation_config": types.GenerateContentConfig(
+                    temperature=chat_conf["generation_config"].get("temperature"),
+                    top_p=chat_conf["generation_config"].get("top_p"),
+                    top_k=chat_conf["generation_config"].get("top_k"),
+                    max_output_tokens=chat_conf["generation_config"].get("max_output_tokens"),
+                    safety_settings=chat_conf.get("safety_settings"),
+                ),
+                "system_instruction": system_instruction,
+                "tools": tools_config,
+            }
+            if previous_interaction_id:
+                call_kwargs["previous_interaction_id"] = previous_interaction_id
+
+            interaction = self.client.interactions.create(**call_kwargs)
+
+            response_text = ""
+            if interaction.outputs:
+                last_output = interaction.outputs[-1]
+                if hasattr(last_output, "text") and last_output.text:
+                    response_text = self._filter_hallucinations(last_output.text)
+
+            sources = []
+            if use_google_search:
+                try:
+                    for output in (interaction.outputs or []):
+                        metadata = getattr(output, "grounding_metadata", None)
+                        if metadata and hasattr(metadata, "grounding_chunks"):
+                            for chunk in (metadata.grounding_chunks or []):
+                                web = getattr(chunk, "web", None)
+                                if web:
+                                    sources.append({
+                                        "title": getattr(web, "title", "Google検索結果") or "Google検索結果",
+                                        "url": getattr(web, "uri", ""),
+                                    })
+                        if not sources:
+                            candidates = getattr(output, "candidates", None)
+                            if candidates:
+                                for candidate in candidates:
+                                    gm = getattr(candidate, "grounding_metadata", None)
+                                    if gm and hasattr(gm, "grounding_chunks"):
+                                        for chunk in (gm.grounding_chunks or []):
+                                            web = getattr(chunk, "web", None)
+                                            if web:
+                                                sources.append({
+                                                    "title": getattr(web, "title", "Google検索結果") or "Google検索結果",
+                                                    "url": getattr(web, "uri", ""),
+                                                })
+                except Exception as e:
+                    print(f"[GeminiProvider] Grounding metadata extraction error: {e}")
+
+            return response_text, interaction.id, sources
+        except Exception as e:
+            print(f"[GeminiProvider] chat_with_interactions error: {e}")
+            raise
+
+    # ------------------------------------------------------------------
+    # 内部: 画像変換
+    # ------------------------------------------------------------------
+
+    def _convert_attachments_to_parts(self, attachments: List[Attachment]) -> list:
+        """Attachment リストを Gemini の Part リストに変換する。"""
         parts = []
         total_size = 0
-        temp_files = []  # cleanup 用
+        temp_files = []
 
         try:
             for i, att in enumerate(attachments):
@@ -189,24 +597,16 @@ class GeminiProvider(BaseProvider):
                 file_size = len(img_bytes)
                 total_size += file_size
 
-                # inline 判定: 1枚2MB以下 & 累計8MB以下
                 if file_size <= INLINE_SIZE_PER_FILE and total_size <= INLINE_SIZE_TOTAL:
-                    part = types_module.Part.from_bytes(
-                        data=img_bytes,
-                        mime_type=att.mime_type,
-                    )
+                    part = types.Part.from_bytes(data=img_bytes, mime_type=att.mime_type)
                     parts.append(part)
                     print(f"[GeminiProvider] 画像{i+1}: inline ({file_size / 1024:.0f}KB)")
                 else:
-                    # Files API 経由
-                    part, tmp_path = self._upload_via_files_api(
-                        brain, img_bytes, att, i, types_module
-                    )
+                    part, tmp_path = self._upload_via_files_api(img_bytes, att, i)
                     parts.append(part)
                     if tmp_path:
                         temp_files.append(tmp_path)
         finally:
-            # ローカル一時ファイルを確実に削除
             for tmp in temp_files:
                 try:
                     os.unlink(tmp)
@@ -216,56 +616,29 @@ class GeminiProvider(BaseProvider):
 
         return parts
 
-    def _upload_via_files_api(
-        self,
-        brain,
-        img_bytes: bytes,
-        att: Attachment,
-        index: int,
-        types_module,
-    ) -> tuple:
-        """
-        Files API を使って画像をアップロードし、Part を返す。
-
-        Returns:
-            (Part, tmp_path): Part と一時ファイルのパス（cleanup用）
-        """
-        # 拡張子の決定
-        ext_map = {
-            "image/jpeg": ".jpg",
-            "image/png": ".png",
-            "image/webp": ".webp",
-        }
+    def _upload_via_files_api(self, img_bytes: bytes, att: Attachment, index: int) -> tuple:
+        """Files API で画像をアップロードし Part を返す。"""
+        ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
         ext = ext_map.get(att.mime_type, ".bin")
 
-        # 一時ファイルに書き出し
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext)
         try:
             with os.fdopen(tmp_fd, "wb") as f:
                 f.write(img_bytes)
 
-            # Files API にアップロード
-            uploaded = brain.client.files.upload(
-                file=tmp_path,
-                config={"mime_type": att.mime_type},
-            )
-            file_size = len(img_bytes)
-            print(f"[GeminiProvider] 画像{index+1}: Files API ({file_size / 1024:.0f}KB) → {uploaded.name}")
-
+            uploaded = self.client.files.upload(file=tmp_path, config={"mime_type": att.mime_type})
+            print(f"[GeminiProvider] 画像{index+1}: Files API ({len(img_bytes) / 1024:.0f}KB) → {uploaded.name}")
             return uploaded, tmp_path
-
         except Exception as e:
-            # アップロード失敗時もローカルファイルは cleanup
             print(f"[GeminiProvider] Files API アップロードエラー: {e}")
             raise
 
     # ------------------------------------------------------------------
-    # 内部メソッド: Google検索リトライ（画像付き）
+    # 内部: Google 検索リトライ
     # ------------------------------------------------------------------
 
-    async def _try_search_with_retry_visual(
+    async def _try_search_with_retry(
         self,
-        brain,
         full_prompt: str,
         image_parts: list,
         cached_content,
@@ -273,29 +646,21 @@ class GeminiProvider(BaseProvider):
         memory_manager,
         override_config,
         memory_blocks,
-        types_module,
     ) -> tuple:
-        """
-        Google検索付きリクエストの3段階リトライ（画像 parts 付き）。
-        brain._try_search_with_retry と同等のロジックだが、
-        画像 parts を GeminiProvider 側で管理する。
-        """
+        """Google 検索付きリクエストの 3 段階リトライ。"""
         # === First Try ===
         print("[GeminiProvider] Search: First Try")
         try:
-            chat_session = await brain.start_chat(
-                cached_content=cached_content,
-                history=history,
-                memory_manager=memory_manager,
-                override_config=override_config,
-                use_google_search=True,
-                memory_blocks=memory_blocks,
+            chat_session = await self._start_chat(
+                cached_content=cached_content, history=history,
+                memory_manager=memory_manager, override_config=override_config,
+                use_google_search=True, memory_blocks=memory_blocks,
             )
             prompt_parts = [full_prompt] + image_parts
             print("[GeminiProvider] Sending message to Gemini API...")
             response = await chat_session.send_message(prompt_parts)
             print("[GeminiProvider] Got response from Gemini API!")
-            response_text, sources, finish_reason = brain._extract_response(response)
+            response_text, sources, finish_reason = self._extract_response(response)
 
             if finish_reason and "MALFORMED" in str(finish_reason):
                 print(f"[GeminiProvider] Search: First Try failed - {finish_reason}")
@@ -310,19 +675,16 @@ class GeminiProvider(BaseProvider):
         print("[GeminiProvider] Search: Retry 1")
         try:
             corrected_prompt = full_prompt + "\n\n【システム注意】前回のGoogle検索ツール呼び出しが不正な形式でした。google_searchツールは自動的に実行されます。関数を明示的に呼び出す必要はありません。通常通り回答してください。"
-            chat_session = await brain.start_chat(
-                cached_content=cached_content,
-                history=history,
-                memory_manager=memory_manager,
-                override_config=override_config,
-                use_google_search=True,
-                memory_blocks=memory_blocks,
+            chat_session = await self._start_chat(
+                cached_content=cached_content, history=history,
+                memory_manager=memory_manager, override_config=override_config,
+                use_google_search=True, memory_blocks=memory_blocks,
             )
             prompt_parts = [corrected_prompt] + image_parts
             print("[GeminiProvider] Sending message to Gemini API...")
             response = await chat_session.send_message(prompt_parts)
             print("[GeminiProvider] Got response from Gemini API!")
-            response_text, sources, finish_reason = brain._extract_response(response)
+            response_text, sources, finish_reason = self._extract_response(response)
 
             if finish_reason and "MALFORMED" in str(finish_reason):
                 print(f"[GeminiProvider] Search: Retry 1 also failed - {finish_reason}")
@@ -335,19 +697,16 @@ class GeminiProvider(BaseProvider):
 
         # === Fallback ===
         print("[GeminiProvider] Search: Fallback (without search)")
-        chat_session = await brain.start_chat(
-            cached_content=cached_content,
-            history=history,
-            memory_manager=memory_manager,
-            override_config=override_config,
-            use_google_search=False,
-            memory_blocks=memory_blocks,
+        chat_session = await self._start_chat(
+            cached_content=cached_content, history=history,
+            memory_manager=memory_manager, override_config=override_config,
+            use_google_search=False, memory_blocks=memory_blocks,
         )
         prompt_parts = [full_prompt] + image_parts
         print("[GeminiProvider] Sending message to Gemini API...")
         response = await chat_session.send_message(prompt_parts)
         print("[GeminiProvider] Got response from Gemini API!")
-        response_text, sources, _ = brain._extract_response(response)
+        response_text, sources, _ = self._extract_response(response)
 
         if response_text:
             response_text = "【検索エラー】外部情報にアクセスできませんでした。以下は内部知識に基づく回答です。\n\n" + response_text
