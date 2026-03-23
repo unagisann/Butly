@@ -1,6 +1,6 @@
 # Butly — Architecture Diagrams
 
-🌐 [日本語](DIAGRAMS.md) | **English**
+🌐 [日本語](DIAGRAMS.ja.md) | **English**
 
 This file compiles Mermaid diagrams that visualize the system design of Butly.
 

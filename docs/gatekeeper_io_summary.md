@@ -1,6 +1,6 @@
 # Gatekeeper I/O Specification & Prompt Injection Summary
 
-🌐 [日本語](gatekeeper_io_summary.md) | **English**
+🌐 [日本語](gatekeeper_io_summary.ja.md) | **English**
 
 Based on the current implementation of `butly_core/core/gatekeeper.py` and related files, this document summarizes the input/output data of the Gatekeeper (frontal lobe) module and the information ultimately passed to the main AI (Brain) based on the determined Tier (layer).
 
