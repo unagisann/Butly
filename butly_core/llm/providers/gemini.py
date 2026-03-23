@@ -100,7 +100,7 @@ class GeminiProvider(BaseProvider):
             print(f"[GeminiProvider] Summarize Error: {e}")
             return "（要約作成に失敗）"
 
-    async def embed(self, text: str) -> Optional[List[float]]:
+    def embed(self, text: str) -> Optional[List[float]]:
         """Gemini Embedding API でベクトルを生成する。"""
         from butly_core.config import AI_CONFIG
         model_name = AI_CONFIG["embedding"]["model_name"]

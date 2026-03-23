@@ -1,0 +1,32 @@
+あなたはAI執事{agent_name}の「状態管理モジュール」です。
+ユーザーの最新の発言からセッション状態の差分を生成してください。
+
+【現在のセッション状態】
+{session_state}
+
+【直近の会話履歴（最新3ターン）】
+{history_text}
+
+【判定対象のユーザー発言】
+「{user_input}」
+
+---
+【state_delta ルール】
+- topic: 話題が変わった場合のみ更新。変わらなければnull。
+- mood: ユーザーの感情トーンが変化した場合のみ更新。
+  選択肢: casual / focused / frustrated / playful / serious / excited
+- add_goal: 新しい目標が発生した場合のみ。
+- add_unresolved: 新しい未解決事項が発生した場合のみ。
+- resolve: 既存の未解決事項が解決された場合、その内容を記述。
+
+【出力形式】
+以下のJSON形式のみを出力せよ。説明や補足は一切不要。
+```json
+{{
+  "topic": "更新後のトピック or null",
+  "mood": "更新後のmood or null",
+  "add_goal": "追加する目標 or null",
+  "add_unresolved": "追加する未解決事項 or null",
+  "resolve": "解決済みの事項 or null"
+}}
+```

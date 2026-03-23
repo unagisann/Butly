@@ -71,7 +71,8 @@ AI_CONFIG = {
 SYSTEM_CONFIG = {
     "agent": {
         "agent_name": "ジャービス",
-        "user_name": "主人"
+        "user_name": "主人",
+        "locale": "ja"
     },
     "paths": {
         "db_name": "butly_memory.db",

@@ -81,7 +81,7 @@ class OpenAIProvider(BaseProvider):
             print(f"[OpenAIProvider] Summarize Error: {e}")
             return "（要約作成に失敗）"
 
-    async def embed(self, text: str) -> Optional[List[float]]:
+    def embed(self, text: str) -> Optional[List[float]]:
         try:
             model = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
             resp = self.client.embeddings.create(model=model, input=text)

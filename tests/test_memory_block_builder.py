@@ -115,7 +115,7 @@ class TestMidTier:
 
         builder = MemoryBlockBuilder()
 
-        with patch("butly_core.core.gatekeeper.SYSTEM_CONFIG", {
+        with patch("butly_core.core.gatekeeper.memory_builder.SYSTEM_CONFIG", {
             "memory": {"use_summarized_mid_term": True},
             "brain": {"search_limit": 3},
         }):

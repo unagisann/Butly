@@ -57,10 +57,9 @@ class ButlyBrain:
 
     def get_embedding(self, text):
         try:
-            import asyncio
             model_name = AI_CONFIG["embedding"]["model_name"]
             provider = self._get_provider(model_name)
-            return asyncio.run(provider.embed(text))
+            return provider.embed(text)
         except Exception as e:
             print(f"[Brain] Embedding Error: {e}")
             return None

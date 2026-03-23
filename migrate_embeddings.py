@@ -88,7 +88,7 @@ def migrate_instance(instance_name: str, batch_size: int = 10, dry_run: bool = F
             content = f"Title: {row['title']}\nTags: {row['tags']}\nSummary: {row['summary']}"
 
             try:
-                embedding = asyncio.run(provider.embed(content))
+                embedding = provider.embed(content)
                 if embedding is None:
                     print(f"  [{card_id}] embed() returned None — skipping")
                     failed += 1

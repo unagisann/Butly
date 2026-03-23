@@ -71,7 +71,7 @@ class BaseProvider(ABC):
         ...
 
     @abstractmethod
-    async def embed(self, text: str) -> Optional[List[float]]:
+    def embed(self, text: str) -> Optional[List[float]]:
         """ベクトル埋め込み生成。RAG 検索のインデックス化に使用。"""
         ...
 

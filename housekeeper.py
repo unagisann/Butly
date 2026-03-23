@@ -89,10 +89,7 @@ class ButlyHousekeeper:
             model_name = AI_CONFIG["embedding"]["model_name"]
             provider = ProviderFactory.create(model_name)
 
-            def _call():
-                return asyncio.run(provider.embed(text))
-
-            result = self._robust_api_call(_call)
+            result = self._robust_api_call(lambda: provider.embed(text))
             return result
         except Exception as e:
             print(f"[Embedding Error] {e}")
