@@ -20,10 +20,16 @@ Butlyは、高度な記憶管理機能（短期記憶・中期記憶・長期記
   - `housekeeper.py`: バックグラウンドでの記憶の抽象化（事実ダイジェスト・関係性のスナップショット生成）
 
 ## 現在のフェーズとステータス
+- **Provider 同期/非同期統一完了 (2026-03-23)**: 全プロバイダーの `generate()` / `summarize()` を `async def` → `def`（同期）に統一。FastAPI の実行中イベントループと `asyncio.run()` が競合する問題を根本解決。`ChatService` 側で `run_in_threadpool()` に逃がす設計に変更。`BaseProvider` に将来の段階的非同期移行用として `async_generate()` / `async_summarize()` / `async_embed()` のデフォルト実装（同期版ラップ）を追備。
 - **マルチプロバイダー対応完了 (2026-03-22)**: Gemini 専用アーキテクチャをプロバイダー非依存に改修。`google.genai` の import を `GeminiProvider` のみに隔離し、OpenAI / Ollama プロバイダーを追加。`user_config.json` の `model_name` 変更のみでプロバイダー切り替え可能。埋め込みマイグレーションツール (`migrate_embeddings.py`) も提供。
 - **Raspi V2 (画像チャット対応) 完了**: DTOの共通化、GeminiProviderへの画像処理の隠蔽化、`ChatService`の導入による責務分離アーキテクチャへのリファクタリングが完了。
 - **Phase 4完了**: 中期記憶の二層要約（事実ダイジェスト＋関係性スナップショット）の動的プロンプト注入機能が完成。UIからの要約モードトグルにも対応。
 - **マルチインスタンス対応完了**: インスタンスごとに独立したディレクトリ (`butly_core/instances/[name]`) で記憶DB・設定・プロンプトを管理。
+
+## 同期/非同期設計方針
+- **全プロバイダーメソッドは同期**: `generate()`, `summarize()`, `embed()`, `classify()` はすべて `def`（同期）。FastAPIのイベントループをブロックしないよう、`ChatService` 内で `starlette.concurrency.run_in_threadpool()` 経由で実行。
+- **非同期移行への布石**: `BaseProvider` に `async_generate()` / `async_summarize()` / `async_embed()` のデフォルト実装（同期版を `run_in_threadpool` でラップ）を備備。プロバイダーを段階的に非同期化する際は、これらをオーバーライドするだけで移行可能。
+- **プロジェクト全体で `asyncio.run()` は 0 件**。
 
 ## 開発上の留意点（他のAIへ向けて）
 - **設定の優先順位**: `butly_core/config.py` がグローバルのデフォルト設定ですが、ユーザー設定は `user_config.json` でオーバーライドされ、さらにインスタンス固有の設定は `instances/[name]/config.json` に保存されます。

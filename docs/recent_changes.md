@@ -1,6 +1,17 @@
 # Recent Changes
 
-## 最新の実装：マルチプロバイダー対応リファクタリング (2026-03-22)
+## 最新の実装：Provider 同期/非同期統一 (2026-03-23)
+`asyncio.run() cannot be called from a running event loop` エラーを根本解決。全プロバイダーの非同期メソッドを完全に同期化した。
+
+- **`BaseProvider` 同期化**: `generate()`, `summarize()` の `@abstractmethod` を `async def` → `def` に変更。
+- **将来への布石**: `async_generate()` / `async_summarize()` / `async_embed()` のデフォルト実装（同期版を `run_in_threadpool` でラップ）を `BaseProvider` に追追。個別プロバイダーをオーバーライドするだけで段階的非同期化が可能。
+- **`GeminiProvider` 全同期化**: `generate()`, `summarize()`, `_start_chat()`, `_try_search_with_retry()` の4メソッドを `def` に変更。`client.aio.chats.create()` → `client.chats.create()` に切り替え。全 `await` 除去。
+- **`OpenAIProvider` / `OllamaProvider`**: `generate()`, `summarize()` を `def` に変更（中身の変更なし）。
+- **`ChatService` 修正**: `await provider.generate(...)` → `await run_in_threadpool(provider.generate, ...)` に変更。`from starlette.concurrency import run_in_threadpool` を追追。
+- **クリーンアップ**: `housekeeper.py` の `generate_embedding()` 内の不要な `import asyncio` を削除。`migrate_embeddings.py` の不要な `import asyncio` を削除。
+- **プロジェクト全体**: `asyncio.run()` 使用箇所 **0件** を確認。テスト **137件全パス**。
+
+## マルチプロバイダー対応リファクタリング (2026-03-22)
 Gemini 専用だったアーキテクチャを **プロバイダー非依存** に改修し、OpenAI / Ollama をサポート。
 
 - **BaseProvider 拡張**: `summarize()`, `embed()`, `classify()` 抽象メソッドを追加。
