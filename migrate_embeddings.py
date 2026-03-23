@@ -11,7 +11,6 @@ migrate_embeddings.py
 """
 
 import argparse
-import asyncio
 import sqlite3
 import struct
 import sys

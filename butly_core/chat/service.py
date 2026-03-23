@@ -15,6 +15,7 @@ from butly_core.chat.types import (
     validate_attachments,
 )
 from butly_core.llm.factory import ProviderFactory
+from starlette.concurrency import run_in_threadpool
 
 
 class ChatService:
@@ -183,7 +184,8 @@ class ChatService:
         if has_attachments:
             print(f"[ChatService] Provider: {type(provider).__name__}, attachments={len(request.attachments)}")
 
-        result = await provider.generate(
+        result = await run_in_threadpool(
+            provider.generate,
             text=full_prompt,
             attachments=request.attachments if has_attachments else [],
             context=context,

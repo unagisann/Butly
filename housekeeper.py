@@ -84,7 +84,6 @@ class ButlyHousekeeper:
 
     def generate_embedding(self, text):
         try:
-            import asyncio
             from butly_core.llm.factory import ProviderFactory
             model_name = AI_CONFIG["embedding"]["model_name"]
             provider = ProviderFactory.create(model_name)

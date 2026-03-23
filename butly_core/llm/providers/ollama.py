@@ -56,7 +56,7 @@ class OllamaProvider(BaseProvider):
     # BaseProvider 必須メソッド
     # ==================================================================
 
-    async def summarize(self, conversation_text: str, config: dict) -> str:
+    def summarize(self, conversation_text: str, config: dict) -> str:
         from butly_core.config import SYSTEM_CONFIG
         from butly_core import prompts
 
@@ -98,7 +98,7 @@ class OllamaProvider(BaseProvider):
             print(f"[OllamaProvider] Classify Error: {e}")
             return ""
 
-    async def generate(
+    def generate(
         self,
         text: str,
         attachments: List[Attachment],

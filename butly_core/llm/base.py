@@ -15,7 +15,7 @@ class BaseProvider(ABC):
     """LLM プロバイダーの抽象基底クラス"""
 
     @abstractmethod
-    async def generate(
+    def generate(
         self,
         text: str,
         attachments: List[Attachment],
@@ -23,6 +23,10 @@ class BaseProvider(ABC):
     ) -> ChatResponse:
         """
         テキスト（+ 添付）を受け取り、LLM から応答を生成する。
+        同期メソッド。呼び出し元が非同期コンテキストの場合は
+        run_in_threadpool() 等でラップすること。
+
+        将来の非同期版は async_generate() として追加予定。
 
         Parameters
         ----------
@@ -66,8 +70,8 @@ class BaseProvider(ABC):
         ...
 
     @abstractmethod
-    async def summarize(self, conversation_text: str, config: dict) -> str:
-        """会話ログの要約生成。"""
+    def summarize(self, conversation_text: str, config: dict) -> str:
+        """会話ログの要約生成。同期メソッド。"""
         ...
 
     @abstractmethod
@@ -79,3 +83,25 @@ class BaseProvider(ABC):
     def classify(self, prompt: str, config: dict) -> str:
         """Gatekeeper の tier 判定用。軽量モデルを使う想定。同期メソッド。"""
         ...
+
+    # --- 非同期メソッド（将来用・デフォルト実装は同期版のラップ） ---
+
+    async def async_generate(
+        self,
+        text: str,
+        attachments: List[Attachment],
+        context: Dict[str, Any],
+    ) -> ChatResponse:
+        """非同期版 generate。デフォルトは同期版をスレッドプールで実行。"""
+        from starlette.concurrency import run_in_threadpool
+        return await run_in_threadpool(self.generate, text, attachments, context)
+
+    async def async_summarize(self, conversation_text: str, config: dict) -> str:
+        """非同期版 summarize。デフォルトは同期版をスレッドプールで実行。"""
+        from starlette.concurrency import run_in_threadpool
+        return await run_in_threadpool(self.summarize, conversation_text, config)
+
+    async def async_embed(self, text: str) -> Optional[List[float]]:
+        """非同期版 embed。デフォルトは同期版をスレッドプールで実行。"""
+        from starlette.concurrency import run_in_threadpool
+        return await run_in_threadpool(self.embed, text)

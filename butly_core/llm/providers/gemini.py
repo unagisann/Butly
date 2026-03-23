@@ -72,7 +72,7 @@ class GeminiProvider(BaseProvider):
     # BaseProvider 必須メソッド
     # ==================================================================
 
-    async def summarize(self, conversation_text: str, config: dict) -> str:
+    def summarize(self, conversation_text: str, config: dict) -> str:
         """会話ログの要約を生成する。"""
         from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
         from butly_core import prompts
@@ -131,7 +131,7 @@ class GeminiProvider(BaseProvider):
             print(f"[GeminiProvider] Classify Error: {e}")
             return ""
 
-    async def generate(
+    def generate(
         self,
         text: str,
         attachments: List[Attachment],
@@ -191,12 +191,12 @@ class GeminiProvider(BaseProvider):
         # --- チャット実行 ---
         try:
             if use_google_search:
-                response_text, sources = await self._try_search_with_retry(
+                response_text, sources = self._try_search_with_retry(
                     full_prompt, image_parts, cached_content, history,
                     memory_manager, override_config, memory_blocks,
                 )
             else:
-                chat_session = await self._start_chat(
+                chat_session = self._start_chat(
                     cached_content=cached_content,
                     history=history,
                     memory_manager=memory_manager,
@@ -206,7 +206,7 @@ class GeminiProvider(BaseProvider):
                 )
                 prompt_parts = [full_prompt] + image_parts
                 print("[GeminiProvider] Sending message to Gemini API...")
-                response = await chat_session.send_message(prompt_parts)
+                response = chat_session.send_message(prompt_parts)
                 print("[GeminiProvider] Got response from Gemini API!")
                 response_text, sources, _ = self._extract_response(response)
 
@@ -301,7 +301,7 @@ class GeminiProvider(BaseProvider):
     # チャットセッション管理
     # ------------------------------------------------------------------
 
-    async def _start_chat(
+    def _start_chat(
         self,
         cached_content=None,
         history=None,
@@ -399,7 +399,7 @@ class GeminiProvider(BaseProvider):
 
             generate_config.system_instruction = base_instruction
 
-        chat = self.client.aio.chats.create(
+        chat = self.client.chats.create(
             model=model_name,
             config=generate_config,
             history=history_contents,
@@ -637,7 +637,7 @@ class GeminiProvider(BaseProvider):
     # 内部: Google 検索リトライ
     # ------------------------------------------------------------------
 
-    async def _try_search_with_retry(
+    def _try_search_with_retry(
         self,
         full_prompt: str,
         image_parts: list,
@@ -651,14 +651,14 @@ class GeminiProvider(BaseProvider):
         # === First Try ===
         print("[GeminiProvider] Search: First Try")
         try:
-            chat_session = await self._start_chat(
+            chat_session = self._start_chat(
                 cached_content=cached_content, history=history,
                 memory_manager=memory_manager, override_config=override_config,
                 use_google_search=True, memory_blocks=memory_blocks,
             )
             prompt_parts = [full_prompt] + image_parts
             print("[GeminiProvider] Sending message to Gemini API...")
-            response = await chat_session.send_message(prompt_parts)
+            response = chat_session.send_message(prompt_parts)
             print("[GeminiProvider] Got response from Gemini API!")
             response_text, sources, finish_reason = self._extract_response(response)
 
@@ -675,14 +675,14 @@ class GeminiProvider(BaseProvider):
         print("[GeminiProvider] Search: Retry 1")
         try:
             corrected_prompt = full_prompt + "\n\n【システム注意】前回のGoogle検索ツール呼び出しが不正な形式でした。google_searchツールは自動的に実行されます。関数を明示的に呼び出す必要はありません。通常通り回答してください。"
-            chat_session = await self._start_chat(
+            chat_session = self._start_chat(
                 cached_content=cached_content, history=history,
                 memory_manager=memory_manager, override_config=override_config,
                 use_google_search=True, memory_blocks=memory_blocks,
             )
             prompt_parts = [corrected_prompt] + image_parts
             print("[GeminiProvider] Sending message to Gemini API...")
-            response = await chat_session.send_message(prompt_parts)
+            response = chat_session.send_message(prompt_parts)
             print("[GeminiProvider] Got response from Gemini API!")
             response_text, sources, finish_reason = self._extract_response(response)
 
@@ -697,14 +697,14 @@ class GeminiProvider(BaseProvider):
 
         # === Fallback ===
         print("[GeminiProvider] Search: Fallback (without search)")
-        chat_session = await self._start_chat(
+        chat_session = self._start_chat(
             cached_content=cached_content, history=history,
             memory_manager=memory_manager, override_config=override_config,
             use_google_search=False, memory_blocks=memory_blocks,
         )
         prompt_parts = [full_prompt] + image_parts
         print("[GeminiProvider] Sending message to Gemini API...")
-        response = await chat_session.send_message(prompt_parts)
+        response = chat_session.send_message(prompt_parts)
         print("[GeminiProvider] Got response from Gemini API!")
         response_text, sources, _ = self._extract_response(response)
 
