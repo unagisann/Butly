@@ -77,8 +77,11 @@ class GeminiProvider(BaseProvider):
         from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
         from butly_core.prompts import PromptLoader
 
-        summary_conf = AI_CONFIG["summary"]
+        # config から model_name / temperature を取得（brain.summarize_conversation がマージ済み）
+        model_name = config.get("model_name", AI_CONFIG["summary"]["model_name"])
+        temperature = config.get("temperature", AI_CONFIG["summary"]["generation_config"].get("temperature", 0.3))
         char_limit = config.get("summary_char_limit", SYSTEM_CONFIG["brain"]["summary_char_limit"])
+        safety_settings = AI_CONFIG["summary"].get("safety_settings")
 
         loader = PromptLoader()
         prompt = loader.get(
@@ -90,11 +93,11 @@ class GeminiProvider(BaseProvider):
 
         try:
             response = self.client.models.generate_content(
-                model=summary_conf["model_name"],
+                model=model_name,
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    temperature=summary_conf["generation_config"].get("temperature"),
-                    safety_settings=summary_conf.get("safety_settings"),
+                    temperature=temperature,
+                    safety_settings=safety_settings,
                 ),
             )
             return response.text.strip() if response.text else "要約なし"
@@ -448,7 +451,10 @@ class GeminiProvider(BaseProvider):
                 return None
 
             contents = [types.Content(parts=[types.Part(text=combined_context)])]
-            model_name = AI_CONFIG["chat"]["model_name"]
+            chat_conf = AI_CONFIG["chat"]
+            if override_config and "chat" in override_config:
+                chat_conf = {**chat_conf, **override_config["chat"]}
+            model_name = chat_conf["model_name"]
 
             new_cache = self.client.caches.create(
                 model=model_name,

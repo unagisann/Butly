@@ -36,8 +36,18 @@ class StateUpdater:
         from butly_core.llm.factory import ProviderFactory
         return ProviderFactory.create(self.model_name)
 
+    def _resolve_config(self, override_config=None):
+        """override_config から gatekeeper 設定を解決する。"""
+        if not override_config or "gatekeeper" not in override_config:
+            return self.model_name, self.gatekeeper_config
+        merged = {**self.gatekeeper_config, **override_config["gatekeeper"]}
+        if "generation_config" in self.gatekeeper_config and "generation_config" in override_config.get("gatekeeper", {}):
+            merged["generation_config"] = {**self.gatekeeper_config["generation_config"], **override_config["gatekeeper"]["generation_config"]}
+        model = merged.get("model_name", self.model_name)
+        return model, merged
+
     def update(self, user_input: str, history_msgs: list,
-               current_state: dict) -> dict:
+               current_state: dict, override_config=None) -> dict:
         """
         Returns:
             {
@@ -50,6 +60,8 @@ class StateUpdater:
         """
         if not self.gatekeeper_config:
             return self._default_output()
+
+        model_name, gk_config = self._resolve_config(override_config)
 
         t0 = time.time()
 
@@ -67,8 +79,9 @@ class StateUpdater:
         )
 
         try:
-            provider = self._get_provider()
-            raw_text = provider.classify(prompt, self.gatekeeper_config)
+            from butly_core.llm.factory import ProviderFactory
+            provider = ProviderFactory.create(model_name)
+            raw_text = provider.classify(prompt, gk_config)
             result = self._parse_response(raw_text)
         except Exception as e:
             print(f"[StateUpdater] API呼び出しエラー: {e}")

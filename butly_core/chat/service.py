@@ -107,6 +107,7 @@ class ChatService:
                 user_input=request.text,
                 history_msgs=history_fmt,
                 session_state=session_state.to_dict(),
+                override_config=instance_config,
             )
             tier = gk_result.get("tier", "mid")
         except Exception as e:

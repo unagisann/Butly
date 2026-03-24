@@ -41,6 +41,7 @@ class Gatekeeper:
         history_msgs: list,
         session_state: dict,
         current_topic: str = "",
+        override_config: dict = None,
     ) -> dict:
         """
         既存と同じシグネチャ・同じ返却形式を維持。
@@ -52,13 +53,15 @@ class Gatekeeper:
         """
         # A. tier判定
         tier_result = self.tier_classifier.classify(
-            user_input, history_msgs, current_topic
+            user_input, history_msgs, current_topic,
+            override_config=override_config,
         )
         tier = tier_result["tier"]
 
         # B. state_delta生成
         state_delta = self.state_updater.update(
-            user_input, history_msgs, session_state
+            user_input, history_msgs, session_state,
+            override_config=override_config,
         )
 
         # C. cortex時のみ検索計画
@@ -66,7 +69,8 @@ class Gatekeeper:
         search_targets = None
         if tier == "cortex":
             plan = self.search_planner.plan(
-                user_input, history_msgs, current_topic
+                user_input, history_msgs, current_topic,
+                override_config=override_config,
             )
             need = plan.get("need")
             search_targets = plan.get("search_targets")
