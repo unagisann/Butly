@@ -95,7 +95,7 @@ SYSTEM_CONFIG = {
         "cache_ttl_hours": 3,
         "summary_char_limit": 200,
         "use_context_cache": False, # Set to False to disable Context Caching
-        "filter_memory_by_type": True, # Default: Only search own instance memory
+        "readable_instances": ["self"], # ["self"], ["self", "00_master"] 等で横断検索
         "dynamic_threshold": 0.6, # Google Search Dynamic Retrieval Threshold (0.0 - 1.0)
         "default_use_google_search": False # デフォルトでGoogle検索グラウンディングを使用するか
     },

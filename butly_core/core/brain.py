@@ -26,9 +26,13 @@ class ButlyBrain:
         # Configから読み込む (デフォルト値はConfig依存)
         self.model_name = AI_CONFIG["chat"]["model_name"]
         
-        # インスタンスごとのDBを参照（全インスタンス共通DBはinstances/00_master/butly_memory.db）
-        db_name = SYSTEM_CONFIG["paths"]["db_name"]
-        self.db_path = self.base_dir / "butly_core" / "instances" / "00_master" / db_name
+        # db_path はインスタンスごとに _get_db_path() で解決するため、固定値を持たない
+        self.instances_dir = self.base_dir / "butly_core" / "instances"
+        self.db_name = SYSTEM_CONFIG["paths"]["db_name"]
+
+    def _get_db_path(self, instance_name: str) -> Path:
+        """インスタンス名からDBパスを解決"""
+        return self.instances_dir / instance_name / self.db_name
 
     # --- Provider アクセス ---
     def _get_provider(self, model_name=None):
@@ -103,7 +107,7 @@ class ButlyBrain:
     def search_knowledge(self, keywords, user_query, instance_name="00_master", limit=None, override_config=None):
         """
         ハイブリッド検索: キーワードフィルター + ベクトル類似度
-        (BLOB対応 & フォールバック機能付き)
+        readable_instances に基づき複数DB横断検索に対応。
         """
         brain_conf = SYSTEM_CONFIG["brain"].copy()
         if override_config and "brain" in override_config:
@@ -112,8 +116,52 @@ class ButlyBrain:
         if limit is None:
             limit = brain_conf["search_limit"]
 
-        # ルートの共通DBパスを取得するように変更
-        instance_db_path = self.db_path
+        # readable_instances の解決
+        readable = brain_conf.get("readable_instances", ["self"])
+        target_instances = []
+        for r in readable:
+            if r == "self":
+                target_instances.append(instance_name)
+            else:
+                target_instances.append(r)
+        # 重複除去（selfと明示指定が被る場合）
+        target_instances = list(dict.fromkeys(target_instances))
+
+        # 単一DBの場合（高速パス）
+        if len(target_instances) == 1:
+            return self._search_single_db(
+                keywords, user_query, target_instances[0], limit, brain_conf
+            )
+
+        # 複数DBの場合: 各DBに個別クエリ → マージしてリランキング
+        return self._search_multi_db(
+            keywords, user_query, target_instances, limit, brain_conf
+        )
+
+    def _search_multi_db(self, keywords, user_query, instances, limit, brain_conf):
+        """複数インスタンスのDBを横断検索"""
+        all_results = []
+        for inst in instances:
+            db_path = self._get_db_path(inst)
+            if not db_path.exists():
+                continue
+            results = self._search_single_db(
+                keywords, user_query, inst, limit, brain_conf
+            )
+            for r in results:
+                r["source_instance"] = inst
+            all_results.extend(results)
+
+        # スコアでリランキング → 上位 limit 件
+        all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return all_results[:limit]
+
+    def _search_single_db(self, keywords, user_query, instance_name, limit, brain_conf):
+        """
+        単一インスタンスDBに対するハイブリッド検索
+        (キーワードフィルター + ベクトル類似度リランキング)
+        """
+        instance_db_path = self._get_db_path(instance_name)
         if not instance_db_path.exists(): return []
 
         try:
@@ -130,15 +178,6 @@ class ButlyBrain:
             # 共通カラム定義: embedding -> embedding_blob
             select_cols = "id, title, summary, episode, type, embedding_blob, created_at, is_archived"
             
-            # Instance Filter
-            base_conditions = []
-            params = []
-            # override_config がマージ済みの brain_conf を参照する（SYSTEM_CONFIG 直参照バグを修正）
-            if brain_conf.get("filter_memory_by_type", True):
-                # "Master" への変換は廃止。instance_name をそのままDBの type として使用する
-                base_conditions.append("type = ?")
-                params.append(instance_name)
-            
             # Keyword Filter
             kw_conditions = []
             kw_params = []
@@ -149,9 +188,7 @@ class ButlyBrain:
             
             # --- Primary Search (Keyword Filter) ---
             if kw_conditions:
-                where_clauses = base_conditions + [f"({' OR '.join(kw_conditions)})"]
-                where_sql = " AND ".join(where_clauses)
-                current_params = params + kw_params
+                where_sql = f"({' OR '.join(kw_conditions)})"
                 
                 # Fetch more candidates for reranking
                 fetch_limit = brain_conf["fallback_fetch_limit"]
@@ -162,7 +199,7 @@ class ButlyBrain:
                     ORDER BY created_at DESC
                     LIMIT {fetch_limit}
                 """
-                cursor.execute(query, current_params)
+                cursor.execute(query, kw_params)
                 rows = cursor.fetchall()
 
             # --- Fallback Logic ---
@@ -173,16 +210,14 @@ class ButlyBrain:
                 # フォールバック: 直近50件 (キーワード条件なし)
                 print(f"[Brain] Fallback triggered (Hits: {len(rows)}). Fetching recent logs.")
                 
-                where_sql_fb = " AND ".join(base_conditions) if base_conditions else "1=1"
                 fetch_limit = brain_conf["fallback_fetch_limit"]
                 query_fb = f"""
                     SELECT {select_cols}
                     FROM knowledge_cards 
-                    WHERE {where_sql_fb}
                     ORDER BY created_at DESC
                     LIMIT {fetch_limit}
                 """
-                cursor.execute(query_fb, params) # params contains instance filter only
+                cursor.execute(query_fb)
                 fallback_rows = cursor.fetchall()
                 
                 # 重複排除しながらマージ (IDをキーにする)

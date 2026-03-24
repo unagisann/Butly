@@ -885,7 +885,7 @@ def render_instance_settings_screen():
     
     # Initialize defaults if empty
     if "brain" not in config:
-        config["brain"] = {"use_context_cache": False, "filter_memory_by_type": True} # Context Cache DEFAULT OFF
+        config["brain"] = {"use_context_cache": False, "readable_instances": ["self"]} # Context Cache DEFAULT OFF
     if "chat" not in config:
         config["chat"] = {
             "model_name": "gemini-3-flash-preview",
@@ -903,8 +903,31 @@ def render_instance_settings_screen():
     
     # Context Cache (Default OFF as requested)
     use_cache = st.toggle("コンテキストキャッシュ (Mid-term Memory)", value=config["brain"].get("use_context_cache", False))
-    filter_mem = st.toggle("インスタンス別記憶フィルタ", value=config["brain"].get("filter_memory_by_type", True), help="無効にすると他のインスタンスの記憶も検索対象になります。")
     default_gs = st.toggle("Google検索のデフォルト有効化", value=config["brain"].get("default_use_google_search", False))
+
+    # 記憶の参照範囲 (readable_instances)
+    st.divider()
+    st.subheader("記憶の参照範囲")
+    st.caption("このインスタンスがRAG検索時にアクセスできる記憶DBを選択します。")
+    current_readable = config["brain"].get("readable_instances", ["self"])
+    # "self" を実際のインスタンス名に展開して判定
+    readable_selected = []
+    for inst in available_instances:
+        is_self = (inst == instance_name)
+        is_checked = is_self or inst in current_readable
+        disabled = is_self  # 自分自身は解除不可
+        if st.checkbox(
+            f"{'📌 ' if is_self else ''}{inst}",
+            value=is_checked,
+            disabled=disabled,
+            key=f"readable_{inst}"
+        ):
+            if is_self:
+                readable_selected.append("self")
+            else:
+                readable_selected.append(inst)
+    if "self" not in readable_selected:
+        readable_selected.insert(0, "self")
     
     col_b1, col_b2 = st.columns(2)
     with col_b1:
@@ -965,8 +988,9 @@ def render_instance_settings_screen():
         if st.button("設定を保存", type="primary", use_container_width=True):
             # Update values
             config["brain"]["use_context_cache"] = use_cache
-            config["brain"]["filter_memory_by_type"] = filter_mem
             config["brain"]["default_use_google_search"] = default_gs
+            config["brain"]["readable_instances"] = readable_selected
+            config["brain"].pop("filter_memory_by_type", None)  # 旧キーを除去
             config["brain"]["search_limit"] = search_lim
             config["brain"]["fallback_fetch_limit"] = fallback_lim
             config["brain"]["keyword_hit_threshold"] = keyword_thr

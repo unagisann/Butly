@@ -140,7 +140,7 @@
             "cache_ttl_hours": 3,
             "summary_char_limit": 200,
             "use_context_cache": false,
-            "filter_memory_by_type": true,
+            "readable_instances": ["self"],
             "dynamic_threshold": 0.6,
             "default_use_google_search": false
         },
