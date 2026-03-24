@@ -19,9 +19,110 @@ manages multiple AI instances (personas), and accumulates & retrieves knowledge 
 
 ---
 
+## Setup
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/unagisann/Butly.git
+cd Butly
+```
+
+### 2. Set up the environment
+
+**Linux / macOS:**
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+**Windows (automated with batch file):**  
+Run `01_setup_requirements.bat` by double-clicking.  
+The `.venv` virtual environment will be created and dependencies installed automatically.
+
+### 3. Configure API keys
+
+**Linux / macOS:**
+
+```bash
+cp .env.example APIkey.env
+```
+
+**Windows:** Automatically copied when the batch file runs.
+
+Set the required keys for your chosen provider:
+
+```env
+# Google Gemini (default)
+GOOGLE_API_KEY=AIza...
+
+# For OpenAI
+OPENAI_API_KEY=sk-...
+
+# Ollama requires no key (local execution)
+# OLLAMA_BASE_URL=http://localhost:11434/v1  (default)
+```
+
+### 4. Prepare the config file
+
+**Linux / macOS:**
+
+```bash
+cp user_config.json.example user_config.json
+```
+
+**Windows:** Automatically copied when the batch file runs.
+
+Customize AI model names, parameters, and agent names freely in `user_config.json`.  
+`user_config.json.example` includes configuration examples for Gemini / OpenAI / Ollama.
+
+> **Note**: If you switch providers, the embedding dimensions will differ and RAG search accuracy may degrade.
+> Regenerate embeddings with the following command:
+> ```bash
+> python migrate_embeddings.py --all
+> ```
+
+### 5. Start
+
+**Linux / macOS — Start the backend (FastAPI):**
+
+```bash
+uvicorn main:app --port 8000 --reload
+```
+
+**Linux / macOS — Start the frontend (Streamlit):**
+
+```bash
+streamlit run app.py
+```
+
+Open `http://localhost:8501` in your browser.
+
+**Windows (automated with batch file):**  
+Run `02_start_webui.bat` by double-clicking.  
+FastAPI and Streamlit will start in separate windows, and your browser will automatically open `http://127.0.0.1:8501`.
+
+---
+
+## Housekeeper (Scheduled Memory Maintenance)
+
+A scheduled process that converts short-term memory into the knowledge DB (SQLite) and generates episode-tagged digests.
+
+```bash
+python housekeeper.py
+```
+
+Or run it from the Web UI via the "🧹 記憶の整理" button.
+
+> **Recommendation**: Run during low-activity hours such as after conversations wind down for the day.
+
+---
+
 ## Architecture
 
-\`\`\`mermaid
+```mermaid
 flowchart TD
     A((User Input)) --> B["⧫ Gatekeeper<br/>Provider.classify()"]
     B --> C["Structured Output<br/>tier / need / search_targets / state_delta"]
@@ -39,7 +140,7 @@ flowchart TD
     K --> L["▣ short_term_json save"]
     L -.->|scheduled| M["⚙ Housekeeper<br/>Daily + Weekly batch"]
     M -.->|integrated memory generation| I
-\`\`\`
+```
 
 ### Design Principles
 
@@ -58,7 +159,7 @@ flowchart TD
 
 Context passed to the LLM is constructed in the following order (upper = immutable, lower = variable):
 
-\`\`\`mermaid
+```mermaid
 block-beta
     columns 1
     A["1. SYSTEM INSTRUCTION — Personality settings (immutable)"]
@@ -76,13 +177,13 @@ block-beta
     style E fill:#1a1a2e,color:#ef4444
     style F fill:#1a1a2e,color:#3b82f6
     style G fill:#1a1a2e,color:#556677
-\`\`\`
+```
 
 ### Mid-term Two-layer Summary Structure
 
 mid_term.txt (RAW conversation log) continues accumulating through the existing pipeline, while two separate summary layers are generated as additional files.
 
-\`\`\`mermaid
+```mermaid
 flowchart LR
     RAW["short_term_json<br/>(RAW)"] --> INT["1_integrated<br/>(RAW archive)"]
     INT --> S1a["Stage 1a<br/>mid_term.txt<br/>RAW accumulation"]
@@ -95,7 +196,7 @@ flowchart LR
     style S1c fill:#4c1d95,color:#8b5cf6
     style S1a fill:#1f2937,color:#8899aa
     style S2 fill:#065f46,color:#10b981
-\`\`\`
+```
 
 | File | Update Frequency | Content | Limit |
 |------|-----------------|---------|-------|
@@ -106,7 +207,7 @@ flowchart LR
 
 ### Housekeeper Stage Configuration
 
-\`\`\`mermaid
+```mermaid
 flowchart TD
     subgraph "Daily Batch"
         S1a["Stage 1a<br/>Mid-term RAW accumulation"]
@@ -125,13 +226,13 @@ flowchart TD
     style S1b fill:#065f46,color:#10b981
     style S1c fill:#4c1d95,color:#8b5cf6
     style S3 fill:#1f2937,color:#556677,stroke-dasharray: 5 5
-\`\`\`
+```
 
 ---
 
 ## Roadmap
 
-\`\`\`mermaid
+```mermaid
 timeline
     title Butly Memory Architecture v2 — Implementation Roadmap
     Phase 1 ✅ : Gatekeeper v2
@@ -164,7 +265,7 @@ timeline
     Final Form : Full autonomy
                 : system_instruction single line
                 : Autonomous persona reconstruction from memory
-\`\`\`
+```
 
 ### Models Used (Default: Gemini)
 
@@ -191,92 +292,9 @@ You can mix different providers per role (e.g., chat=OpenAI, embedding=Gemini).
 
 ---
 
-## Setup
-
-### 1. Clone the repository
-
-\`\`\`bash
-git clone https://github.com/unagisann/Butly.git
-cd Butly
-\`\`\`
-
-### 2. Set up the environment
-
-\`\`\`bash
-python -m venv venv
-source venv/bin/activate       # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-\`\`\`
-
-### 3. Configure API keys
-
-\`\`\`bash
-cp .env.example APIkey.env
-\`\`\`
-
-Set the required keys for your chosen provider:
-
-\`\`\`env
-# Google Gemini (default)
-GOOGLE_API_KEY=AIza...
-
-# For OpenAI
-OPENAI_API_KEY=sk-...
-
-# Ollama requires no key (local execution)
-# OLLAMA_BASE_URL=http://localhost:11434/v1  (default)
-\`\`\`
-
-### 4. Prepare the config file
-
-\`\`\`bash
-cp user_config.json.example user_config.json
-\`\`\`
-
-Customize AI model names, parameters, and agent names freely in \`user_config.json\`.
-\`user_config.json.example\` includes configuration examples for Gemini / OpenAI / Ollama.
-
-> **Note**: If you switch providers, the embedding dimensions will differ and RAG search accuracy may degrade.
-> Regenerate embeddings with the following command:
-> \`\`\`bash
-> python migrate_embeddings.py --all
-> \`\`\`
-
-### 5. Start
-
-**Start the backend (FastAPI):**
-
-\`\`\`bash
-uvicorn main:app --port 8000 --reload
-\`\`\`
-
-**Start the frontend (Streamlit):**
-
-\`\`\`bash
-streamlit run app.py
-\`\`\`
-
-Open \`http://localhost:8501\` in your browser.
-
----
-
-## Housekeeper (Scheduled Memory Maintenance)
-
-A scheduled process that converts short-term memory into the knowledge DB (SQLite) and generates episode-tagged digests.
-
-\`\`\`bash
-python housekeeper.py
-\`\`\`
-
-Or run it from the Web UI via the "🧹 記憶の整理" button.
-
-> **Recommendation**: Run during low-activity hours such as late at night every day.
-
----
-
 ## File Structure
 
-\`\`\`
+```
 butly_core/
 ├── config.py          ← AI/system configuration defaults
 ├── prompts.py         ← Prompt templates
@@ -316,7 +334,7 @@ butly_core/instances/{instance_name}/
     └── 3_log/
         ├── archive_long_term.txt  ← Old RAW that overflowed from mid_term
         └── archive_digest.txt     ← Old summaries that overflowed from digest
-\`\`\`
+```
 
 ---
 

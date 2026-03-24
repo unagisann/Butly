@@ -20,6 +20,93 @@
 
 ---
 
+## セットアップ
+
+### 1. リポジトリのクローン
+
+```bash
+git clone https://github.com/unagisann/Butly.git
+cd Butly
+```
+
+### 2. 環境構築
+
+**Linux / macOS:**
+
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+**Windows（バッチファイルで自動化）:**  
+`01_setup_requirements.bat` をダブルクリックして実行してください。  
+仮想環境 `.venv` の作成・依存パッケージのインストールが自動で行われます。
+
+### 3. APIキーの設定
+
+**Linux / macOS:**
+
+```bash
+cp .env.example APIkey.env
+```
+
+**Windows:** バッチファイル実行時に自動でコピーされます。
+
+使用するプロバイダーに応じて必要なキーを設定します：
+
+```env
+# Google Gemini（デフォルト）
+GOOGLE_API_KEY=AIza...
+
+# OpenAI を使う場合
+OPENAI_API_KEY=sk-...
+
+# Ollama はローカル実行のためキー不要
+# OLLAMA_BASE_URL=http://localhost:11434/v1  （デフォルト）
+```
+
+### 4. 設定ファイルの準備
+
+**Linux / macOS:**
+
+```bash
+cp user_config.json.example user_config.json
+```
+
+**Windows:** バッチファイル実行時に自動でコピーされます。
+
+`user_config.json` でAIモデル名やパラメータ、エージェント名を自由にカスタマイズできます。  
+`user_config.json.example` に Gemini / OpenAI / Ollama の設定例が含まれています。
+
+> **注意**: プロバイダーを切り替えた場合、Embedding の次元が異なるため
+> RAG 検索の精度が低下します。以下のコマンドで埋め込みを再生成してください：
+> ```bash
+> python migrate_embeddings.py --all
+> ```
+
+### 5. 起動
+
+**Linux / macOS — バックエンド（FastAPI）を起動：**
+
+```bash
+uvicorn main:app --port 8000 --reload
+```
+
+**Linux / macOS — フロントエンド（Streamlit）を起動：**
+
+```bash
+streamlit run app.py
+```
+
+ブラウザで `http://localhost:8501` を開きます。
+
+**Windows（バッチファイルで自動起動）:**  
+`02_start_webui.bat` をダブルクリックして実行してください。  
+FastAPI と Streamlit が別ウィンドウで自動起動し、ブラウザが自動で `http://127.0.0.1:8501` を開きます。
+
+---
+
 ## アーキテクチャ
 
 ```mermaid
@@ -189,75 +276,6 @@ timeline
 | **Ollama** | `ollama/*` | （不要・ローカル実行） | `ollama/llama3.1:8b` |
 
 各ロールで異なるプロバイダーを混在させることも可能です（例: chat=OpenAI, embedding=Gemini）。
-
----
-
-## セットアップ
-
-### 1. リポジトリのクローン
-
-```bash
-git clone https://github.com/unagisann/Butly.git
-cd Butly
-```
-
-### 2. 環境構築
-
-```bash
-python -m venv venv
-source venv/bin/activate       # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-### 3. APIキーの設定
-
-```bash
-cp .env.example APIkey.env
-```
-
-使用するプロバイダーに応じて必要なキーを設定します：
-
-```env
-# Google Gemini（デフォルト）
-GOOGLE_API_KEY=AIza...
-
-# OpenAI を使う場合
-OPENAI_API_KEY=sk-...
-
-# Ollama はローカル実行のためキー不要
-# OLLAMA_BASE_URL=http://localhost:11434/v1  （デフォルト）
-```
-
-### 4. 設定ファイルの準備
-
-```bash
-cp user_config.json.example user_config.json
-```
-
-`user_config.json` でAIモデル名やパラメータ、エージェント名を自由にカスタマイズできます。
-`user_config.json.example` に Gemini / OpenAI / Ollama の設定例が含まれています。
-
-> **注意**: プロバイダーを切り替えた場合、Embedding の次元が異なるため
-> RAG 検索の精度が低下します。以下のコマンドで埋め込みを再生成してください：
-> ```bash
-> python migrate_embeddings.py --all
-> ```
-
-### 5. 起動
-
-**バックエンド（FastAPI）を起動：**
-
-```bash
-uvicorn main:app --port 8000 --reload
-```
-
-**フロントエンド（Streamlit）を起動：**
-
-```bash
-streamlit run app.py
-```
-
-ブラウザで `http://localhost:8501` を開きます。
 
 ---
 
