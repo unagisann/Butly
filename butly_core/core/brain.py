@@ -81,6 +81,28 @@ class ButlyBrain:
                 merged[key] = value
         return merged
 
+    def summarize_conversation(self, conversation_text: str, override_config=None) -> str:
+        """会話ログをサマリーモデルで要約する（memory.maintain_memory から呼ばれる）"""
+        try:
+            summary_conf = AI_CONFIG["summary"].copy()
+            if override_config and "summary" in override_config:
+                summary_conf = self._merge_config(summary_conf, override_config["summary"])
+
+            brain_conf = SYSTEM_CONFIG["brain"].copy()
+            if override_config and "brain" in override_config:
+                brain_conf.update(override_config["brain"])
+
+            # プロバイダが model_name / temperature を config から読むため、summary設定をマージ
+            merged_conf = brain_conf.copy()
+            merged_conf["model_name"] = summary_conf["model_name"]
+            merged_conf["temperature"] = summary_conf.get("generation_config", {}).get("temperature", 0.3)
+
+            provider = self._get_provider(summary_conf["model_name"])
+            return provider.summarize(conversation_text, merged_conf)
+        except Exception as e:
+            print(f"[Brain] Summarize Error: {e}")
+            return "要約なし"
+
     def extract_keywords(self, user_input, override_config=None):
         """ユーザー発言からDB検索用のキーワードを抽出"""
         try:

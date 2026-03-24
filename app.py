@@ -254,7 +254,7 @@ def render_settings_screen():
     with col2:
         st.markdown('<h1 class="app-title">⚙️ 設定</h1>', unsafe_allow_html=True)
 
-    tab1, tab2, tab3, tab4 = st.tabs(["🏠 基本設定", "📝 プロンプト", "🤖 LLMプロバイダー", "🔧 詳細設定"])
+    tab1, tab2, tab3 = st.tabs(["🏠 基本設定", "📝 プロンプト", "🤖 LLMプロバイダー"])
 
     # ========================
     # タブ1: 基本設定
@@ -279,6 +279,37 @@ def render_settings_screen():
         if st.button("🗑️ Clear Cache"):
             st.cache_resource.clear()
             st.success("Cache cleared!")
+
+        st.divider()
+        st.subheader("🌐 言語設定")
+        import requests as _req_lang
+        _lang_api_url = st.session_state.api_base_url
+        try:
+            _lang_cfg = _req_lang.get(f"{_lang_api_url}/config", timeout=5).json()
+        except Exception:
+            _lang_cfg = {"SYSTEM_CONFIG": {}}
+        _lang_agent_s = _lang_cfg.get("SYSTEM_CONFIG", {}).get("agent", {})
+        _locale_options = {"ja": "日本語", "en": "English"}
+        _locale_keys = list(_locale_options.keys())
+        _current_locale = _lang_agent_s.get("locale", "ja")
+        _locale_index = _locale_keys.index(_current_locale) if _current_locale in _locale_keys else 0
+        _selected_locale = st.selectbox(
+            "Language / 言語",
+            options=_locale_keys,
+            index=_locale_index,
+            format_func=lambda x: _locale_options.get(x, x),
+            key="tab1_locale",
+        )
+        if st.button("💾 言語設定を保存", key="save_locale_tab1"):
+            _lang_cfg.setdefault("SYSTEM_CONFIG", {}).setdefault("agent", {})["locale"] = _selected_locale
+            try:
+                _r = _req_lang.post(f"{_lang_api_url}/config", json=_lang_cfg, timeout=5)
+                if _r.ok:
+                    st.success("言語設定を保存しました。")
+                else:
+                    st.error(f"保存エラー: {_r.text}")
+            except Exception as _e:
+                st.error(f"サーバー接続エラー: {_e}")
 
     # ========================
     # タブ2: プロンプト編集
@@ -469,6 +500,17 @@ def render_settings_screen():
             st.caption(f"プロバイダー: {get_provider_label(selected)}")
             model_selections[role] = selected
 
+        st.divider()
+        st.subheader("🌡️ Temperature 設定")
+        st.caption("バックグラウンドロールの生成パラメータを設定します（Chat の Temperature はインスタンス設定から変更できます）。")
+        _TEMP_ROLES = {"summary": "Summary (要約)", "gatekeeper": "Gatekeeper (Tier判定)", "knowledge": "Knowledge (知識蒸留)"}
+        _TEMP_DEFAULTS = {"summary": 0.3, "gatekeeper": 0.0, "knowledge": 0.7}
+        for _t_role, _t_label in _TEMP_ROLES.items():
+            _mc = provider_ai_cfg.get(_t_role, {})
+            _cur_temp = float(_mc.get("generation_config", {}).get("temperature", _TEMP_DEFAULTS[_t_role]))
+            _new_temp = st.slider(_t_label, 0.0, 2.0, value=_cur_temp, step=0.1, key=f"provider_temp_{_t_role}")
+            provider_ai_cfg.setdefault(_t_role, {}).setdefault("generation_config", {})["temperature"] = _new_temp
+
         if st.button("💾 モデル設定を保存", type="primary", key="save_provider_models"):
             # provider_cfg のAI_CONFIGを更新
             for role, model_name in model_selections.items():
@@ -506,97 +548,6 @@ def render_settings_screen():
                     st.success(f"Embedding再生成を開始しました。(対象: {reindex_target})")
                 else:
                     st.error(f"エラー: {resp.text}")
-            except Exception as e:
-                st.error(f"サーバー接続エラー: {e}")
-
-    # ========================
-    # タブ4: 詳細設定 (AIモデル/システム)
-    # ========================
-    with tab4:
-        import requests
-        api_url = st.session_state.api_base_url
-        try:
-            resp = requests.get(f"{api_url}/config", timeout=5)
-            cfg = resp.json() if resp.ok else {"AI_CONFIG": {}, "SYSTEM_CONFIG": {}}
-        except Exception as e:
-            st.error(f"サーバー接続エラー: {e}")
-            cfg = {"AI_CONFIG": {}, "SYSTEM_CONFIG": {}}
-
-        ai_cfg = cfg.get("AI_CONFIG", {})
-        sys_cfg = cfg.get("SYSTEM_CONFIG", {})
-
-        st.subheader("🤖 AIモデル設定")
-        st.caption("モデルの選択は「🤖 LLMプロバイダー」タブで変更できます。ここではTemperature等の生成パラメータのみ設定します。")
-
-        for model_key in ['summary', 'knowledge']:
-            mc = ai_cfg.get(model_key, {})
-            with st.expander(f"**{model_key.upper()}** ({mc.get('model_name', '(unset)')})", expanded=False):
-                gen = mc.get('generation_config', {})
-                ai_cfg.setdefault(model_key, {})['generation_config'] = ai_cfg.get(model_key, {}).get('generation_config', {})
-                ai_cfg[model_key]['generation_config']['temperature'] = st.slider(
-                    "Temperature", 0.0, 2.0, step=0.1,
-                    value=float(gen.get('temperature', 0.7)), key=f"adv_temp_{model_key}"
-                )
-
-        st.divider()
-        st.subheader("🗠 システム設定 (Brain / Memory)")
-        brain_s = sys_cfg.get('brain', {})
-        memory_s = sys_cfg.get('memory', {})
-
-        col_s1, col_s2 = st.columns(2)
-        with col_s1:
-            brain_s['search_limit'] = st.number_input("検索リミット", 1, 20, int(brain_s.get('search_limit', 3)), key="adv_sl")
-            brain_s['keyword_hit_threshold'] = st.number_input( 
-                "キーワード閾値", 1, 20, int(brain_s.get('keyword_hit_threshold', 5)), key="adv_kht"
-            )
-            brain_s['cache_ttl_hours'] = st.number_input("キャッシュ有効期限(時間)", 1, 72, int(brain_s.get('cache_ttl_hours', 3)), key="adv_cttl")
-        with col_s2:
-            brain_s['fallback_fetch_limit'] = st.slider( 
-                "フォールバック上限", 10, 200, int(brain_s.get('fallback_fetch_limit', 50)), step=10, key="adv_ffl"
-            )
-            brain_s['summary_char_limit'] = st.slider( 
-                "要約文字数上限", 50, 500, int(brain_s.get('summary_char_limit', 200)), step=50, key="adv_scl"
-            )
-            memory_s['max_mid_term_chars'] = st.slider( 
-                "長期記憶最大文字数", 5000, 100000, int(memory_s.get('max_mid_term_chars', 30000)), step=5000, key="adv_mmt"
-            )
-            memory_s['use_summarized_mid_term'] = st.toggle(
-                "中期記憶の二層要約注入を有効化", value=memory_s.get('use_summarized_mid_term', True), key="adv_umt", help="RAWテキストの代わりに生成された要約をプロンプトに注入します。"
-            )
-
-        brain_s['dynamic_threshold'] = st.slider( 
-            "Google動的閾値 (dynamic_threshold)", 0.0, 1.0,
-            float(brain_s.get('dynamic_threshold', 0.6)), step=0.05, key="adv_dt"
-        )
-
-        st.divider()
-        st.subheader("🌐 Language / 言語")
-        locale_options = {"ja": "日本語", "en": "English"}
-        agent_s = sys_cfg.get('agent', {})
-        current_locale = agent_s.get('locale', 'ja')
-        locale_keys = list(locale_options.keys())
-        locale_index = locale_keys.index(current_locale) if current_locale in locale_keys else 0
-        agent_s['locale'] = st.selectbox(
-            "Language / 言語",
-            options=locale_keys,
-            index=locale_index,
-            format_func=lambda x: locale_options.get(x, x),
-            key="adv_locale",
-        )
-        sys_cfg['agent'] = agent_s
-
-        st.divider()
-        if st.button("💾 詳細設定を保存", type="primary"):
-            cfg['AI_CONFIG'] = ai_cfg
-            cfg['SYSTEM_CONFIG']['brain'] = brain_s
-            cfg['SYSTEM_CONFIG']['memory'] = memory_s
-            cfg['SYSTEM_CONFIG']['agent'] = agent_s
-            try:
-                save_resp = requests.post(f"{api_url}/config", json=cfg, timeout=5)
-                if save_resp.ok:
-                    st.success("詳細設定を保存しました。")
-                else:
-                    st.error(f"保存エラー: {save_resp.text}")
             except Exception as e:
                 st.error(f"サーバー接続エラー: {e}")
 
@@ -897,25 +848,33 @@ def render_instance_settings_screen():
     # State elements
     sys_inst = st.text_area("System Instruction (性格設定)", value=prompts.get("system_instruction", ""), height=150)
     key_mem = st.text_area("Key Memory (根幹記憶)", value=prompts.get("key_memory", ""), height=150)
-    
-    st.divider()
-    st.subheader("脳・記憶設定 (Brain)")
-    
-    # Context Cache (Default OFF as requested)
-    use_cache = st.toggle("コンテキストキャッシュ (Mid-term Memory)", value=config["brain"].get("use_context_cache", False))
-    default_gs = st.toggle("Google検索のデフォルト有効化", value=config["brain"].get("default_use_google_search", False))
 
-    # 記憶の参照範囲 (readable_instances)
     st.divider()
-    st.subheader("記憶の参照範囲")
+    st.subheader("🤖 生成モデル設定")
+    models = [
+        'gemini-3.1-pro-preview',
+        'gemini-3-flash-preview',
+        'gemini-3.1-flash-lite-preview',
+        'gemini-2.5-pro',
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-lite',
+    ]
+    current_model = config["chat"].get("model_name", "gemini-3-flash-preview")
+    if current_model not in models: models.append(current_model)
+    model_name = st.selectbox("モデル名", models, index=models.index(current_model))
+    gen_config = config["chat"].get("generation_config", {})
+    temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(gen_config.get("temperature", 1.0)))
+    max_tokens = st.number_input("最大出力トークン数", min_value=1, value=int(gen_config.get("max_output_tokens", 8192)))
+
+    st.divider()
+    st.subheader("📚 記憶の参照範囲")
     st.caption("このインスタンスがRAG検索時にアクセスできる記憶DBを選択します。")
     current_readable = config["brain"].get("readable_instances", ["self"])
-    # "self" を実際のインスタンス名に展開して判定
     readable_selected = []
     for inst in available_instances:
         is_self = (inst == instance_name)
         is_checked = is_self or inst in current_readable
-        disabled = is_self  # 自分自身は解除不可
+        disabled = is_self
         if st.checkbox(
             f"{'📌 ' if is_self else ''}{inst}",
             value=is_checked,
@@ -928,49 +887,20 @@ def render_instance_settings_screen():
                 readable_selected.append(inst)
     if "self" not in readable_selected:
         readable_selected.insert(0, "self")
-    
-    col_b1, col_b2 = st.columns(2)
-    with col_b1:
-        search_lim = st.number_input("検索リミット (Search Limit)", min_value=1, max_value=10, value=config["brain"].get("search_limit", 3))
-        fallback_lim = st.slider("フォールバック取得数", min_value=10, max_value=100, step=10, value=config["brain"].get("fallback_fetch_limit", 50))
-    with col_b2:
-        keyword_thr = st.number_input("キーワードヒット閾値", min_value=1, max_value=10, value=config["brain"].get("keyword_hit_threshold", 5))
-        cache_ttl = st.slider("キャッシュ有効期限 (時間)", min_value=1, max_value=24, step=1, value=config["brain"].get("cache_ttl_hours", 3))
-        
-    st.divider()
-    st.subheader("メモリ容量設定 (Memory Capacity)")
-    col_m1, col_m2 = st.columns(2)
-    with col_m1:
-        st_limit = st.number_input("短期記憶 (Short-term) 保存数", min_value=2, max_value=12, step=2, value=config["memory"].get("short_term_limit", 6))
-    with col_m2:
-        mt_max = st.slider("長期記憶 (Mid-term) 最大文字数", min_value=5000, max_value=100000, step=5000, value=config["memory"].get("max_mid_term_chars", 30000))
 
     st.divider()
-    st.subheader("生成モデル設定 (Generation)")
-    models = [
-        # 最新世代 (Gemini 3 / latest)
-        'gemini-3.1-pro-preview',
-        'gemini-3-flash-preview',
-        'gemini-3.1-flash-lite-preview',
-        # Gemini 2.5系 (最新安定プレビュー)
-        'gemini-2.5-pro',
-        'gemini-2.5-flash',
-        'gemini-2.5-flash-lite',
-    ]
-    current_model = config["chat"].get("model_name", "gemini-3-flash-preview")
-    if current_model not in models: models.append(current_model)
-    
-    model_name = st.selectbox("モデル名", models, index=models.index(current_model))
-    
-    gen_config = config["chat"].get("generation_config", {})
-    temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(gen_config.get("temperature", 1.0)))
-    top_p = st.slider("Top P", min_value=0.0, max_value=1.0, step=0.05, value=float(gen_config.get("top_p", 0.95)))
-    
-    col_g1, col_g2 = st.columns(2)
-    with col_g1:
-        top_k = st.number_input("Top K", min_value=1, value=int(gen_config.get("top_k", 40)))
-    with col_g2:
-        max_tokens = st.number_input("最大出力トークン数", min_value=1, value=int(gen_config.get("max_output_tokens", 8192)))
+    st.subheader("🧠 RAG・記憶チューニング")
+    use_cache = st.toggle("コンテキストキャッシュ (Mid-term Memory)", value=config["brain"].get("use_context_cache", False))
+    default_gs = st.toggle("Google検索のデフォルト有効化", value=config["brain"].get("default_use_google_search", False))
+    col_r1, col_r2 = st.columns(2)
+    with col_r1:
+        search_lim = st.number_input("検索リミット", min_value=1, max_value=10, value=config["brain"].get("search_limit", 3))
+        fallback_lim = st.slider("フォールバック取得数", min_value=10, max_value=100, step=10, value=config["brain"].get("fallback_fetch_limit", 50))
+        st_limit = st.number_input("短期記憶 保存数", min_value=2, max_value=12, step=2, value=config["memory"].get("short_term_limit", 6))
+    with col_r2:
+        keyword_thr = st.number_input("記憶検索の感度", min_value=1, max_value=10, value=config["brain"].get("keyword_hit_threshold", 5), help="値が大きいほど直近の会話記憶が検索補完に加わりやすくなります。")
+        cache_ttl = st.slider("キャッシュ有効期限 (時間)", min_value=1, max_value=24, step=1, value=config["brain"].get("cache_ttl_hours", 3))
+        mt_max = st.slider("長期記憶 最大文字数", min_value=5000, max_value=100000, step=5000, value=config["memory"].get("max_mid_term_chars", 30000))
 
     st.divider()
 
@@ -995,14 +925,12 @@ def render_instance_settings_screen():
             config["brain"]["fallback_fetch_limit"] = fallback_lim
             config["brain"]["keyword_hit_threshold"] = keyword_thr
             config["brain"]["cache_ttl_hours"] = cache_ttl
-            
+
             config["memory"]["short_term_limit"] = st_limit
             config["memory"]["max_mid_term_chars"] = mt_max
-            
+
             config["chat"]["model_name"] = model_name
             config["chat"]["generation_config"]["temperature"] = temp
-            config["chat"]["generation_config"]["top_p"] = top_p
-            config["chat"]["generation_config"]["top_k"] = top_k
             config["chat"]["generation_config"]["max_output_tokens"] = max_tokens
             
             # Save configs
