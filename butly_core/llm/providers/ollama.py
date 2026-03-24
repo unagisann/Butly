@@ -17,6 +17,11 @@ from butly_core.llm.base import BaseProvider
 _VISION_MODELS = {"llava", "bakllava", "moondream", "llama3.2-vision", "gemma3"}
 
 
+def _strip_ollama_prefix(model_name: str) -> str:
+    """'ollama/' プレフィックスを除去して Ollama API に渡せる形式にする。"""
+    return model_name.removeprefix("ollama/")
+
+
 def _get_client():
     """Ollama 用 OpenAI 互換クライアントを生成する。"""
     try:
@@ -49,7 +54,7 @@ class OllamaProvider(BaseProvider):
 
     @staticmethod
     def supports_vision(model_name: str) -> bool:
-        base = model_name.split(":")[0]  # "llava:13b" → "llava"
+        base = _strip_ollama_prefix(model_name).split(":")[0]  # "ollama/llava:13b" → "llava"
         return any(base.startswith(prefix) for prefix in _VISION_MODELS)
 
     # ==================================================================
@@ -70,7 +75,7 @@ class OllamaProvider(BaseProvider):
         )
         try:
             resp = self.client.chat.completions.create(
-                model=config.get("model_name", "llama3.2"),
+                model=_strip_ollama_prefix(config.get("model_name", "llama3.2")),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=config.get("temperature", 0.3),
             )
@@ -91,7 +96,7 @@ class OllamaProvider(BaseProvider):
     def classify(self, prompt: str, config: dict) -> str:
         try:
             resp = self.client.chat.completions.create(
-                model=config.get("model_name", "llama3.2"),
+                model=_strip_ollama_prefix(config.get("model_name", "llama3.2")),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=config.get("generation_config", {}).get("temperature", 0.0),
             )
@@ -155,7 +160,7 @@ class OllamaProvider(BaseProvider):
 
         try:
             resp = self.client.chat.completions.create(
-                model=chat_conf.get("model_name", "llama3.2"),
+                model=_strip_ollama_prefix(chat_conf.get("model_name", "llama3.2")),
                 messages=messages,
                 temperature=chat_conf.get("generation_config", {}).get("temperature", 0.7),
             )

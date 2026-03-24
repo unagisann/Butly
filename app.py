@@ -348,7 +348,7 @@ def render_settings_screen():
                 return "🟦 Gemini"
             elif model_name.startswith(("gpt-", "o1-", "o3-", "o4-", "text-embedding")):
                 return "🟩 OpenAI"
-            elif model_name in ("llama3.2", "mistral", "qwen2.5", "nomic-embed-text") or model_name.startswith("ollama/"):
+            elif model_name.startswith("ollama/"):
                 return "🟧 Ollama"
             else:
                 return "❓ 不明"
@@ -449,28 +449,28 @@ def render_settings_screen():
                 "gpt-4o",
                 "gpt-4o-mini",
                 "o3-mini",
-                "llama3.2",
-                "mistral",
-                "qwen2.5",
+                "ollama/llama3.2",
+                "ollama/mistral",
+                "ollama/qwen2.5",
             ],
             "summary": [
                 "gemini-3.1-flash-lite-preview",
                 "gemini-2.5-flash",
                 "gpt-4o-mini",
-                "llama3.2",
-                "mistral",
+                "ollama/llama3.2",
+                "ollama/mistral",
             ],
             "gatekeeper": [
                 "gemini-3.1-flash-lite-preview",
                 "gemini-2.5-flash-lite",
                 "gpt-4o-mini",
-                "llama3.2",
+                "ollama/llama3.2",
             ],
             "embedding": [
                 "models/gemini-embedding-001",
                 "text-embedding-3-small",
                 "text-embedding-3-large",
-                "nomic-embed-text",
+                "ollama/nomic-embed-text",
             ],
         }
 
