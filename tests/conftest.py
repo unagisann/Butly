@@ -57,7 +57,7 @@ def skip_without_api_key(has_api_key):
 # ===================================================================
 
 TEST_INSTANCE_NAME = "test_instance"
-TEST_INSTANCE_FOLDER = f"99_{TEST_INSTANCE_NAME}"
+TEST_INSTANCE_FOLDER = TEST_INSTANCE_NAME
 
 
 @pytest.fixture
@@ -68,17 +68,6 @@ def base_dir(tmp_path: Path) -> Path:
     """
     instances_dir = tmp_path / "butly_core" / "instances"
     instances_dir.mkdir(parents=True)
-
-    # 00_master も作成（デフォルト参照対策）
-    master_dir = instances_dir / "00_master"
-    master_dir.mkdir()
-    (master_dir / "system_instruction.txt").write_text(
-        "あなたはテスト用AIです。", encoding="utf-8"
-    )
-    (master_dir / "Key_Memory.txt").write_text(
-        "テスト用の根幹記憶です。", encoding="utf-8"
-    )
-    (master_dir / "mid_term.txt").write_text("", encoding="utf-8")
 
     return tmp_path
 

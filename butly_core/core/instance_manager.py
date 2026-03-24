@@ -9,24 +9,6 @@ class InstanceManager:
         self.instances_dir = self.base_dir / "butly_core" / "instances"
         self.instances_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_next_id(self):
-        """既存のフォルダを走査して、次の連番ID (xx) を決定する"""
-        existing_ids = []
-        for d in self.instances_dir.iterdir():
-            if d.is_dir() and "_" in d.name:
-                try:
-                    # "01_flutter" -> 1
-                    prefix = d.name.split("_")[0]
-                    existing_ids.append(int(prefix))
-                except ValueError:
-                    continue
-        
-        if not existing_ids:
-            return "01" # 00_master以外で最初なら01
-        
-        next_num = max(existing_ids) + 1
-        return f"{next_num:02d}"
-
     def create_instance(self, name, template_text):
         """新しい人格フォルダと構成を作成"""
         # 半角英数チェック
@@ -36,12 +18,11 @@ class InstanceManager:
         # 前後の空白だけは念のため除去（フォルダ名のトラブル防止）
         name = name.strip()
 
-        next_id = self.get_next_id()
-        folder_name = f"{next_id}_{name}"
+        folder_name = name
         new_instance_dir = self.instances_dir / folder_name
 
         if new_instance_dir.exists():
-            return False, "そのIDまたは名前は既に存在します。"
+            return False, "その名前のインスタンスは既に存在します。"
 
         try:
             # 1. フォルダ作成
@@ -159,17 +140,7 @@ class InstanceManager:
         if not old_dir.exists():
             return False, "変更元のインスタンスが存在しません。"
 
-        # Extract ID from old name
-        # Expected format: "01_oldname"
-        match = re.match(r"^(\d+)_(.+)$", old_name)
-        if not match:
-             return False, "フォルダ名の形式が不正です(IDが取得できません)。"
-        
-        instance_id = match.group(1)
-        
-        # Construct new directory path
-        new_folder_name = f"{instance_id}_{new_name}"
-        new_dir = self.instances_dir / new_folder_name
+        new_dir = self.instances_dir / new_name
         
         if new_dir.exists():
             return False, "その名前のインスタンスは既に存在します。"
@@ -177,32 +148,20 @@ class InstanceManager:
         try:
             old_dir.rename(new_dir)
             
-            # Start: Update system_instruction.txt if it contains the old name
-            # This is optional but nice to have.
+            # Update system_instruction.txt if it contains the old name
             si_path = new_dir / "system_instruction.txt"
             if si_path.exists():
                 content = si_path.read_text(encoding="utf-8")
-                # Simple replacement of project name if it follows the template pattern
-                # "プロジェクト名：old_name" -> "プロジェクト名：new_name"
-                # Be careful not to replace unintended parts.
-                # Just replacing the filename part might be safer for now? 
-                # Or let's just leave the content as is to be safe, 
-                # or maybe just replace "プロジェクト名：{old_name_without_id}"
-                
-                old_real_name = match.group(2)
-                if f"プロジェクト名：{old_real_name}" in content:
-                     new_content = content.replace(f"プロジェクト名：{old_real_name}", f"プロジェクト名：{new_name}")
+                if f"プロジェクト名：{old_name}" in content:
+                     new_content = content.replace(f"プロジェクト名：{old_name}", f"プロジェクト名：{new_name}")
                      si_path.write_text(new_content, encoding="utf-8")
 
-            return True, new_folder_name
+            return True, new_name
         except Exception as e:
             return False, f"リネームエラー: {str(e)}"
 
     def delete_instance(self, instance_name):
         """インスタンスを削除する（フォルダごと）"""
-        if instance_name == "00_master":
-            return False, "00_masterは削除できません。"
-            
         target_dir = self.instances_dir / instance_name
         if not target_dir.exists():
             return False, "インスタンスが存在しません。"

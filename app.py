@@ -141,16 +141,14 @@ def initialize_system(base_dir, instance_name):
 # --- 初期化・ディレクトリ作成 ---
 if not INSTANCES_DIR.exists():
     INSTANCES_DIR.mkdir(parents=True, exist_ok=True)
-    (INSTANCES_DIR / "00_master").mkdir(exist_ok=True)
 
 available_instances = sorted([p.name for p in INSTANCES_DIR.iterdir() if p.is_dir() and not p.name.startswith(".")])
-if not available_instances: available_instances = ["00_master"]
 
 # --- セッションステートの初期化 ---
 if "current_page" not in st.session_state:
     st.session_state.current_page = "home"
 if "current_instance" not in st.session_state:
-    st.session_state.current_instance = available_instances[0]
+    st.session_state.current_instance = available_instances[0] if available_instances else None
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "is_holiday" not in st.session_state:
@@ -961,7 +959,7 @@ def render_instance_settings_screen():
                         msg = del_resp.json().get("message", "Deleted")
                         st.success(msg)
                         time.sleep(1)
-                        st.session_state.current_instance = "00_master"
+                        st.session_state.current_instance = None
                         navigate_to("home")
                     else:
                         st.error(f"削除エラー: {del_resp.text}")
@@ -1170,9 +1168,47 @@ def render_chat_screen():
 
 
 # ==========================================
+# 🎉 オンボーディング画面 (Onboarding Screen)
+# ==========================================
+def render_onboarding_screen():
+    st.markdown('<h1 class="app-title">Butly へようこそ！</h1>', unsafe_allow_html=True)
+    st.write("まずは最初のAIインスタンスを作成しましょう。")
+    st.divider()
+
+    new_proj_name = st.text_input("インスタンス名（半角英数字・_）", placeholder="e.g. my_agent")
+    from butly_core import prompts
+    new_template = st.text_area("性格テンプレート", value=prompts.WEB_UI_DEFAULT_TEMPLATE.format(agent_name="{agent_name}"), height=100)
+
+    if st.button("作成", type="primary"):
+        if new_proj_name:
+            import requests
+            api_url = st.session_state.api_base_url
+            try:
+                res = requests.post(f"{api_url}/instances", json={"name": new_proj_name, "template": new_template}, timeout=5)
+                if res.ok:
+                    st.session_state.current_instance = new_proj_name
+                    st.rerun()
+                else:
+                    st.error(f"作成エラー: {res.text}")
+            except Exception as e:
+                st.error(f"作成エラー: {e}")
+
+
+# ==========================================
 # 🔀 メインルーティング
 # ==========================================
 def main():
+    # Re-scan instances (may have changed since startup)
+    global available_instances
+    available_instances = sorted([p.name for p in INSTANCES_DIR.iterdir() if p.is_dir() and not p.name.startswith(".")]) if INSTANCES_DIR.exists() else []
+
+    if not available_instances:
+        render_onboarding_screen()
+        return
+
+    if st.session_state.current_instance is None:
+        st.session_state.current_instance = available_instances[0]
+
     if st.session_state.current_page == "home":
         render_home_screen()
     elif st.session_state.current_page == "chat":

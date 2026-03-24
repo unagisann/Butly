@@ -26,13 +26,11 @@ class RenameInstanceRequest(BaseModel):
 def list_instances():
     """List all available AI instances."""
     if not deps.INSTANCES_DIR.exists():
-        return ["00_master"]
+        return []
     instances = sorted([
         p.name for p in deps.INSTANCES_DIR.iterdir()
         if p.is_dir() and not p.name.startswith(".")
     ])
-    if not instances:
-        return ["00_master"]
     return instances
 
 
@@ -61,9 +59,6 @@ def rename_instance(instance_name: str, request: RenameInstanceRequest):
 @router.delete("/instances/{instance_name}")
 def delete_instance(instance_name: str):
     """Delete an existing AI instance."""
-    if instance_name == "00_master":
-        raise HTTPException(status_code=400, detail="Cannot delete 00_master.")
-
     success, result = deps.instance_manager.delete_instance(instance_name)
     if not success:
         raise HTTPException(status_code=400, detail=result)

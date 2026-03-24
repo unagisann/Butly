@@ -114,7 +114,6 @@ async def lifespan(app: FastAPI):
 
     if not deps.INSTANCES_DIR.exists():
         deps.INSTANCES_DIR.mkdir(parents=True, exist_ok=True)
-        (deps.INSTANCES_DIR / "00_master").mkdir(exist_ok=True)
 
     print("Butly Server Started.")
     yield

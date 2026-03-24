@@ -208,7 +208,7 @@ class ButlyHousekeeper:
         # Stage 2: ナレッジ化
         self.stage_2_knowledgeize(instance_path, db_type)
 
-    def stage_1_cleanup(self, instance_name="00_master"):
+    def stage_1_cleanup(self, instance_name):
         """
         Phase 1: 中期記憶の更新
         1_integrated にある生ログを読んで mid_term.txt に追記する。
@@ -472,7 +472,7 @@ class ButlyHousekeeper:
             print(f"[Housekeeper] Relationship generation error: {e}")
 
     # --- Backup Logic ---
-    def backup_database(self, instance_name="00_master"):
+    def backup_database(self, instance_name):
         """
         データベースのバックアップを作成し、古いものをローテーション（削除）する。
         保存先: butly_core/db_backups/
@@ -726,19 +726,7 @@ housekeeper_store = {}
 
 if __name__ == "__main__":
     hk = ButlyHousekeeper()
-    # テスト対象
-    target = "00_master"
-        
-    print(f"=== Housekeeper Logic Started for {target} ===")
-    
-    # 1. 中期記憶の更新 (Stage 1)
-    hk.stage_1_cleanup(target)
-    
-    # 2. ナレッジ化とアーカイブ (Stage 2)
-    hk.stage_2_knowledgeize(target, target)
-    
-    # 3. DBバックアップ (Stage 3)
-    print("--- Stage 3: Database Backup ---")
-    hk.backup_database(target)
+    # 全インスタンスを処理
+    hk.run()
     
     print("=== All Tasks Completed ===")
