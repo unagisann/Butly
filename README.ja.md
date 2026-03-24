@@ -105,6 +105,43 @@ streamlit run app.py
 `02_start_webui.bat` をダブルクリックして実行してください。  
 FastAPI と Streamlit が別ウィンドウで自動起動し、ブラウザが自動で `http://127.0.0.1:8501` を開きます。
 
+### 使用モデル（デフォルト: Gemini）
+
+| 役割 | デフォルトモデル | 用途 | 呼び出し頻度 |
+|------|-------|------|-------------|
+| Gatekeeper | gemini-3.1-flash-lite-preview | tier判定・メタ認知 | 1回/ターン |
+| Brain (Chat) | gemini-3-flash-preview | 最終応答生成 | 1回/ターン |
+| Summary/Digest | gemini-3.1-flash-lite-preview | 要約・digest・relationship | 日次バッチ |
+| Knowledge | gemini-3.1-pro-preview | ナレッジカード生成 | 日次バッチ |
+| Embedding | gemini-embedding-001 | ベクトル検索 | カード生成時 |
+| Floating要約 | gemini-3.1-flash-lite-preview | 短期記憶の溢れ圧縮 | リアルタイム |
+
+#### 対応プロバイダー
+
+`user_config.json` の `model_name` プレフィックスでプロバイダーが自動判定されます:
+
+| プロバイダー | model_name プレフィックス | 必要な環境変数 | 例 |
+|---|---|---|---|
+| **Gemini** | `gemini-*` / `models/gemini-*` | `GOOGLE_API_KEY` | `gemini-3-flash-preview` |
+| **OpenAI** | `gpt-*` / `o1` / `o3` / `o4` | `OPENAI_API_KEY` | `gpt-4o`, `gpt-4o-mini` |
+| **Ollama** | `ollama/*` | （不要・ローカル実行） | `ollama/llama3.1:8b` |
+
+各ロールで異なるプロバイダーを混在させることも可能です（例: chat=OpenAI, embedding=Gemini）。
+
+---
+
+## Housekeeper（記憶の定期整理）
+
+短期記憶をナレッジDB（SQLite）へ変換し、エピソード付きダイジェストを生成する定期処理です。
+
+```bash
+python housekeeper.py
+```
+
+または Web UI の「🧹 記憶の整理」ボタンから実行できます。
+
+> **推奨**: 一日の終わりなど会話がひと段落した後に実行をお願いします。
+
 ---
 
 ## アーキテクチャ
@@ -253,43 +290,6 @@ timeline
             : system_instruction 1行化
             : 人格の記憶からの自律再構成
 ```
-
-### 使用モデル（デフォルト: Gemini）
-
-| 役割 | デフォルトモデル | 用途 | 呼び出し頻度 |
-|------|-------|------|-------------|
-| Gatekeeper | gemini-3.1-flash-lite-preview | tier判定・メタ認知 | 1回/ターン |
-| Brain (Chat) | gemini-3-flash-preview | 最終応答生成 | 1回/ターン |
-| Summary/Digest | gemini-3.1-flash-lite-preview | 要約・digest・relationship | 日次バッチ |
-| Knowledge | gemini-3.1-pro-preview | ナレッジカード生成 | 日次バッチ |
-| Embedding | gemini-embedding-001 | ベクトル検索 | カード生成時 |
-| Floating要約 | gemini-3.1-flash-lite-preview | 短期記憶の溢れ圧縮 | リアルタイム |
-
-#### 対応プロバイダー
-
-`user_config.json` の `model_name` プレフィックスでプロバイダーが自動判定されます:
-
-| プロバイダー | model_name プレフィックス | 必要な環境変数 | 例 |
-|---|---|---|---|
-| **Gemini** | `gemini-*` / `models/gemini-*` | `GOOGLE_API_KEY` | `gemini-3-flash-preview` |
-| **OpenAI** | `gpt-*` / `o1` / `o3` / `o4` | `OPENAI_API_KEY` | `gpt-4o`, `gpt-4o-mini` |
-| **Ollama** | `ollama/*` | （不要・ローカル実行） | `ollama/llama3.1:8b` |
-
-各ロールで異なるプロバイダーを混在させることも可能です（例: chat=OpenAI, embedding=Gemini）。
-
----
-
-## Housekeeper（記憶の定期整理）
-
-短期記憶をナレッジDB（SQLite）へ変換し、エピソード付きダイジェストを生成する定期処理です。
-
-```bash
-python housekeeper.py
-```
-
-または Web UI の「🧹 記憶の整理」ボタンから実行できます。
-
-> **推奨**: 毎日深夜など、会話が少ない時間帯に実行してください。
 
 ---
 
