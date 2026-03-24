@@ -148,6 +148,77 @@ class InstanceManager:
         try:
             old_dir.rename(new_dir)
             
+            # ========================================
+            # DB内のtypeカラムを更新
+            # ========================================
+            db_path = new_dir / "butly_memory.db"
+            if db_path.exists():
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(db_path)
+                    conn.execute("PRAGMA journal_mode=WAL;")
+                    conn.execute(
+                        "UPDATE knowledge_cards SET type = ? WHERE type = ?",
+                        (new_name, old_name),
+                    )
+                    conn.execute(
+                        "UPDATE knowledge_cards SET type = REPLACE(type, ?, ?) "
+                        "WHERE type LIKE ?",
+                        (old_name + "/", new_name + "/", old_name + "/%"),
+                    )
+                    updated = conn.total_changes
+                    conn.commit()
+                    conn.close()
+                    print(f"[InstanceManager] Updated {updated} type entries in DB")
+                except Exception as e:
+                    print(f"[InstanceManager] DB type update warning: {e}")
+
+            # ========================================
+            # 他インスタンスの readable_instances を更新
+            # ========================================
+            for inst_dir in self.instances_dir.iterdir():
+                if not inst_dir.is_dir() or inst_dir.name == new_name:
+                    continue
+                config_path = inst_dir / "config.json"
+                if not config_path.exists():
+                    continue
+                try:
+                    config = json.loads(config_path.read_text(encoding="utf-8"))
+                    readable = config.get("brain", {}).get("readable_instances", [])
+                    if old_name in readable:
+                        readable = [new_name if r == old_name else r for r in readable]
+                        config["brain"]["readable_instances"] = readable
+                        config_path.write_text(
+                            json.dumps(config, indent=2, ensure_ascii=False),
+                            encoding="utf-8",
+                        )
+                        print(f"[InstanceManager] Updated readable_instances in {inst_dir.name}")
+                except Exception:
+                    pass
+
+            # ========================================
+            # エージェントのparent設定を更新
+            # ========================================
+            agents_dir = new_dir / "agents"
+            if agents_dir.exists():
+                for agent_dir in agents_dir.iterdir():
+                    if not agent_dir.is_dir():
+                        continue
+                    agent_config_path = agent_dir / "config.json"
+                    if not agent_config_path.exists():
+                        continue
+                    try:
+                        agent_config = json.loads(agent_config_path.read_text(encoding="utf-8"))
+                        if agent_config.get("parent") == old_name:
+                            agent_config["parent"] = new_name
+                            agent_config_path.write_text(
+                                json.dumps(agent_config, indent=2, ensure_ascii=False),
+                                encoding="utf-8",
+                            )
+                            print(f"[InstanceManager] Updated parent in agent {agent_dir.name}")
+                    except Exception:
+                        pass
+
             # Update system_instruction.txt if it contains the old name
             si_path = new_dir / "system_instruction.txt"
             if si_path.exists():

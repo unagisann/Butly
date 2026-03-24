@@ -6,6 +6,8 @@ InstanceManager のユニットテスト。
 API キー不要。
 """
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -157,3 +159,121 @@ class TestInstancePrompts:
 
         result = manager.get_instance_prompts("prompt_upd")
         assert "更新されたシステム指示" in result["system_instruction"]
+
+
+class TestRenameDbSync:
+    """リネーム時のDB・config連動テスト"""
+
+    def test_rename_updates_db_type(self, manager: InstanceManager):
+        """リネーム後にDB内のtypeが新名に変わる"""
+        manager.create_instance("old_bot", "t")
+
+        db_path = manager.instances_dir / "old_bot" / "butly_memory.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS knowledge_cards (
+                id TEXT PRIMARY KEY, type TEXT, title TEXT,
+                category TEXT, summary TEXT, tags TEXT,
+                ai_importance INTEGER, humanity_importance INTEGER,
+                episode TEXT, count INTEGER, raw_reference TEXT,
+                embedding_blob BLOB, created_at TEXT, updated_at TEXT,
+                is_pinned INTEGER DEFAULT 0, is_archived INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute(
+            "INSERT INTO knowledge_cards (id, type, title, category, summary) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("card_001", "old_bot", "Test Card", "Tech", "Test summary"),
+        )
+        conn.commit()
+        conn.close()
+
+        success, new_name = manager.rename_instance("old_bot", "new_bot")
+        assert success is True
+
+        new_db_path = manager.instances_dir / "new_bot" / "butly_memory.db"
+        conn = sqlite3.connect(new_db_path)
+        row = conn.execute(
+            "SELECT type FROM knowledge_cards WHERE id = ?", ("card_001",)
+        ).fetchone()
+        conn.close()
+
+        assert row[0] == "new_bot"
+
+    def test_rename_updates_agent_type_prefix(self, manager: InstanceManager):
+        """エージェントカード type='old/coding' が 'new/coding' に更新される"""
+        manager.create_instance("old_bot2", "t")
+
+        db_path = manager.instances_dir / "old_bot2" / "butly_memory.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS knowledge_cards (
+                id TEXT PRIMARY KEY, type TEXT, title TEXT,
+                category TEXT, summary TEXT, tags TEXT,
+                ai_importance INTEGER, humanity_importance INTEGER,
+                episode TEXT, count INTEGER, raw_reference TEXT,
+                embedding_blob BLOB, created_at TEXT, updated_at TEXT,
+                is_pinned INTEGER DEFAULT 0, is_archived INTEGER DEFAULT 0
+            )
+        """)
+        conn.execute(
+            "INSERT INTO knowledge_cards (id, type, title, category, summary) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("agent_001", "old_bot2/coding", "Agent Card", "Tech", "Summary"),
+        )
+        conn.commit()
+        conn.close()
+
+        manager.rename_instance("old_bot2", "new_bot2")
+
+        new_db_path = manager.instances_dir / "new_bot2" / "butly_memory.db"
+        conn = sqlite3.connect(new_db_path)
+        row = conn.execute(
+            "SELECT type FROM knowledge_cards WHERE id = ?", ("agent_001",)
+        ).fetchone()
+        conn.close()
+
+        assert row[0] == "new_bot2/coding"
+
+    def test_rename_updates_readable_instances(self, manager: InstanceManager):
+        """リネーム後に他インスタンスのreadable_instancesが追従する"""
+        manager.create_instance("bot_a", "t")
+        manager.create_instance("bot_b", "t")
+
+        config = {"brain": {"readable_instances": ["self", "bot_a"]}}
+        manager.update_instance_config("bot_b", config)
+
+        manager.rename_instance("bot_a", "bot_a_renamed")
+
+        updated_config = manager.get_instance_config("bot_b")
+        readable = updated_config["brain"]["readable_instances"]
+        assert "bot_a_renamed" in readable
+        assert "bot_a" not in readable
+
+    def test_rename_updates_agent_parent(self, manager: InstanceManager):
+        """リネーム後にエージェントのparent設定が追従する"""
+        manager.create_instance("parent_bot", "t")
+
+        agents_dir = manager.instances_dir / "parent_bot" / "agents" / "coding"
+        agents_dir.mkdir(parents=True)
+        agent_config = {"instance_type": "agent", "parent": "parent_bot"}
+        (agents_dir / "config.json").write_text(
+            json.dumps(agent_config), encoding="utf-8"
+        )
+
+        manager.rename_instance("parent_bot", "jarvis")
+
+        new_agent_config = json.loads(
+            (manager.instances_dir / "jarvis" / "agents" / "coding" / "config.json")
+            .read_text(encoding="utf-8")
+        )
+        assert new_agent_config["parent"] == "jarvis"
+
+    def test_rename_db_failure_does_not_block(self, manager: InstanceManager):
+        """DB更新失敗してもフォルダリネーム自体は成功する"""
+        manager.create_instance("fragile", "t")
+
+        # DBなしでもリネームは成功する
+        success, new_name = manager.rename_instance("fragile", "robust")
+        assert success is True
+        assert (manager.instances_dir / "robust").exists()
