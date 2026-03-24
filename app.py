@@ -909,6 +909,42 @@ def render_instance_settings_screen():
     st.caption("短期記憶を整理し、知識カードとして長期記憶に保存します。")
 
     st.divider()
+
+    # Rename Instance
+    st.subheader("✏️ インスタンス名の変更")
+    rename_col1, rename_col2 = st.columns([3, 1])
+    with rename_col1:
+        new_inst_name = st.text_input("新しいインスタンス名（半角英数字・_）", placeholder=instance_name, key="rename_input")
+    with rename_col2:
+        st.write("")  # spacer
+        st.write("")
+        if st.button("変更", key="btn_rename", use_container_width=True):
+            if new_inst_name and new_inst_name != instance_name:
+                try:
+                    ren_resp = requests.post(
+                        f"{api_url}/instances/{instance_name}/rename",
+                        json={"new_name": new_inst_name},
+                        timeout=10,
+                    )
+                    if ren_resp.ok:
+                        result = ren_resp.json()
+                        new_name = result.get("new_instance_name", new_inst_name)
+                        st.success(f"名前を '{new_name}' に変更しました。")
+                        st.session_state.current_instance = new_name
+                        st.cache_resource.clear()
+                        time.sleep(1)
+                        navigate_to("chat")
+                    else:
+                        st.error(f"リネームエラー: {ren_resp.text}")
+                except Exception as e:
+                    st.error(f"リネームエラー: {e}")
+            elif new_inst_name == instance_name:
+                st.warning("現在の名前と同じです。")
+            else:
+                st.warning("名前を入力してください。")
+    st.caption("記憶DB内のデータと他インスタンスの参照設定も自動で追従します。")
+
+    st.divider()
     
     # Action Buttons
     col_a1, col_a2, col_a3 = st.columns([6, 2, 2])
