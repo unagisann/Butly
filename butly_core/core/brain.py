@@ -84,7 +84,9 @@ class ButlyBrain:
             if override_config and "chat" in override_config:
                 chat_conf = self._merge_config(chat_conf, override_config["chat"])
 
-            prompt = prompts.BRAIN_EXTRACT_KEYWORDS_PROMPT.format(user_input=user_input)
+            from butly_core.prompts import PromptLoader
+            loader = PromptLoader()
+            prompt = loader.get("brain_extract_keywords", user_input=user_input)
             
             provider = self._get_provider(chat_conf["model_name"])
             text = provider.classify(prompt, chat_conf)

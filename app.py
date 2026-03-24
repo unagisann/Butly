@@ -570,10 +570,27 @@ def render_settings_screen():
         )
 
         st.divider()
+        st.subheader("🌐 Language / 言語")
+        locale_options = {"ja": "日本語", "en": "English"}
+        agent_s = sys_cfg.get('agent', {})
+        current_locale = agent_s.get('locale', 'ja')
+        locale_keys = list(locale_options.keys())
+        locale_index = locale_keys.index(current_locale) if current_locale in locale_keys else 0
+        agent_s['locale'] = st.selectbox(
+            "Language / 言語",
+            options=locale_keys,
+            index=locale_index,
+            format_func=lambda x: locale_options.get(x, x),
+            key="adv_locale",
+        )
+        sys_cfg['agent'] = agent_s
+
+        st.divider()
         if st.button("💾 詳細設定を保存", type="primary"):
             cfg['AI_CONFIG'] = ai_cfg
             cfg['SYSTEM_CONFIG']['brain'] = brain_s
             cfg['SYSTEM_CONFIG']['memory'] = memory_s
+            cfg['SYSTEM_CONFIG']['agent'] = agent_s
             try:
                 save_resp = requests.post(f"{api_url}/config", json=cfg, timeout=5)
                 if save_resp.ok:

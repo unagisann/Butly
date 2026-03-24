@@ -162,18 +162,22 @@ def build_system_instruction_from_blocks(
         Gemini に渡す system_instruction 文字列。
     """
     from butly_core.core.chronos import ButlyChronos
+    from butly_core.prompts import PromptLoader
+
+    loader = PromptLoader()
+    h = loader.get_section_header
 
     tier = blocks.get("tier", "mid")
     sections = []
 
     # 1. SYSTEM INSTRUCTION（性格設定）— 全 tier 共通
     sys_inst = memory_manager.get_system_instruction()
-    sections.append(f"=== SYSTEM INSTRUCTION ===\n{sys_inst}")
+    sections.append(f"{h('system_instruction')}\n{sys_inst}")
 
     # 2. KEY MEMORY（根幹記憶）— 全 tier 共通
     key_mem = memory_manager.get_key_memory()
     if key_mem:
-        sections.append(f"=== KEY MEMORY (根幹記憶) ===\n{key_mem}")
+        sections.append(f"{h('key_memory')}\n{key_mem}")
 
     # 3. MID-TERM MEMORY（中期記憶）— mid 以上
     if tier in ("mid", "cortex"):
@@ -185,43 +189,43 @@ def build_system_instruction_from_blocks(
 
             if digest:
                 sections.append(
-                    f"=== MID-TERM DIGEST (中期記憶・事実ダイジェスト) ===\n"
-                    f"※以下はAIの主観的な記憶です。直近の会話と矛盾する場合は、直近の会話を優先してください。\n"
+                    f"{h('mid_term_digest')}\n"
+                    f"{h('note_mid_term_digest')}\n"
                     f"{digest}"
                 )
             if relationship:
                 sections.append(
-                    f"=== RELATIONSHIP SNAPSHOT (関係性スナップショット) ===\n"
-                    f"※以下は現在の関係性のステータスです。Key Memoryの根幹を補完する参考情報として扱ってください。\n"
+                    f"{h('relationship_snapshot')}\n"
+                    f"{h('note_relationship')}\n"
                     f"{relationship}"
                 )
         else:
             mid_term = blocks.get("mid_term", "")
             if mid_term:
-                sections.append(f"=== MID-TERM MEMORY (中期記憶) ===\n{mid_term}")
+                sections.append(f"{h('mid_term_memory')}\n{mid_term}")
 
     # 4. CURRENT TIME（現在時刻）— 全 tier 共通
     current_time = ButlyChronos().get_system_note()
     sections.append(
-        f"=== CURRENT TIME (現在時刻) ===\n{current_time}\n"
-        "※上記の時刻情報は文脈理解のための参考情報です。随時日付や時間を読み上げる必要はありません。あくまで自然な対話を最優先してください。"
+        f"{h('current_time')}\n{current_time}\n"
+        f"{h('note_current_time')}"
     )
 
     # 5. RAG コンテキスト — cortex のみ
     rag_context = blocks.get("rag_context", "")
     if tier == "cortex" and rag_context:
-        sections.append(f"=== LONG-TERM MEMORY (RAG) ===\n※以下は過去の記録からの参考情報です。直近の会話と矛盾する場合は、直近の会話を優先してください。\n{rag_context}")
+        sections.append(f"{h('long_term_memory')}\n{h('note_rag')}\n{rag_context}")
 
     # 6. FLOATING SUMMARY（未整理記憶）— 全 tier 共通
     floating = blocks.get("floating", "")
     if floating:
-        sections.append(f"=== FLOATING SUMMARY (未整理記憶) ===\n※以下は直近の会話の要約です。直前の3ターンと併用して最も新しい文脈として優先的に参照してください。\n{floating.strip()}")
+        sections.append(f"{h('floating_summary')}\n{h('note_floating')}\n{floating.strip()}")
 
-    # 7. tier 情報 + topic 注入（Phase 3）
-    tier_text = f"現在の思考モード: {tier}"
+    # 7. tier 情報 + topic 注入
+    tier_text = h('tier_mode').format(tier=tier)
     topic = blocks.get("topic", "")
     if tier in ("mid", "cortex") and topic:
-        tier_text += f"\n現在の話題: {topic}"
-    sections.append(f"=== TIER INFO ===\n{tier_text}")
+        tier_text += "\n" + h('tier_topic').format(topic=topic)
+    sections.append(f"{h('tier_info')}\n{tier_text}")
 
     return "\n\n".join(sections)

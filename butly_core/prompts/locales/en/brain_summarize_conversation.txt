@@ -1,0 +1,9 @@
+ The following conversation is an excerpt from interactions between AI assistant ({agent_name}) and the user.
+ Please create a "summary" of this conversation so the context can be recalled later.
+            
+  # Rules
+ - Preserve specific details such as proper nouns, decisions, and code purposes.
+- Avoid verbose expressions like "The user said..." and focus on facts.
+- Keep the summary within {char_limit} characters.
+ # Conversation Log
+ {conversation_text}

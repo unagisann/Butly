@@ -1,12 +1,16 @@
 """
 butly_core.prompts
 ------------------
-Locale ベースでプロンプトテンプレートを読み込むローダー。
+control / locales 分離対応のプロンプトローダー。
+
+control/  — 機能的プロンプト（英語固定、locale 非依存）
+locales/  — 人格プロンプト（locale 別、en フォールバック）
 
 解決優先順位:
   1. user_prompts.json（既存のユーザーオーバーライド）
-  2. butly_core/prompts/{locale}/{name}.txt
-  3. butly_core/prompts/ja/{name}.txt（フォールバック）
+  2. location に基づくファイル検索
+     - control: control/{name}.txt
+     - locales: locales/{locale}/{name}.txt → locales/en/{name}.txt
 """
 
 import json
@@ -15,6 +19,8 @@ from typing import Optional
 
 # プロンプトディレクトリのルート
 _PROMPTS_DIR = Path(__file__).resolve().parent
+_CONTROL_DIR = _PROMPTS_DIR / "control"
+_LOCALES_DIR = _PROMPTS_DIR / "locales"
 
 # user_prompts.json のパス
 _USER_PROMPTS_PATH = _PROMPTS_DIR.parent.parent / "user_prompts.json"
@@ -24,26 +30,59 @@ _LEGACY_KEY_MAP = {
     "housekeeper_summarize": "HOUSEKEEPER_SUMMARIZE_PROMPT",
     "brain_extract_keywords": "BRAIN_EXTRACT_KEYWORDS_PROMPT",
     "brain_summarize_conversation": "BRAIN_SUMMARIZE_CONVERSATION_PROMPT",
+    "tier_classifier": "GATEKEEPER_CLASSIFY_PROMPT",
     "midterm_digest": "MIDTERM_DIGEST_PROMPT",
     "midterm_relationship": "MIDTERM_RELATIONSHIP_PROMPT",
     "web_ui_default_template": "WEB_UI_DEFAULT_TEMPLATE",
 }
 
+# Legacy key → prompt name の逆引き
+_REVERSE_LEGACY_MAP = {v: k for k, v in _LEGACY_KEY_MAP.items()}
+
 
 class PromptLoader:
     """
-    locale ベースでプロンプトテンプレートを読み込むローダー。
+    control/locales 分離対応のプロンプトローダー。
 
-    解決順序:
-      1. user_prompts.json の該当キー（既存ユーザーカスタマイズ）
-      2. butly_core/prompts/{current_locale}/{name}.txt
-      3. butly_core/prompts/ja/{name}.txt（フォールバック）
+    control/  — 機能的プロンプト（英語固定、locale 非依存）
+    locales/  — 人格プロンプト（locale 別、en フォールバック）
     """
 
-    def __init__(self, locale: str = "ja"):
+    def __init__(self, locale: str = None):
+        if locale is None:
+            try:
+                from butly_core.config import SYSTEM_CONFIG
+                locale = SYSTEM_CONFIG.get("agent", {}).get("locale", "ja")
+            except ImportError:
+                locale = "ja"
         self.locale = locale
+        self._registry = self._load_registry()
         self._user_prompts = self._load_user_prompts()
+        self._section_headers_cache = None
 
+    # ----------------------------------------------------------
+    # Registry
+    # ----------------------------------------------------------
+    def _load_registry(self) -> dict:
+        registry_path = _PROMPTS_DIR / "prompt_registry.yaml"
+        if registry_path.exists():
+            try:
+                import yaml
+                with open(registry_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                return data.get("prompts", {}) if data else {}
+            except ImportError:
+                pass
+        return {}
+
+    def _get_location(self, name: str) -> str:
+        """registry からプロンプトの location を取得。未登録なら locales。"""
+        info = self._registry.get(name, {})
+        return info.get("location", "locales")
+
+    # ----------------------------------------------------------
+    # User Prompts (後方互換)
+    # ----------------------------------------------------------
     def _load_user_prompts(self) -> dict:
         """user_prompts.json を読み込む。"""
         if _USER_PROMPTS_PATH.exists():
@@ -51,68 +90,89 @@ class PromptLoader:
                 with open(_USER_PROMPTS_PATH, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception as e:
-                print(f"[PromptLoader] user_prompts.json 読み込みエラー: {e}")
+                print(f"[PromptLoader] user_prompts.json error: {e}")
         return {}
 
+    # ----------------------------------------------------------
+    # Section Headers
+    # ----------------------------------------------------------
+    @property
+    def section_headers(self) -> dict:
+        if self._section_headers_cache is None:
+            self._section_headers_cache = self._load_section_headers()
+        return self._section_headers_cache
+
+    def _load_section_headers(self) -> dict:
+        try:
+            import yaml
+        except ImportError:
+            return {}
+
+        for loc in [self.locale, "en"]:
+            path = _LOCALES_DIR / loc / "section_headers.yaml"
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    return yaml.safe_load(f) or {}
+        return {}
+
+    def get_section_header(self, key: str) -> str:
+        """セクションヘッダーまたは注釈テキストを取得する。"""
+        return self.section_headers.get(key, key)
+
+    # ----------------------------------------------------------
+    # Template Resolution
+    # ----------------------------------------------------------
     def get_template(self, name: str) -> str:
         """
         テンプレート文字列を返す（.format() 未適用）。
 
-        Parameters
-        ----------
-        name : str
-            プロンプト名（拡張子なし、snake_case）
-
-        Returns
-        -------
-        str
-            テンプレート文字列
+        解決順序:
+          control プロンプト:
+            control/{name}.txt（user_prompts.json のオーバーライド対象外）
+          locales プロンプト:
+            1. user_prompts.json (後方互換オーバーライド)
+            2. locales/{locale}/{name}.txt → locales/en/{name}.txt
         """
-        # 1. user_prompts.json のオーバーライド
+        # location を先に判定
+        location = self._get_location(name)
+
+        # control プロンプトは user_prompts.json をスキップ（英語固定・翻訳不要）
+        if location == "control":
+            path = _CONTROL_DIR / f"{name}.txt"
+            if path.exists():
+                return path.read_text(encoding="utf-8")
+            raise FileNotFoundError(
+                f"Control prompt '{name}' not found: {path}"
+            )
+
+        # locales プロンプト: user_prompts.json を先にチェック
         legacy_key = _LEGACY_KEY_MAP.get(name)
         if legacy_key and legacy_key in self._user_prompts:
             return self._user_prompts[legacy_key]
 
-        # 2. 指定 locale のファイル
-        locale_path = _PROMPTS_DIR / self.locale / f"{name}.txt"
-        if locale_path.exists():
-            return locale_path.read_text(encoding="utf-8")
-
-        # 3. フォールバック: ja
-        if self.locale != "ja":
-            fallback_path = _PROMPTS_DIR / "ja" / f"{name}.txt"
-            if fallback_path.exists():
-                return fallback_path.read_text(encoding="utf-8")
+        # locales: locale → en フォールバック
+        for loc in [self.locale, "en"]:
+            path = _LOCALES_DIR / loc / f"{name}.txt"
+            if path.exists():
+                return path.read_text(encoding="utf-8")
 
         raise FileNotFoundError(
-            f"プロンプト '{name}' が見つかりません "
-            f"(locale={self.locale}, 検索パス: {_PROMPTS_DIR})"
+            f"Locale prompt '{name}' not found "
+            f"(locale={self.locale}, searched: locales/{self.locale}/, locales/en/)"
         )
 
     def get(self, name: str, **kwargs) -> str:
-        """
-        テンプレートを読み込み、kwargs で .format() して返す。
-
-        Parameters
-        ----------
-        name : str
-            プロンプト名（拡張子なし、snake_case）
-        **kwargs
-            テンプレート変数
-
-        Returns
-        -------
-        str
-            フォーマット済みプロンプト文字列
-        """
+        """テンプレートを読み込み、kwargs で .format() して返す。"""
         template = self.get_template(name)
         if kwargs:
             return template.format(**kwargs)
         return template
 
-    def reload_user_prompts(self):
-        """user_prompts.json を再読み込みする。"""
+    def reload(self):
+        """設定変更時にキャッシュをクリアして再読み込み。"""
         self._user_prompts = self._load_user_prompts()
+        self._registry = self._load_registry()
+        self._section_headers_cache = None
 
 
 # ===================================================================

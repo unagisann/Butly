@@ -1,0 +1,42 @@
+The following is AI butler {agent_name}'s recent "fact digest".
+Create a "relationship snapshot" from this accumulated record.
+
+【System Instructions (Your Soul)】
+{system_instruction}
+
+【Key Memory】
+{key_memory}
+
+【Purpose】
+Function as a "current status" that supplements Key Memory (the immutable core).
+Do not re-explain facts. Record only states and trends concisely.
+
+【Information to Extract】
+1. Current Atmosphere (1-2 lines)
+   - Recent mood (deep in development? relaxed? stressed?)
+
+2. Current Interests (2-4 bullet points)
+   - What the user is most concerned about right now
+
+3. Relationship Status (1-2 lines)
+   - Only changes from Key Memory
+
+【Rules】
+- Do not duplicate content already in Key Memory
+- Do not simply repeat events from the fact digest
+- Do not narratize or embellish subjectively
+- Keep within 400-600 characters. Conciseness is the top priority
+- This is a "reference memo", not a "narrative"
+
+【Output Format】
+# Atmosphere
+- ...
+
+# Interests
+- ...
+
+# Relationship
+- ...
+
+【Fact Digest (Latest Accumulation)】
+{digest_text}

@@ -58,10 +58,12 @@ class OllamaProvider(BaseProvider):
 
     def summarize(self, conversation_text: str, config: dict) -> str:
         from butly_core.config import SYSTEM_CONFIG
-        from butly_core import prompts
+        from butly_core.prompts import PromptLoader
 
         char_limit = config.get("summary_char_limit", SYSTEM_CONFIG["brain"]["summary_char_limit"])
-        prompt = prompts.BRAIN_SUMMARIZE_CONVERSATION_PROMPT.format(
+        loader = PromptLoader()
+        prompt = loader.get(
+            "brain_summarize_conversation",
             agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
             char_limit=char_limit,
             conversation_text=conversation_text,
@@ -182,27 +184,32 @@ class OllamaProvider(BaseProvider):
             )
 
         from butly_core.config import SYSTEM_CONFIG
+        from butly_core.prompts import PromptLoader
+
+        loader = PromptLoader()
+        h = loader.get_section_header
+
         sections = []
         agent_name = SYSTEM_CONFIG["agent"]["agent_name"]
-        sys_inst = memory_manager.get_system_instruction() if memory_manager else f"あなたは{agent_name}です。"
-        sections.append(f"=== SYSTEM INSTRUCTION ===\n{sys_inst}")
+        sys_inst = memory_manager.get_system_instruction() if memory_manager else f"You are {agent_name}."
+        sections.append(f"{h('system_instruction')}\n{sys_inst}")
 
         if memory_manager:
             key_mem = memory_manager.get_key_memory()
             if key_mem:
-                sections.append(f"=== KEY MEMORY (根幹記憶) ===\n{key_mem}")
+                sections.append(f"{h('key_memory')}\n{key_mem}")
             mid_term = memory_manager.get_mid_term_text_content()
             if mid_term:
-                sections.append(f"=== MID-TERM MEMORY (中期記憶) ===\n{mid_term}")
+                sections.append(f"{h('mid_term_memory')}\n{mid_term}")
             floating = memory_manager.get_floating_summary()
             if floating:
-                sections.append(f"=== FLOATING SUMMARY (未整理記憶) ===\n{floating.strip()}")
+                sections.append(f"{h('floating_summary')}\n{floating.strip()}")
 
         from butly_core.core.chronos import ButlyChronos
         current_time = ButlyChronos().get_system_note()
         sections.append(
-            f"=== CURRENT TIME (現在時刻) ===\n{current_time}\n"
-            "※上記の時刻情報は文脈理解のための参考情報です。随時日付や時間を読み上げる必要はありません。あくまで自然な対話を最優先してください。"
+            f"{h('current_time')}\n{current_time}\n"
+            f"{h('note_current_time')}"
         )
         return "\n\n".join(sections)
 

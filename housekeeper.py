@@ -122,7 +122,10 @@ class ButlyHousekeeper:
         agent_instruction = self.get_instance_instruction(db_type)
         agent_key_memory = self.get_instance_key_memory(db_type)
         
-        prompt = prompts.HOUSEKEEPER_SUMMARIZE_PROMPT.format(
+        from butly_core.prompts import PromptLoader
+        loader = PromptLoader()
+        prompt = loader.get(
+            "housekeeper_summarize",
             agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
             system_instruction=agent_instruction,
             key_memory=agent_key_memory,
@@ -330,7 +333,7 @@ class ButlyHousekeeper:
         
         print(f"[Housekeeper] Daily digest: Generating from {len(new_text)} chars of today's raw text...")
         
-        from butly_core.prompts import MIDTERM_DIGEST_PROMPT
+        from butly_core.prompts import PromptLoader
         
         try:
             summary_conf = AI_CONFIG.get("summary", {})
@@ -345,7 +348,9 @@ class ButlyHousekeeper:
             system_instruction = self.get_instance_instruction(instance_name)
             key_memory = self.get_instance_key_memory(instance_name)
             
-            digest_prompt = MIDTERM_DIGEST_PROMPT.format(
+            loader = PromptLoader()
+            digest_prompt = loader.get(
+                "midterm_digest",
                 agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
                 user_name=SYSTEM_CONFIG["agent"]["user_name"],
                 system_instruction=system_instruction,
@@ -436,7 +441,7 @@ class ButlyHousekeeper:
             print("[Housekeeper] Relationship: digest too short, skipping.")
             return
         
-        from butly_core.prompts import MIDTERM_RELATIONSHIP_PROMPT
+        from butly_core.prompts import PromptLoader
         
         try:
             k_conf = AI_CONFIG.get("knowledge", {})
@@ -447,7 +452,9 @@ class ButlyHousekeeper:
             system_instruction = self.get_instance_instruction(instance_name)
             key_memory = self.get_instance_key_memory(instance_name)
             
-            rel_prompt = MIDTERM_RELATIONSHIP_PROMPT.format(
+            loader = PromptLoader()
+            rel_prompt = loader.get(
+                "midterm_relationship",
                 agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
                 system_instruction=system_instruction,
                 key_memory=key_memory,

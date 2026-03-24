@@ -203,7 +203,9 @@ class TestCortexInstruction:
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "直近の会話を優先" in result
+        # locale に依存せず、RAG 注釈が含まれることを確認
+        assert ("直近の会話を優先" in result
+                or "prioritize recent conversation" in result)
 
 
 class TestFloatingSummary:

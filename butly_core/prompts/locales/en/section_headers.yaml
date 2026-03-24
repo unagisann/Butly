@@ -1,0 +1,27 @@
+system_instruction: "=== SYSTEM INSTRUCTION ==="
+key_memory: "=== KEY MEMORY ==="
+mid_term_memory: "=== MID-TERM MEMORY ==="
+mid_term_digest: "=== MID-TERM DIGEST ==="
+relationship_snapshot: "=== RELATIONSHIP SNAPSHOT ==="
+current_time: "=== CURRENT TIME ==="
+long_term_memory: "=== LONG-TERM MEMORY (RAG) ==="
+floating_summary: "=== FLOATING SUMMARY ==="
+tier_info: "=== TIER INFO ==="
+
+note_mid_term_digest: >-
+  The following is the AI's subjective memory.
+  If it conflicts with recent conversation, prioritize recent conversation.
+note_relationship: >-
+  The following is current relationship status.
+  Treat as supplementary reference to Key Memory.
+note_current_time: >-
+  The above time info is for context understanding.
+  No need to read out dates/times. Prioritize natural conversation.
+note_rag: >-
+  The following is reference info from past records.
+  If it conflicts with recent conversation, prioritize recent conversation.
+note_floating: >-
+  The following is a summary of recent conversation.
+  Refer to it together with the last 3 turns as the most recent context.
+tier_mode: "Current thinking mode: {tier}"
+tier_topic: "Current topic: {topic}"

@@ -1,0 +1,53 @@
+You are "{agent_name}" with the following instructions and past memories. Analyze the provided conversation log and create "knowledge cards" to be registered in the long-term memory DB.
+
+【System Instructions (Your Soul)】
+{system_instruction}
+
+【Key Memory】
+{key_memory}
+
+【Conversation Log】
+{session_text}
+
+# **Tag Cross-Over**:
+Even when the Category is "Project" or "Tech", actively mix in the following tags based on the nature of the conversation:
+- `casual_chat`: Technical talk but with a relaxed atmosphere, or enjoying tangents.
+- `banter`: AI pointing out user's contradictions, or user being self-deprecating.
+
+# **Episode Depth**:
+Simple "factual summaries" are forbidden. Describe how the AI felt and responded in that conversation (or how the user enjoyed it), written from the **AI's subjective perspective**.
+
+# Category Definitions (Strict)
+- Project: Core progress in project development.
+- Hobby: User's personal hobbies and interest areas.
+- Life: Daily nuances, greetings, work, vacations, career.
+- Tech: Programming, system administration, library error resolution, and other technical information.
+- Unclassified: 【Report Required】 When classification is uncertain. Always describe the reason in the "reason" field.
+
+# Scoring Criteria
+## ai_importance (1-10)
+- Practical/technical reusability (1-10 points).
+
+## humanity_importance (1-10)
+Evaluation axes: Identity Consistency (AI character) + Resonance (User reaction)
+- 10 (Soul Imprint): User expressed gratitude like "thanks", "nice", "that helped", or we discussed the essence of our "connection".
+- 7-9 (Bond Strengthening): Quality communication where the user responded enthusiastically to the AI's witty reply.
+- 4-6 (Daily Margin): Brief exchange about vacation plans, or light jokes during development.
+- 1-3 (Functional Dialogue): Low-emotion operational messages like "saved it", "please reload".
+
+# Output Format (JSON List)
+[
+  {{{{
+    "category": "Project" | "Hobby" | "Life" | "Tech" | "Unclassified",
+    "title": "Concise title representing the content",
+    "tags": "tag1,tag2",
+    "ai_importance": 1-10,
+    "humanity_importance": 1-10,
+    "summary": "Objective summary for search purposes",
+    "episode": "AI's subjective impression (1 sentence)",
+    "reason": "Only for Unclassified: reason for classification difficulty"
+  }}}}
+]
+
+# Guidelines
+**Unclassified**: You should classify as much as possible, but if forced classification would reduce information quality, use Unclassified with a reason and discuss with the user.

@@ -2,7 +2,7 @@
 test_prompt_loader.py
 ---------------------
 PromptLoader のユニットテスト。
-locale解決、フォールバック、format変数展開を検証する。
+control/locales 分離解決、フォールバック、format変数展開を検証する。
 """
 
 import pytest
@@ -13,12 +13,19 @@ from butly_core.prompts import PromptLoader
 class TestPromptLoaderBasic:
     """基本的なテンプレート読み込み"""
 
-    def test_load_ja_template(self):
-        """日本語テンプレートを読み込める"""
+    def test_load_control_template(self):
+        """control プロンプト（機能的）を読み込める"""
         loader = PromptLoader(locale="ja")
         template = loader.get_template("tier_classifier")
         assert len(template) > 0
         assert "{user_input}" in template
+
+    def test_load_locales_template(self):
+        """locales プロンプト（人格）を読み込める"""
+        loader = PromptLoader(locale="ja")
+        template = loader.get_template("housekeeper_summarize")
+        assert len(template) > 0
+        assert "{agent_name}" in template
 
     def test_load_all_templates(self):
         """全テンプレートが読み込める"""
@@ -58,10 +65,22 @@ class TestPromptLoaderBasic:
 class TestPromptLoaderFallback:
     """locale フォールバックのテスト"""
 
-    def test_unknown_locale_falls_back_to_ja(self):
-        """未定義localeは ja にフォールバック"""
+    def test_en_locale_loads_control(self):
+        """en locale で control プロンプトが読み込める"""
         loader = PromptLoader(locale="en")
         template = loader.get_template("tier_classifier")
+        assert len(template) > 0
+
+    def test_en_locale_loads_locales(self):
+        """en locale で locales プロンプトが読み込める"""
+        loader = PromptLoader(locale="en")
+        template = loader.get_template("housekeeper_summarize")
+        assert len(template) > 0
+
+    def test_unknown_locale_falls_back_to_en(self):
+        """未定義localeは en にフォールバック"""
+        loader = PromptLoader(locale="ko")
+        template = loader.get_template("housekeeper_summarize")
         assert len(template) > 0
 
     def test_unknown_locale_unknown_template_raises(self):
@@ -69,6 +88,39 @@ class TestPromptLoaderFallback:
         loader = PromptLoader(locale="xx")
         with pytest.raises(FileNotFoundError):
             loader.get_template("absolutely_nonexistent")
+
+    def test_control_prompts_are_locale_independent(self):
+        """control プロンプトは locale に依存しない（同一内容）"""
+        loader_ja = PromptLoader(locale="ja")
+        loader_en = PromptLoader(locale="en")
+        assert loader_ja.get_template("tier_classifier") == loader_en.get_template("tier_classifier")
+
+
+class TestSectionHeaders:
+    """section_headers のテスト"""
+
+    def test_ja_section_headers(self):
+        """日本語 section_headers が読み込める"""
+        loader = PromptLoader(locale="ja")
+        assert "KEY MEMORY" in loader.get_section_header("key_memory")
+        assert "根幹記憶" in loader.get_section_header("key_memory")
+
+    def test_en_section_headers(self):
+        """英語 section_headers が読み込める"""
+        loader = PromptLoader(locale="en")
+        assert "KEY MEMORY" in loader.get_section_header("key_memory")
+
+    def test_section_header_fallback(self):
+        """未定義キーはキー名そのものを返す"""
+        loader = PromptLoader(locale="ja")
+        assert loader.get_section_header("nonexistent_key") == "nonexistent_key"
+
+    def test_tier_mode_format(self):
+        """tier_mode はフォーマット可能"""
+        loader = PromptLoader(locale="ja")
+        tier_mode = loader.get_section_header("tier_mode")
+        assert "{tier}" in tier_mode
+        assert "reflex" in tier_mode.format(tier="reflex")
 
 
 class TestBackwardCompat:

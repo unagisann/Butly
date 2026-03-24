@@ -802,8 +802,20 @@ def update_config(config_data: Dict[str, Any] = Body(...)):
 
 @app.get("/prompts")
 def get_prompts():
-    """Get editable prompts."""
-    return {key: getattr(prompts_module, key, "") for key in EDITABLE_PROMPTS}
+    """Get editable prompts (locale-aware)."""
+    from butly_core.prompts import PromptLoader, _REVERSE_LEGACY_MAP
+    loader = PromptLoader()
+    result = {}
+    for key in EDITABLE_PROMPTS:
+        name = _REVERSE_LEGACY_MAP.get(key)
+        if name:
+            try:
+                result[key] = loader.get_template(name)
+            except FileNotFoundError:
+                result[key] = getattr(prompts_module, key, "")
+        else:
+            result[key] = getattr(prompts_module, key, "")
+    return result
 
 @app.post("/prompts")
 def update_prompts(prompts_data: Dict[str, str] = Body(...)):

@@ -1,0 +1,25 @@
+You are the "search planning module" of AI butler {agent_name}.
+Identify what information should be retrieved from the long-term memory DB to respond to the user's message.
+
+【Current Topic】
+{current_topic}
+
+【Recent Conversation History (last 3 turns)】
+{history_text}
+
+【User Message to Classify】
+"{user_input}"
+
+---
+【Rules】
+- need: Describe information that is required for the response but missing from the current context.
+- search_targets: Generate up to 3 keywords to search the long-term memory DB.
+
+【Output Format】
+Output ONLY the following JSON format. No explanation or supplementary text.
+```json
+{{
+  "need": "Information needed but currently missing",
+  "search_targets": ["keyword1", "keyword2"]
+}}
+```

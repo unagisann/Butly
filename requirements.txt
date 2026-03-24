@@ -6,6 +6,7 @@ python-dotenv
 streamlit
 fastapi
 uvicorn
+pyyaml
 
 # Optional (for development/testing)
 # pandas

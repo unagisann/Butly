@@ -75,12 +75,14 @@ class GeminiProvider(BaseProvider):
     def summarize(self, conversation_text: str, config: dict) -> str:
         """会話ログの要約を生成する。"""
         from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
-        from butly_core import prompts
+        from butly_core.prompts import PromptLoader
 
         summary_conf = AI_CONFIG["summary"]
         char_limit = config.get("summary_char_limit", SYSTEM_CONFIG["brain"]["summary_char_limit"])
 
-        prompt = prompts.BRAIN_SUMMARIZE_CONVERSATION_PROMPT.format(
+        loader = PromptLoader()
+        prompt = loader.get(
+            "brain_summarize_conversation",
             agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
             char_limit=char_limit,
             conversation_text=conversation_text,
@@ -320,7 +322,7 @@ class GeminiProvider(BaseProvider):
         if memory_manager:
             raw_summary = memory_manager.get_floating_summary()
             if raw_summary:
-                floating_summary = f"\n\n========================================\n【直近の未整理記憶（浮動要約）】\n{raw_summary}"
+                floating_summary = raw_summary
 
         chat_conf = AI_CONFIG["chat"]
         if override_config and "chat" in override_config:
@@ -367,30 +369,34 @@ class GeminiProvider(BaseProvider):
                     use_google_search=use_google_search,
                 )
             else:
+                from butly_core.prompts import PromptLoader
+                loader = PromptLoader()
+                h = loader.get_section_header
+
                 sections = []
                 agent_name = SYSTEM_CONFIG["agent"]["agent_name"]
-                sys_inst = memory_manager.get_system_instruction() if memory_manager else f"あなたは{agent_name}です。"
-                sections.append(f"=== SYSTEM INSTRUCTION ===\n{sys_inst}")
+                sys_inst = memory_manager.get_system_instruction() if memory_manager else f"You are {agent_name}."
+                sections.append(f"{h('system_instruction')}\n{sys_inst}")
 
                 if memory_manager:
                     key_mem = memory_manager.get_key_memory()
                     if key_mem:
-                        sections.append(f"=== KEY MEMORY (根幹記憶) ===\n{key_mem}")
+                        sections.append(f"{h('key_memory')}\n{key_mem}")
 
                 if memory_manager:
                     mid_term = memory_manager.get_mid_term_text_content()
                     if mid_term:
-                        sections.append(f"=== MID-TERM MEMORY (中期記憶) ===\n{mid_term}")
+                        sections.append(f"{h('mid_term_memory')}\n{mid_term}")
 
                 from butly_core.core.chronos import ButlyChronos
                 current_time = ButlyChronos().get_system_note()
                 sections.append(
-                    f"=== CURRENT TIME (現在時刻) ===\n{current_time}\n"
-                    "※上記の時刻情報は文脈理解のための参考情報です。随時日付や時間を読み上げる必要はありません。あくまで自然な対話を最優先してください。"
+                    f"{h('current_time')}\n{current_time}\n"
+                    f"{h('note_current_time')}"
                 )
 
                 if floating_summary:
-                    sections.append(f"=== FLOATING SUMMARY (未整理記憶) ===\n{floating_summary.strip()}")
+                    sections.append(f"{h('floating_summary')}\n{floating_summary.strip()}")
 
                 if not use_google_search:
                     sections.append("")
@@ -490,31 +496,35 @@ class GeminiProvider(BaseProvider):
                 use_google_search=use_google_search,
             )
         else:
+            from butly_core.prompts import PromptLoader
+            loader = PromptLoader()
+            h = loader.get_section_header
+
             sections = []
             agent_name = SYSTEM_CONFIG["agent"]["agent_name"]
-            sys_inst = memory_manager.get_system_instruction() if memory_manager else f"あなたは{agent_name}です。"
-            sections.append(f"=== SYSTEM INSTRUCTION ===\n{sys_inst}")
+            sys_inst = memory_manager.get_system_instruction() if memory_manager else f"You are {agent_name}."
+            sections.append(f"{h('system_instruction')}\n{sys_inst}")
 
             if memory_manager:
                 key_mem = memory_manager.get_key_memory()
                 if key_mem:
-                    sections.append(f"=== KEY MEMORY (根幹記憶) ===\n{key_mem}")
+                    sections.append(f"{h('key_memory')}\n{key_mem}")
             if memory_manager:
                 mid_term = memory_manager.get_mid_term_text_content()
                 if mid_term:
-                    sections.append(f"=== MID-TERM MEMORY (中期記憶) ===\n{mid_term}")
+                    sections.append(f"{h('mid_term_memory')}\n{mid_term}")
 
             from butly_core.core.chronos import ButlyChronos
             current_time = ButlyChronos().get_system_note()
             sections.append(
-                f"=== CURRENT TIME (現在時刻) ===\n{current_time}\n"
-                "※上記の時刻情報は文脈理解のための参考情報です。随時日付や時間を読み上げる必要はありません。あくまで自然な対話を最優先してください。"
+                f"{h('current_time')}\n{current_time}\n"
+                f"{h('note_current_time')}"
             )
 
             if memory_manager:
                 floating_summary = memory_manager.get_floating_summary()
                 if floating_summary:
-                    sections.append(f"=== FLOATING SUMMARY (未整理記憶) ===\n{floating_summary.strip()}")
+                    sections.append(f"{h('floating_summary')}\n{floating_summary.strip()}")
 
             system_instruction = "\n\n".join(sections)
 

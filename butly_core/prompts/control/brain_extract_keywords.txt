@@ -1,0 +1,3 @@
+Extract up to 3 keywords from the following user message for database search.
+JSON format: {{{{"keywords": ["word1", "word2"]}}}}
+User message: "{user_input}"

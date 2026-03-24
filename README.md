@@ -1,6 +1,5 @@
 # Butly 🤵
-⚠ This project is currently under active development. / 本プロジェクトは開発中です。
-
+⚠ This project is currently under active development. 
 🌐 [日本語](README.ja.md) | **English**
 
 **A personal AI assistant platform with a multi-layered memory system.**

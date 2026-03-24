@@ -1,0 +1,52 @@
+# Prompt Registry
+# location: control | locales
+#   control  → control/{name}.txt (locale-independent)
+#   locales  → locales/{locale}/{name}.txt (with en fallback)
+
+prompts:
+  # --- Functional Prompts (control/) ---
+  tier_classifier:
+    location: control
+    description: "Tier classification signal extraction"
+    variables: [agent_name, history_text, user_input, current_topic]
+
+  state_updater:
+    location: control
+    description: "Session state delta generation"
+    variables: [agent_name, session_state, history_text, user_input]
+
+  search_planner:
+    location: control
+    description: "RAG search keyword planning (cortex only)"
+    variables: [agent_name, history_text, user_input, current_topic]
+
+  brain_extract_keywords:
+    location: control
+    description: "Keyword extraction for DB search"
+    variables: [user_input]
+
+  # --- Persona Prompts (locales/) ---
+  housekeeper_summarize:
+    location: locales
+    description: "Knowledge card generation with AI persona"
+    variables: [agent_name, system_instruction, key_memory, session_text]
+
+  brain_summarize_conversation:
+    location: locales
+    description: "Conversation summary generation"
+    variables: [agent_name, char_limit, conversation_text]
+
+  midterm_digest:
+    location: locales
+    description: "Daily fact digest generation"
+    variables: [agent_name, user_name, system_instruction, key_memory, raw_text]
+
+  midterm_relationship:
+    location: locales
+    description: "Weekly relationship snapshot"
+    variables: [agent_name, system_instruction, key_memory, digest_text]
+
+  web_ui_default_template:
+    location: locales
+    description: "Default template for new instances"
+    variables: [agent_name]

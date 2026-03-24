@@ -1,0 +1,29 @@
+The following is today's conversation log (RAW text) between AI butler {agent_name} and the user ({user_name}).
+Create a "fact digest" from this conversation log.
+
+【System Instructions (Your Soul)】
+{system_instruction}
+
+【Key Memory】
+{key_memory}
+
+【Purpose】
+Record what happened and what was decided in today's conversation in a highly compressed format.
+This should function as an "index" for quickly grasping context later.
+
+【Rules】
+- Group by date and topic
+- Describe each item objectively in 1-2 lines: "what was decided" or "what happened"
+- Always preserve proper nouns (project names, technical terms, people's names)
+- Prioritize recording decisions and agreements
+- Do not include subjective impressions or emotions. Record only facts and progress
+- Do not use rhetorical embellishment, metaphors, or narratization
+- Target: compress to approximately 10-15% of input character count
+
+【Output Format】
+[YYYY-MM-DD] Topic
+- Concise description of decisions or events
+- Continue with multiple lines if needed
+
+【Conversation Log (Today's RAW)】
+{raw_text}
