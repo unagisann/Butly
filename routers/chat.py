@@ -74,6 +74,7 @@ class ChatResponse(BaseModel):
     need: Optional[str] = None
     search_targets: Optional[List[str]] = None
     session_state: Optional[Dict[str, Any]] = None
+    gatekeeper_scores: Optional[Dict[str, float]] = None
 
 
 # =====================================================================
@@ -116,6 +117,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             need=result.need,
             search_targets=result.search_targets,
             session_state=result.session_state,
+            gatekeeper_scores=result.gatekeeper_scores,
         )
 
     except Exception as e:

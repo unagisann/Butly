@@ -67,6 +67,7 @@ class ChatResponse(BaseModel):
     need: Optional[str] = None
     search_targets: Optional[List[str]] = None
     session_state: Optional[Dict[str, Any]] = None
+    gatekeeper_scores: Optional[Dict[str, float]] = None
 
 
 # ===================================================================

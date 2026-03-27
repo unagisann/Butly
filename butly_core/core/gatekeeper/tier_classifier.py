@@ -1,10 +1,9 @@
 """
 tier_classifier.py
 ------------------
-LLM にシグナル（bool値）を出力させ、Python 側で tier を再決定する。
+LLM に 4 つのスコア（0-1）を出力させ、Python 側で tier を決定する。
 """
 
-import copy
 import json
 import re
 import time
@@ -15,7 +14,7 @@ from butly_core.prompts import PromptLoader
 
 
 class TierClassifier:
-    """LLM にシグナルを出力させ、Python 側で tier を最終決定する。"""
+    """LLM に 4 スコアを出力させ、Python 側で tier を最終決定する。"""
 
     def __init__(self, base_dir: Path = None):
         self.base_dir = base_dir or Path(__file__).resolve().parent.parent.parent.parent
@@ -53,12 +52,11 @@ class TierClassifier:
         Returns:
             {
                 "tier": "reflex" | "mid" | "cortex",
-                "llm_tier": str,  # LLMが出した元のtier（デバッグ用）
-                "llm_reasoning": {
-                    "recent_context_sufficient": bool,
-                    "needs_user_memory": bool,
-                    "needs_relationship_state": bool,
-                    "needs_long_term_search": bool
+                "llm_scoring": {
+                    "response_complexity": float,
+                    "emotional_weight": float,
+                    "memory_reference_likelihood": float,
+                    "continuity_need": float
                 }
             }
         """
@@ -89,29 +87,34 @@ class TierClassifier:
             result = self._default_output()
 
         t1 = time.time()
-        print(f"[TierClassifier] user='{user_input[:30]}' → tier={result['tier']} ({int((t1-t0)*1000)}ms)")
+        scores = result.get("llm_scoring", {})
+        print(
+            f"[TierClassifier] user='{user_input[:30]}'\n"
+            f"  scores: rc={scores.get('response_complexity', 0):.2f}, "
+            f"ew={scores.get('emotional_weight', 0):.2f}, "
+            f"ml={scores.get('memory_reference_likelihood', 0):.2f}, "
+            f"cn={scores.get('continuity_need', 0):.2f}\n"
+            f"  → tier={result['tier']} ({int((t1-t0)*1000)}ms)"
+        )
         return result
 
-    def _determine_tier(self, llm_output: dict) -> str:
-        """llm_reasoning のシグナルから tier を再決定する。"""
-        signals = llm_output.get("llm_reasoning", {})
+    def _determine_tier_from_scores(self, scores: dict) -> str:
+        """llm_scoring のスコアから tier を決定する。"""
+        rc = scores.get("response_complexity", 0)
+        ew = scores.get("emotional_weight", 0)
+        ml = scores.get("memory_reference_likelihood", 0)
+        cn = scores.get("continuity_need", 0)
 
-        recent_ok = signals.get("recent_context_sufficient", False)
-        needs_mem = signals.get("needs_user_memory", False)
-        needs_rel = signals.get("needs_relationship_state", False)
-        needs_lt = signals.get("needs_long_term_search", False)
-
-        if needs_lt:
+        # cortex: 記憶参照の可能性が高い
+        if ml >= 0.7:
             return "cortex"
-        if recent_ok and not needs_mem and not needs_rel:
+
+        # reflex: 複雑さも記憶参照も低く、連続性も低い
+        if rc <= 0.2 and ml <= 0.3 and cn <= 0.3:
             return "reflex"
-        if needs_rel:
-            return "cortex"
-        if needs_mem:
-            return "mid"
 
-        # シグナル全falseの場合はLLMのtierをフォールバック
-        return llm_output.get("tier", "mid")
+        # mid: それ以外
+        return "mid"
 
     def _parse_response(self, raw_text: str) -> dict:
         """LLM応答からJSONを抽出しパースする。"""
@@ -130,20 +133,19 @@ class TierClassifier:
 
             data = json.loads(json_str)
 
-            llm_tier = data.get("tier", "mid")
-            if llm_tier not in ("reflex", "mid", "cortex"):
-                llm_tier = "mid"
+            llm_scoring = data.get("llm_scoring", {})
+            # スコア値を 0-1 にクランプ
+            for key in ("response_complexity", "emotional_weight",
+                        "memory_reference_likelihood", "continuity_need"):
+                if key in llm_scoring:
+                    llm_scoring[key] = max(0.0, min(1.0, float(llm_scoring[key])))
 
-            llm_reasoning = data.get("llm_reasoning", {})
+            tier = self._determine_tier_from_scores(llm_scoring)
 
-            result = {
-                "tier": llm_tier,
-                "llm_tier": llm_tier,
-                "llm_reasoning": llm_reasoning,
+            return {
+                "tier": tier,
+                "llm_scoring": llm_scoring,
             }
-            # Python側で再判定
-            result["tier"] = self._determine_tier(result)
-            return result
 
         except Exception as e:
             print(f"[TierClassifier] JSONパースエラー: {e}\nRaw: '{raw_text}'")
@@ -152,8 +154,7 @@ class TierClassifier:
     def _default_output(self) -> dict:
         return {
             "tier": "mid",
-            "llm_tier": "mid",
-            "llm_reasoning": {},
+            "llm_scoring": {},
         }
 
     def _format_history(self, history_msgs: list, max_turns: int = 3) -> str:

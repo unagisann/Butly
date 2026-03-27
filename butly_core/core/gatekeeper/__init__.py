@@ -84,8 +84,7 @@ class Gatekeeper:
             "search_targets": search_targets,
             "state_delta": state_delta,
             # デバッグ用
-            "llm_tier": tier_result.get("llm_tier"),
-            "llm_reasoning": tier_result.get("llm_reasoning"),
+            "llm_scoring": tier_result.get("llm_scoring"),
         }
 
     def classify_tier_only(self, user_input: str, history_msgs: list,

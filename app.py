@@ -1151,6 +1151,23 @@ def render_chat_screen():
                     if tier:
                         st.caption(f"🧠 Tier: `{tier}`")
 
+                    # ★ Gatekeeper Scores
+                    gk_scores = data.get("gatekeeper_scores")
+                    if gk_scores:
+                        with st.expander("🧠 Gatekeeper Scores", expanded=False):
+                            score_labels = {
+                                "response_complexity": "response_complexity",
+                                "emotional_weight": "emotional_weight",
+                                "memory_reference_likelihood": "memory_reference_likelihood",
+                                "continuity_need": "continuity_need",
+                            }
+                            for key, label in score_labels.items():
+                                val = gk_scores.get(key, 0.0)
+                                filled = int(val * 10)
+                                bar = "█" * filled + "░" * (10 - filled)
+                                st.text(f"  {label:>30s}: {val:.2f} {bar}")
+                            st.text(f"  → {tier}")
+
                     # ★ Phase 2: Gatekeeper v2 Details
                     need = data.get("need")
                     search_targets = data.get("search_targets")

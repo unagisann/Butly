@@ -197,6 +197,7 @@ class ChatService:
         result.need = gk_result.get("need")
         result.search_targets = gk_result.get("search_targets")
         result.session_state = session_state.to_dict()
+        result.gatekeeper_scores = gk_result.get("llm_scoring")
 
         # --- 7. 会話保存 ---
         memory.save_single_turn(request.text, result.text)
