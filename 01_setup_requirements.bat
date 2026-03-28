@@ -32,9 +32,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist "APIkey.env" if exist ".env.example" (
-    echo APIkey.env を初期作成します...
-    copy ".env.example" "APIkey.env" >nul
+if not exist ".env" if exist ".env.example" (
+    echo .env を初期作成します...
+    copy ".env.example" ".env" >nul
 )
 
 if not exist "user_config.json" if exist "user_config.json.example" (
