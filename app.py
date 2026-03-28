@@ -368,6 +368,8 @@ def render_home_screen():
             birthday_input = st.date_input(
                 "生年月日" if _home_locale == "ja" else "Date of Birth",
                 value=None,
+                min_value=datetime(datetime.today().year - 90, 1, 1),
+                max_value=datetime(datetime.today().year + 5, 12, 31),
                 format="YYYY/MM/DD",
             )
 
