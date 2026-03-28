@@ -235,6 +235,36 @@ def build_key_memory(ai_name, user_name, nickname, gender, birthday, locale="en"
             lines.append(f"Date of Birth: {birthday}")
     return "\n".join(lines)
 
+def is_gemini_provider(model_name: str) -> bool:
+    """model_name がGeminiプロバイダーかどうかを判定する。"""
+    if not model_name:
+        return True  # デフォルトはGemini
+    name = model_name.lower()
+    return name.startswith("gemini") or name.startswith("models/gemini")
+
+def get_active_chat_model(api_url: str, instance_name: str) -> str:
+    """現在のインスタンスの chat model_name を取得する。"""
+    import requests as _requests
+    # 1. インスタンス固有config
+    try:
+        resp = _requests.get(f"{api_url}/instances/{instance_name}/config", timeout=5)
+        if resp.ok:
+            inst_cfg = resp.json()
+            inst_model = inst_cfg.get("chat", {}).get("model_name", "")
+            if inst_model:
+                return inst_model
+    except Exception:
+        pass
+    # 2. グローバルconfig
+    try:
+        resp = _requests.get(f"{api_url}/config", timeout=5)
+        if resp.ok:
+            global_cfg = resp.json()
+            return global_cfg.get("AI_CONFIG", {}).get("chat", {}).get("model_name", "gemini-3-flash-preview")
+    except Exception:
+        pass
+    return "gemini-3-flash-preview"  # 最終フォールバック
+
 # ==========================================
 # 🏠 ホーム画面 (Home Screen)
 # ==========================================
@@ -1074,7 +1104,20 @@ def render_instance_settings_screen():
     st.divider()
     st.subheader("🧠 RAG・記憶チューニング")
     use_cache = st.toggle("コンテキストキャッシュ (Mid-term Memory)", value=config["brain"].get("use_context_cache", False))
-    default_gs = st.toggle("Google検索のデフォルト有効化", value=config["brain"].get("default_use_google_search", False))
+    _is_gemini_inst = is_gemini_provider(model_name)
+    if _is_gemini_inst:
+        default_gs = st.toggle(
+            "Google検索のデフォルト有効化",
+            value=config["brain"].get("default_use_google_search", False),
+        )
+    else:
+        default_gs = False
+        st.toggle(
+            "Google検索のデフォルト有効化",
+            value=False,
+            disabled=True,
+            help="Google検索はGeminiモデル専用です",
+        )
     col_r1, col_r2 = st.columns(2)
     with col_r1:
         search_lim = st.number_input("検索リミット", min_value=1, max_value=10, value=config["brain"].get("search_limit", 3))
@@ -1216,13 +1259,29 @@ def render_chat_screen():
                 del st.session_state.last_interaction_time
             st.rerun()
     with col6:
-        # Google Search toggle: 押すたびにON/OFF切り替え
+        # Google Search toggle
+        # Gemini以外のプロバイダーでは無効化する
+        active_model = get_active_chat_model(api_url, instance_name)
+        is_gemini = is_gemini_provider(active_model)
+
         gs_on = st.session_state.get("use_google_search", False)
-        gs_label = "🌐 ON" if gs_on else "🌐"
-        gs_help = "Google検索: ON（クリックでOFF）" if gs_on else "Google検索: OFF（クリックでON）"
-        if st.button(gs_label, help=gs_help):
-            st.session_state.use_google_search = not gs_on
-            st.rerun()
+
+        if is_gemini:
+            # Gemini: 通常通りトグル可能
+            gs_label = "🌐 ON" if gs_on else "🌐"
+            gs_help = "Google検索: ON（クリックでOFF）" if gs_on else "Google検索: OFF（クリックでON）"
+            if st.button(gs_label, help=gs_help):
+                st.session_state.use_google_search = not gs_on
+                st.rerun()
+        else:
+            # 非Gemini: 無効化 + 強制OFF
+            if gs_on:
+                st.session_state.use_google_search = False
+            st.button(
+                "🌐",
+                help="Google検索はGeminiモデル専用です",
+                disabled=True,
+            )
 
     st.divider()
     
@@ -1295,6 +1354,10 @@ def render_chat_screen():
                 import requests
                 use_rag = True
                 use_gs = st.session_state.get("use_google_search", False)
+
+                # 安全弁: 非Geminiプロバイダーでは強制的にFalseにする
+                if use_gs and not is_gemini:
+                    use_gs = False
 
                 # 画像添付は現在の実装では未対応のため空配列
                 payload = {
