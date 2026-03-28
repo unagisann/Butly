@@ -126,22 +126,24 @@ class OllamaProvider(BaseProvider):
             memory_blocks=memory_blocks,
         )
 
-        # --- RAG context ---
-        rag_context = ""
-        if use_rag and rag_results:
-            rag_context = "\n\n[過去の記憶]\n"
-            for k in rag_results:
-                rag_context += f"・{k['title']}: {k['summary']}\n"
-                if k.get("episode"):
-                    rag_context += f"  (補足: {k['episode']})\n"
-            rag_context += "\n"
-        elif use_rag and memory_blocks and memory_blocks.get("rag_context"):
-            rag_context = memory_blocks["rag_context"]
+        # --- context prefix (可変コンテキスト) ---
+        context_prefix = ""
+        if memory_blocks is not None:
+            from butly_core.core.gatekeeper import build_context_prefix
+            context_prefix = build_context_prefix(
+                blocks=memory_blocks,
+                memory_manager=memory_manager,
+                use_google_search=False,
+            )
 
-        full_prompt = f"{rag_context}\nユーザー: {text}" if rag_context else text
+        full_prompt = text
 
         # --- messages ---
         messages = [{"role": "system", "content": system_instruction}]
+
+        # 可変コンテキストを会話履歴の先頭に注入
+        if context_prefix:
+            messages.append({"role": "user", "content": context_prefix})
 
         for h in history:
             role = h.get("role", "user")

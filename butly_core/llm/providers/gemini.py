@@ -168,23 +168,9 @@ class GeminiProvider(BaseProvider):
             print(f"[GeminiProvider] 画像 parts 構築完了: {len(image_parts)}枚")
 
         # --- RAG コンテキスト文字列を構築 ---
-        rag_context = ""
-        tier = memory_blocks.get("tier", "mid") if memory_blocks else "mid"
-
-        if use_rag:
-            if memory_blocks and tier == "cortex" and memory_blocks.get("rag_context"):
-                rag_context = memory_blocks["rag_context"]
-            elif rag_results:
-                rag_context = "\n\n[過去の記憶]\n"
-                for k in rag_results:
-                    rag_context += f"・{k['title']}: {k['summary']}\n"
-                    if k.get("episode"):
-                        rag_context += f"  (補足: {k['episode']})\n"
-                rag_context += "\n"
-
-        full_prompt = f"{rag_context}\nユーザー: {text}" if rag_context else text
-        if use_google_search and rag_context:
-            full_prompt += "\n\n(Note: Prioritize the local database information above. Use Google Search only if the database lacks sufficient information or for checking the latest facts.)"
+        # RAG は build_context_prefix() で会話コンテキストに注入されるため、
+        # ここでは full_prompt に結合しない
+        full_prompt = text
 
         # --- キーワード（レスポンス用） ---
         keywords = []
@@ -365,12 +351,28 @@ class GeminiProvider(BaseProvider):
             generate_config.cached_content = cached_content.name
         else:
             if memory_blocks is not None:
-                from butly_core.core.gatekeeper import build_system_instruction_from_blocks
+                from butly_core.core.gatekeeper import (
+                    build_system_instruction_from_blocks,
+                    build_context_prefix,
+                )
                 base_instruction = build_system_instruction_from_blocks(
                     blocks=memory_blocks,
                     memory_manager=memory_manager,
                     use_google_search=use_google_search,
                 )
+
+                # 可変コンテキストを history の先頭に注入
+                context_prefix = build_context_prefix(
+                    blocks=memory_blocks,
+                    memory_manager=memory_manager,
+                    use_google_search=use_google_search,
+                )
+                if context_prefix:
+                    prefix_content = types.Content(
+                        role="user",
+                        parts=[types.Part(text=context_prefix)]
+                    )
+                    history_contents = [prefix_content] + history_contents
             else:
                 from butly_core.prompts import PromptLoader
                 loader = PromptLoader()
@@ -471,131 +473,6 @@ class GeminiProvider(BaseProvider):
                 return None
             print(f"[GeminiProvider] Cache Error: {e}")
             return None
-
-    def chat_with_interactions(
-        self,
-        user_input: str,
-        memory_manager=None,
-        override_config: dict = None,
-        use_google_search: bool = False,
-        previous_interaction_id: str = None,
-        memory_blocks: dict = None,
-    ):
-        """Interactions API（ステートフルセッション）で 1 ターン応答を生成する。"""
-        from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
-
-        chat_conf = AI_CONFIG["chat"].copy()
-        if override_config:
-            if "AI_CONFIG" in override_config and "chat" in override_config["AI_CONFIG"]:
-                chat_conf.update(override_config["AI_CONFIG"]["chat"])
-            elif "chat" in override_config:
-                chat_conf.update(override_config["chat"])
-
-        model_name = chat_conf["model_name"]
-
-        # system_instruction を構築
-        if memory_blocks is not None:
-            from butly_core.core.gatekeeper import build_system_instruction_from_blocks
-            system_instruction = build_system_instruction_from_blocks(
-                blocks=memory_blocks,
-                memory_manager=memory_manager,
-                use_google_search=use_google_search,
-            )
-        else:
-            from butly_core.prompts import PromptLoader
-            loader = PromptLoader()
-            h = loader.get_section_header
-
-            sections = []
-            agent_name = SYSTEM_CONFIG["agent"]["agent_name"]
-            sys_inst = memory_manager.get_system_instruction() if memory_manager else f"You are {agent_name}."
-            sections.append(f"{h('system_instruction')}\n{sys_inst}")
-
-            if memory_manager:
-                key_mem = memory_manager.get_key_memory()
-                if key_mem:
-                    sections.append(f"{h('key_memory')}\n{key_mem}")
-            if memory_manager:
-                mid_term = memory_manager.get_mid_term_text_content()
-                if mid_term:
-                    sections.append(f"{h('mid_term_memory')}\n{mid_term}")
-
-            from butly_core.core.chronos import ButlyChronos
-            current_time = ButlyChronos().get_system_note()
-            sections.append(
-                f"{h('current_time')}\n{current_time}\n"
-                f"{h('note_current_time')}"
-            )
-
-            if memory_manager:
-                floating_summary = memory_manager.get_floating_summary()
-                if floating_summary:
-                    sections.append(f"{h('floating_summary')}\n{floating_summary.strip()}")
-
-            system_instruction = "\n\n".join(sections)
-
-        tools_config = None
-        if use_google_search:
-            tools_config = [{"google_search": {}}]
-
-        try:
-            call_kwargs = {
-                "model": model_name,
-                "input": user_input,
-                "generation_config": types.GenerateContentConfig(
-                    temperature=chat_conf["generation_config"].get("temperature"),
-                    top_p=chat_conf["generation_config"].get("top_p"),
-                    top_k=chat_conf["generation_config"].get("top_k"),
-                    max_output_tokens=chat_conf["generation_config"].get("max_output_tokens"),
-                    safety_settings=chat_conf.get("safety_settings"),
-                ),
-                "system_instruction": system_instruction,
-                "tools": tools_config,
-            }
-            if previous_interaction_id:
-                call_kwargs["previous_interaction_id"] = previous_interaction_id
-
-            interaction = self.client.interactions.create(**call_kwargs)
-
-            response_text = ""
-            if interaction.outputs:
-                last_output = interaction.outputs[-1]
-                if hasattr(last_output, "text") and last_output.text:
-                    response_text = self._filter_hallucinations(last_output.text)
-
-            sources = []
-            if use_google_search:
-                try:
-                    for output in (interaction.outputs or []):
-                        metadata = getattr(output, "grounding_metadata", None)
-                        if metadata and hasattr(metadata, "grounding_chunks"):
-                            for chunk in (metadata.grounding_chunks or []):
-                                web = getattr(chunk, "web", None)
-                                if web:
-                                    sources.append({
-                                        "title": getattr(web, "title", "Google検索結果") or "Google検索結果",
-                                        "url": getattr(web, "uri", ""),
-                                    })
-                        if not sources:
-                            candidates = getattr(output, "candidates", None)
-                            if candidates:
-                                for candidate in candidates:
-                                    gm = getattr(candidate, "grounding_metadata", None)
-                                    if gm and hasattr(gm, "grounding_chunks"):
-                                        for chunk in (gm.grounding_chunks or []):
-                                            web = getattr(chunk, "web", None)
-                                            if web:
-                                                sources.append({
-                                                    "title": getattr(web, "title", "Google検索結果") or "Google検索結果",
-                                                    "url": getattr(web, "uri", ""),
-                                                })
-                except Exception as e:
-                    print(f"[GeminiProvider] Grounding metadata extraction error: {e}")
-
-            return response_text, interaction.id, sources
-        except Exception as e:
-            print(f"[GeminiProvider] chat_with_interactions error: {e}")
-            raise
 
     # ------------------------------------------------------------------
     # 内部: 画像変換

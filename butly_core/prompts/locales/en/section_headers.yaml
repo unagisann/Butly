@@ -25,3 +25,10 @@ note_floating: >-
   Refer to it together with the last 3 turns as the most recent context.
 tier_mode: "Current thinking mode: {tier}"
 tier_topic: "Current topic: {topic}"
+
+note_context_prefix: >-
+  The following is background information to support the current conversation.
+  Priority order: recent conversation > floating summary > mid-term memory > past memory (RAG) > time info.
+  If any information below conflicts with recent conversation, always prioritize recent conversation.
+
+context_prefix_label: "[Background Info]"

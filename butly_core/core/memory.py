@@ -209,35 +209,6 @@ class ButlyMemory:
             
         return file_name
 
-    def save_interaction_id(self, interaction_id: str):
-        """Interactions APIのinteraction.idをファイルに保存（再起動対策）"""
-        id_file = self.instance_dir / "last_interaction_id.txt"
-        try:
-            id_file.write_text(interaction_id, encoding="utf-8")
-        except Exception as e:
-            print(f"[Memory] Failed to save interaction_id: {e}")
-
-    def load_interaction_id(self) -> str | None:
-        """last_interaction_id.txt を読み込む。なければ None を返す"""
-        id_file = self.instance_dir / "last_interaction_id.txt"
-        try:
-            if id_file.exists():
-                content = id_file.read_text(encoding="utf-8").strip()
-                return content if content else None
-        except Exception as e:
-            print(f"[Memory] Failed to load interaction_id: {e}")
-        return None
-
-    def clear_interaction_id(self):
-        """last_interaction_id.txt を削除（セッションリセット用）"""
-        id_file = self.instance_dir / "last_interaction_id.txt"
-        try:
-            if id_file.exists():
-                id_file.unlink()
-        except Exception as e:
-            print(f"[Memory] Failed to clear interaction_id: {e}")
-
-
     def get_floating_summary(self):
         """
         現在保持している浮動要約(floating summary)のテキストをすべて結合して返す

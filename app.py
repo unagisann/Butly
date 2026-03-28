@@ -155,8 +155,6 @@ if "is_holiday" not in st.session_state:
     st.session_state.is_holiday = False
 if "debug_mode" not in st.session_state:
     st.session_state.debug_mode = True
-if "use_interactions_api" not in st.session_state:
-    st.session_state.use_interactions_api = False
 if "use_google_search" not in st.session_state:
     # インスタンス設定のdefault_use_google_searchを初期値に使用
     st.session_state.use_google_search = False
@@ -273,7 +271,7 @@ def render_settings_screen():
         st.divider()
         st.subheader("🔧 System Toggles")
         st.session_state.debug_mode = st.toggle("🐛 Debug Mode", value=st.session_state.debug_mode)
-        st.session_state.use_interactions_api = st.toggle("🌐 Enable Interactions API (ステートフル)", value=st.session_state.use_interactions_api, help="オンにすると旧来のローカルメモリ(4層構造)を無効にし、Geminiサーバー側の会話セッション管理を利用します。")
+
         if st.button("🗑️ Clear Cache"):
             st.cache_resource.clear()
             st.success("Cache cleared!")
@@ -1108,7 +1106,7 @@ def render_chat_screen():
         with st.spinner("Thinking..."):
             try:
                 import requests
-                use_rag = not st.session_state.use_interactions_api
+                use_rag = True
                 use_gs = st.session_state.get("use_google_search", False)
 
                 # 画像添付は現在の実装では未対応のため空配列
@@ -1182,7 +1180,7 @@ def render_chat_screen():
                             if session_st:
                                 st.json(session_st)
 
-                    if not st.session_state.use_interactions_api and (keywords or refs):
+                    if keywords or refs:
                         with st.expander("🧠 Brain Process (RAG / Local Memory)", expanded=False):
                             st.write(f"**Keywords:** {keywords}")
                             if refs:

@@ -17,7 +17,7 @@ Gemini 専用だったアーキテクチャを **プロバイダー非依存** �
 - **BaseProvider 拡張**: `summarize()`, `embed()`, `classify()` 抽象メソッドを追加。
 - **brain.py 刷新**: 全 `google.genai` 依存を除去し、ProviderFactory 経由の純粋 RAG エンジンに縮小（~861行 → ~253行）。
 - **ChatService 統一**: RAG 検索を ChatService 側に移動、全パスを `Provider.generate()` 経由に統一。
-- **GeminiProvider 完成**: brain.py から移管した Gemini 固有ロジック（検索リトライ、コンテキストキャッシュ、Interactions API、ハルシネーションフィルタ）を集約。
+- **GeminiProvider 完成**: brain.py から移管した Gemini 固有ロジック（検索リトライ、コンテキストキャッシュ、ハルシネーションフィルタ）を集約。
 - **OpenAIProvider 追加**: GPT-4o 等対応。Vision、embed（text-embedding-3-small）、classify を実装。
 - **OllamaProvider 追加**: ローカル LLM 対応。OpenAI 互換 API（`localhost:11434/v1`）経由。
 - **Gatekeeper / Housekeeper**: `google.genai` 依存を除去し、Provider.classify() / embed() 経由に切り替え。
@@ -37,7 +37,7 @@ Gemini 専用だったアーキテクチャを **プロバイダー非依存** �
    - `housekeeper.py` における中期記憶の整理機能を拡張し、出来事と決定事項をまとめた「事実ダイジェスト」と、AIとユーザーの距離感を示す「関係性スナップショット」の二層ファイル生成パイプラインを構築。
 2. **OSS向けオープン化準備 / リファクタリング**:
    - 「Jarvis」などのハードコードされた初期名や個人情報を排除し、設定ファイルやテンプレートから動的に読み込む汎用的な「Butly」プラットフォームへと改修。
-3. **ステートフルAPI (Interactions API) の導入**:
+3. **ステートフルAPI (Interactions API) の導入** *(削除済み — マルチプロバイダ統一のため廃止)*:
    - 会話ターンごとに長期履歴を全て手動で挿入する状態から、Google Gemini側のセッション履歴保持機構に移行し、不要なトークン消費を抑制。
 4. **FastAPI + Streamlit への分離**:
    - 処理の非同期化とバックグラウンドタスク（Housekeeper）の安定稼働、UI側のレスポンス向上のため、単一スクリプトからAPIサーバーとフロントエンドの構成に分離。

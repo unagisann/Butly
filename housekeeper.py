@@ -213,7 +213,7 @@ class ButlyHousekeeper:
         Phase 1: 中期記憶の更新
         1_integrated にある生ログを読んで mid_term.txt に追記する。
         溌れた古い記憶は archive_long_term.txt の末尾に追記する。
-        floating_summaryは Interactions API 移行により廃止。
+        floating_summaryは Housekeeper 実行時にリセットされる。
         """
         instance_path = INSTANCES_DIR / instance_name
         integrated_dir = instance_path / "memory_archive" / "1_integrated"

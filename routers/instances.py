@@ -76,10 +76,6 @@ def reload_instance(instance_name: str):
         del deps.instance_store[instance_name]
 
     instance_dir = deps.INSTANCES_DIR / instance_name
-    if instance_dir.exists():
-        id_file = instance_dir / "last_interaction_id.txt"
-        if id_file.exists():
-            id_file.unlink()
 
     try:
         ss = SessionState(instance_dir)

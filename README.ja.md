@@ -306,7 +306,7 @@ butly_core/
 │   ├── base.py        ← プロバイダー抽象基底クラス（BaseProvider）
 │   ├── factory.py     ← モデル名→プロバイダー自動ルーティング
 │   └── providers/
-│       ├── gemini.py   ← Google Gemini（検索リトライ、キャッシュ、Interactions API）
+│       ├── gemini.py   ← Google Gemini（検索リトライ、キャッシュ）
 │       ├── openai.py   ← OpenAI（GPT-4o 等、Vision 対応）
 │       └── ollama.py   ← Ollama（ローカル LLM、OpenAI 互換 API）
 └── core/

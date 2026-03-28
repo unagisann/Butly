@@ -210,28 +210,4 @@ class TestFloatingSummary:
         assert "新形式要約テスト" in text
 
 
-class TestInteractionId:
-    """Interactions API の ID 管理テスト"""
 
-    def test_save_and_load(self, memory_manager):
-        """interaction ID の保存と読み込み"""
-        memory_manager.save_interaction_id("test-interaction-123")
-
-        loaded = memory_manager.load_interaction_id()
-
-        assert loaded == "test-interaction-123"
-
-    def test_load_when_no_file(self, memory_manager):
-        """ファイルがない場合 None が返る"""
-        loaded = memory_manager.load_interaction_id()
-
-        assert loaded is None
-
-    def test_clear(self, memory_manager):
-        """クリア後は None が返る"""
-        memory_manager.save_interaction_id("test-123")
-        memory_manager.clear_interaction_id()
-
-        loaded = memory_manager.load_interaction_id()
-
-        assert loaded is None

@@ -18,6 +18,7 @@ from butly_core.core.gatekeeper.search_planner import SearchPlanner
 from butly_core.core.gatekeeper.memory_builder import (
     MemoryBlockBuilder,
     build_system_instruction_from_blocks,
+    build_context_prefix,
 )
 
 from pathlib import Path
@@ -102,6 +103,7 @@ __all__ = [
     "SessionState",
     "MemoryBlockBuilder",
     "build_system_instruction_from_blocks",
+    "build_context_prefix",
     "TierClassifier",
     "StateUpdater",
     "SearchPlanner",

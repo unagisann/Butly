@@ -147,6 +147,13 @@ def build_system_instruction_from_blocks(
     """
     MemoryBlockBuilder.build() の戻り値から system_instruction 文字列を生成する。
 
+    不変セクションのみを含む:
+      1. SYSTEM INSTRUCTION（性格設定）
+      2. KEY MEMORY（根幹記憶）
+
+    可変セクション（MID-TERM, RAG, FLOATING, CURRENT TIME, TIER INFO）は
+    build_context_prefix() に移動済み。
+
     Parameters
     ----------
     blocks : dict
@@ -154,20 +161,18 @@ def build_system_instruction_from_blocks(
     memory_manager : ButlyMemory
         system_instruction.txt / Key_Memory.txt の読み取りに使用。
     use_google_search : bool
-        Google 検索使用フラグ（注意書き用）。
+        （後方互換のため残すが、現在は未使用）
 
     Returns
     -------
     str
-        Gemini に渡す system_instruction 文字列。
+        LLM に渡す system_instruction 文字列。
     """
-    from butly_core.core.chronos import ButlyChronos
     from butly_core.prompts import PromptLoader
 
     loader = PromptLoader()
     h = loader.get_section_header
 
-    tier = blocks.get("tier", "mid")
     sections = []
 
     # 1. SYSTEM INSTRUCTION（性格設定）— 全 tier 共通
@@ -179,7 +184,66 @@ def build_system_instruction_from_blocks(
     if key_mem:
         sections.append(f"{h('key_memory')}\n{key_mem}")
 
-    # 3. MID-TERM MEMORY（中期記憶）— mid 以上
+    return "\n\n".join(sections)
+
+
+def build_context_prefix(
+    blocks: dict,
+    memory_manager=None,
+    use_google_search: bool = False,
+) -> str:
+    """
+    可変コンテキスト（背景情報）を生成する。
+    各 Provider が会話履歴の先頭に user メッセージとして注入する。
+
+    出力順序:
+      0. ラベル + 注意文（優先順位の明文化）
+      1. CURRENT TIME
+      2. MID-TERM / DIGEST / RELATIONSHIP（mid 以上）
+      3. RAG（cortex のみ）
+      4. FLOATING SUMMARY
+      5. TIER INFO + topic
+      6. Google 検索注意書き（該当時）
+
+    Parameters
+    ----------
+    blocks : dict
+        MemoryBlockBuilder.build() の戻り値。
+    memory_manager : ButlyMemory | None
+        （後方互換のため残すが、現在は未使用）
+    use_google_search : bool
+        Google 検索使用フラグ（注意書き用）。
+
+    Returns
+    -------
+    str
+        可変コンテキスト文字列。空の場合は空文字列。
+    """
+    from butly_core.core.chronos import ButlyChronos
+    from butly_core.prompts import PromptLoader
+
+    loader = PromptLoader()
+    h = loader.get_section_header
+
+    tier = blocks.get("tier", "mid")
+    sections = []
+
+    # 0. ラベル + 注意文（優先順位の明文化）
+    label = h('context_prefix_label')
+    if label and label != 'context_prefix_label':
+        sections.append(label)
+    note = h('note_context_prefix')
+    if note and note != 'note_context_prefix':
+        sections.append(note)
+
+    # 1. CURRENT TIME（現在時刻）— 全 tier 共通
+    current_time = ButlyChronos().get_system_note()
+    sections.append(
+        f"{h('current_time')}\n{current_time}\n"
+        f"{h('note_current_time')}"
+    )
+
+    # MID-TERM MEMORY（中期記憶）— mid 以上
     if tier in ("mid", "cortex"):
         mid_term_mode = blocks.get("mid_term_mode", "raw")
 
@@ -204,28 +268,25 @@ def build_system_instruction_from_blocks(
             if mid_term:
                 sections.append(f"{h('mid_term_memory')}\n{mid_term}")
 
-    # 4. CURRENT TIME（現在時刻）— 全 tier 共通
-    current_time = ButlyChronos().get_system_note()
-    sections.append(
-        f"{h('current_time')}\n{current_time}\n"
-        f"{h('note_current_time')}"
-    )
-
-    # 5. RAG コンテキスト — cortex のみ
+    # RAG コンテキスト — cortex のみ
     rag_context = blocks.get("rag_context", "")
     if tier == "cortex" and rag_context:
         sections.append(f"{h('long_term_memory')}\n{h('note_rag')}\n{rag_context}")
 
-    # 6. FLOATING SUMMARY（未整理記憶）— 全 tier 共通
+    # FLOATING SUMMARY（未整理記憶）— 全 tier 共通
     floating = blocks.get("floating", "")
     if floating:
         sections.append(f"{h('floating_summary')}\n{h('note_floating')}\n{floating.strip()}")
 
-    # 7. tier 情報 + topic 注入
+    # 5. TIER INFO + topic
     tier_text = h('tier_mode').format(tier=tier)
     topic = blocks.get("topic", "")
     if tier in ("mid", "cortex") and topic:
         tier_text += "\n" + h('tier_topic').format(topic=topic)
     sections.append(f"{h('tier_info')}\n{tier_text}")
 
-    return "\n\n".join(sections)
+    # Google 検索注意書き
+    if use_google_search:
+        sections.append(h('note_google_search'))
+
+    return "\n\n".join(sections) if sections else ""

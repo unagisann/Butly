@@ -10,7 +10,7 @@ Butlyは、高度な記憶管理機能（短期記憶・中期記憶・長期記
 - **AIエンジン:** マルチプロバイダー対応 (Google Gemini / OpenAI / Ollama)
   - `butly_core/llm/base.py`: 抽象基底クラス (`generate`, `summarize`, `embed`, `classify`)
   - `butly_core/llm/factory.py`: モデル名プレフィックスによるプロバイダー自動ルーティング
-  - `butly_core/llm/providers/gemini.py`: Gemini プロバイダー（検索リトライ、コンテキストキャッシュ、Interactions API）
+  - `butly_core/llm/providers/gemini.py`: Gemini プロバイダー（検索リトライ、コンテキストキャッシュ）
   - `butly_core/llm/providers/openai.py`: OpenAI プロバイダー（GPT-4o 等、Vision 対応）
   - `butly_core/llm/providers/ollama.py`: Ollama プロバイダー（ローカル LLM、OpenAI 互換 API 経由）
 - **コアモジュール:** `butly_core/`

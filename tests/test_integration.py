@@ -155,6 +155,7 @@ class TestEndToEndFlow:
             Gatekeeper,
             MemoryBlockBuilder,
             SessionState,
+            build_context_prefix,
             build_system_instruction_from_blocks,
         )
 
@@ -190,5 +191,10 @@ class TestEndToEndFlow:
 
         assert "=== SYSTEM INSTRUCTION ===" in instruction
         assert "=== KEY MEMORY" in instruction
-        assert "=== TIER INFO ===" in instruction
-        assert tier in instruction
+        # TIER INFO は context_prefix に移動済み
+        assert "=== TIER INFO" not in instruction
+
+        # 5. context_prefix 構築
+        context = build_context_prefix(blocks, memory_manager)
+        assert "=== TIER INFO" in context
+        assert tier in context
