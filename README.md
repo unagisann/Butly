@@ -47,7 +47,7 @@ The `.venv` virtual environment will be created and dependencies installed autom
 **Linux / macOS:**
 
 ```bash
-cp .env.example APIkey.env
+cp .env.example .env
 ```
 
 **Windows:** Automatically copied when the batch file runs.
@@ -103,6 +103,44 @@ Open `http://localhost:8501` in your browser.
 **Windows (automated with batch file):**  
 Run `02_start_webui.bat` by double-clicking.  
 FastAPI and Streamlit will start in separate windows, and your browser will automatically open `http://127.0.0.1:8501`.
+
+### 6. First Launch Configuration
+
+Once `http://localhost:8501` opens in your browser, configure in the following order:
+
+#### ① Language Settings
+
+1. Click the **⚙️** icon (top right) → **Basic Settings** tab
+2. Select `日本語` or `English` under **Language / 言語**, then click **💾 Save Language Settings**
+
+#### ② LLM / API Key Setup
+
+1. Open **⚙️ → LLM Provider** tab
+2. Enter your API key for the chosen provider under **API Key Settings** and click **💾 Save**
+3. Assign models to Chat / Summary / Gatekeeper / Embedding roles under **Model Assignment**
+4. Click **💾 Save Model Settings**
+
+> For Ollama, no API key is required. Check the connection URL under the **Ollama (Local LLM)** section.
+
+#### ③ Create Your First AI Instance
+
+1. Expand **➕ New Instance** on the home screen
+2. Enter an **Instance Name** (alphanumeric & _) — e.g. `my_agent`
+3. Select a **Personality Template**:
+
+   | Template | Character |
+   |---|---|
+   | Butly | Intellectual collaborative partner (default) |
+   | Creator | Creative, divergent thinking |
+   | Analyst | Logic and analysis focused |
+   | Friendly | Casual and approachable |
+   | Caring | Empathetic and supportive |
+   | Custom | Free input |
+
+4. Enter an **AI Name** (e.g. `Jarvis`) — **required**
+5. Enter **Your Name** and **Preferred Name** (optional)
+6. Click **Create** → once the AI appears in the instance list, you’re all set
+7. Click the AI’s name to start chatting!
 
 ---
 
@@ -297,7 +335,10 @@ You can mix different providers per role (e.g., chat=OpenAI, embedding=Gemini).
 ```
 butly_core/
 ├── config.py          ← AI/system configuration defaults
-├── prompts.py         ← Prompt templates
+├── prompts.py         ← Prompt loader
+├── prompts/           ← Prompt management
+│   ├── locales/ja/templates/  ← Japanese personality templates
+│   └── locales/en/templates/  ← English personality templates
 ├── chat/
 │   ├── service.py     ← Chat orchestration (ChatService)
 │   └── types.py       ← DTOs (ChatRequest / ChatResponse / Attachment)
@@ -312,7 +353,12 @@ butly_core/
     ├── brain.py       ← RAG search engine (keyword extraction + vector reranking)
     ├── memory.py      ← Memory read/write management
     ├── database.py    ← SQLite operations (knowledge cards)
-    ├── gatekeeper.py  ← Gatekeeper (metacognitive engine) + SessionState + MemoryBlockBuilder
+    ├── gatekeeper/         ← Gatekeeper (metacognitive engine)
+    │   ├── tier_classifier.py  ← Tier classification & scoring
+    │   ├── search_planner.py   ← Missing-prerequisite search planning
+    │   ├── session_state.py    ← SessionState definition
+    │   ├── state_updater.py    ← state_delta application
+    │   └── memory_builder.py   ← MemoryBlock construction
     ├── instance_manager.py ← Instance creation and management
     ├── chronos.py     ← Time context generation
     └── fire_tv.py     ← Fire TV integration (ADB over TCP)

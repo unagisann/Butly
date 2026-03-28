@@ -48,7 +48,7 @@ pip install -r requirements.txt
 **Linux / macOS:**
 
 ```bash
-cp .env.example APIkey.env
+cp .env.example .env
 ```
 
 **Windows:** バッチファイル実行時に自動でコピーされます。
@@ -127,6 +127,46 @@ FastAPI と Streamlit が別ウィンドウで自動起動し、ブラウザが�
 | **Ollama** | `ollama/*` | （不要・ローカル実行） | `ollama/llama3.1:8b` |
 
 各ロールで異なるプロバイダーを混在させることも可能です（例: chat=OpenAI, embedding=Gemini）。
+
+---
+
+### 6. 初回起動後の設定
+
+ブラウザで `http://localhost:8501` が開いたら、以下の順で設定してください。
+
+#### ① 言語設定
+
+1. 画面右上の **⚙️** → **基本設定** タブ
+2. **Language / 言語** で `日本語` または `English` を選択し **💾 言語設定を保存** をクリック
+
+#### ② LLM / APIキー設定
+
+1. **⚙️ → LLMプロバイダー** タブを開く
+2. **APIキー設定** に使用するプロバイダーのキーを入力して **💾 保存**
+3. **モデル割り当て** で Chat / Summary / Gatekeeper / Embedding の各ロールにモデルを選択
+4. **💾 モデル設定を保存** をクリック
+
+> Ollama はローカル実行のためAPIキー不要。**Ollama (ローカルLLM)** セクションで接続URLを確認してください。
+
+#### ③ 最初のAIインスタンスを作成
+
+1. ホーム画面の **➕ 新しいインスタンスを作成** を展開
+2. **インスタンス名**（半角英数字・_）を入力 — 例: `my_agent`
+3. **性格テンプレート** を選択:
+
+   | テンプレート | 特徴 |
+   |---|---|
+   | Butly | 知的で協働的なパートナー（デフォルト） |
+   | Creator | 創造的・発散的思考 |
+   | Analyst | 論理・分析重視 |
+   | Friendly | カジュアルで親しみやすい |
+   | Caring | 共感・寄り添い型 |
+   | カスタム | 自由入力 |
+
+4. **AIの名前** を入力（例: `Jarvis`）— **必須**
+5. **あなたの名前** と **呼ばれたい名前** を入力（任意）
+6. **作成** をクリック → インスタンス一覧にAIが表示されたら完了
+7. AIの名前をクリックしてチャット開始！
 
 ---
 
@@ -298,7 +338,10 @@ timeline
 ```
 butly_core/
 ├── config.py          ← AI/システム設定のデフォルト値
-├── prompts.py         ← プロンプトテンプレート
+├── prompts.py         ← プロンプトローダー
+├── prompts/           ← プロンプト管理
+│   ├── locales/ja/templates/  ← 日本語性格テンプレート
+│   └── locales/en/templates/  ← 英語性格テンプレート
 ├── chat/
 │   ├── service.py     ← チャットオーケストレーション（ChatService）
 │   └── types.py       ← DTO（ChatRequest / ChatResponse / Attachment）
@@ -313,7 +356,12 @@ butly_core/
     ├── brain.py       ← RAG検索エンジン（キーワード抽出 + ベクトルリランキング）
     ├── memory.py      ← 記憶の読み書き管理
     ├── database.py    ← SQLite操作（知識カード）
-    ├── gatekeeper.py  ← Gatekeeper（メタ認知エンジン）+ SessionState + MemoryBlockBuilder
+    ├── gatekeeper/         ← Gatekeeper（メタ認知エンジン）
+    │   ├── tier_classifier.py  ← tier判定・スコアリング
+    │   ├── search_planner.py   ← 不足前提の検索計画
+    │   ├── session_state.py    ← SessionState 定義
+    │   ├── state_updater.py    ← state_delta 適用
+    │   └── memory_builder.py   ← MemoryBlock 構築
     ├── instance_manager.py ← インスタンスの作成・管理
     ├── chronos.py     ← 時刻コンテキスト生成
     └── fire_tv.py     ← Fire TV 連携（ADB over TCP）
