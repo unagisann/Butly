@@ -70,9 +70,9 @@ AI_CONFIG = {
 # System Configuration (Paths, Thresholds, Limits)
 SYSTEM_CONFIG = {
     "agent": {
-        "agent_name": "ジャービス",
-        "user_name": "主人",
-        "locale": "ja"
+        "agent_name": "Butly",
+        "user_name": "User",
+        "locale": "en"
     },
     "paths": {
         "db_name": "butly_memory.db",

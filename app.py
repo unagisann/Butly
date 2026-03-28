@@ -186,6 +186,19 @@ def navigate_to(page, instance=None):
             st.cache_resource.clear()
     st.rerun()
 
+# 性格テンプレート読み込みヘルパー
+def load_personality_templates(base_dir, locale="ja"):
+    """locales/{locale}/templates/ から性格テンプレートを読み込む。"""
+    template_dir = (
+        base_dir / "butly_core" / "prompts" / "locales" / locale / "templates"
+    )
+    templates = {}
+    if template_dir.exists():
+        for f in sorted(template_dir.glob("system_instruction_*.txt")):
+            name = f.stem.replace("system_instruction_", "")
+            templates[name] = f.read_text(encoding="utf-8")
+    return templates
+
 # ==========================================
 # 🏠 ホーム画面 (Home Screen)
 # ==========================================
@@ -220,13 +233,64 @@ def render_home_screen():
                 navigate_to("chat", instance=name)
 
     st.divider()
-    
+
+    # locale 取得（テンプレート選択に使用）
+    import requests as _req_home
+    try:
+        _home_cfg = _req_home.get(f"{st.session_state.api_base_url}/config", timeout=5).json()
+    except Exception:
+        _home_cfg = {"SYSTEM_CONFIG": {}}
+    _home_locale = _home_cfg.get("SYSTEM_CONFIG", {}).get("agent", {}).get("locale", "ja")
+
     # 新規インスタンス作成 (FABの代わり)
     with st.expander("➕ 新しいインスタンスを作成"):
         new_proj_name = st.text_input("インスタンス名（半角英数字・_）", placeholder="e.g. new_agent")
-        from butly_core import prompts
-        new_template = st.text_area("性格テンプレート", value=prompts.WEB_UI_DEFAULT_TEMPLATE.format(agent_name="{agent_name}"), height=100)
-        
+
+        # --- テンプレート選択UI ---
+        _templates = load_personality_templates(BASE_DIR, _home_locale)
+        _template_labels_ja = {
+            "butly": "Butly（知的協働パートナー）",
+            "creator": "Creator（創造的パートナー）",
+            "analyst": "Analyst（分析パートナー）",
+            "friendly": "Friendly（カジュアルパートナー）",
+            "caring": "Caring（寄り添い型パートナー）",
+            "custom": "カスタム（自由入力）",
+        }
+        _template_labels_en = {
+            "butly": "Butly (Intellectual Partner)",
+            "creator": "Creator (Creative Partner)",
+            "analyst": "Analyst (Analytical Partner)",
+            "friendly": "Friendly (Casual Partner)",
+            "caring": "Caring (Supportive Partner)",
+            "custom": "Custom (Free Input)",
+        }
+        _labels = _template_labels_en if _home_locale == "en" else _template_labels_ja
+        _options = list(_templates.keys()) + ["custom"]
+
+        if "prev_template_choice" not in st.session_state:
+            st.session_state.prev_template_choice = _options[0] if _options else "custom"
+
+        _selected = st.selectbox(
+            "性格テンプレート" if _home_locale != "en" else "Personality Template",
+            options=_options,
+            format_func=lambda x: _labels.get(x, x),
+        )
+
+        _default_text = "" if _selected == "custom" else _templates.get(_selected, "")
+
+        if _selected != st.session_state.prev_template_choice:
+            st.session_state.prev_template_choice = _selected
+            st.session_state.create_instance_template = _default_text
+            st.rerun()
+
+        new_template = st.text_area(
+            "性格設定" if _home_locale != "en" else "Personality Settings",
+            value=_default_text,
+            height=200,
+            key="create_instance_template",
+        )
+        # --- テンプレート選択UI（ここまで） ---
+
         if st.button("作成", type="primary"):
             if new_proj_name:
                 import requests
