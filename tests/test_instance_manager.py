@@ -277,3 +277,34 @@ class TestRenameDbSync:
         success, new_name = manager.rename_instance("fragile", "robust")
         assert success is True
         assert (manager.instances_dir / "robust").exists()
+
+
+class TestKeyMemoryCreation:
+    """Key Memory の初期設定テスト"""
+
+    def test_create_with_key_memory(self, manager: InstanceManager):
+        """key_memory パラメータで Key_Memory.txt が書き込まれる"""
+        key_mem = "AI Name: TestBot\n\nUser Name: Taro\nPreferred Name: taro-kun"
+        manager.create_instance("km_test", "template text", key_memory=key_mem)
+
+        km_path = manager.instances_dir / "km_test" / "Key_Memory.txt"
+        assert km_path.exists()
+        content = km_path.read_text(encoding="utf-8")
+        assert "TestBot" in content
+        assert "taro-kun" in content
+
+    def test_create_without_key_memory(self, manager: InstanceManager):
+        """key_memory 省略時は空の Key_Memory.txt が作成される"""
+        manager.create_instance("km_empty", "template text")
+
+        km_path = manager.instances_dir / "km_empty" / "Key_Memory.txt"
+        assert km_path.exists()
+        assert km_path.read_text(encoding="utf-8") == ""
+
+    def test_create_with_partial_key_memory(self, manager: InstanceManager):
+        """AI名のみの Key Memory でも正常に作成される"""
+        manager.create_instance("km_partial", "t", key_memory="AI Name: Luna")
+
+        content = (manager.instances_dir / "km_partial" / "Key_Memory.txt").read_text(encoding="utf-8")
+        assert "Luna" in content
+        assert "User Name" not in content

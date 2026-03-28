@@ -9,7 +9,7 @@ class InstanceManager:
         self.instances_dir = self.base_dir / "butly_core" / "instances"
         self.instances_dir.mkdir(parents=True, exist_ok=True)
 
-    def create_instance(self, name, template_text):
+    def create_instance(self, name, template_text, key_memory=""):
         """新しい人格フォルダと構成を作成"""
         # 半角英数チェック
         if not re.match(r"^[a-zA-Z0-9_]+$", name):
@@ -39,7 +39,7 @@ class InstanceManager:
             # 2. 空ファイルの作成
             (new_instance_dir / "mid_term.txt").write_text("", encoding="utf-8")
             (new_instance_dir / "current_cache_id.txt").write_text("", encoding="utf-8")
-            (new_instance_dir / "Key_Memory.txt").write_text("", encoding="utf-8")
+            (new_instance_dir / "Key_Memory.txt").write_text(key_memory, encoding="utf-8")
 
             # 3. system_instruction.txt の作成
             # ユーザー指定のテンプレ + プロジェクト名

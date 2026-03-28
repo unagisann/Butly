@@ -199,6 +199,42 @@ def load_personality_templates(base_dir, locale="ja"):
             templates[name] = f.read_text(encoding="utf-8")
     return templates
 
+# Key Memory ビルダー
+def build_key_memory(ai_name, user_name, nickname, gender, birthday, locale="en"):
+    """入力値から Key Memory テキストを生成する。未入力項目は省略。"""
+    lines = []
+    if locale == "ja":
+        if ai_name:
+            lines.append(f"AI名: {ai_name}")
+        if user_name or nickname:
+            lines.append("")
+        if user_name:
+            lines.append(f"ユーザー名: {user_name}")
+        if nickname:
+            lines.append(f"呼称: {nickname}")
+        if gender or birthday:
+            lines.append("")
+        if gender:
+            lines.append(f"性別: {gender}")
+        if birthday:
+            lines.append(f"生年月日: {birthday}")
+    else:
+        if ai_name:
+            lines.append(f"AI Name: {ai_name}")
+        if user_name or nickname:
+            lines.append("")
+        if user_name:
+            lines.append(f"User Name: {user_name}")
+        if nickname:
+            lines.append(f"Preferred Name: {nickname}")
+        if gender or birthday:
+            lines.append("")
+        if gender:
+            lines.append(f"Gender: {gender}")
+        if birthday:
+            lines.append(f"Date of Birth: {birthday}")
+    return "\n".join(lines)
+
 # ==========================================
 # 🏠 ホーム画面 (Home Screen)
 # ==========================================
@@ -244,7 +280,10 @@ def render_home_screen():
 
     # 新規インスタンス作成 (FABの代わり)
     with st.expander("➕ 新しいインスタンスを作成"):
-        new_proj_name = st.text_input("インスタンス名（半角英数字・_）", placeholder="e.g. new_agent")
+        new_proj_name = st.text_input(
+            "インスタンス名（半角英数字・_）" if _home_locale != "en" else "Instance Name (alphanumeric & _)",
+            placeholder="e.g. new_agent",
+        )
 
         # --- テンプレート選択UI ---
         _templates = load_personality_templates(BASE_DIR, _home_locale)
@@ -291,18 +330,100 @@ def render_home_screen():
         )
         # --- テンプレート選択UI（ここまで） ---
 
-        if st.button("作成", type="primary"):
-            if new_proj_name:
+        st.divider()
+
+        # --- Key Memory 初期設定 ---
+        st.markdown("**🧠 初期設定**" if _home_locale == "ja" else "**🧠 Initial Setup**")
+
+        ai_name_input = st.text_input(
+            "AIの名前" if _home_locale == "ja" else "AI Name",
+            placeholder="ジャービス、ルナ、アトラス..." if _home_locale == "ja" else "Jarvis, Luna, Atlas...",
+            help="AIの呼び名を決めてください。" if _home_locale == "ja" else "Choose a name for your AI.",
+        )
+
+        _col_name, _col_nick = st.columns(2)
+        with _col_name:
+            user_name_input = st.text_input(
+                "あなたの名前" if _home_locale == "ja" else "Your Name",
+                placeholder="太郎" if _home_locale == "ja" else "John",
+                help="AIがあなたを認識するための名前です。" if _home_locale == "ja"
+                     else "The name your AI will use to recognize you.",
+            )
+        with _col_nick:
+            nickname_input = st.text_input(
+                "呼ばれたい名前" if _home_locale == "ja" else "Preferred Name",
+                placeholder="たろ、マスター、〇〇さん" if _home_locale == "ja" else "Johnny, Boss, Mr. Smith",
+                help="AIがあなたを呼ぶときの名前です。空欄なら「あなたの名前」を使います。"
+                     if _home_locale == "ja"
+                     else "How your AI will address you. Leave blank to use your name.",
+            )
+
+        with st.expander("🎁 追加設定（任意）" if _home_locale == "ja" else "🎁 Additional Settings (Optional)"):
+            _gender_opts = ["", "男性", "女性", "その他"] if _home_locale == "ja" else ["", "Male", "Female", "Other"]
+            gender_input = st.selectbox(
+                "性別" if _home_locale == "ja" else "Gender",
+                options=_gender_opts,
+                index=0,
+            )
+            birthday_input = st.date_input(
+                "生年月日" if _home_locale == "ja" else "Date of Birth",
+                value=None,
+                format="YYYY/MM/DD",
+            )
+
+        _birthday_str = birthday_input.strftime("%Y/%m/%d") if birthday_input else ""
+        _key_memory_preview = build_key_memory(
+            ai_name=ai_name_input,
+            user_name=user_name_input,
+            nickname=nickname_input,
+            gender=gender_input if gender_input else "",
+            birthday=_birthday_str,
+            locale=_home_locale,
+        )
+
+        if _key_memory_preview.strip():
+            with st.expander("📋 Key Memory プレビュー" if _home_locale == "ja" else "📋 Key Memory Preview"):
+                st.code(_key_memory_preview, language=None)
+        # --- Key Memory 初期設定（ここまで） ---
+
+        if st.button("作成" if _home_locale == "ja" else "Create", type="primary"):
+            if not new_proj_name:
+                st.error("インスタンス名を入力してください。" if _home_locale == "ja" else "Please enter an instance name.")
+            elif not ai_name_input:
+                st.error("AIの名前を入力してください。" if _home_locale == "ja" else "Please enter an AI name.")
+            else:
                 import requests
                 api_url = st.session_state.api_base_url
                 try:
-                    res = requests.post(f"{api_url}/instances", json={"name": new_proj_name, "template": new_template}, timeout=5)
+                    res = requests.post(
+                        f"{api_url}/instances",
+                        json={
+                            "name": new_proj_name,
+                            "template": new_template,
+                            "key_memory": _key_memory_preview,
+                        },
+                        timeout=5,
+                    )
                     if res.ok:
+                        # agent_name / user_name をグローバル config に反映
+                        try:
+                            cfg_resp = requests.get(f"{api_url}/config", timeout=5)
+                            if cfg_resp.ok:
+                                global_cfg = cfg_resp.json()
+                                global_cfg.setdefault("SYSTEM_CONFIG", {}).setdefault("agent", {})
+                                global_cfg["SYSTEM_CONFIG"]["agent"]["agent_name"] = ai_name_input
+                                if user_name_input:
+                                    global_cfg["SYSTEM_CONFIG"]["agent"]["user_name"] = (
+                                        nickname_input if nickname_input else user_name_input
+                                    )
+                                requests.post(f"{api_url}/config", json=global_cfg, timeout=5)
+                        except Exception:
+                            pass  # config 更新失敗は致命的ではない
                         st.rerun()
                     else:
-                        st.error(f"作成エラー: {res.text}")
+                        st.error(f"エラー: {res.text}" if _home_locale == "ja" else f"Error: {res.text}")
                 except Exception as e:
-                    st.error(f"作成エラー: {e}")
+                    st.error(f"エラー: {e}" if _home_locale == "ja" else f"Error: {e}")
 
 # ==========================================
 # ⚙️ 設定画面 (タブ3構成) - Butly Client準拠

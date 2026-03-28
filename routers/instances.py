@@ -17,6 +17,7 @@ router = APIRouter()
 class CreateInstanceRequest(BaseModel):
     name: str
     template: str = "{agent_name} is a helpful AI assistant."
+    key_memory: str = ""
 
 class RenameInstanceRequest(BaseModel):
     new_name: str
@@ -37,7 +38,11 @@ def list_instances():
 @router.post("/instances")
 def create_instance(request: CreateInstanceRequest):
     """Create a new AI instance."""
-    success, message = deps.instance_manager.create_instance(request.name, request.template)
+    success, message = deps.instance_manager.create_instance(
+        request.name,
+        request.template,
+        key_memory=request.key_memory,
+    )
     if not success:
         raise HTTPException(status_code=400, detail=message)
     return {"message": message, "name": request.name}
