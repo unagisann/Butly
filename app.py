@@ -1146,6 +1146,119 @@ def render_instance_settings_screen():
 
     st.divider()
 
+    # ==========================================
+    # 🧩 コンテキスト注入順序
+    # ==========================================
+    st.subheader("🧩 コンテキスト注入順序")
+    st.caption("LLMに渡すコンテキストのセクション順序を変更できます。チェックを外すとそのセクションは注入されません。")
+
+    from butly_core.core.gatekeeper.memory_builder import DEFAULT_CONTEXT_ORDER
+
+    # config から読み込み（なければデフォルト）
+    ctx_order = config.get("context_order", {})
+    _si_order = list(ctx_order.get("system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"]))
+    _cp_order = list(ctx_order.get("context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"]))
+    _si_position = ctx_order.get("system_instruction_position", DEFAULT_CONTEXT_ORDER["system_instruction_position"])
+
+    # セクションの日本語ラベル
+    _SECTION_LABELS = {
+        "system_instruction": "性格設定 (system_instruction)",
+        "key_memory": "根幹記憶 (key_memory)",
+        "label_notes": "ラベル・注意文 (label_notes)",
+        "current_time": "現在時刻 (current_time)",
+        "mid_term": "中期記憶 (mid_term)",
+        "rag": "長期記憶 RAG (rag)",
+        "floating": "浮動要約 (floating)",
+        "tier_info": "Tier情報 (tier_info)",
+        "google_search": "Google検索 (google_search)",
+    }
+
+    # --- system_instruction_position ---
+    st.markdown("**▎ System Instruction の配置**")
+    _pos_options = {"top": "先頭 (top) — 標準・Gemini推奨", "bottom": "末尾 (bottom) — SillyTavern方式・OpenAI/Ollama向け"}
+    _si_position = st.radio(
+        "配置位置",
+        options=list(_pos_options.keys()),
+        index=0 if _si_position == "top" else 1,
+        format_func=lambda x: _pos_options[x],
+        key="ctx_si_position",
+        horizontal=True,
+    )
+    st.caption("ℹ️ Gemini API では system_instruction は常に独立パラメータとして渡されるため、この設定は無視されます。")
+
+    # --- session_state 初期化 ---
+    if "ctx_si_order" not in st.session_state:
+        st.session_state.ctx_si_order = _si_order
+    if "ctx_cp_order" not in st.session_state:
+        st.session_state.ctx_cp_order = _cp_order
+
+    # 並べ替えヘルパー
+    def _swap_items(lst_key, idx, direction):
+        lst = st.session_state[lst_key]
+        new_idx = idx + direction
+        if 0 <= new_idx < len(lst):
+            lst[idx], lst[new_idx] = lst[new_idx], lst[idx]
+
+    # --- System Instruction セクション ---
+    st.markdown("**▎ System Instruction**")
+    _all_si_sections = list(DEFAULT_CONTEXT_ORDER["system_instruction"])
+    _si_enabled = {}
+    for i, sid in enumerate(st.session_state.ctx_si_order):
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns([0.5, 6, 1, 1])
+            with c1:
+                # system_instruction は除外不可
+                is_disabled = (sid == "system_instruction")
+                is_checked = sid in st.session_state.ctx_si_order
+                _si_enabled[sid] = st.checkbox(
+                    "", value=True, disabled=is_disabled, key=f"si_chk_{sid}",
+                    label_visibility="collapsed",
+                )
+            with c2:
+                st.markdown(f"**{i+1}.** {_SECTION_LABELS.get(sid, sid)}")
+            with c3:
+                if i > 0:
+                    if st.button("↑", key=f"si_up_{sid}"):
+                        _swap_items("ctx_si_order", i, -1)
+                        st.rerun()
+            with c4:
+                if i < len(st.session_state.ctx_si_order) - 1:
+                    if st.button("↓", key=f"si_down_{sid}"):
+                        _swap_items("ctx_si_order", i, 1)
+                        st.rerun()
+
+    # --- Context Prefix セクション ---
+    st.markdown("**▎ Context Prefix（会話コンテキスト）**")
+    _cp_enabled = {}
+    for i, sid in enumerate(st.session_state.ctx_cp_order):
+        with st.container(border=True):
+            c1, c2, c3, c4 = st.columns([0.5, 6, 1, 1])
+            with c1:
+                _cp_enabled[sid] = st.checkbox(
+                    "", value=True, key=f"cp_chk_{sid}",
+                    label_visibility="collapsed",
+                )
+            with c2:
+                st.markdown(f"**{i+1}.** {_SECTION_LABELS.get(sid, sid)}")
+            with c3:
+                if i > 0:
+                    if st.button("↑", key=f"cp_up_{sid}"):
+                        _swap_items("ctx_cp_order", i, -1)
+                        st.rerun()
+            with c4:
+                if i < len(st.session_state.ctx_cp_order) - 1:
+                    if st.button("↓", key=f"cp_down_{sid}"):
+                        _swap_items("ctx_cp_order", i, 1)
+                        st.rerun()
+
+    # デフォルトに戻すボタン
+    if st.button("デフォルトに戻す", key="ctx_reset_default"):
+        st.session_state.ctx_si_order = list(DEFAULT_CONTEXT_ORDER["system_instruction"])
+        st.session_state.ctx_cp_order = list(DEFAULT_CONTEXT_ORDER["context_prefix"])
+        st.rerun()
+
+    st.divider()
+
     # Housekeeper Button
     if st.button("🧹 記憶の整理 (Housekeeper)", use_container_width=True):
         st.session_state.housekeeper_instance = instance_name
@@ -1210,6 +1323,18 @@ def render_instance_settings_screen():
             config["chat"]["model_name"] = model_name
             config["chat"]["generation_config"]["temperature"] = temp
             config["chat"]["generation_config"]["max_output_tokens"] = max_tokens
+
+            # context_order の保存
+            _final_si = [s for s in st.session_state.ctx_si_order if _si_enabled.get(s, True)]
+            _final_cp = [s for s in st.session_state.ctx_cp_order if _cp_enabled.get(s, True)]
+            # system_instruction は必ず含める
+            if "system_instruction" not in _final_si:
+                _final_si.insert(0, "system_instruction")
+            config["context_order"] = {
+                "system_instruction": _final_si,
+                "context_prefix": _final_cp,
+                "system_instruction_position": _si_position,
+            }
             
             # Save configs
             try:

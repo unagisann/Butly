@@ -119,12 +119,14 @@ class OpenAIProvider(BaseProvider):
         memory_blocks = context.get("memory_blocks")
         rag_results = context.get("rag_results", [])
         use_rag = context.get("use_rag", True)
+        context_order = context.get("context_order")
 
         # --- system instruction ---
         system_instruction = self._build_system_instruction(
             memory_manager=memory_manager,
             memory_blocks=memory_blocks,
             override_config=override_config,
+            context_order=context_order,
         )
 
         # --- context prefix (可変コンテキスト) ---
@@ -135,27 +137,43 @@ class OpenAIProvider(BaseProvider):
                 blocks=memory_blocks,
                 memory_manager=memory_manager,
                 use_google_search=False,
+                context_order=context_order,
             )
 
         full_prompt = text
 
         # --- messages 構築 ---
-        messages = [{"role": "system", "content": system_instruction}]
+        # system_instruction_position による配置制御
+        position = (context_order or {}).get(
+            "system_instruction_position", "top"
+        )
 
-        # 可変コンテキストを会話履歴の先頭に注入
-        if context_prefix:
-            messages.append({"role": "user", "content": context_prefix})
-
-        # history → messages
-        for h in history:
-            role = h.get("role", "user")
-            parts = h.get("parts", [])
-            content = parts[0] if parts else ""
-            messages.append({"role": role, "content": str(content)})
-
-        # ユーザーメッセージ
-        user_content = self._build_user_content(full_prompt, attachments)
-        messages.append({"role": "user", "content": user_content})
+        if position == "bottom":
+            # Bottom配置: prefix → 履歴 → sys_inst → ユーザー入力
+            if context_prefix:
+                messages = [{"role": "system", "content": context_prefix}]
+            else:
+                messages = []
+            for h in history:
+                role = h.get("role", "user")
+                parts = h.get("parts", [])
+                content = parts[0] if parts else ""
+                messages.append({"role": role, "content": str(content)})
+            messages.append({"role": "system", "content": system_instruction})
+            user_content = self._build_user_content(full_prompt, attachments)
+            messages.append({"role": "user", "content": user_content})
+        else:
+            # Top配置（デフォルト）: sys_inst → prefix → 履歴 → ユーザー入力
+            messages = [{"role": "system", "content": system_instruction}]
+            if context_prefix:
+                messages.append({"role": "user", "content": context_prefix})
+            for h in history:
+                role = h.get("role", "user")
+                parts = h.get("parts", [])
+                content = parts[0] if parts else ""
+                messages.append({"role": role, "content": str(content)})
+            user_content = self._build_user_content(full_prompt, attachments)
+            messages.append({"role": "user", "content": user_content})
 
         # --- API 呼び出し ---
         chat_conf = AI_CONFIG["chat"]
@@ -183,7 +201,7 @@ class OpenAIProvider(BaseProvider):
     # 内部ユーティリティ
     # ==================================================================
 
-    def _build_system_instruction(self, memory_manager, memory_blocks, override_config):
+    def _build_system_instruction(self, memory_manager, memory_blocks, override_config, context_order=None):
         """system instruction を構築する。"""
         if memory_blocks is not None:
             from butly_core.core.gatekeeper import build_system_instruction_from_blocks
@@ -191,6 +209,7 @@ class OpenAIProvider(BaseProvider):
                 blocks=memory_blocks,
                 memory_manager=memory_manager,
                 use_google_search=False,
+                context_order=context_order,
             )
 
         from butly_core.config import SYSTEM_CONFIG

@@ -235,3 +235,188 @@ class TestBlockStructure:
         )
 
         assert blocks["tier"] == tier
+
+
+# ===================================================================
+# コンテキスト順序制御テスト
+# ===================================================================
+
+class TestContextOrder:
+    """context_order によるセクション順序変更のテスト"""
+
+    def test_default_order_when_none(self, memory_manager, mock_brain, test_instance_dir):
+        """context_order=None でデフォルト順が維持される"""
+        from butly_core.core.gatekeeper import (
+            build_system_instruction_from_blocks,
+            build_context_prefix,
+        )
+
+        builder = MemoryBlockBuilder()
+        blocks = builder.build(
+            tier="mid",
+            memory_manager=memory_manager,
+            brain=mock_brain,
+            user_input="テスト",
+        )
+
+        result_default = build_system_instruction_from_blocks(
+            blocks, memory_manager, context_order=None
+        )
+        result_explicit = build_system_instruction_from_blocks(
+            blocks, memory_manager
+        )
+        assert result_default == result_explicit
+
+    def test_system_instruction_order_reversed(self, memory_manager, mock_brain, test_instance_dir):
+        """system_instruction のセクション順序を逆にできる"""
+        from butly_core.core.gatekeeper import build_system_instruction_from_blocks
+
+        builder = MemoryBlockBuilder()
+        blocks = builder.build(
+            tier="mid",
+            memory_manager=memory_manager,
+            brain=mock_brain,
+            user_input="テスト",
+        )
+
+        # デフォルト順: system_instruction → key_memory
+        result_normal = build_system_instruction_from_blocks(
+            blocks, memory_manager, context_order=None
+        )
+
+        # 逆順: key_memory → system_instruction
+        result_reversed = build_system_instruction_from_blocks(
+            blocks, memory_manager,
+            context_order={"system_instruction": ["key_memory", "system_instruction"]},
+        )
+
+        # 両方にキーワードが含まれる
+        assert "テスト用の執事AI" in result_normal
+        assert "テスト用の執事AI" in result_reversed
+
+        # 逆順では key_memory が先に来る
+        key_mem_pos = result_reversed.find("プログラマー")
+        sys_inst_pos = result_reversed.find("テスト用の執事AI")
+        assert key_mem_pos < sys_inst_pos
+
+    def test_section_excluded_by_removal(self, memory_manager, mock_brain, test_instance_dir):
+        """配列から ID を除外するとそのセクションが出力されない"""
+        from butly_core.core.gatekeeper import build_system_instruction_from_blocks
+
+        builder = MemoryBlockBuilder()
+        blocks = builder.build(
+            tier="mid",
+            memory_manager=memory_manager,
+            brain=mock_brain,
+            user_input="テスト",
+        )
+
+        # key_memory を除外
+        result = build_system_instruction_from_blocks(
+            blocks, memory_manager,
+            context_order={"system_instruction": ["system_instruction"]},
+        )
+
+        assert "テスト用の執事AI" in result
+        assert "プログラマー" not in result
+
+    def test_context_prefix_order_changed(self, memory_manager, mock_brain, test_instance_dir):
+        """context_prefix のセクション順序を変更できる"""
+        from butly_core.core.gatekeeper import build_context_prefix
+
+        (test_instance_dir / "floating_summary.txt").write_text(
+            "前回はPythonの話をしました。", encoding="utf-8",
+        )
+
+        builder = MemoryBlockBuilder()
+        blocks = builder.build(
+            tier="mid",
+            memory_manager=memory_manager,
+            brain=mock_brain,
+            user_input="テスト",
+        )
+
+        # floating を current_time より前に配置
+        result = build_context_prefix(
+            blocks, memory_manager,
+            context_order={"context_prefix": ["floating", "current_time", "tier_info"]},
+        )
+
+        floating_pos = result.find("Pythonの話")
+        # floating が存在する
+        assert floating_pos >= 0
+
+    def test_unknown_section_id_ignored(self, memory_manager, mock_brain, test_instance_dir):
+        """不明なセクション ID は無視される"""
+        from butly_core.core.gatekeeper import build_system_instruction_from_blocks
+
+        builder = MemoryBlockBuilder()
+        blocks = builder.build(
+            tier="mid",
+            memory_manager=memory_manager,
+            brain=mock_brain,
+            user_input="テスト",
+        )
+
+        # 存在しない ID を含める
+        result = build_system_instruction_from_blocks(
+            blocks, memory_manager,
+            context_order={"system_instruction": ["nonexistent", "system_instruction"]},
+        )
+
+        assert "テスト用の執事AI" in result
+
+    def test_context_prefix_exclude_section(self, memory_manager, mock_brain, test_instance_dir):
+        """context_prefix からセクションを除外できる"""
+        from butly_core.core.gatekeeper import build_context_prefix
+
+        builder = MemoryBlockBuilder()
+        blocks = builder.build(
+            tier="mid",
+            memory_manager=memory_manager,
+            brain=mock_brain,
+            user_input="テスト",
+        )
+
+        # tier_info のみ
+        result = build_context_prefix(
+            blocks, memory_manager,
+            context_order={"context_prefix": ["tier_info"]},
+        )
+
+        # tier_info は含まれる
+        assert "mid" in result
+
+    def test_position_not_affect_build_functions(self, memory_manager, mock_brain, test_instance_dir):
+        """system_instruction_position は build_* 関数自体には影響しない（Provider 責務）"""
+        from butly_core.core.gatekeeper import (
+            build_system_instruction_from_blocks,
+            build_context_prefix,
+        )
+
+        builder = MemoryBlockBuilder()
+        blocks = builder.build(
+            tier="mid",
+            memory_manager=memory_manager,
+            brain=mock_brain,
+            user_input="テスト",
+        )
+
+        order_top = {
+            "system_instruction": ["system_instruction", "key_memory"],
+            "context_prefix": ["current_time", "tier_info"],
+            "system_instruction_position": "top",
+        }
+        order_bottom = {
+            "system_instruction": ["system_instruction", "key_memory"],
+            "context_prefix": ["current_time", "tier_info"],
+            "system_instruction_position": "bottom",
+        }
+
+        si_top = build_system_instruction_from_blocks(blocks, memory_manager, context_order=order_top)
+        si_bottom = build_system_instruction_from_blocks(blocks, memory_manager, context_order=order_bottom)
+        assert si_top == si_bottom
+
+        cp_top = build_context_prefix(blocks, memory_manager, context_order=order_top)
+        cp_bottom = build_context_prefix(blocks, memory_manager, context_order=order_bottom)
+        assert cp_top == cp_bottom

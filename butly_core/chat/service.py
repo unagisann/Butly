@@ -180,6 +180,7 @@ class ChatService:
             "use_google_search": request.use_google_search,
             "rag_results": rag_results,
             "use_rag": request.use_rag,
+            "context_order": instance_config.get("context_order"),
         }
 
         if has_attachments:

@@ -3,9 +3,26 @@ memory_builder.py
 -----------------
 MemoryBlockBuilder: tier → 記憶ブロック dict を構築するクラス。
 build_system_instruction_from_blocks: ブロック → system_instruction 変換関数。
+build_context_prefix: 可変コンテキスト変換関数。
 """
 
 from butly_core.config import SYSTEM_CONFIG
+
+
+# セクション順序のデフォルト定義
+DEFAULT_CONTEXT_ORDER = {
+    "system_instruction": ["system_instruction", "key_memory"],
+    "context_prefix": [
+        "label_notes",
+        "current_time",
+        "mid_term",
+        "rag",
+        "floating",
+        "tier_info",
+        "google_search",
+    ],
+    "system_instruction_position": "top",
+}
 
 
 class MemoryBlockBuilder:
@@ -143,6 +160,7 @@ def build_system_instruction_from_blocks(
     blocks: dict,
     memory_manager,
     use_google_search: bool = False,
+    context_order: dict | None = None,
 ) -> str:
     """
     MemoryBlockBuilder.build() の戻り値から system_instruction 文字列を生成する。
@@ -151,8 +169,8 @@ def build_system_instruction_from_blocks(
       1. SYSTEM INSTRUCTION（性格設定）
       2. KEY MEMORY（根幹記憶）
 
-    可変セクション（MID-TERM, RAG, FLOATING, CURRENT TIME, TIER INFO）は
-    build_context_prefix() に移動済み。
+    セクション順序は context_order["system_instruction"] で制御可能。
+    context_order が None の場合はデフォルト順を使用。
 
     Parameters
     ----------
@@ -162,6 +180,8 @@ def build_system_instruction_from_blocks(
         system_instruction.txt / Key_Memory.txt の読み取りに使用。
     use_google_search : bool
         （後方互換のため残すが、現在は未使用）
+    context_order : dict | None
+        セクション順序設定。None の場合はデフォルト順。
 
     Returns
     -------
@@ -173,16 +193,25 @@ def build_system_instruction_from_blocks(
     loader = PromptLoader()
     h = loader.get_section_header
 
-    sections = []
+    order = (context_order or DEFAULT_CONTEXT_ORDER).get(
+        "system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"]
+    )
 
-    # 1. SYSTEM INSTRUCTION（性格設定）— 全 tier 共通
     sys_inst = memory_manager.get_system_instruction()
-    sections.append(f"{h('system_instruction')}\n{sys_inst}")
-
-    # 2. KEY MEMORY（根幹記憶）— 全 tier 共通
     key_mem = memory_manager.get_key_memory()
-    if key_mem:
-        sections.append(f"{h('key_memory')}\n{key_mem}")
+
+    builders = {
+        "system_instruction": lambda: f"{h('system_instruction')}\n{sys_inst}",
+        "key_memory": lambda: (f"{h('key_memory')}\n{key_mem}" if key_mem else None),
+    }
+
+    sections = []
+    for section_id in order:
+        builder = builders.get(section_id)
+        if builder:
+            result = builder()
+            if result:
+                sections.append(result)
 
     return "\n\n".join(sections)
 
@@ -191,19 +220,14 @@ def build_context_prefix(
     blocks: dict,
     memory_manager=None,
     use_google_search: bool = False,
+    context_order: dict | None = None,
 ) -> str:
     """
     可変コンテキスト（背景情報）を生成する。
     各 Provider が会話履歴の先頭に user メッセージとして注入する。
 
-    出力順序:
-      0. ラベル + 注意文（優先順位の明文化）
-      1. CURRENT TIME
-      2. MID-TERM / DIGEST / RELATIONSHIP（mid 以上）
-      3. RAG（cortex のみ）
-      4. FLOATING SUMMARY
-      5. TIER INFO + topic
-      6. Google 検索注意書き（該当時）
+    セクション順序は context_order["context_prefix"] で制御可能。
+    context_order が None の場合はデフォルト順を使用。
 
     Parameters
     ----------
@@ -213,6 +237,8 @@ def build_context_prefix(
         （後方互換のため残すが、現在は未使用）
     use_google_search : bool
         Google 検索使用フラグ（注意書き用）。
+    context_order : dict | None
+        セクション順序設定。None の場合はデフォルト順。
 
     Returns
     -------
@@ -226,39 +252,45 @@ def build_context_prefix(
     h = loader.get_section_header
 
     tier = blocks.get("tier", "mid")
-    sections = []
 
-    # 0. ラベル + 注意文（優先順位の明文化）
-    label = h('context_prefix_label')
-    if label and label != 'context_prefix_label':
-        sections.append(label)
-    note = h('note_context_prefix')
-    if note and note != 'note_context_prefix':
-        sections.append(note)
-
-    # 1. CURRENT TIME（現在時刻）— 全 tier 共通
-    current_time = ButlyChronos().get_system_note()
-    sections.append(
-        f"{h('current_time')}\n{current_time}\n"
-        f"{h('note_current_time')}"
+    order = (context_order or DEFAULT_CONTEXT_ORDER).get(
+        "context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"]
     )
 
-    # MID-TERM MEMORY（中期記憶）— mid 以上
-    if tier in ("mid", "cortex"):
-        mid_term_mode = blocks.get("mid_term_mode", "raw")
+    # --- セクションビルダー定義 ---
+    def _build_label_notes():
+        parts = []
+        label = h('context_prefix_label')
+        if label and label != 'context_prefix_label':
+            parts.append(label)
+        note = h('note_context_prefix')
+        if note and note != 'note_context_prefix':
+            parts.append(note)
+        return "\n\n".join(parts) if parts else None
 
+    def _build_current_time():
+        current_time = ButlyChronos().get_system_note()
+        return (
+            f"{h('current_time')}\n{current_time}\n"
+            f"{h('note_current_time')}"
+        )
+
+    def _build_mid_term():
+        if tier not in ("mid", "cortex"):
+            return None
+        mid_term_mode = blocks.get("mid_term_mode", "raw")
+        parts = []
         if mid_term_mode == "summary":
             digest = blocks.get("mid_term_digest", "")
             relationship = blocks.get("mid_term_relationship", "")
-
             if digest:
-                sections.append(
+                parts.append(
                     f"{h('mid_term_digest')}\n"
                     f"{h('note_mid_term_digest')}\n"
                     f"{digest}"
                 )
             if relationship:
-                sections.append(
+                parts.append(
                     f"{h('relationship_snapshot')}\n"
                     f"{h('note_relationship')}\n"
                     f"{relationship}"
@@ -266,27 +298,49 @@ def build_context_prefix(
         else:
             mid_term = blocks.get("mid_term", "")
             if mid_term:
-                sections.append(f"{h('mid_term_memory')}\n{mid_term}")
+                parts.append(f"{h('mid_term_memory')}\n{mid_term}")
+        return "\n\n".join(parts) if parts else None
 
-    # RAG コンテキスト — cortex のみ
-    rag_context = blocks.get("rag_context", "")
-    if tier == "cortex" and rag_context:
-        sections.append(f"{h('long_term_memory')}\n{h('note_rag')}\n{rag_context}")
+    def _build_rag():
+        rag_context = blocks.get("rag_context", "")
+        if tier == "cortex" and rag_context:
+            return f"{h('long_term_memory')}\n{h('note_rag')}\n{rag_context}"
+        return None
 
-    # FLOATING SUMMARY（未整理記憶）— 全 tier 共通
-    floating = blocks.get("floating", "")
-    if floating:
-        sections.append(f"{h('floating_summary')}\n{h('note_floating')}\n{floating.strip()}")
+    def _build_floating():
+        floating = blocks.get("floating", "")
+        if floating:
+            return f"{h('floating_summary')}\n{h('note_floating')}\n{floating.strip()}"
+        return None
 
-    # 5. TIER INFO + topic
-    tier_text = h('tier_mode').format(tier=tier)
-    topic = blocks.get("topic", "")
-    if tier in ("mid", "cortex") and topic:
-        tier_text += "\n" + h('tier_topic').format(topic=topic)
-    sections.append(f"{h('tier_info')}\n{tier_text}")
+    def _build_tier_info():
+        tier_text = h('tier_mode').format(tier=tier)
+        topic = blocks.get("topic", "")
+        if tier in ("mid", "cortex") and topic:
+            tier_text += "\n" + h('tier_topic').format(topic=topic)
+        return f"{h('tier_info')}\n{tier_text}"
 
-    # Google 検索注意書き
-    if use_google_search:
-        sections.append(h('note_google_search'))
+    def _build_google_search():
+        if use_google_search:
+            return h('note_google_search')
+        return None
+
+    builders = {
+        "label_notes": _build_label_notes,
+        "current_time": _build_current_time,
+        "mid_term": _build_mid_term,
+        "rag": _build_rag,
+        "floating": _build_floating,
+        "tier_info": _build_tier_info,
+        "google_search": _build_google_search,
+    }
+
+    sections = []
+    for section_id in order:
+        builder = builders.get(section_id)
+        if builder:
+            result = builder()
+            if result:
+                sections.append(result)
 
     return "\n\n".join(sections) if sections else ""

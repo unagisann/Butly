@@ -19,6 +19,7 @@ from butly_core.core.gatekeeper.memory_builder import (
     MemoryBlockBuilder,
     build_system_instruction_from_blocks,
     build_context_prefix,
+    DEFAULT_CONTEXT_ORDER,
 )
 
 from pathlib import Path
