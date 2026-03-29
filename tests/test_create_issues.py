@@ -1,12 +1,22 @@
-"""create_issues.py の parse_frontmatter と _parse_yaml_simple のテスト"""
+"""create_issues.py のテスト"""
 
+import os
 import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 # .github/scripts をパスに追加
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / ".github" / "scripts"))
 
-from create_issues import _parse_yaml_simple, parse_frontmatter
+import subprocess
+
+from create_issues import (
+    _parse_yaml_simple,
+    create_issue_with_gh,
+    main,
+    parse_frontmatter,
+    process_issue_files,
+)
 
 
 class TestParseYamlSimple:
@@ -131,3 +141,134 @@ class TestParseFrontmatter:
         metadata, body = parse_frontmatter(content)
         assert metadata["title"] == "テスト"
         assert "本文" in body
+
+
+class TestCreateIssueWithGh:
+    """create_issue_with_gh のテスト"""
+
+    @patch("create_issues.subprocess.run")
+    def test_success(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="https://github.com/owner/repo/issues/1\n")
+        result = create_issue_with_gh(title="テスト", body="本文")
+        assert result is not None
+        assert result["url"] == "https://github.com/owner/repo/issues/1"
+        mock_run.assert_called_once()
+
+    @patch("create_issues.subprocess.run")
+    def test_with_labels_and_assignees(self, mock_run):
+        mock_run.return_value = MagicMock(stdout="https://github.com/owner/repo/issues/2\n")
+        result = create_issue_with_gh(
+            title="テスト",
+            body="本文",
+            labels=["bug", "enhancement"],
+            assignees=["user1"],
+            milestone="v1.0",
+            repo="owner/repo",
+        )
+        assert result is not None
+        cmd = mock_run.call_args[0][0]
+        assert "--label" in cmd
+        assert "bug" in cmd
+        assert "enhancement" in cmd
+        assert "--assignee" in cmd
+        assert "user1" in cmd
+        assert "--milestone" in cmd
+        assert "v1.0" in cmd
+        assert "--repo" in cmd
+        assert "owner/repo" in cmd
+
+    @patch("create_issues.subprocess.run")
+    def test_called_process_error(self, mock_run):
+        mock_run.side_effect = subprocess.CalledProcessError(1, "gh", stderr="API error")
+        result = create_issue_with_gh(title="テスト", body="本文")
+        assert result is None
+
+    @patch("create_issues.subprocess.run")
+    def test_gh_not_found(self, mock_run):
+        mock_run.side_effect = FileNotFoundError()
+        result = create_issue_with_gh(title="テスト", body="本文")
+        assert result is None
+
+
+class TestProcessIssueFiles:
+    """process_issue_files のテスト"""
+
+    def test_nonexistent_directory(self):
+        success, fail = process_issue_files("/nonexistent/path")
+        assert success == 0
+        assert fail == 0
+
+    @patch("create_issues.create_issue_with_gh")
+    def test_process_files(self, mock_create, tmp_path):
+        # テスト用MDファイルを作成
+        issue_file = tmp_path / "test-issue.md"
+        issue_file.write_text('---\ntitle: "テスト"\nlabels:\n  - bug\n---\n\n本文', encoding="utf-8")
+
+        # _で始まるファイル（除外対象）
+        template_file = tmp_path / "_template.md"
+        template_file.write_text('---\ntitle: "テンプレ"\n---\n\n本文', encoding="utf-8")
+
+        mock_create.return_value = {"url": "https://github.com/owner/repo/issues/1"}
+        success, fail = process_issue_files(str(tmp_path))
+        assert success == 1
+        assert fail == 0
+        # _template.md は処理されない
+        mock_create.assert_called_once()
+
+    @patch("create_issues.create_issue_with_gh")
+    def test_missing_title(self, mock_create, tmp_path):
+        issue_file = tmp_path / "no-title.md"
+        issue_file.write_text("---\nlabels:\n  - bug\n---\n\n本文", encoding="utf-8")
+        success, fail = process_issue_files(str(tmp_path))
+        assert success == 0
+        assert fail == 1
+        mock_create.assert_not_called()
+
+    @patch("create_issues.create_issue_with_gh")
+    def test_invalid_frontmatter(self, mock_create, tmp_path):
+        issue_file = tmp_path / "bad.md"
+        issue_file.write_text("これはフロントマターなし", encoding="utf-8")
+        success, fail = process_issue_files(str(tmp_path))
+        assert success == 0
+        assert fail == 1
+
+    def test_empty_directory(self, tmp_path):
+        success, fail = process_issue_files(str(tmp_path))
+        assert success == 0
+        assert fail == 0
+
+    @patch("create_issues.create_issue_with_gh")
+    def test_gh_failure(self, mock_create, tmp_path):
+        issue_file = tmp_path / "fail.md"
+        issue_file.write_text('---\ntitle: "テスト"\n---\n\n本文', encoding="utf-8")
+        mock_create.return_value = None  # 失敗
+        success, fail = process_issue_files(str(tmp_path))
+        assert success == 0
+        assert fail == 1
+
+
+class TestMain:
+    """main のテスト"""
+
+    @patch("create_issues.process_issue_files")
+    def test_main_no_issues(self, mock_process):
+        mock_process.return_value = (0, 0)
+        # 例外なしで終了すること
+        main()
+        mock_process.assert_called_once()
+
+    @patch("create_issues.process_issue_files")
+    def test_main_with_failures_exits(self, mock_process):
+        mock_process.return_value = (1, 1)
+        try:
+            main()
+            assert False, "SystemExitが発生すべき"
+        except SystemExit as e:
+            assert e.code == 1
+
+    @patch("create_issues.process_issue_files")
+    def test_main_uses_env_vars(self, mock_process):
+        mock_process.return_value = (1, 0)
+        with patch.dict(os.environ, {"ISSUES_DIR": "/custom/path", "GITHUB_REPOSITORY": "owner/repo"}):
+            main()
+        mock_process.assert_called_once_with("/custom/path", "owner/repo")
