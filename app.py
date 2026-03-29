@@ -1,5 +1,6 @@
 import streamlit as st
 import time
+import base64
 from datetime import datetime
 from pathlib import Path
 import asyncio
@@ -110,6 +111,15 @@ st.markdown("""
         }
     }
 
+    /* 添付画像サムネイル */
+    .chat-bubble-user img.attachment-thumb {
+        max-width: 240px;
+        max-height: 180px;
+        border-radius: 8px;
+        margin-top: 6px;
+        display: block;
+    }
+
     /* 汎用クラス */
     .clearfix::after {
         content: "";
@@ -160,6 +170,8 @@ if "use_google_search" not in st.session_state:
     st.session_state.use_google_search = False
 if "input_key_counter" not in st.session_state:
     st.session_state.input_key_counter = 0 # チャット入力欄クリア用
+if "pending_attachments" not in st.session_state:
+    st.session_state.pending_attachments = []
 # デフォルトAPI接続先
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 if "api_base_url" not in st.session_state:
@@ -1466,7 +1478,11 @@ def render_chat_screen():
             except: pass
             
         if role == "user":
-            st.markdown(f'<div class="chat-bubble-user">{ts_display}{text}</div>', unsafe_allow_html=True)
+            # 添付画像のサムネイルHTML
+            img_html = ""
+            for att in msg.get("attachments", []):
+                img_html += f'<img class="attachment-thumb" src="data:{att["mime_type"]};base64,{att["data_base64"]}" alt="{att.get("name", "image")}" />'
+            st.markdown(f'<div class="chat-bubble-user">{ts_display}{text}{img_html}</div>', unsafe_allow_html=True)
         else:
             st.markdown(f'<div class="chat-bubble-ai">{ts_display}{text}</div>', unsafe_allow_html=True)
             
@@ -1475,15 +1491,43 @@ def render_chat_screen():
     # 上記の描画が行われた後、少しスペースを空ける
     st.write("")
 
+    # --- 画像添付エリア ---
+    uploaded_files = st.file_uploader(
+        "📎 画像を添付",
+        type=["jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=True,
+        key=f"img_uploader_{st.session_state.input_key_counter}",
+        label_visibility="collapsed",
+    )
+    if uploaded_files:
+        new_attachments = []
+        for uf in uploaded_files[:3]:  # 最大3枚
+            raw = uf.read()
+            new_attachments.append({
+                "kind": "image",
+                "mime_type": uf.type,
+                "data_base64": base64.b64encode(raw).decode(),
+                "name": uf.name,
+                "size": len(raw),
+            })
+        st.session_state.pending_attachments = new_attachments
+        st.caption(f"📎 {len(new_attachments)} 枚の画像を添付中")
+    else:
+        st.session_state.pending_attachments = []
+
     # --- チャット入力エリア ---
     # st.chat_input は画面下部に固定される仕様
     if prompt := st.chat_input(f"メッセージを入力... ({instance_name})"):
         # UIに即座に表示
-        st.session_state.messages.append({
-            "role": "user", 
+        msg = {
+            "role": "user",
             "parts": [prompt],
-            "timestamp": datetime.now().isoformat()
-        })
+            "timestamp": datetime.now().isoformat(),
+        }
+        if st.session_state.pending_attachments:
+            msg["attachments"] = st.session_state.pending_attachments
+        st.session_state.messages.append(msg)
+        st.session_state.input_key_counter += 1  # uploaderをリセット
         st.rerun()
 
     # --- 直前のユーザー入力があった場合に応答を生成 ---
@@ -1500,13 +1544,24 @@ def render_chat_screen():
                 if use_gs and not is_gemini:
                     use_gs = False
 
-                # 画像添付は現在の実装では未対応のため空配列
+                # 添付画像をペイロードに変換
+                last_msg = st.session_state.messages[-1]
+                att_list = [
+                    {
+                        "kind": a["kind"],
+                        "mime_type": a["mime_type"],
+                        "data_base64": a["data_base64"],
+                        "name": a.get("name"),
+                        "size": a.get("size"),
+                    }
+                    for a in last_msg.get("attachments", [])
+                ]
                 payload = {
                     "message": prompt_text,
                     "instance_name": instance_name,
                     "use_rag": use_rag,
                     "use_google_search": use_gs,
-                    "images": [],
+                    "attachments": att_list,
                 }
 
                 resp = requests.post(
