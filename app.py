@@ -699,17 +699,28 @@ def render_settings_screen():
         provider_ai_cfg = provider_cfg.get("AI_CONFIG", {})
         model_selections = {}
 
+        _CUSTOM_ENTRY = "✏️ カスタム入力..."
+        st.caption("💡 ローカルLLM (Ollama) を使用する場合は、モデル名の前に `ollama/` を付けてください（例: `ollama/llama3.2`）")
+
         for role in ["chat", "summary", "gatekeeper", "embedding"]:
             current_model = provider_ai_cfg.get(role, {}).get("model_name", MODEL_PRESETS[role][0])
             opts = list(MODEL_PRESETS[role])
-            if current_model not in opts:
+            if current_model not in opts and current_model:
                 opts.append(current_model)
+            opts.append(_CUSTOM_ENTRY)
             selected = st.selectbox(
                 ROLE_LABELS[role],
                 opts,
-                index=opts.index(current_model),
+                index=opts.index(current_model) if current_model in opts else 0,
                 key=f"provider_model_{role}",
             )
+            if selected == _CUSTOM_ENTRY:
+                selected = st.text_input(
+                    f"{ROLE_LABELS[role]} - モデル名を入力",
+                    value="" if current_model in MODEL_PRESETS[role] else current_model,
+                    placeholder="例: gemini-2.5-pro / ollama/phi3",
+                    key=f"provider_model_custom_{role}",
+                )
             st.caption(f"プロバイダー: {get_provider_label(selected)}")
             model_selections[role] = selected
 
@@ -725,18 +736,23 @@ def render_settings_screen():
             provider_ai_cfg.setdefault(_t_role, {}).setdefault("generation_config", {})["temperature"] = _new_temp
 
         if st.button("💾 モデル設定を保存", type="primary", key="save_provider_models"):
-            # provider_cfg のAI_CONFIGを更新
-            for role, model_name in model_selections.items():
-                provider_ai_cfg.setdefault(role, {})["model_name"] = model_name
-            provider_cfg["AI_CONFIG"] = provider_ai_cfg
-            try:
-                save_resp = requests.post(f"{api_url}/config", json=provider_cfg, timeout=5)
-                if save_resp.ok:
-                    st.success("モデル設定を保存しました。")
-                else:
-                    st.error(f"保存エラー: {save_resp.text}")
-            except Exception as e:
-                st.error(f"サーバー接続エラー: {e}")
+            # 空白ガード
+            empty_roles = [r for r, m in model_selections.items() if not m or not m.strip()]
+            if empty_roles:
+                st.error(f"モデル名が未入力のロールがあります: {', '.join(empty_roles)}")
+            else:
+                # provider_cfg のAI_CONFIGを更新
+                for role, model_name in model_selections.items():
+                    provider_ai_cfg.setdefault(role, {})["model_name"] = model_name.strip()
+                provider_cfg["AI_CONFIG"] = provider_ai_cfg
+                try:
+                    save_resp = requests.post(f"{api_url}/config", json=provider_cfg, timeout=5)
+                    if save_resp.ok:
+                        st.success("モデル設定を保存しました。")
+                    else:
+                        st.error(f"保存エラー: {save_resp.text}")
+                except Exception as e:
+                    st.error(f"サーバー接続エラー: {e}")
 
         st.divider()
 

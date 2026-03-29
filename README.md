@@ -118,6 +118,9 @@ Once `http://localhost:8501` opens in your browser, configure in the following o
 1. Open **⚙️ → LLM Provider** tab
 2. Enter your API key for the chosen provider under **API Key Settings** and click **💾 Save**
 3. Assign models to Chat / Summary / Gatekeeper / Embedding roles under **Model Assignment**
+   - Select from the preset list, or choose **"✏️ Custom Input..."** to enter any model name manually
+   - This is useful for using the latest API models, older models, or local LLMs via Ollama
+   - For Ollama models, prefix with `ollama/` (e.g. `ollama/phi3`, `ollama/gemma2`)
 4. Click **💾 Save Model Settings**
 
 > For Ollama, no API key is required. Check the connection URL under the **Ollama (Local LLM)** section.
