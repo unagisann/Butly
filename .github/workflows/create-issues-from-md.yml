@@ -1,0 +1,51 @@
+name: Create Issues from Markdown
+
+on:
+  push:
+    paths:
+      - '.github/ISSUES/*.md'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: write
+
+jobs:
+  create-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create issues from markdown files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUES_DIR: .github/ISSUES
+        run: python .github/scripts/create_issues.py
+
+      - name: Remove processed issue files
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # _で始まるファイル（テンプレート）以外のMDファイルを削除
+          CHANGED=false
+          for file in .github/ISSUES/*.md; do
+            filename=$(basename "$file")
+            if [ -f "$file" ] && [[ ! "$filename" == _* ]]; then
+              git rm "$file"
+              CHANGED=true
+            fi
+          done
+
+          if [ "$CHANGED" = true ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -m "🗑️ 処理済みIssueファイルを削除"
+            git push
+          fi
