@@ -76,6 +76,56 @@ class ButlyMemory:
         except:
             return ""
 
+    def get_glossary(self) -> str:
+        """Glossary (共通言語辞書) を読み込み、active エントリをテキスト形式で返す。"""
+        glossary_file = self.instance_dir / "glossary.yaml"
+        if not glossary_file.exists():
+            return ""
+        try:
+            import yaml
+            with open(glossary_file, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            if not data or "entries" not in data:
+                return ""
+            lines = []
+            for entry in data["entries"]:
+                if entry.get("status") != "active":
+                    continue
+                term = entry.get("term", "")
+                definition = entry.get("definition", "")
+                if term and definition:
+                    lines.append(f"- {term}: {definition}")
+            return "\n".join(lines)
+        except Exception as e:
+            print(f"[Memory] Failed to read glossary: {e}")
+            return ""
+
+    def get_glossary_raw(self) -> dict:
+        """Glossary の生データ (dict) を返す。UI/API 用。"""
+        glossary_file = self.instance_dir / "glossary.yaml"
+        if not glossary_file.exists():
+            return {"version": 1, "entries": []}
+        try:
+            import yaml
+            with open(glossary_file, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            return data if data else {"version": 1, "entries": []}
+        except Exception as e:
+            print(f"[Memory] Failed to read glossary raw: {e}")
+            return {"version": 1, "entries": []}
+
+    def save_glossary(self, data: dict) -> bool:
+        """Glossary データを YAML ファイルに保存する。"""
+        glossary_file = self.instance_dir / "glossary.yaml"
+        try:
+            import yaml
+            with open(glossary_file, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+            return True
+        except Exception as e:
+            print(f"[Memory] Failed to save glossary: {e}")
+            return False
+
     def get_mid_term_text_content(self):
         try:
             text = self.mid_term_file.read_text(encoding="utf-8").strip()

@@ -104,9 +104,18 @@ class SearchPlanner:
 
             data = json.loads(json_str)
 
+            need = data.get("need")
+            search_targets = data.get("search_targets")
+
+            # LLM が "None" / "null" を文字列として出力するケースを正規化
+            if need in ("None", "null", ""):
+                need = None
+            if search_targets in ("None", "null", []):
+                search_targets = None
+
             return {
-                "need": data.get("need"),
-                "search_targets": data.get("search_targets"),
+                "need": need,
+                "search_targets": search_targets,
             }
 
         except Exception as e:

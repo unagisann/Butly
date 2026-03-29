@@ -141,3 +141,26 @@ def get_history(instance_name: str, limit: int = 10):
         formatted_history.append({"role": msg.get("role"), "parts": [content]})
 
     return formatted_history
+
+
+# ==========================================
+# 📖 Glossary (共通言語辞書) エンドポイント
+# ==========================================
+
+@router.get("/instances/{instance_name}/glossary")
+def get_glossary(instance_name: str):
+    """インスタンスの Glossary データを取得する。"""
+    components = deps.get_instance_components(instance_name)
+    memory = components["memory"]
+    return memory.get_glossary_raw()
+
+
+@router.post("/instances/{instance_name}/glossary")
+def update_glossary(instance_name: str, data: Dict[str, Any] = Body(...)):
+    """インスタンスの Glossary データを保存する。"""
+    components = deps.get_instance_components(instance_name)
+    memory = components["memory"]
+    success = memory.save_glossary(data)
+    if not success:
+        raise HTTPException(status_code=500, detail="Glossary の保存に失敗しました。")
+    return {"message": "Glossary を保存しました。"}

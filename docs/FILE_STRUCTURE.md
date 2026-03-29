@@ -1,6 +1,6 @@
 # Butly ファイル構成一覧
 
-> 最終更新: 2026-03-29
+> 最終更新: 2026-04-02
 
 ---
 
@@ -89,7 +89,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 | ファイル | エンドポイント群 |
 |---|---|
 | `chat.py` | `/chat` (REST) / `/ws/chat` (WebSocket) |
-| `instances.py` | `/instances` CRUD、`/config`、`/history` |
+| `instances.py` | `/instances` CRUD、`/config`、`/history`、`/glossary` |
 | `housekeeper.py` | `/housekeeper/run`、`/housekeeper/status`、`/housekeeper/estimate` |
 | `database.py` | `/database/cards` CRUD（ナレッジカード管理） |
 | `settings.py` | `/settings`、`/api-key`、`/config`、`/prompts` |
@@ -143,11 +143,11 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 ```
 1. コンポーネント取得 (Memory / Brain / Chronos / Cache)
 2. 時刻コンテキスト生成 (Chronos.get_system_note → full_prompt の冒頭に付加)
-3. Gatekeeper.classify → tier 判定 + state_delta 生成
+3. Gatekeeper.classify → tier 判定 + state_delta 生成（Gatekeeper 無効時は mid 固定）
 4. SessionState.apply_delta → セッション状態更新
 5. MemoryBlockBuilder.build → 記憶ブロック辞書構築
 6. ProviderFactory.create → Provider 選択・vision チェック
-7. キーワード抽出 + RAG 検索 (use_rag=True 時。cortex で Gatekeeper 済み RAG があれば流用)
+7. RAG 検索結果の取得（cortex + use_rag=True 時のみ。Gatekeeper 経由 MemoryBlockBuilder が実行済みの RAG を流用）
 8. provider.generate(full_prompt, attachments, context) → LLM 応答生成
 9. memory.save_single_turn → 会話を short_term_json に保存
 10. memory.maintain_memory → 閾値超過時に short_term → floating_summary へ折りたたみ
@@ -167,6 +167,9 @@ AIアシスタントのコアエンジン群。
 - `ButlyMemory(base_dir, instance_name)` — 各インスタンスの記憶ディレクトリを初期化
   - `get_system_instruction()` — system_instruction.txt を読み込む
   - `get_key_memory()` — Key_Memory.txt（根幹記憶）を読み込む
+  - `get_glossary()` — glossary.yaml からアクティブなエントリを `- term: definition` 形式で返す
+  - `get_glossary_raw()` — glossary.yaml を dict できっちり返す（UI/API向け）
+  - `save_glossary(data)` — glossary.yaml を書き出す
   - `get_mid_term_text_content()` — mid_term.txt を上限文字数でカットして返す
   - `get_mid_term_digest()` — mid_term_digest.txt（エピソード付きダイジェスト）を返す
   - `get_mid_term_relationship()` — mid_term_relationship.txt（関係性グラフ）を返す
@@ -321,6 +324,8 @@ LLM に 4 スコア（0–1）を出力させ、Python 側でルールに基づ�
 
 ### `gatekeeper/search_planner.py`
 `cortex` tier 判定時のみ呼ばれ、RAG 検索に必要なキーワードを LLM で生成する。
+`need: null` / `search_targets: null` を返すことで、cortex でも RAG 検索をスキップできる。
+LLM が返す `"None"` / `"null"` 文字列は Python の `None` に正規化される。
 
 - `SearchPlanner(base_dir)`
   - `plan(user_input, history_msgs, current_topic, override_config)` — `{need, search_targets}` を返す
@@ -364,7 +369,7 @@ tier に応じて、LLM プロバイダーに渡す「記憶ブロック辞書�
 | `cortex` | ✅ | ✅ | ✅ | ✅ (RAG) |
 
 - `build_system_instruction_from_blocks(blocks, memory_manager, use_google_search)` — **不変セクション**（system_instruction + Key_Memory）のみを結合して system_instruction 文字列を生成
-- `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / mid_term / RAG / floating / tier 情報 / Google 検索注意書き）を結合し、Provider が会話履歴の先頭にユーザーメッセージとして注入する文字列を生成
+- `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / glossary / mid_term / RAG / floating / tier 情報 / Google 検索注意書き）を結合し、Provider が会話履歴の先頭に user メッセージとして注入する文字列を生成
 
 ---
 
@@ -477,30 +482,31 @@ user_prompts.json (ユーザーオーバーライド)
   Provider が会話履歴の先頭に user メッセージとして注入する
 ─────────────────────────────────────
 ③ 現在時刻（Chronos.get_system_note）
-④ [mid tier 以上] mid_term 記憶 ← 2 モードあり:
+④ GLOSSARY（共通言語辞書 / 意味記憶） ← glossary.yaml のアクティブエントリ
+⑤ [mid tier 以上] mid_term 記憶 ← 2 モードあり:
    - raw モード: mid_term.txt をそのまま
    - summary モード: mid_term_digest.txt + mid_term_relationship.txt
-⑤ [cortex のみ] RAG 検索結果  ← 関連ナレッジカード
-⑥ floating_summary.txt        ← 直近の会話の浮動要約
-⑦ tier 情報 + topic
-⑧ [該当時] Google 検索注意書き
+⑥ [cortex + need有りのみ] RAG 検索結果  ← 関連ナレッジカード
+⑦ floating_summary.txt        ← 直近の会話の浮動要約
+⑧ tier 情報 + topic
+⑨ [該当時] Google 検索注意書き
 
 [user turn]
 ─────────────────────────────────────
-⑨ Chronos 日時 + ユーザーメッセージ  ← ChatService が結合した full_prompt
+⑩ Chronos 日時 + ユーザーメッセージ  ← ChatService が結合した full_prompt
 
 [history（マルチターン）]
-─────────────────────────────────────
-⑩ short_term_json の直近 6 件
+───────────────────────────────────
+⑪ short_term_json の直近 6 件
 ```
 
 **tier 別のコンテキスト包含関係:**
 ```
 reflex  ⊂  mid  ⊂  cortex
 
-reflex: ①②③⑥⑦⑨⑩
-mid:    ①②③④⑥⑦⑨⑩
-cortex: ①②③④⑤⑥⑦⑨⑩  (RAG あり)
+reflex: ①②③④⑦⑧⑩⑪
+mid:    ①②③④⑤⑦⑧⑩⑪
+cortex: ①②③④⑤⑥⑦⑧⑩⑪  (RAG あり。need=null 時はスキップ)
 ```
 
 **mid_term のモード分岐** (`SYSTEM_CONFIG.memory.use_summarized_mid_term`):

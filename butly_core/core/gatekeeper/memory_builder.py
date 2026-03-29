@@ -15,6 +15,7 @@ DEFAULT_CONTEXT_ORDER = {
     "context_prefix": [
         "label_notes",
         "current_time",
+        "glossary",
         "mid_term",
         "rag",
         "floating",
@@ -128,7 +129,8 @@ class MemoryBlockBuilder:
             return blocks
 
         # --- cortex のみ: RAG 検索を実施 ---
-        if brain and user_input:
+        need = blocks.get("need")
+        if brain and user_input and need:
             try:
                 keyword_data = brain.extract_keywords(user_input, override_config)
                 keywords = keyword_data.get("keywords", [])
@@ -150,6 +152,8 @@ class MemoryBlockBuilder:
                     print(f"[Gatekeeper] MemoryBlock: cortex（RAG hits={len(knowledge_list)}）")
             except Exception as e:
                 print(f"[Gatekeeper] RAG 検索エラー: {e}")
+        elif not need:
+            print("[Gatekeeper] MemoryBlock: cortex（need=null のため RAG スキップ）")
         else:
             print("[Gatekeeper] MemoryBlock: cortex（brain/user_input 未指定のため RAG スキップ）")
 
@@ -325,9 +329,22 @@ def build_context_prefix(
             return h('note_google_search')
         return None
 
+    def _build_glossary():
+        if not memory_manager:
+            return None
+        glossary_text = memory_manager.get_glossary()
+        if glossary_text:
+            return (
+                f"{h('glossary')}\n"
+                f"{h('note_glossary')}\n"
+                f"{glossary_text}"
+            )
+        return None
+
     builders = {
         "label_notes": _build_label_notes,
         "current_time": _build_current_time,
+        "glossary": _build_glossary,
         "mid_term": _build_mid_term,
         "rag": _build_rag,
         "floating": _build_floating,

@@ -41,19 +41,21 @@ block-beta
     columns 1
     A["1. SYSTEM INSTRUCTION — 性格設定（不変）"]
     B["2. KEY MEMORY — 根幹記憶（不変）"]
-    C["3. MID-TERM — 中期記憶 digest + relationship（低頻度更新）"]
-    D["4. CURRENT TIME — 現在時刻"]
-    E["5. RAG — 長期記憶検索結果（※参考情報注釈付き）"]
-    F["6. FLOATING — 直近の会話要約（※直近文脈注釈付き）"]
-    G["7. TIER INFO — 思考モード"]
+    C["3. CURRENT TIME — 現在時刻"]
+    D["4. GLOSSARY — 共通言語辞書・意味記憶"]
+    E["5. MID-TERM — 中期記憶 digest + relationship（低頻度更新）"]
+    F["6. RAG — 長期記憶検索結果（※参考情報注釈付き）"]
+    G["7. FLOATING — 直近の会話要約（※直近文脈注釈付き）"]
+    H["8. TIER INFO — 思考モード"]
 
     style A fill:#1a1a2e,color:#ec4899
     style B fill:#1a1a2e,color:#f59e0b
-    style C fill:#1a1a2e,color:#10b981
-    style D fill:#1a1a2e,color:#8899aa
-    style E fill:#1a1a2e,color:#ef4444
-    style F fill:#1a1a2e,color:#3b82f6
-    style G fill:#1a1a2e,color:#556677
+    style C fill:#1a1a2e,color:#8899aa
+    style D fill:#1a1a2e,color:#a78bfa
+    style E fill:#1a1a2e,color:#10b981
+    style F fill:#1a1a2e,color:#ef4444
+    style G fill:#1a1a2e,color:#3b82f6
+    style H fill:#1a1a2e,color:#556677
 ```
 
 ---
@@ -145,6 +147,7 @@ flowchart TD
     MD["mid_term_digest.txt"]
     MR["mid_term_relationship.txt"]
     SS["session_state.json"]
+    GL["glossary.yaml"]
     DB["butly_memory.db"]
     ST["short_term_json/"]
     FS["floating_summaries/"]
@@ -161,6 +164,7 @@ flowchart TD
     I1 --> MD
     I1 --> MR
     I1 --> SS
+    I1 --> GL
     I1 --> DB
     I1 --> ST
     I1 --> FS
@@ -197,7 +201,11 @@ timeline
              : OpenAI / Ollama 追加
              : google.genai 隔離
              : 埋め込みマイグレーション
-    Phase 5 : 統合記憶生成
+    Phase 5 ✅ : Glossary（意味記憶）
+             : need:null RAG スキップ
+             : ChatService RAG 一元化
+             : Gatekeeper / RAG ON/OFF
+    Phase 6 : 統合記憶生成
              : Housekeeper Stage3
              : reflection / generalization
              : self_model蓄積開始

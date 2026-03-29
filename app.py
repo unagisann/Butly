@@ -1130,7 +1130,22 @@ def render_instance_settings_screen():
         readable_selected.insert(0, "self")
 
     st.divider()
+    st.subheader("� Gatekeeper 設定")
+    if "gatekeeper" not in config:
+        config["gatekeeper"] = {"enabled": True}
+    gk_enabled = st.toggle(
+        "Gatekeeper (Tier自動判定)",
+        value=config.get("gatekeeper", {}).get("enabled", True),
+        help="OFF にすると常に mid tier で動作します（RAG 検索は行われません）",
+    )
+
+    st.divider()
     st.subheader("🧠 RAG・記憶チューニング")
+    use_rag_setting = st.toggle(
+        "RAG検索 (長期記憶の検索)",
+        value=config.get("brain", {}).get("use_rag", True),
+        help="OFF にすると過去の記憶DBからの検索を行いません。短期記憶・中期記憶のみで応答します。",
+    )
     use_cache = st.toggle("コンテキストキャッシュ (Mid-term Memory)", value=config["brain"].get("use_context_cache", False))
     _is_gemini_inst = is_gemini_provider(model_name)
     if _is_gemini_inst:
@@ -1176,6 +1191,7 @@ def render_instance_settings_screen():
     _SECTION_LABELS = {
         "system_instruction": "性格設定 (system_instruction)",
         "key_memory": "根幹記憶 (key_memory)",
+        "glossary": "共通言語辞書 (glossary)",
         "label_notes": "ラベル・注意文 (label_notes)",
         "current_time": "現在時刻 (current_time)",
         "mid_term": "中期記憶 (mid_term)",
@@ -1223,7 +1239,7 @@ def render_instance_settings_screen():
                 is_disabled = (sid == "system_instruction")
                 is_checked = sid in st.session_state.ctx_si_order
                 _si_enabled[sid] = st.checkbox(
-                    "", value=True, disabled=is_disabled, key=f"si_chk_{sid}",
+                    f"有効: {sid}", value=True, disabled=is_disabled, key=f"si_chk_{sid}",
                     label_visibility="collapsed",
                 )
             with c2:
@@ -1247,7 +1263,7 @@ def render_instance_settings_screen():
             c1, c2, c3, c4 = st.columns([0.5, 6, 1, 1])
             with c1:
                 _cp_enabled[sid] = st.checkbox(
-                    "", value=True, key=f"cp_chk_{sid}",
+                    f"有効: {sid}", value=True, key=f"cp_chk_{sid}",
                     label_visibility="collapsed",
                 )
             with c2:
@@ -1268,6 +1284,115 @@ def render_instance_settings_screen():
         st.session_state.ctx_si_order = list(DEFAULT_CONTEXT_ORDER["system_instruction"])
         st.session_state.ctx_cp_order = list(DEFAULT_CONTEXT_ORDER["context_prefix"])
         st.rerun()
+
+    st.divider()
+
+    # ==========================================
+    # 📖 Glossary (共通言語辞書) 管理
+    # ==========================================
+    st.subheader("📖 Glossary（共通言語辞書）")
+    st.caption("GatekeeperとBrainに注入される意味記憶です。未知語のパニックを防ぎます。")
+
+    # Glossary データ読み込み
+    glossary_data = {"version": 1, "entries": []}
+    try:
+        gl_resp = requests.get(f"{api_url}/instances/{instance_name}/glossary", timeout=5)
+        if gl_resp.ok:
+            glossary_data = gl_resp.json()
+    except Exception:
+        pass
+
+    entries = glossary_data.get("entries", [])
+
+    # session_state にエントリコピーを保持（編集用）
+    if "glossary_entries" not in st.session_state or st.session_state.get("glossary_instance") != instance_name:
+        st.session_state.glossary_entries = [dict(e) for e in entries]
+        st.session_state.glossary_instance = instance_name
+
+    gl_entries = st.session_state.glossary_entries
+
+    # --- フィルター ---
+    gl_filter_col1, gl_filter_col2 = st.columns([2, 2])
+    with gl_filter_col1:
+        gl_status_filter = st.selectbox("ステータス", ["all", "active", "pending", "archived"], key="gl_status_filter")
+    with gl_filter_col2:
+        gl_search = st.text_input("🔍 用語検索", key="gl_search", placeholder="用語名で絞り込み")
+
+    # フィルタリング
+    filtered_indices = []
+    for i, entry in enumerate(gl_entries):
+        if gl_status_filter != "all" and entry.get("status") != gl_status_filter:
+            continue
+        if gl_search and gl_search.lower() not in entry.get("term", "").lower():
+            continue
+        filtered_indices.append(i)
+
+    st.caption(f"{len(filtered_indices)} / {len(gl_entries)} 件表示")
+
+    # --- エントリ一覧 ---
+    for idx in filtered_indices:
+        entry = gl_entries[idx]
+        with st.container(border=True):
+            gc1, gc2, gc3 = st.columns([5, 2, 1])
+            with gc1:
+                st.markdown(f"**{entry.get('term', '')}**")
+                st.caption(entry.get("definition", ""))
+                aliases = entry.get("aliases", [])
+                if aliases:
+                    st.caption(f"別名: {', '.join(aliases)}")
+            with gc2:
+                new_status = st.selectbox(
+                    "status",
+                    ["active", "pending", "archived"],
+                    index=["active", "pending", "archived"].index(entry.get("status", "active")),
+                    key=f"gl_status_{idx}",
+                    label_visibility="collapsed",
+                )
+                if new_status != entry.get("status"):
+                    gl_entries[idx]["status"] = new_status
+            with gc3:
+                if st.button("🗑️", key=f"gl_del_{idx}"):
+                    gl_entries.pop(idx)
+                    st.rerun()
+
+    # --- 新規エントリ追加 ---
+    with st.expander("➕ 新しい用語を追加"):
+        new_term = st.text_input("用語名", key="gl_new_term")
+        new_def = st.text_input("定義", key="gl_new_def")
+        new_aliases = st.text_input("別名（カンマ区切り）", key="gl_new_aliases")
+        new_cat = st.selectbox("カテゴリ", ["system", "hardware", "project", "tool", "world", "character", "other"], key="gl_new_cat")
+        if st.button("追加", key="gl_add_entry"):
+            if new_term and new_def:
+                alias_list = [a.strip() for a in new_aliases.split(",") if a.strip()] if new_aliases else []
+                gl_entries.append({
+                    "term": new_term,
+                    "definition": new_def,
+                    "aliases": alias_list,
+                    "category": new_cat,
+                    "status": "active",
+                })
+                st.rerun()
+            else:
+                st.warning("用語名と定義は必須です。")
+
+    # --- Glossary 保存ボタン ---
+    if st.button("💾 Glossary を保存", key="gl_save", use_container_width=True):
+        save_data = {"version": glossary_data.get("version", 1), "entries": gl_entries}
+        try:
+            sv_resp = requests.post(
+                f"{api_url}/instances/{instance_name}/glossary",
+                json=save_data,
+                timeout=5,
+            )
+            if sv_resp.ok:
+                st.success("Glossary を保存しました。")
+                # session_state をリセットして再読み込みさせる
+                st.session_state.pop("glossary_entries", None)
+                st.session_state.pop("glossary_instance", None)
+            else:
+                st.error(f"保存エラー: {sv_resp.text}")
+        except Exception as e:
+            st.error(f"保存エラー: {e}")
 
     st.divider()
 
@@ -1324,10 +1449,13 @@ def render_instance_settings_screen():
             config["brain"]["default_use_google_search"] = default_gs
             config["brain"]["readable_instances"] = readable_selected
             config["brain"].pop("filter_memory_by_type", None)  # 旧キーを除去
+            config["brain"]["use_rag"] = use_rag_setting
             config["brain"]["search_limit"] = search_lim
             config["brain"]["fallback_fetch_limit"] = fallback_lim
             config["brain"]["keyword_hit_threshold"] = keyword_thr
             config["brain"]["cache_ttl_hours"] = cache_ttl
+
+            config["gatekeeper"] = {"enabled": gk_enabled}
 
             config["memory"]["short_term_limit"] = st_limit
             config["memory"]["max_mid_term_chars"] = mt_max
@@ -1537,7 +1665,7 @@ def render_chat_screen():
         with st.spinner("Thinking..."):
             try:
                 import requests
-                use_rag = True
+                use_rag = True  # ChatRequestには常にTrueを渡す（実際のON/OFFはconfig.brain.use_ragでサーバー側が制御）
                 use_gs = st.session_state.get("use_google_search", False)
 
                 # 安全弁: 非Geminiプロバイダーでは強制的にFalseにする

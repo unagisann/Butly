@@ -15,7 +15,7 @@ Gatekeeper は以下の 4 コンポーネントに分割されています。
 |---|---|---|
 | `TierClassifier` | `tier_classifier.py` | LLM に 4 スコアを出力させ、Python 側で tier を最終決定 |
 | `StateUpdater` | `state_updater.py` | ユーザー発言から session_state の差分（state_delta）を生成 |
-| `SearchPlanner` | `search_planner.py` | cortex 時のみ呼び出され、RAG 検索キーワードを生成 |
+| `SearchPlanner` | `search_planner.py` | cortex 時のみ呼び出され、RAG 検索キーワードを生成。`need: null` で RAG スキップ可 |
 | `MemoryBlockBuilder` | `memory_builder.py` | tier に応じた記憶ブロック辞書を構築し Brain へ渡す |
 
 ### 処理フロー
@@ -68,8 +68,8 @@ MemoryBlockBuilder.build()  → Brain へのプロンプト構築
 {
     "tier": "reflex" | "mid" | "cortex",
     "topic": str,          # state_delta または現在 topic
-    "need": str | None,   # cortex 時のみ
-    "search_targets": list[str] | None,  # cortex 時のみ
+    "need": str | None,   # cortex 時のみ。null の場合 RAG 検索をスキップ
+    "search_targets": list[str] | None,  # cortex 時のみ。need が null なら null
     "state_delta": {
         "topic": str | None,
         "mood": str | None,
@@ -109,12 +109,13 @@ LLM が出力する 4 スコアを Python 側で以下のルールで tier を�
 |---|---|---|
 | 1 | **SYSTEM INSTRUCTION** | AIの基本性格・システム設定 |
 | 2 | **KEY MEMORY** | ユーザーに関する根幹・不変の記憶 |
-| 3 | **MID-TERM（条件付）** | mid 以上のみ（下記参照） |
-| 4 | **CURRENT TIME** | 現在時刻（システムノート） |
-| 5 | **RAG（条件付）** | cortex のみ（下記参照） |
-| 6 | **FLOATING SUMMARY** | 最新の対話の浮動要約 |
-| 7 | **TIER INFO** | 現在の思考モード（reflex/mid/cortex） |
-| 8 | **Short Term** | 直近 6 ターンの会話履歴 |
+| 3 | **CURRENT TIME** | 現在時刻（システムノート） |
+| 4 | **GLOSSARY** | 共通言語辞書（意味記憶。glossary.yaml のアクティブエントリ） |
+| 5 | **MID-TERM（条件付）** | mid 以上のみ（下記参照） |
+| 6 | **RAG（条件付）** | cortex + need有りのみ（下記参照） |
+| 7 | **FLOATING SUMMARY** | 最新の対話の浮動要約 |
+| 8 | **TIER INFO** | 現在の思考モード（reflex/mid/cortex） |
+| 9 | **Short Term** | 直近 6 ターンの会話履歴 |
 
 ### 🔵 Tier別に追加される情報
 
@@ -134,6 +135,7 @@ LLM が出力する 4 スコアを Python 側で以下のルールで tier を�
   - mid の情報すべて
   - ➕ **LONG-TERM MEMORY (RAG)**: `butly_memory.db` からの検索結果
     （SearchPlanner が生成した `search_targets` をキーワードに使用）
+  - ※ SearchPlanner が `need: null` を返した場合は RAG 検索をスキップ
 - 「あの時の」といった過去への言及や、深い考察が必要な問いで発動。
 
 ---

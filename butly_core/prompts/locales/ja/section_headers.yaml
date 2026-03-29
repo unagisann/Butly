@@ -7,6 +7,11 @@ current_time: "=== CURRENT TIME (現在時刻) ==="
 long_term_memory: "=== LONG-TERM MEMORY (RAG) ==="
 floating_summary: "=== FLOATING SUMMARY (未整理記憶) ==="
 tier_info: "=== TIER INFO ==="
+glossary: "=== GLOSSARY (共通言語) ==="
+
+note_glossary: >-
+  ※ 以下はあなたとマスターの間の共通言語です。
+  定義をそのまま読み上げる必要はありません。自然な会話を優先してください。
 
 note_mid_term_digest: >-
   ※以下はAIの主観的な記憶です。

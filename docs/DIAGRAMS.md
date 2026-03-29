@@ -41,19 +41,21 @@ block-beta
     columns 1
     A["1. SYSTEM INSTRUCTION — Personality settings (immutable)"]
     B["2. KEY MEMORY — Core memory (immutable)"]
-    C["3. MID-TERM — Mid-term memory digest + relationship (low-frequency update)"]
-    D["4. CURRENT TIME — Current timestamp"]
-    E["5. RAG — Long-term memory search results (※ annotated as reference)"]
-    F["6. FLOATING — Recent conversation summary (※ annotated as recent context)"]
-    G["7. TIER INFO — Thinking mode"]
+    C["3. CURRENT TIME — Current timestamp"]
+    D["4. GLOSSARY — Shared vocabulary / Semantic memory"]
+    E["5. MID-TERM — Mid-term memory digest + relationship (low-frequency update)"]
+    F["6. RAG — Long-term memory search results (※ annotated as reference)"]
+    G["7. FLOATING — Recent conversation summary (※ annotated as recent context)"]
+    H["8. TIER INFO — Thinking mode"]
 
     style A fill:#1a1a2e,color:#ec4899
     style B fill:#1a1a2e,color:#f59e0b
-    style C fill:#1a1a2e,color:#10b981
-    style D fill:#1a1a2e,color:#8899aa
-    style E fill:#1a1a2e,color:#ef4444
-    style F fill:#1a1a2e,color:#3b82f6
-    style G fill:#1a1a2e,color:#556677
+    style C fill:#1a1a2e,color:#8899aa
+    style D fill:#1a1a2e,color:#a78bfa
+    style E fill:#1a1a2e,color:#10b981
+    style F fill:#1a1a2e,color:#ef4444
+    style G fill:#1a1a2e,color:#3b82f6
+    style H fill:#1a1a2e,color:#556677
 ```
 
 ---
@@ -145,6 +147,7 @@ flowchart TD
     MD["mid_term_digest.txt"]
     MR["mid_term_relationship.txt"]
     SS["session_state.json"]
+    GL["glossary.yaml"]
     DB["butly_memory.db"]
     ST["short_term_json/"]
     FS["floating_summaries/"]
@@ -161,6 +164,7 @@ flowchart TD
     I1 --> MD
     I1 --> MR
     I1 --> SS
+    I1 --> GL
     I1 --> DB
     I1 --> ST
     I1 --> FS
@@ -197,7 +201,11 @@ timeline
              : OpenAI / Ollama added
              : google.genai isolation
              : Embedding migration
-    Phase 5 : Integrated memory generation
+    Phase 5 ✅ : Glossary (Semantic memory)
+             : need:null RAG skip
+             : ChatService RAG consolidation
+             : Gatekeeper / RAG ON/OFF
+    Phase 6 : Integrated memory generation
              : Housekeeper Stage3
              : reflection / generalization
              : self_model accumulation start

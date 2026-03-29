@@ -10,7 +10,7 @@ manages multiple AI instances (personas), and accumulates & retrieves knowledge 
 
 ## Features
 
-- 🧠 **Multi-layer Memory System** — Short-term, floating summary, mid-term (two-layer summary), long-term (RAG), and core memory
+- 🧠 **Multi-layer Memory System** — Short-term, floating summary, mid-term (two-layer summary), long-term (RAG), glossary (semantic memory), and core memory
 - 🎭 **Multi-instance** — Create and switch between multiple AI personas
 - 🔍 **RAG Search** — Knowledge retrieval via Embedding + cosine similarity
 - 🧹 **Housekeeper** — Automatic memory organization, knowledge card generation, and episode-tagged digest creation

@@ -12,14 +12,22 @@ Identify what information should be retrieved from the long-term memory DB to re
 
 ---
 【Rules】
-- need: Describe information that is required for the response but missing from the current context.
+- need: Describe information that is required for the response but missing
+  from the current context. If the recent conversation history and mid-term
+  memory are sufficient, set to null.
 - search_targets: Generate up to 3 keywords to search the long-term memory DB.
+  If need is null, set to null.
+
+【Important】
+- Continuing a recent conversation or referencing information already shared
+  within the session does NOT require a long-term memory search.
+- need: null / search_targets: null is a valid output meaning "no search needed".
 
 【Output Format】
 Output ONLY the following JSON format. No explanation or supplementary text.
 ```json
 {{
-  "need": "Information needed but currently missing",
+  "need": "Information needed but currently missing (or null)",
   "search_targets": ["keyword1", "keyword2"]
 }}
 ```

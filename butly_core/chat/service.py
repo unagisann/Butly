@@ -102,32 +102,46 @@ class ChatService:
         instance_dir = instances_dir / instance_name
         session_state = SessionState(instance_dir)
 
-        try:
-            gk_result = gatekeeper.classify(
-                user_input=request.text,
-                history_msgs=history_fmt,
-                session_state=session_state.to_dict(),
-                override_config=instance_config,
-            )
-            tier = gk_result.get("tier", "mid")
-        except Exception as e:
-            print(f"[ChatService] Gatekeeper エラー、フォールバック: {e}")
+        gk_enabled = instance_config.get("gatekeeper", {}).get("enabled", True)
+
+        if gk_enabled:
+            try:
+                gk_result = gatekeeper.classify(
+                    user_input=request.text,
+                    history_msgs=history_fmt,
+                    session_state=session_state.to_dict(),
+                    override_config=instance_config,
+                )
+                tier = gk_result.get("tier", "mid")
+            except Exception as e:
+                print(f"[ChatService] Gatekeeper エラー、フォールバック: {e}")
+                gk_result = {
+                    "tier": "mid", "topic": "", "need": None,
+                    "search_targets": None, "state_delta": {},
+                }
+                tier = "mid"
+
+            # SessionState 更新
+            state_delta = gk_result.get("state_delta", {})
+            session_state.apply_delta(state_delta)
+        else:
+            # Gatekeeper 無効時: 常に mid 相当で動作（RAG なし）
             gk_result = {
                 "tier": "mid", "topic": "", "need": None,
                 "search_targets": None, "state_delta": {},
             }
             tier = "mid"
+            print("[ChatService] Gatekeeper disabled — defaulting to mid tier")
 
-        # SessionState 更新
-        state_delta = gk_result.get("state_delta", {})
-        session_state.apply_delta(state_delta)
         session_state.increment_turn(tier)
 
         # --- 5. 記憶ブロック構築 ---
+        use_rag = instance_config.get("brain", {}).get("use_rag", True)
+
         memory_blocks = mem_block_builder.build(
             tier=tier,
             memory_manager=memory,
-            brain=brain if tier == "cortex" else None,
+            brain=brain if (tier == "cortex" and use_rag) else None,
             user_input=request.text,
             instance_name=instance_name,
             override_config=instance_config,
@@ -149,26 +163,13 @@ class ChatService:
                 session_state=session_state.to_dict(),
             )
 
-        # RAG コンテキストを ChatService 側で構築
+        # RAG は Gatekeeper → MemoryBlockBuilder で一元管理
+        # memory_blocks["rag_context"] に結果が格納済み（cortex + need有効時のみ）
         rag_results = []
-        if request.use_rag:
-            keyword_data = brain.extract_keywords(request.text, instance_config)
-            keywords = keyword_data.get("keywords", [])
-            current_instance = memory.instance_dir.name
-
-            # cortex で Gatekeeper 済み RAG がある場合は流用
-            if memory_blocks and tier == "cortex" and memory_blocks.get("rag_context"):
-                print("[ChatService] RAG: cortex モード、Gatekeeper 済み RAG を流用")
-            else:
-                from butly_core.config import SYSTEM_CONFIG as _SC
-                limit = _SC["brain"]["search_limit"]
-                rag_results = brain.search_knowledge(
-                    keywords, request.text,
-                    instance_name=current_instance,
-                    limit=limit,
-                    override_config=instance_config,
-                )
-                print(f"[ChatService] RAG Search: keywords={keywords}, hits={len(rag_results)}")
+        if memory_blocks and memory_blocks.get("rag_context"):
+            print("[ChatService] RAG: Gatekeeper 経由の RAG コンテキストを使用")
+        else:
+            print("[ChatService] RAG: なし（Gatekeeper 判断によりスキップ）")
 
         context = {
             "brain": brain,

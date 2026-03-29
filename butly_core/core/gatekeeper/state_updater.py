@@ -112,7 +112,10 @@ class StateUpdater:
             result = {}
             for key in ("topic", "mood", "add_goal", "add_unresolved", "resolve"):
                 val = data.get(key)
-                result[key] = val if val else None
+                # LLM が "None" / "null" を文字列として出力するケースを正規化
+                if val in (None, "None", "null", ""):
+                    val = None
+                result[key] = val
 
             return result
 

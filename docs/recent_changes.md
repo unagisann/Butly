@@ -1,5 +1,31 @@
 # Recent Changes
 
+## Glossary（意味記憶）導入・RAG 一元化・GK/RAG トグル (2026-04-02)
+
+### Glossary（共通言語辞書）
+- **glossary.yaml**: インスタンス別に `instances/{name}/glossary.yaml` を追加。term / definition / aliases / category / status フィールドを持つ YAML 形式の意味記憶。
+- **memory.py**: `get_glossary()` / `get_glossary_raw()` / `save_glossary()` の 3 メソッドを追加。
+- **memory_builder.py**: `build_context_prefix()` に `_build_glossary()` ビルダーを追加。全 tier で context_prefix に注入（CURRENT TIME の直後、MID-TERM の前）。
+- **section_headers.yaml**: ja/en に `glossary` ヘッダーと `note_glossary` 注釈を追加。
+- **API**: `GET /instances/{name}/glossary` / `POST /instances/{name}/glossary` エンドポイントを追加。
+- **UI**: `app.py` にインスタンス設定画面のGlossary管理セクション（フィルタ・追加・削除・ステータス変更・保存）を追加。
+
+### SearchPlanner need:null
+- **search_planner.txt**: `need: null` / `search_targets: null` の出力を許可。「検索が不要な場合」の説明を【Important】セクションとして追加。
+- **search_planner.py**: LLM が返す `"None"` / `"null"` / `""` 文字列を Python `None` に正規化。
+- **state_updater.py**: 同様の `"None"` / `"null"` 正規化を実装。
+- **memory_builder.py**: `need` が null の場合に RAG 検索をスキップするロジックを追加（cortex でも RAG 不要時にコストを抑制）。
+
+### ChatService RAG 一元化
+- **service.py**: ChatService 独自の RAG 検索パス（キーワード抽出 + 検索）を完全に削除。RAG は MemoryBlockBuilder 経由の単一パスに統一。
+- **Gatekeeper ON/OFF**: `config.gatekeeper.enabled` で Gatekeeper 全体を無効化可能（無効時は mid tier 固定、RAG なし）。
+- **RAG ON/OFF**: `config.brain.use_rag` で RAG 検索を無効化可能。cortex 時でも use_rag=False なら brain を渡さない。
+- **UI**: `app.py` に「🧬 Gatekeeper 設定」トグルと「RAG検索」トグルを追加。
+
+### その他
+- **Streamlit checkbox 警告修正**: 空ラベル `""` を `f"有効: {sid}"` + `label_visibility="collapsed"` に変更。
+- **テスト**: `TestContextPrefixGlossary` クラス（6 テスト）を追加。全 216 テストパス。
+
 ## モデル選択UIにカスタム入力欄を追加 (2026-03-29)
 
 - **カスタムモデル入力**: 各ロール（Chat / Summary / Gatekeeper / Embedding）のモデル選択に「✏️ カスタム入力...」オプションを追加。プリセット以外の任意のモデル名を直接入力可能に。
