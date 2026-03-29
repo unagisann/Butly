@@ -21,3 +21,4 @@ Context Cache はデフォルト OFF で、現在のトークン規模（〜1万
 - [ ] `app.py` `initialize_system()` 内の `prepare_cache` 呼び出しを削除
 - [ ] `cached_content` の戻り値を `initialize_system` から除去（または常に `None`）
 - [ ] config のデフォルト値 `use_context_cache: false` は維持
+
