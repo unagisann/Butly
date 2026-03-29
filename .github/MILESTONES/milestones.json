@@ -1,0 +1,67 @@
+[
+  {
+    "title": "v0.9 — UI正常化 & クリーンアップ",
+    "description": "既存UIの不要機能削除・残骸クリーンアップ。新機能追加の前に技術的負債を解消する。",
+    "due_on": null,
+    "issue_titles": [
+      "Context Cache の UI 削除",
+      "Interactions API 残骸の完全クリーンアップ"
+    ]
+  },
+  {
+    "title": "v0.10 — チャットUX改善",
+    "description": "チャット画面の操作性向上。メッセージ削除・再生成、RAGスコア表示など日常利用の体験を改善する。",
+    "due_on": null,
+    "issue_titles": [
+      "チャット画面 — 直近メッセージの削除と再生成（Swipe）",
+      "RAG デバッグにスコア表示を追加"
+    ]
+  },
+  {
+    "title": "v0.11 — 設定画面の拡充",
+    "description": "モデルパラメータ・Memory設定・Housekeeper履歴など、設定周りの機能を充実させる。",
+    "due_on": null,
+    "issue_titles": [
+      "モデルパラメータ設定の拡充（top_p 等）",
+      "Memory 設定の補完（digest/relationship サイズ制御）",
+      "Housekeeper 管理画面に実行履歴を追加"
+    ]
+  },
+  {
+    "title": "v1.0 — Lorebook & 記憶アーキテクチャ",
+    "description": "キーワードトリガー型コンテキスト注入（Lorebook）の実装と、記憶DBのUI分離。RP対応・ペルソナ対応の基盤となる。",
+    "due_on": null,
+    "issue_titles": [
+      "Lorebook（キーワードトリガー型コンテキスト注入）",
+      "記憶 DB の UI 分離（通常記憶 vs Lorebook）"
+    ]
+  },
+  {
+    "title": "v1.1 — キャラ & ペルソナ",
+    "description": "Character Card V2インポートとユーザーペルソナ機能。外部キャラ資産の活用とユーザー側の多面的な自己記述を可能にする。",
+    "due_on": null,
+    "issue_titles": [
+      "Character Card V2 インポート",
+      "ユーザーペルソナ（User Persona）"
+    ]
+  },
+  {
+    "title": "v1.2 — ロールプレイ基盤",
+    "description": "Author's Note・RP設定画面・チャット分岐。ロールプレイ用途の本格対応。",
+    "due_on": null,
+    "issue_titles": [
+      "動的プロンプト注入位置の制御（Author's Note）",
+      "RP 用設定画面（ロールプレイモード）",
+      "チャット分岐（Chat Bookmarks）"
+    ]
+  },
+  {
+    "title": "v1.3 — マルチメディア",
+    "description": "TTS音声合成と表情スプライト表示。マルチメディア体験の強化。",
+    "due_on": null,
+    "issue_titles": [
+      "TTS 統合（音声合成）",
+      "表情・スプライト表示（SessionState mood 連動）"
+    ]
+  }
+]

@@ -1,0 +1,26 @@
+name: Setup Milestones
+
+on:
+  push:
+    paths:
+      - '.github/MILESTONES/*.json'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  setup-milestones:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create milestones and assign issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python .github/scripts/setup_milestones.py
