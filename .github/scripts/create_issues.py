@@ -109,6 +109,39 @@ def _parse_yaml_simple(text: str) -> dict:
     return result
 
 
+def ensure_labels_exist(labels: list[str], repo: str | None = None) -> None:
+    """ラベルが存在しない場合は自動作成する。
+
+    Args:
+        labels: 確認・作成するラベルのリスト
+        repo: リポジトリ名 (owner/repo形式)
+    """
+    if not labels:
+        return
+
+    # 既存ラベル一覧を取得
+    cmd = ["gh", "label", "list", "--json", "name", "--limit", "200"]
+    if repo:
+        cmd.extend(["--repo", repo])
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        existing = {item["name"] for item in json.loads(result.stdout)}
+    except (subprocess.CalledProcessError, json.JSONDecodeError):
+        existing = set()
+
+    for label in labels:
+        if label not in existing:
+            create_cmd = ["gh", "label", "create", label]
+            if repo:
+                create_cmd.extend(["--repo", repo])
+            try:
+                subprocess.run(create_cmd, capture_output=True, text=True, check=True)
+                print(f"  🏷️ ラベル作成: {label}")
+            except subprocess.CalledProcessError:
+                print(f"  ⚠️ ラベル作成スキップ (既存?): {label}")
+
+
 def create_issue_with_gh(
     title: str,
     body: str,
@@ -130,6 +163,10 @@ def create_issue_with_gh(
     Returns:
         作成されたIssueの情報(dict)、失敗時はNone
     """
+    # ラベルが存在しない場合は事前に作成
+    if labels:
+        ensure_labels_exist(labels, repo)
+
     cmd = ["gh", "issue", "create", "--title", title, "--body", body]
 
     if labels:
