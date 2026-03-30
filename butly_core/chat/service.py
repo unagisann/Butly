@@ -18,6 +18,14 @@ from butly_core.llm.factory import ProviderFactory
 from starlette.concurrency import run_in_threadpool
 
 
+def _is_gemini_model(model_name: str) -> bool:
+    """モデル名が Gemini かどうかを判定する"""
+    if not model_name:
+        return True  # デフォルトは Gemini
+    lower = model_name.lower()
+    return lower.startswith("gemini") or lower.startswith("models/gemini")
+
+
 class ChatService:
     """
     チャット実行のステートレスオーケストレーター。
@@ -171,6 +179,37 @@ class ChatService:
         else:
             print("[ChatService] RAG: なし（Gatekeeper 判断によりスキップ）")
 
+        # --- 5.5 Web検索（非Gemini + 検索ON時） ---
+        web_search_context = ""
+        web_sources = []
+        if request.use_web_search and not _is_gemini_model(model_name):
+            from butly_core.search import create_search_provider
+            search_provider = create_search_provider()
+            if search_provider.is_available():
+                print("[ChatService] Web Search: 汎用検索モジュールで検索実行")
+                search_results = await run_in_threadpool(
+                    search_provider.search,
+                    query=request.text,
+                    max_results=3,
+                )
+                if search_results:
+                    lines = []
+                    for i, r in enumerate(search_results, 1):
+                        lines.append(f"[{i}] {r.title}")
+                        lines.append(f"    URL: {r.url}")
+                        lines.append(f"    {r.content}")
+                        lines.append("")
+                    web_search_context = "\n".join(lines)
+                    web_sources = [{"title": r.title, "url": r.url} for r in search_results]
+                    print(f"[ChatService] Web Search: {len(search_results)} 件取得")
+                else:
+                    print("[ChatService] Web Search: 結果なし")
+            else:
+                print("[ChatService] Web Search: API キー未設定のためスキップ")
+
+        if web_search_context:
+            memory_blocks["web_search_context"] = web_search_context
+
         context = {
             "brain": brain,
             "memory_manager": memory,
@@ -200,6 +239,10 @@ class ChatService:
         result.search_targets = gk_result.get("search_targets")
         result.session_state = session_state.to_dict()
         result.gatekeeper_scores = gk_result.get("llm_scoring")
+
+        # Web検索ソースをレスポンスに追加
+        if web_sources:
+            result.sources = web_sources + (result.sources or [])
 
         # --- 7. 会話保存 ---
         memory.save_single_turn(request.text, result.text)

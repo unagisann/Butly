@@ -24,6 +24,8 @@ flowchart TD
     F --> J["◆ ChatService<br/>Provider.generate()"]
     G --> J
     I -->|検索結果| J
+    J -->|非Gemini + 検索ON| WS["🔍 SearchModule<br/>Tavily API"]
+    WS -->|検索結果をcontextに注入| J
     J --> K((返答))
     K --> L["▣ short_term_json 保存"]
     L -.->|定期処理| M["⚙ Housekeeper<br/>日次 + 週次バッチ"]
@@ -47,6 +49,7 @@ block-beta
     F["6. RAG — 長期記憶検索結果（※参考情報注釈付き）"]
     G["7. FLOATING — 直近の会話要約（※直近文脈注釈付き）"]
     H["8. TIER INFO — 思考モード"]
+    I["9. WEB SEARCH RESULTS — Web検索結果（非Gemini + 検索ON時のみ）"]
 
     style A fill:#1a1a2e,color:#ec4899
     style B fill:#1a1a2e,color:#f59e0b
@@ -56,6 +59,7 @@ block-beta
     style F fill:#1a1a2e,color:#ef4444
     style G fill:#1a1a2e,color:#3b82f6
     style H fill:#1a1a2e,color:#556677
+    style I fill:#1a1a2e,color:#f97316
 ```
 
 ---
@@ -198,6 +202,9 @@ timeline
              : RAW→要約の切替スイッチ
              : 品質検証
     Multi-Provider ✅ : マルチプロバイダー対応
+    Web Search ✅ : 汎用Web検索モジュール
+                  : Tavily API統合
+                  : 非Geminiプロバイダー対応
              : OpenAI / Ollama 追加
              : google.genai 隔離
              : 埋め込みマイグレーション

@@ -115,7 +115,8 @@ LLM が出力する 4 スコアを Python 側で以下のルールで tier を�
 | 6 | **RAG（条件付）** | cortex + need有りのみ（下記参照） |
 | 7 | **FLOATING SUMMARY** | 最新の対話の浮動要約 |
 | 8 | **TIER INFO** | 現在の思考モード（reflex/mid/cortex） |
-| 9 | **Short Term** | 直近 6 ターンの会話履歴 |
+| 9 | **WEB SEARCH RESULTS**（条件付） | 非Gemini + use_web_search=True 時のみ。Tavily API 経由のWeb検索結果 |
+| 10 | **Short Term** | 直近 6 ターンの会話履歴 |
 
 ### 🔵 Tier別に追加される情報
 

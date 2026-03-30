@@ -115,7 +115,8 @@ The tier is determined on the Python side using the 4 scores output by the LLM:
 | 6 | **RAG (conditional)** | cortex + need present only (see below) |
 | 7 | **FLOATING SUMMARY** | Floating summary of the latest dialogue flow |
 | 8 | **TIER INFO** | Current thinking mode (reflex / mid / cortex) |
-| 9 | **Short Term** | Last 6 turns of conversation history |
+| 9 | **WEB SEARCH RESULTS** (conditional) | Non-Gemini + use_web_search=True only. Web search results via Tavily API |
+| 10 | **Short Term** | Last 6 turns of conversation history |
 
 ### 🔵 Information Added Per Tier
 

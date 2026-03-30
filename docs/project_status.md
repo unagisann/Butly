@@ -20,6 +20,7 @@ Butlyは、高度な記憶管理機能（短期記憶・中期記憶・長期記
   - `housekeeper.py`: バックグラウンドでの記憶の抽象化（事実ダイジェスト・関係性のスナップショット生成）
 
 ## 現在のフェーズとステータス
+- **汎用Web検索モジュール追加 (2026-03-31)**: Gemini 以外のプロバイダー（OpenAI / Ollama）でもWeb検索を利用可能に。`butly_core/search/` パッケージとして Tavily Search API を統合。検索結果は `ChatService` が `context_prefix` に注入し、LLM には通常のコンテキストとして渡すパターンA方式を採用。Gemini は従来通り Native Grounding を使用。UI では非 Gemini 時に 🔍 トグルを表示し、月次使用量トラッキングも搭載。
 - **Provider 同期/非同期統一完了 (2026-03-23)**: 全プロバイダーの `generate()` / `summarize()` を `async def` → `def`（同期）に統一。FastAPI の実行中イベントループと `asyncio.run()` が競合する問題を根本解決。`ChatService` 側で `run_in_threadpool()` に逃がす設計に変更。`BaseProvider` に将来の段階的非同期移行用として `async_generate()` / `async_summarize()` / `async_embed()` のデフォルト実装（同期版ラップ）を追備。
 - **マルチプロバイダー対応完了 (2026-03-22)**: Gemini 専用アーキテクチャをプロバイダー非依存に改修。`google.genai` の import を `GeminiProvider` のみに隔離し、OpenAI / Ollama プロバイダーを追加。`user_config.json` の `model_name` 変更のみでプロバイダー切り替え可能。埋め込みマイグレーションツール (`migrate_embeddings.py`) も提供。
 - **Raspi V2 (画像チャット対応) 完了**: DTOの共通化、GeminiProviderへの画像処理の隠蔽化、`ChatService`の導入による責務分離アーキテクチャへのリファクタリングが完了。

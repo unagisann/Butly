@@ -37,3 +37,7 @@ note_context_prefix: >-
   If any information below conflicts with recent conversation, always prioritize recent conversation.
 
 context_prefix_label: "[Background Info]"
+
+web_search: >-
+  [Web Search Results] The following is reference information retrieved from the internet.
+  Use it as a reference for up-to-date information, but always cross-check with your own knowledge.

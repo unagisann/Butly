@@ -21,6 +21,7 @@ DEFAULT_CONTEXT_ORDER = {
         "floating",
         "tier_info",
         "google_search",
+        "web_search",
     ],
     "system_instruction_position": "top",
 }
@@ -329,6 +330,12 @@ def build_context_prefix(
             return h('note_google_search')
         return None
 
+    def _build_web_search():
+        web_search_ctx = blocks.get("web_search_context", "")
+        if web_search_ctx:
+            return f"{h('web_search')}\n{web_search_ctx}"
+        return None
+
     def _build_glossary():
         if not memory_manager:
             return None
@@ -350,6 +357,7 @@ def build_context_prefix(
         "floating": _build_floating,
         "tier_info": _build_tier_info,
         "google_search": _build_google_search,
+        "web_search": _build_web_search,
     }
 
     sections = []

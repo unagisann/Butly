@@ -102,6 +102,11 @@ SYSTEM_CONFIG = {
     "backup": {
         "generations": 7,
         "dir_name": "db_backups"
+    },
+    "search": {
+        "provider": "tavily",
+        "max_results": 3,
+        "search_depth": "basic",
     }
 }
 

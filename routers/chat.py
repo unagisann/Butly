@@ -63,6 +63,7 @@ class ChatRequest(BaseModel):
     instance_name: str = "00_master"
     use_rag: bool = True
     use_google_search: bool = False
+    use_web_search: bool = False
     attachments: List[Dict[str, Any]] = []
 
 class ChatResponse(BaseModel):
@@ -96,6 +97,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         instance_name=request.instance_name,
         use_rag=request.use_rag,
         use_google_search=request.use_google_search,
+        use_web_search=request.use_web_search,
     )
 
     try:

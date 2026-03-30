@@ -24,6 +24,8 @@ flowchart TD
     F --> J["◆ ChatService<br/>Provider.generate()"]
     G --> J
     I -->|search results| J
+    J -->|non-Gemini + search ON| WS["🔍 SearchModule<br/>Tavily API"]
+    WS -->|inject results into context| J
     J --> K((Response))
     K --> L["▣ short_term_json save"]
     L -.->|scheduled| M["⚙ Housekeeper<br/>Daily + Weekly batch"]
@@ -47,6 +49,7 @@ block-beta
     F["6. RAG — Long-term memory search results (※ annotated as reference)"]
     G["7. FLOATING — Recent conversation summary (※ annotated as recent context)"]
     H["8. TIER INFO — Thinking mode"]
+    I["9. WEB SEARCH RESULTS — Web search results (non-Gemini + search ON only)"]
 
     style A fill:#1a1a2e,color:#ec4899
     style B fill:#1a1a2e,color:#f59e0b
@@ -56,6 +59,7 @@ block-beta
     style F fill:#1a1a2e,color:#ef4444
     style G fill:#1a1a2e,color:#3b82f6
     style H fill:#1a1a2e,color:#556677
+    style I fill:#1a1a2e,color:#f97316
 ```
 
 ---
@@ -198,6 +202,9 @@ timeline
              : RAW→Summary toggle switch
              : Quality validation
     Multi-Provider ✅ : Multi-provider support
+    Web Search ✅ : Generic web search module
+                  : Tavily API integration
+                  : Non-Gemini provider support
              : OpenAI / Ollama added
              : google.genai isolation
              : Embedding migration

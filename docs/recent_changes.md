@@ -1,5 +1,40 @@
 # Recent Changes
 
+## 汎用Web検索モジュール追加 (2026-03-31)
+
+Gemini 以外のプロバイダー（OpenAI / Ollama）で Web 検索を利用可能にする汎用検索モジュールを実装。
+
+### 新規パッケージ: `butly_core/search/`
+- **base.py**: `BaseSearchProvider` 抽象基底クラス（`search()` / `is_available()`）。将来の差し替え（DuckDuckGo、SerpAPI 等）に備えた設計。
+- **tavily_provider.py**: `TavilySearchProvider` — Tavily Search API 実装。環境変数 `TAVILY_API_KEY` で認証。
+- **types.py**: `SearchResult` DTO（title / url / content / score）。
+- **usage_tracker.py**: `UsageTracker` — 月次 API 使用量を `butly_core/search_usage.json` に記録。
+- **__init__.py**: `create_search_provider()` ファクトリ関数。
+
+### ChatService 統合
+- **service.py**: `_is_gemini_model()` ヘルパーを追加。非 Gemini + `use_web_search=True` 時に Tavily 検索を実行し、結果を `memory_blocks["web_search_context"]` に格納。検索ソース URL をレスポンスの `sources` に追加。
+- **設計方針**: 検索の ON/OFF はユーザーがトグルで決定（パターンA）。LLM に検索判断させるエージェント方式（パターンB）は別 Issue へ。
+
+### MemoryBuilder 対応
+- **memory_builder.py**: `DEFAULT_CONTEXT_ORDER` に `web_search` を追加。`_build_web_search()` ビルダーで `web_search_context` が存在する場合のみセクションを出力。
+- **section_headers.yaml**: ja/en に `web_search` ヘッダー（Web検索結果の参照注釈付き）を追加。
+
+### DTO / Router / UI
+- **types.py**: `ChatRequest` に `use_web_search: bool = False` フィールドを追加。`normalize_ws_payload()` でも受け渡し対応。
+- **routers/chat.py**: REST の `ChatRequest` に `use_web_search` を追加し、内部リクエスト変換に反映。
+- **app.py**: 非 Gemini 時に 🔍 トグル表示（`TAVILY_API_KEY` 未設定時は disabled）。ペイロードに `use_web_search` を追加。
+
+### 設定・依存関係
+- **config.py**: `SYSTEM_CONFIG["search"]` にデフォルト設定（provider / max_results / search_depth）を追加。
+- **requirements.txt**: `tavily-python>=0.5.0` 追加。
+- **.env.example**: `TAVILY_API_KEY` の説明を追加。
+
+### テスト
+- `tests/test_search_types.py`: SearchResult DTO テスト（4 件）。
+- `tests/test_tavily_provider.py`: TavilySearchProvider テスト（is_available / モック検索 / エラー処理、7 件）。
+- `tests/test_usage_tracker.py`: UsageTracker テスト（increment / get / 破損ファイル対応、6 件）。
+- 既存テスト含む全 57 件パス。
+
 ## Glossary（意味記憶）導入・RAG 一元化・GK/RAG トグル (2026-04-02)
 
 ### Glossary（共通言語辞書）

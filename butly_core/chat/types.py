@@ -54,6 +54,7 @@ class ChatRequest(BaseModel):
     model_name: Optional[str] = None
     use_rag: bool = True
     use_google_search: bool = False
+    use_web_search: bool = False
     metadata: Optional[Dict[str, Any]] = None
 
 
@@ -143,6 +144,7 @@ def normalize_ws_payload(raw_payload) -> ChatRequest:
         text = raw_payload.get("text", "")
         instance_name = raw_payload.get("instance_name", "00_master")
         use_google_search = raw_payload.get("use_google_search", False)
+        use_web_search = raw_payload.get("use_web_search", False)
 
         attachments = []
 
@@ -166,6 +168,7 @@ def normalize_ws_payload(raw_payload) -> ChatRequest:
             attachments=attachments,
             instance_name=instance_name,
             use_google_search=use_google_search,
+            use_web_search=use_web_search,
         )
 
     # 不正な形式

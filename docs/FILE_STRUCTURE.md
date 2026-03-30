@@ -1,6 +1,6 @@
 # Butly ファイル構成一覧
 
-> 最終更新: 2026-04-02
+> 最終更新: 2026-03-31
 
 ---
 
@@ -116,7 +116,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 アプリ全体の設定定数を管理。
 
 - `AI_CONFIG` — モデル別の設定（chat / summary / knowledge / embedding / gatekeeper）
-- `SYSTEM_CONFIG` — パス定義・メモリ上限・Brain パラメータ等
+- `SYSTEM_CONFIG` — パス定義・メモリ上限・Brain パラメータ・検索モジュール設定等
 - `USER_CONFIG_PATH` — ユーザーカスタム設定ファイルのパス
 - `_recursive_update(base, override)` — 設定辞書を再帰マージするユーティリティ
 
@@ -130,7 +130,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 チャット機能で使う Pydantic モデルとバリデーション関数。LLM プロバイダーに依存しない。
 
 - `Attachment` — 添付ファイル（kind / mime_type / data_base64 / name / size）
-- `ChatRequest` — チャットリクエスト（text / attachments / instance_name / model_name / use_rag 等）
+- `ChatRequest` — チャットリクエスト（text / attachments / instance_name / model_name / use_rag / use_web_search 等）
 - `ChatResponse` — チャット応答（text / keywords / references / tier / need / session_state 等）
 - `validate_attachments(attachments)` — 枚数・サイズ・MIME タイプのバリデーション
 - `normalize_ws_payload(payload)` — WebSocket ペイロードを `ChatRequest` に正規化
@@ -146,6 +146,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 3. Gatekeeper.classify → tier 判定 + state_delta 生成（Gatekeeper 無効時は mid 固定）
 4. SessionState.apply_delta → セッション状態更新
 5. MemoryBlockBuilder.build → 記憶ブロック辞書構築
+5.5. Web検索実行（非Gemini + use_web_search=True 時のみ。Tavily API 経由。結果は memory_blocks["web_search_context"] に格納）
 6. ProviderFactory.create → Provider 選択・vision チェック
 7. RAG 検索結果の取得（cortex + use_rag=True 時のみ。Gatekeeper 経由 MemoryBlockBuilder が実行済みの RAG を流用）
 8. provider.generate(full_prompt, attachments, context) → LLM 応答生成
@@ -369,7 +370,45 @@ tier に応じて、LLM プロバイダーに渡す「記憶ブロック辞書�
 | `cortex` | ✅ | ✅ | ✅ | ✅ (RAG) |
 
 - `build_system_instruction_from_blocks(blocks, memory_manager, use_google_search)` — **不変セクション**（system_instruction + Key_Memory）のみを結合して system_instruction 文字列を生成
-- `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / glossary / mid_term / RAG / floating / tier 情報 / Google 検索注意書き）を結合し、Provider が会話履歴の先頭に user メッセージとして注入する文字列を生成
+- `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / glossary / mid_term / RAG / floating / tier 情報 / Google 検索注意書き / Web 検索結果）を結合し、Provider が会話履歴の先頭に user メッセージとして注入する文字列を生成
+
+---
+
+## butly_core/search/
+
+プロバイダー非依存の汎用 Web 検索モジュール。Gemini 以外のプロバイダー（OpenAI / Ollama）で Web 検索を利用するためのパッケージ。
+
+### `butly_core/search/types.py`
+検索結果の Pydantic DTO。
+
+- `SearchResult` — 検索結果 1 件（title / url / content / score）
+
+### `butly_core/search/base.py`
+検索プロバイダーの抽象基底クラス。
+
+- `BaseSearchProvider` (ABC)
+  - `search(query, max_results)` — クエリを実行し SearchResult リストを返す（同期）
+  - `is_available()` — API キー設定済みか等、利用可能かを返す
+
+### `butly_core/search/tavily_provider.py`
+Tavily Search API を使った検索プロバイダー実装。
+
+- `TavilySearchProvider(BaseSearchProvider)` — 環境変数 `TAVILY_API_KEY` で認証
+  - `search(query, max_results)` — Tavily API で検索、結果を SearchResult に変換
+  - `is_available()` — API キーが設定済みかチェック
+
+### `butly_core/search/usage_tracker.py`
+月次の検索 API 使用量カウンター。
+
+- `UsageTracker` — `butly_core/search_usage.json` に YYYY-MM キーで累計を記録
+  - `increment()` — 当月カウントを +1
+  - `get_current_month_count()` — 当月の使用回数を返す
+  - `get_all()` — 全月の使用量を dict で返す
+
+### `butly_core/search/__init__.py`
+パッケージ公開。
+
+- `create_search_provider()` — 設定に基づいて検索プロバイダーをファクトリ生成（現在は Tavily 固定、将来の差し替えポイント）
 
 ---
 

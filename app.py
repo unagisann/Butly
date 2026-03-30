@@ -168,6 +168,8 @@ if "debug_mode" not in st.session_state:
 if "use_google_search" not in st.session_state:
     # インスタンス設定のdefault_use_google_searchを初期値に使用
     st.session_state.use_google_search = False
+if "use_web_search" not in st.session_state:
+    st.session_state.use_web_search = False
 if "input_key_counter" not in st.session_state:
     st.session_state.input_key_counter = 0 # チャット入力欄クリア用
 if "pending_attachments" not in st.session_state:
@@ -1540,29 +1542,41 @@ def render_chat_screen():
                 del st.session_state.last_interaction_time
             st.rerun()
     with col6:
-        # Google Search toggle
-        # Gemini以外のプロバイダーでは無効化する
+        # Google Search toggle / Web Search toggle
+        # プロバイダーに応じて使い分ける
         active_model = get_active_chat_model(api_url, instance_name)
         is_gemini = is_gemini_provider(active_model)
 
         gs_on = st.session_state.get("use_google_search", False)
 
         if is_gemini:
-            # Gemini: 通常通りトグル可能
+            # Gemini: 通常通りトグル可能（Native Grounding）
             gs_label = "🌐 ON" if gs_on else "🌐"
             gs_help = "Google検索: ON（クリックでOFF）" if gs_on else "Google検索: OFF（クリックでON）"
             if st.button(gs_label, help=gs_help):
                 st.session_state.use_google_search = not gs_on
                 st.rerun()
         else:
-            # 非Gemini: 無効化 + 強制OFF
+            # 非Gemini: Google検索を強制OFF + 汎用Web検索トグル
             if gs_on:
                 st.session_state.use_google_search = False
-            st.button(
-                "🌐",
-                help="Google検索はGeminiモデル専用です",
-                disabled=True,
-            )
+
+            import os
+            tavily_available = bool(os.environ.get("TAVILY_API_KEY", ""))
+            ws_on = st.session_state.get("use_web_search", False)
+
+            if tavily_available:
+                ws_label = "🔍 ON" if ws_on else "🔍"
+                ws_help = "Web検索: ON（クリックでOFF）" if ws_on else "Web検索: OFF（クリックでON）"
+                if st.button(ws_label, help=ws_help):
+                    st.session_state.use_web_search = not ws_on
+                    st.rerun()
+            else:
+                st.button(
+                    "🔍",
+                    help="Web検索を使用するには TAVILY_API_KEY を設定してください",
+                    disabled=True,
+                )
 
     st.divider()
     
@@ -1672,6 +1686,8 @@ def render_chat_screen():
                 if use_gs and not is_gemini:
                     use_gs = False
 
+                use_ws = st.session_state.get("use_web_search", False) if not is_gemini else False
+
                 # 添付画像をペイロードに変換
                 last_msg = st.session_state.messages[-1]
                 att_list = [
@@ -1689,6 +1705,7 @@ def render_chat_screen():
                     "instance_name": instance_name,
                     "use_rag": use_rag,
                     "use_google_search": use_gs,
+                    "use_web_search": use_ws,
                     "attachments": att_list,
                 }
 
