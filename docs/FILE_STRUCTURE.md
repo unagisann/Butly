@@ -266,7 +266,7 @@ Gatekeeper.classify(user_input, history, session_state)
 外部 API 互換の Facade。`ChatService` からはここだけを呼ぶ。
 
 - `Gatekeeper(base_dir)`
-  - `classify(user_input, history_msgs, session_state, current_topic, override_config)` — 上記 3 サブクラスを協調実行し、統合結果を返す
+  - `classify(user_input, history_msgs, session_state, current_topic, override_config, instance_dir)` — 上記 3 サブクラスを協調実行し、統合結果を返す。`instance_dir` を受け取り、`recent_digest_headlines.json` を読み込んで TierClassifier に渡す
 
 **返却値の構造:**
 ```python
@@ -293,7 +293,7 @@ Gatekeeper.classify(user_input, history, session_state)
 LLM に 4 スコア（0–1）を出力させ、Python 側でルールに基づき tier を決定する。
 
 - `TierClassifier(base_dir)`
-  - `classify(user_input, history_msgs, current_topic, override_config)` — tier 判定を実行
+  - `classify(user_input, history_msgs, current_topic, recent_headlines, override_config)` — tier 判定を実行。`recent_headlines` でダイジェストから抽出した見出しを注入
 
 **tier 決定ロジック:**
 | tier | 条件 |
@@ -315,9 +315,6 @@ LLM に 4 スコア（0–1）を出力させ、Python 側でルールに基づ�
 {
     "topic": str | None,         # 現在の話題（変化した場合）
     "mood": str | None,          # ユーザーの気分
-    "add_goal": str | None,      # 追加するゴール
-    "add_unresolved": str | None,# 追加する未解決事項
-    "resolve": str | None,       # 解決済みにする未解決事項
 }
 ```
 
@@ -338,19 +335,18 @@ LLM が返す `"None"` / `"null"` 文字列は Python の `None` に正規化さ
 
 - `SessionState(instance_dir)`
   - `apply_delta(delta)` — state_delta を現在の state に適用する
-  - `increment_turn(tier)` — ターン数と最後の tier を更新する
-  - `to_dict()` — 現在の状態を dict で返す
+  - `increment_turn(tier, history_msgs)` — ターン数と最後の tier を更新する。topic 寿命チェック（10ターン＋直近3ターン言及なしで自動リセット）を含む
+  - `to_dict()` — 現在の状態を dict で返す（内部管理フィールド `topic_set_at_turn` は除外）
   - `_load()` / `_save()` — `session_state.json` との I/O
 
 **管理するフィールド:**
 ```python
 {
-    "topic": str,       # 現在の会話の話題
-    "mood": str,        # ユーザーの気分 (neutral / positive / negative 等)
-    "goals": list,      # 達成したいゴール
-    "unresolved": list, # 未解決事項
-    "turn_count": int,  # ターン数
-    "last_tier": str,   # 直前の tier
+    "topic": str,        # 現在の会話の話題（live topic）
+    "mood": str,         # ユーザーの気分 (neutral / casual / focused 等)
+    "turn_count": int,   # ターン数
+    "last_tier": str,    # 直前の tier
+    "topic_set_at_turn": int,  # 内部管理用。topic が設定されたターン数
 }
 ```
 

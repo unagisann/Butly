@@ -296,6 +296,10 @@ timeline
              : OpenAI / Ollama added
              : google.genai isolation
              : Embedding migration
+    Phase 4.5 ✅ : Gatekeeper compactification
+             : session_state goals/unresolved removal
+             : recent_digest_headlines introduction
+             : StateUpdater output simplification
     Phase 5 : Integrated memory generation
              : Housekeeper Stage3
              : reflection / generalization

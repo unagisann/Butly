@@ -53,9 +53,6 @@ class StateUpdater:
             {
                 "topic": str | None,
                 "mood": str | None,
-                "add_goal": str | None,
-                "add_unresolved": str | None,
-                "resolve": str | None
             }
         """
         if not self.gatekeeper_config:
@@ -108,9 +105,9 @@ class StateUpdater:
 
             data = json.loads(json_str)
 
-            # Validate and normalize
+            # Validate and normalize — topic, mood のみ抽出
             result = {}
-            for key in ("topic", "mood", "add_goal", "add_unresolved", "resolve"):
+            for key in ("topic", "mood"):
                 val = data.get(key)
                 # LLM が "None" / "null" を文字列として出力するケースを正規化
                 if val in (None, "None", "null", ""):
@@ -124,23 +121,15 @@ class StateUpdater:
             return default
 
     def _default_output(self) -> dict:
-        return {
-            "topic": None,
-            "mood": None,
-            "add_goal": None,
-            "add_unresolved": None,
-            "resolve": None,
-        }
+        return {"topic": None, "mood": None}
 
     def _format_state(self, state: dict) -> str:
         """セッション状態をプロンプト用テキストに変換する。"""
         if not isinstance(state, dict):
-            return "(未設定)"
+            return "(none)"
         lines = [
-            f"Topic: {state.get('topic', '') or '(未設定)'}",
+            f"Topic: {state.get('topic', '') or '(none)'}",
             f"Mood: {state.get('mood', 'neutral')}",
-            f"Goals: {', '.join(state.get('goals', [])) if state.get('goals') else '(なし)'}",
-            f"Unresolved: {', '.join(state.get('unresolved', [])) if state.get('unresolved') else '(なし)'}",
             f"Turn: {state.get('turn_count', 0)}",
         ]
         return "\n".join(lines)

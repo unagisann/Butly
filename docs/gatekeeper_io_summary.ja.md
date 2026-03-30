@@ -41,16 +41,15 @@ MemoryBlockBuilder.build()  → Brain へのプロンプト構築
 - **ユーザーの最新の発言** (`user_input`)
 - **直近の会話履歴** (`history_msgs`): 直近のやり取り（最大 3 ターン分）
 - **現在のトピック** (`current_topic`): SessionState から渡される話題文字列
+- **最近の会話ヘッドライン** (`recent_headlines`): `recent_digest_headlines.json` から抽出されたヘッドライン（Housekeeper 日次バッチで生成）
 
 ### StateUpdater への入力
 
 - **ユーザーの最新の発言** (`user_input`)
 - **直近の会話履歴** (`history_msgs`)
 - **現在のセッション状態** (`current_state`): 以下のフィールドを持つ SessionState:
-  - `topic`: 現在の話題
+  - `topic`: 現在の話題（live topic。10ターン経過＋直近3ターン言及なしで自動消滅）
   - `mood`: 会話のムード（デフォルト: `neutral`）
-  - `goals`: 目標リスト（最大 5 件）
-  - `unresolved`: 未解決事項リスト（最大 8 件）
   - `turn_count`: 経過ターン数
   - `last_tier`: 直前の処理 tier
 
@@ -73,9 +72,6 @@ MemoryBlockBuilder.build()  → Brain へのプロンプト構築
     "state_delta": {
         "topic": str | None,
         "mood": str | None,
-        "add_goal": str | None,
-        "add_unresolved": str | None,
-        "resolve": str | None
     },
     "llm_scoring": {
         "response_complexity": float,      # 0〜1
@@ -150,8 +146,8 @@ LLM が出力する 4 スコアを Python 側で以下のルールで tier を�
 state_delta = {
     "topic": str | None,           # 話題の更新
     "mood": str | None,            # ムードの更新
-    "add_goal": str | None,        # 目標を追加
-    "add_unresolved": str | None,  # 未解決事項を追加
-    "resolve": str | None          # 未解決事項を解決済みに移動
 }
 ```
+
+**注記:** `goals`, `unresolved`, `add_goal`, `add_unresolved`, `resolve` フィールドは廃止されました。  
+SearchPlanner には `recent_headlines` は渡されません — これは意図的な設計判断です（実装計画の設計判断セクション参照）。

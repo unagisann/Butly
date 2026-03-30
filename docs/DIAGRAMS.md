@@ -14,7 +14,7 @@ The processing flow from user input to response generation and memory storage.
 flowchart TD
     A((User Input)) --> B["⧫ Gatekeeper<br/>Provider.classify()"]
     B --> C["Structured Output<br/>tier / need / search_targets / state_delta"]
-    C -.->|state_delta| D["◈ Session State<br/>topic / mood / goals / unresolved"]
+    C -.->|state_delta| D["◈ Session State<br/>topic / mood"]
     D -.->|reference| B
     C --> E{tier}
     E -->|reflex| F["⚡ reflex<br/>Minimal context"]
@@ -212,6 +212,10 @@ timeline
              : need:null RAG skip
              : ChatService RAG consolidation
              : Gatekeeper / RAG ON/OFF
+    Phase 5.5 ✅ : Gatekeeper headlines + session_state compactification
+             : session_state goals/unresolved removal
+             : recent_digest_headlines introduction
+             : StateUpdater output simplification
     Phase 6 : Integrated memory generation
              : Housekeeper Stage3
              : reflection / generalization

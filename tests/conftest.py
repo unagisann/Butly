@@ -107,10 +107,9 @@ def test_instance_dir(base_dir: Path) -> Path:
         json.dumps({
             "topic": "",
             "mood": "neutral",
-            "goals": [],
-            "unresolved": [],
             "turn_count": 0,
             "last_tier": "mid",
+            "topic_set_at_turn": 0,
         }),
         encoding="utf-8",
     )

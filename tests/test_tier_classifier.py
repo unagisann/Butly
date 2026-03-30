@@ -160,3 +160,64 @@ class TestParseResponse:
         result = classifier._parse_response(raw)
         assert result["llm_scoring"]["response_complexity"] == 1.0
         assert result["llm_scoring"]["emotional_weight"] == 0.0
+
+
+class TestRecentHeadlines:
+    """recent_headlines 引数のテスト"""
+
+    @pytest.fixture
+    def classifier(self):
+        return TierClassifier()
+
+    def test_classify_accepts_recent_headlines(self, classifier, monkeypatch):
+        """recent_headlines 引数ありでプロンプトに注入される"""
+        captured_prompt = {}
+
+        def mock_get(name, **kwargs):
+            captured_prompt["kwargs"] = kwargs
+            return "mock prompt"
+
+        monkeypatch.setattr(classifier._prompt_loader, "get", mock_get)
+
+        # classify の LLM 呼び出しもモック
+        def mock_classify(prompt, config):
+            return '{"llm_scoring": {"response_complexity": 0.5, "emotional_weight": 0.0, "memory_reference_likelihood": 0.5, "continuity_need": 0.0}}'
+
+        from unittest.mock import MagicMock
+        mock_provider = MagicMock()
+        mock_provider.classify = mock_classify
+        monkeypatch.setattr(
+            "butly_core.llm.factory.ProviderFactory.create",
+            lambda model_name: mock_provider,
+        )
+
+        result = classifier.classify(
+            "テスト", [],
+            current_topic="",
+            recent_headlines="- [Topic] Gatekeeper改修方針",
+        )
+
+        assert captured_prompt["kwargs"]["recent_headlines"] == "- [Topic] Gatekeeper改修方針"
+        assert result["tier"] in ("reflex", "mid", "cortex")
+
+    def test_classify_empty_headlines_no_error(self, classifier, monkeypatch):
+        """recent_headlines 空文字でもエラーにならない"""
+        def mock_get(name, **kwargs):
+            return "mock prompt"
+
+        monkeypatch.setattr(classifier._prompt_loader, "get", mock_get)
+
+        def mock_classify(prompt, config):
+            return '{"llm_scoring": {"response_complexity": 0.1, "emotional_weight": 0.0, "memory_reference_likelihood": 0.0, "continuity_need": 0.0}}'
+
+        from unittest.mock import MagicMock
+        mock_provider = MagicMock()
+        mock_provider.classify = mock_classify
+        monkeypatch.setattr(
+            "butly_core.llm.factory.ProviderFactory.create",
+            lambda model_name: mock_provider,
+        )
+
+        result = classifier.classify("おはよう", [], recent_headlines="")
+
+        assert result["tier"] == "reflex"

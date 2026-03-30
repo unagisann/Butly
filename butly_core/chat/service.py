@@ -119,6 +119,7 @@ class ChatService:
                     history_msgs=history_fmt,
                     session_state=session_state.to_dict(),
                     override_config=instance_config,
+                    instance_dir=instance_dir,
                 )
                 tier = gk_result.get("tier", "mid")
             except Exception as e:
@@ -141,7 +142,7 @@ class ChatService:
             tier = "mid"
             print("[ChatService] Gatekeeper disabled — defaulting to mid tier")
 
-        session_state.increment_turn(tier)
+        session_state.increment_turn(tier, history_msgs=history_fmt)
 
         # --- 5. 記憶ブロック構築 ---
         use_rag = instance_config.get("brain", {}).get("use_rag", True)

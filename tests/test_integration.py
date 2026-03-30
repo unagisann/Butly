@@ -102,7 +102,7 @@ class TestGatekeeperIntegration:
         delta = result.get("state_delta", {})
         assert isinstance(delta, dict)
         # delta のキーは既知のもののみ
-        valid_keys = {"topic", "mood", "add_goal", "add_unresolved", "resolve"}
+        valid_keys = {"topic", "mood"}
         assert set(delta.keys()).issubset(valid_keys)
 
 
@@ -198,3 +198,69 @@ class TestEndToEndFlow:
         context = build_context_prefix(blocks, memory_manager)
         assert "=== TIER INFO" in context
         assert tier in context
+
+
+class TestGatekeeperHeadlines:
+    """Gatekeeper の headlines 読み込みテスト（API キー不要）"""
+
+    def test_load_headlines_with_instance_dir(self, test_instance_dir: Path):
+        """Gatekeeper.classify に instance_dir を渡すと headlines が読まれる"""
+        from butly_core.core.gatekeeper import Gatekeeper
+
+        # headlines ファイルを作成
+        headlines_file = test_instance_dir / "recent_digest_headlines.json"
+        import json
+        headlines_file.write_text(
+            json.dumps({
+                "generated_at": "2026-03-30T03:00:00",
+                "headlines": [
+                    {"type": "topic", "text": "Gatekeeper改修方針"},
+                    {"type": "event", "text": "session_stateコンパクト化を決定"},
+                ],
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        gk = Gatekeeper()
+        result = gk._load_headlines(test_instance_dir)
+
+        assert "Gatekeeper改修方針" in result
+        assert "[Topic]" in result
+        assert "[Event]" in result
+
+    def test_load_headlines_missing_file(self, test_instance_dir: Path):
+        """headlines ファイルが存在しない場合のフォールバック"""
+        from butly_core.core.gatekeeper import Gatekeeper
+
+        headlines_file = test_instance_dir / "recent_digest_headlines.json"
+        headlines_file.unlink(missing_ok=True)
+
+        gk = Gatekeeper()
+        result = gk._load_headlines(test_instance_dir)
+
+        assert result == "(no recent headlines)"
+
+    def test_load_headlines_no_instance_dir(self):
+        """instance_dir が None の場合のフォールバック"""
+        from butly_core.core.gatekeeper import Gatekeeper
+
+        gk = Gatekeeper()
+        result = gk._load_headlines(None)
+
+        assert result == "(no recent headlines)"
+
+    def test_load_headlines_empty_headlines(self, test_instance_dir: Path):
+        """headlines が空配列の場合のフォールバック"""
+        from butly_core.core.gatekeeper import Gatekeeper
+
+        import json
+        headlines_file = test_instance_dir / "recent_digest_headlines.json"
+        headlines_file.write_text(
+            json.dumps({"generated_at": "2026-03-30T03:00:00", "headlines": []}),
+            encoding="utf-8",
+        )
+
+        gk = Gatekeeper()
+        result = gk._load_headlines(test_instance_dir)
+
+        assert result == "(no recent headlines)"

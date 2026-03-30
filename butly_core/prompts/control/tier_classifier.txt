@@ -4,6 +4,9 @@ Analyze the user's latest message and score its attributes to determine the requ
 【Current Topic】
 {current_topic}
 
+【Recent Conversation Headlines (from past sessions)】
+{recent_headlines}
+
 【Recent Conversation History (last 3 turns)】
 {history_text}
 
@@ -26,10 +29,11 @@ Rate each of the following 4 attributes on a scale of 0.0 to 1.0.
    - 0.7: Noticeable emotional content (e.g., "ちょっと疲れたな")
    - 1.0: Heavy emotional weight (e.g., "もうやめたいかも")
 
-3. memory_reference_likelihood: How likely is it that past shared memories or user-specific history should be referenced?
+3. memory_reference_likelihood: How likely is it that past shared memories should be referenced?
    - 0.0: No memory needed (e.g., "おはよう")
-   - 0.3: Slight possibility (e.g., "最近どう？")
-   - 0.7: Strong signal (e.g., "あの件どうなった？")
+   - 0.3: Slight possibility, but not matching any recent headline
+   - 0.5: Vaguely related to a recent headline topic
+   - 0.7: Clearly references a recent headline or past shared event
    - 1.0: Explicit reference to past events (e.g., "前に話してたプロジェクト")
 
 4. continuity_need: How much does understanding this message depend on the immediately preceding conversation?

@@ -24,8 +24,7 @@ Butly の記憶システムは、会話の鮮度と重要度に応じて複数�
 
 [Stage 1] 1_integrated JSONs を읽 → テキスト整形
   ├─ [4] mid_term.txt ← RAWログ追記
-  ├─ [5] mid_term_digest.txt ← LLMによる日次事実ダイジェスト（差分追記）
-  └─ [6] mid_term_relationship.txt ← LLMによる関係性スナップショット（7日ごと全上書き）
+  ├─ [5] mid_term_digest.txt ← LLMによる日次事実ダイジェスト（差分追記）  ├─ [5b] recent_digest_headlines.json ← LLMによるヘッドライン抽出（最大 4 件）  └─ [6] mid_term_relationship.txt ← LLMによる関係性スナップショット（7日ごと全上書き）
 
 [Stage 2] 1_integrated JSONs → 日付グループ → LLMナレッジ抽出
   └─ [7] butly_memory.db ← 長期記憶ベクトルDB (RAG)
@@ -123,6 +122,20 @@ SYSTEM_CONFIG["memory"]["max_digest_chars"] = 8000
 
 ---
 
+### 5b. recent_digest_headlines.json（最近のヘッドライン）
+
+| 項目 | 内容 |
+|---|---|
+| **場所** | `instances/{name}/recent_digest_headlines.json` |
+| **書き込み** | Housekeeper Stage 1 内 `_generate_recent_headlines()` — ダイジェストから LLM で最大 4 件のヘッドラインを抽出 |
+| **入力** | `mid_term_digest.txt` の末尾（最大 10,000 文字） |
+| **形式** | `{"type": "topic" or "event", "headline": "20〜40文字の要約"}` の JSON 配列 |
+| **使用先** | `Gatekeeper.__init__()` がヘッドラインを読み込み TierClassifier に渡し、memory_reference_likelihood のスコアリングに使用 |
+| **ライフサイクル** | Housekeeper 実行のたびに上書き |
+| **使用モデル** | `AI_CONFIG["summary"]["model_name"]`（Flash Lite 系） |
+
+---
+
 ### 6. mid_term_relationship.txt（関係性スナップショット）
 
 | 項目 | 内容 |
@@ -188,7 +201,8 @@ ButlyHousekeeper.run()
     │     ├── [Step 2] floating_summaries/* を削除（一時コンテキストのクリア）
     │     ├── [Step 3] mid_term.txt に追記（オーバーフロー時は 3_log へアーカイブ）
     │     ├── [Step 4] _generate_daily_digest() → mid_term_digest.txt 差分追記
-    │     └── [Step 5] _update_relationship_if_due() → mid_term_relationship.txt（7日間隔）
+    │     ├── [Step 5] _generate_recent_headlines() → recent_digest_headlines.json（最大 4 見出し）
+    │     └── [Step 6] _update_relationship_if_due() → mid_term_relationship.txt（7日間隔）
     │
     └── stage_2_knowledgeize(instance_path, db_type)
           ├── 1_integrated JSON を日付でグループ化
@@ -238,6 +252,7 @@ instances/{name}/
 ├── Key_Memory.txt             # 不変の根幹記憶（手動編集）
 ├── system_instruction.txt     # AI 人格定義（手動編集）
 ├── session_state.json         # Gatekeeper セッション状態
+├── recent_digest_headlines.json  # 最近の会話ヘッドライン（Gatekeeper 入力）
 ├── butly_memory.db            # ⑦ 長期記憶ベクトルDB
 └── memory_archive/
     ├── 1_integrated/          # ③ Housekeeper 処理待ち生 JSON
@@ -258,6 +273,7 @@ instances/{name}/
 | 会話要約 (floating) | `AI_CONFIG["summary"]["model_name"]` | 短期溢れ時の浮動要約 |
 | 事実ダイジェスト生成 | `AI_CONFIG["summary"]["model_name"]` | mid_term_digest 生成 |
 | 関係性スナップショット | `AI_CONFIG["knowledge"]["model_name"]` | mid_term_relationship 生成 |
+| ヘッドライン抽出 | `AI_CONFIG["summary"]["model_name"]` | recent_digest_headlines.json 生成 |
 | ナレッジカード抽出 | `AI_CONFIG["knowledge"]["model_name"]` | Stage 2 RAG DB への抽出 |
 | 埋め込みベクトル生成 | `AI_CONFIG["embedding"]["model_name"]` | knowledge_cards.embedding_blob |
 | Tier 判定 | `AI_CONFIG["gatekeeper"]["model_name"]` | TierClassifier 4スコア出力 |

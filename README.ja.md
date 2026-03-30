@@ -322,6 +322,10 @@ timeline
              : OpenAI / Ollama 追加
              : google.genai 隔離
              : 埋め込みマイグレーション
+    Phase 4.5 ✅ : Gatekeeper コンパクト化
+             : session_state goals/unresolved 廃止
+             : recent_digest_headlines 導入
+             : StateUpdater 出力簡素化
     Phase 5 : 統合記憶生成
              : Housekeeper Stage3
              : reflection / generalization

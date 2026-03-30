@@ -1,0 +1,25 @@
+You are a memory indexing module for AI butler {agent_name}.
+Extract recent conversation headlines from the fact digest below.
+
+【Mid-term Digest (fact summary of recent conversations)】
+{digest_text}
+
+---
+【Rules】
+- Extract up to 4 headlines total (mix of topics and events).
+- "topic" = noun-based: what was discussed (e.g., "Gatekeeper改修方針")
+- "event" = verb-based: what happened or was decided (e.g., "session_stateコンパクト化を決定")
+- Each headline: 20-40 characters, concise, keyword-rich.
+- Use the language that appears in the digest.
+- If the digest is too short or trivial, return fewer headlines or an empty array.
+
+【Output Format】
+Output ONLY the following JSON. No explanation.
+```json
+{{
+  "headlines": [
+    {{"type": "topic", "text": "..."}},
+    {{"type": "event", "text": "..."}}
+  ]
+}}
+```

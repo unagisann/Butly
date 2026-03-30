@@ -8,7 +8,7 @@ prompts:
   tier_classifier:
     location: control
     description: "Tier classification signal extraction"
-    variables: [agent_name, history_text, user_input, current_topic]
+    variables: [agent_name, history_text, user_input, current_topic, recent_headlines]
 
   state_updater:
     location: control
@@ -24,6 +24,11 @@ prompts:
     location: control
     description: "Keyword extraction for DB search"
     variables: [user_input]
+
+  recent_headlines:
+    location: control
+    description: "Recent digest headline extraction for Gatekeeper context"
+    variables: [agent_name, digest_text]
 
   # --- Persona Prompts (locales/) ---
   housekeeper_summarize:

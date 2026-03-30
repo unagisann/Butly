@@ -303,6 +303,9 @@ class ButlyHousekeeper:
         if new_text.strip():
             self._generate_daily_digest(instance_path, new_text)
 
+        # --- 7. recent_digest_headlines 生成 ---
+        self._generate_recent_headlines(instance_path)
+
         # 関係性更新は新規ログの有無に関わらず常時チェック
         # （7日インターバルで制御されるため、毎日呼んでも問題ない）
         self._update_relationship_if_due(instance_path)
@@ -390,6 +393,75 @@ class ButlyHousekeeper:
             
         except Exception as e:
             print(f"[Housekeeper] Daily digest generation error: {e}")
+
+    def _generate_recent_headlines(self, instance_path: Path):
+        """
+        mid_term_digest.txt から recent_digest_headlines.json を生成する。
+        毎回上書き（蓄積しない）。
+        digest は既に RAW から事実抽出済みのため、同じ文字数でもカバー範囲が広い。
+        """
+        from butly_core.config import SYSTEM_CONFIG, AI_CONFIG
+
+        digest_file = instance_path / "mid_term_digest.txt"
+        headlines_file = instance_path / "recent_digest_headlines.json"
+
+        if not digest_file.exists():
+            print("[Housekeeper] recent_headlines: mid_term_digest.txt not found, skipping.")
+            return
+
+        digest_text = digest_file.read_text(encoding="utf-8")
+        if len(digest_text.strip()) < 100:
+            print(f"[Housekeeper] recent_headlines: digest too short ({len(digest_text)} chars), skipping.")
+            headlines_file.write_text(
+                json.dumps({"generated_at": datetime.now().isoformat(), "headlines": []},
+                           ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+            return
+
+        # 上限 10,000 文字。超過時は末尾を採用
+        if len(digest_text) > 10000:
+            digest_text = digest_text[-10000:]
+
+        print(f"[Housekeeper] recent_headlines: Generating from {len(digest_text)} chars of digest...")
+
+        from butly_core.prompts import PromptLoader
+        try:
+            summary_conf = AI_CONFIG.get("summary", {})
+            model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite-preview")
+
+            loader = PromptLoader()
+            prompt = loader.get(
+                "recent_headlines",
+                agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
+                digest_text=digest_text,
+            )
+            provider = self._get_provider(model_name)
+            raw_response = provider.classify(
+                prompt,
+                {"generation_config": {"temperature": 0.0, "max_output_tokens": 512}},
+            )
+
+            # JSON パース
+            match = re.search(r"```json(.*?)```", raw_response, re.DOTALL)
+            json_str = match.group(1).strip() if match else raw_response.strip()
+            data = json.loads(json_str)
+
+            # バリデーション: headlines は最大4件
+            headlines = data.get("headlines", [])[:4]
+            output = {
+                "generated_at": datetime.now().isoformat(),
+                "headlines": headlines,
+            }
+
+            headlines_file.write_text(
+                json.dumps(output, ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+            print(f"[Housekeeper] recent_headlines: Generated {len(headlines)} headlines.")
+
+        except Exception as e:
+            print(f"[Housekeeper] recent_headlines generation error: {e}")
 
     def _update_relationship_if_due(self, instance_path: Path):
         """

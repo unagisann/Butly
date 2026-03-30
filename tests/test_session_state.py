@@ -25,8 +25,6 @@ class TestSessionStateInit:
 
         assert ss.state["topic"] == ""
         assert ss.state["mood"] == "neutral"
-        assert ss.state["goals"] == []
-        assert ss.state["unresolved"] == []
         assert ss.state["turn_count"] == 0
         assert ss.state["last_tier"] == "mid"
 
@@ -37,8 +35,6 @@ class TestSessionStateInit:
             json.dumps({
                 "topic": "テスト話題",
                 "mood": "playful",
-                "goals": ["ゴールA"],
-                "unresolved": ["課題X"],
                 "turn_count": 10,
                 "last_tier": "cortex",
             }),
@@ -63,7 +59,30 @@ class TestSessionStateInit:
 
         assert ss.state["topic"] == "部分的なデータ"
         assert ss.state["mood"] == "neutral"  # デフォルト補完
-        assert ss.state["goals"] == []
+
+    def test_legacy_format_with_goals_unresolved(self, test_instance_dir: Path):
+        """旧フォーマット JSON（goals/unresolved あり）読み込みで正常動作（後方互換）"""
+        state_file = test_instance_dir / "session_state.json"
+        state_file.write_text(
+            json.dumps({
+                "topic": "旧フォーマット",
+                "mood": "focused",
+                "goals": ["ゴールA", "ゴールB"],
+                "unresolved": ["課題X"],
+                "turn_count": 5,
+                "last_tier": "mid",
+            }),
+            encoding="utf-8",
+        )
+
+        ss = SessionState(test_instance_dir)
+
+        assert ss.state["topic"] == "旧フォーマット"
+        assert ss.state["mood"] == "focused"
+        assert ss.state["turn_count"] == 5
+        # 旧フィールドは無視される
+        assert "goals" not in ss.state
+        assert "unresolved" not in ss.state
 
 
 class TestSessionStateDelta:
@@ -88,67 +107,30 @@ class TestSessionStateDelta:
 
         assert ss.state["topic"] == "元の話題"
 
-    def test_add_goal(self, test_instance_dir: Path):
-        """goals に新しいゴールが追加される"""
+    def test_topic_update_sets_topic_set_at_turn(self, test_instance_dir: Path):
+        """topic 更新で topic_set_at_turn が更新される"""
         ss = SessionState(test_instance_dir)
         ss.reset()
+        ss.increment_turn("mid")  # turn_count = 1
+        ss.increment_turn("mid")  # turn_count = 2
+        ss.increment_turn("mid")  # turn_count = 3
 
-        ss.apply_delta({"add_goal": "テストを書く"})
+        ss.apply_delta({"topic": "新トピック"})
 
-        assert "テストを書く" in ss.state["goals"]
+        assert ss.state["topic_set_at_turn"] == 3
 
-    def test_duplicate_goal_not_added(self, test_instance_dir: Path):
-        """重複するゴールは追加されない"""
+    def test_topic_set_at_turn_updates_on_subsequent_change(self, test_instance_dir: Path):
+        """topic を再度変更すると topic_set_at_turn も更新される"""
         ss = SessionState(test_instance_dir)
         ss.reset()
+        ss.apply_delta({"topic": "最初のトピック"})
+        assert ss.state["topic_set_at_turn"] == 0
 
-        ss.apply_delta({"add_goal": "テストを書く"})
-        ss.apply_delta({"add_goal": "テストを書く"})
+        for _ in range(5):
+            ss.increment_turn("mid")
 
-        assert ss.state["goals"].count("テストを書く") == 1
-
-    def test_add_unresolved(self, test_instance_dir: Path):
-        """unresolved に課題が追加される"""
-        ss = SessionState(test_instance_dir)
-        ss.reset()
-
-        ss.apply_delta({"add_unresolved": "バグ修正"})
-
-        assert "バグ修正" in ss.state["unresolved"]
-
-    def test_resolve_removes_matching(self, test_instance_dir: Path):
-        """resolve で部分一致する unresolved が除去される"""
-        ss = SessionState(test_instance_dir)
-        ss.reset()
-        ss.apply_delta({"add_unresolved": "プロンプト最適化"})
-        ss.apply_delta({"add_unresolved": "DB設計"})
-
-        ss.apply_delta({"resolve": "プロンプト"})
-
-        assert "プロンプト最適化" not in ss.state["unresolved"]
-        assert "DB設計" in ss.state["unresolved"]
-
-    def test_goals_max_limit(self, test_instance_dir: Path):
-        """goals が上限（5件）を超えた場合、古いものが切り捨てられる"""
-        ss = SessionState(test_instance_dir)
-        ss.reset()
-
-        for i in range(8):
-            ss.apply_delta({"add_goal": f"ゴール{i}"})
-
-        assert len(ss.state["goals"]) == 5
-        # 最後の5件が残る
-        assert ss.state["goals"][-1] == "ゴール7"
-
-    def test_unresolved_max_limit(self, test_instance_dir: Path):
-        """unresolved が上限（8件）を超えた場合、古いものが切り捨てられる"""
-        ss = SessionState(test_instance_dir)
-        ss.reset()
-
-        for i in range(12):
-            ss.apply_delta({"add_unresolved": f"課題{i}"})
-
-        assert len(ss.state["unresolved"]) == 8
+        ss.apply_delta({"topic": "次のトピック"})
+        assert ss.state["topic_set_at_turn"] == 5
 
     def test_mood_update(self, test_instance_dir: Path):
         """mood が更新される"""
@@ -203,6 +185,48 @@ class TestSessionStateTurn:
         assert ss.state["turn_count"] == 3
         assert ss.state["last_tier"] == "cortex"
 
+    def test_topic_reset_after_10_turns_no_reference(self, test_instance_dir: Path):
+        """10ターン経過後に直近3ターンでtopicへの言及がなければtopicが空にリセットされる"""
+        ss = SessionState(test_instance_dir)
+        ss.reset()
+        ss.apply_delta({"topic": "古いトピック"})
+
+        # 10ターン進める（topicへの言及なし）
+        for _ in range(10):
+            ss.increment_turn("mid", history_msgs=[])
+
+        assert ss.state["topic"] == ""
+
+    def test_topic_preserved_after_10_turns_with_reference(self, test_instance_dir: Path):
+        """10ターン経過後でも直近3ターンでtopicへの言及があればtopicが保持される"""
+        ss = SessionState(test_instance_dir)
+        ss.reset()
+        ss.apply_delta({"topic": "古いトピック"})
+
+        # 9ターン進める
+        for _ in range(9):
+            ss.increment_turn("mid", history_msgs=[])
+
+        # 10ターン目で「古いトピック」に言及する履歴を渡す
+        history_with_reference = [
+            {"role": "user", "parts": ["古いトピックの件だけど"]},
+            {"role": "model", "parts": ["はい、古いトピックについてですね"]},
+        ]
+        ss.increment_turn("mid", history_msgs=history_with_reference)
+
+        assert ss.state["topic"] == "古いトピック"
+
+    def test_topic_not_reset_before_10_turns(self, test_instance_dir: Path):
+        """10ターン未満ではtopicはリセットされない"""
+        ss = SessionState(test_instance_dir)
+        ss.reset()
+        ss.apply_delta({"topic": "まだ新しいトピック"})
+
+        for _ in range(9):
+            ss.increment_turn("mid", history_msgs=[])
+
+        assert ss.state["topic"] == "まだ新しいトピック"
+
 
 class TestSessionStatePersistence:
     """ファイル永続化のテスト"""
@@ -211,29 +235,40 @@ class TestSessionStatePersistence:
         """delta 適用後に状態がファイルに保存される"""
         ss = SessionState(test_instance_dir)
         ss.reset()
-        ss.apply_delta({"topic": "永続化テスト", "add_goal": "保存確認"})
+        ss.apply_delta({"topic": "永続化テスト", "mood": "focused"})
 
         # 新しいインスタンスで読み直し
         ss2 = SessionState(test_instance_dir)
 
         assert ss2.state["topic"] == "永続化テスト"
-        assert "保存確認" in ss2.state["goals"]
+        assert ss2.state["mood"] == "focused"
 
     def test_reset_clears_all(self, test_instance_dir: Path):
         """reset で全状態がクリアされる"""
-        # 前のテストの残骸をクリアするため、まず空状態を書き込む
         state_file = test_instance_dir / "session_state.json"
         state_file.write_text("{}", encoding="utf-8")
 
         ss = SessionState(test_instance_dir)
-        ss.apply_delta({"topic": "消える話題", "add_goal": "消えるゴール"})
+        ss.apply_delta({"topic": "消える話題"})
         assert ss.state["topic"] == "消える話題"
 
         ss.reset()
 
         assert ss.state["topic"] == ""
-        assert ss.state["goals"] == []
         assert ss.state["turn_count"] == 0
+
+    def test_to_dict_excludes_internal_fields(self, test_instance_dir: Path):
+        """to_dict() に topic_set_at_turn が含まれない"""
+        ss = SessionState(test_instance_dir)
+        ss.reset()
+        ss.apply_delta({"topic": "テスト"})
+
+        d = ss.to_dict()
+
+        assert "topic_set_at_turn" not in d
+        assert "topic" in d
+        assert "mood" in d
+        assert "turn_count" in d
 
 
 class TestSessionStatePromptText:
@@ -246,11 +281,13 @@ class TestSessionStatePromptText:
         ss.apply_delta({
             "topic": "テスト",
             "mood": "focused",
-            "add_goal": "完了させる",
         })
 
         text = ss.to_prompt_text()
 
         assert "Topic: テスト" in text
         assert "Mood: focused" in text
-        assert "完了させる" in text
+        assert "Turn:" in text
+        # Goals/Unresolved は廃止済み
+        assert "Goals" not in text
+        assert "Unresolved" not in text

@@ -47,7 +47,8 @@ class TierClassifier:
         return model, merged
 
     def classify(self, user_input: str, history_msgs: list,
-                 current_topic: str = "", override_config=None) -> dict:
+                 current_topic: str = "", recent_headlines: str = "",
+                 override_config=None) -> dict:
         """
         Returns:
             {
@@ -75,6 +76,7 @@ class TierClassifier:
             current_topic=current_topic or "(未設定)",
             history_text=history_text,
             user_input=user_input,
+            recent_headlines=recent_headlines or "(no recent headlines)",
         )
 
         try:

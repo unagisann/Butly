@@ -14,7 +14,7 @@
 flowchart TD
     A((ユーザー発言)) --> B["⧫ Gatekeeper<br/>Provider.classify()"]
     B --> C["構造化出力<br/>tier / need / search_targets / state_delta"]
-    C -.->|state_delta| D["◈ Session State<br/>topic / mood / goals / unresolved"]
+    C -.->|state_delta| D["◈ Session State<br/>topic / mood"]
     D -.->|参照| B
     C --> E{tier}
     E -->|reflex| F["⚡ reflex<br/>最小コンテキスト"]
@@ -212,6 +212,10 @@ timeline
              : need:null RAG スキップ
              : ChatService RAG 一元化
              : Gatekeeper / RAG ON/OFF
+    Phase 5.5 ✅ : Gatekeeper headlines + session_state コンパクト化
+             : session_state goals/unresolved 廃止
+             : recent_digest_headlines 導入
+             : StateUpdater 出力簡素化
     Phase 6 : 統合記憶生成
              : Housekeeper Stage3
              : reflection / generalization

@@ -1,5 +1,5 @@
 You are the "state management module" of AI butler {agent_name}.
-Generate session state deltas from the user's latest message.
+Extract topic and mood changes from the user's latest message.
 
 【Current Session State】
 {session_state}
@@ -7,26 +7,20 @@ Generate session state deltas from the user's latest message.
 【Recent Conversation History (last 3 turns)】
 {history_text}
 
-【User Message to Classify】
+【User Message】
 "{user_input}"
 
 ---
-【state_delta Rules】
-- topic: Update only if the topic has changed. null if unchanged.
-- mood: Update only if the user's emotional tone has changed.
-  Options: casual / focused / frustrated / playful / serious / excited
-- add_goal: Only if a new goal has emerged.
-- add_unresolved: Only if a new unresolved issue has emerged.
-- resolve: If an existing unresolved issue has been resolved, describe it.
+【Rules】
+- topic: Update only if the conversation topic has clearly changed. null if unchanged.
+- mood: Update only if the user's emotional tone has shifted.
+  Options: casual / focused / frustrated / playful / serious / excited / neutral
 
 【Output Format】
-Output ONLY the following JSON format. No explanation or supplementary text.
+Output ONLY the following JSON. No explanation.
 ```json
 {{
   "topic": "updated topic or null",
-  "mood": "updated mood or null",
-  "add_goal": "goal to add or null",
-  "add_unresolved": "unresolved issue to add or null",
-  "resolve": "resolved issue or null"
+  "mood": "updated mood or null"
 }}
 ```

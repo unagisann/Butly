@@ -123,6 +123,20 @@ SYSTEM_CONFIG["memory"]["max_digest_chars"] = 8000
 
 ---
 
+### 5b. recent_digest_headlines.json (Recent Headlines)
+
+| Item | Content |
+|---|---|
+| **Location** | `instances/{name}/recent_digest_headlines.json` |
+| **Written by** | Housekeeper Stage 1 `_generate_recent_headlines()` — extracts up to 4 headlines from digest via LLM |
+| **Input** | Tail of `mid_term_digest.txt` (max 10,000 chars) |
+| **Format** | JSON array of `{"type": "topic" or "event", "headline": "20-40 char summary"}` |
+| **Used by** | `Gatekeeper.__init__()` loads headlines and passes to TierClassifier for memory_reference_likelihood scoring |
+| **Lifecycle** | Overwritten on every Housekeeper run |
+| **Model used** | `AI_CONFIG["summary"]["model_name"]` (Flash Lite class) |
+
+---
+
 ### 6. mid_term_relationship.txt (Relationship Snapshot)
 
 | Item | Content |
@@ -188,7 +202,8 @@ ButlyHousekeeper.run()
     │     ├── [Step 2] Delete floating_summaries/* (clear temporary context)
     │     ├── [Step 3] Append to mid_term.txt (archive overflow to 3_log/)
     │     ├── [Step 4] _generate_daily_digest() → incremental update mid_term_digest.txt
-    │     └── [Step 5] _update_relationship_if_due() → mid_term_relationship.txt (7-day interval)
+    │     ├── [Step 5] _generate_recent_headlines() → recent_digest_headlines.json (up to 4 headlines)
+    │     └── [Step 6] _update_relationship_if_due() → mid_term_relationship.txt (7-day interval)
     │
     └── stage_2_knowledgeize(instance_path, db_type)
           ├── Group 1_integrated JSONs by date
@@ -238,6 +253,7 @@ instances/{name}/
 ├── Key_Memory.txt             # immutable core memory (manual edit)
 ├── system_instruction.txt     # AI personality definition (manual edit)
 ├── session_state.json         # Gatekeeper session state
+├── recent_digest_headlines.json  # recent conversation headlines (Gatekeeper input)
 ├── butly_memory.db            # ⑦ long-term vector DB
 └── memory_archive/
     ├── 1_integrated/          # ③ raw JSONs awaiting Housekeeper processing
@@ -258,6 +274,7 @@ instances/{name}/
 | Conversation summarization (floating) | `AI_CONFIG["summary"]["model_name"]` | Floating summary on short-term overflow |
 | Fact digest generation | `AI_CONFIG["summary"]["model_name"]` | Generate mid_term_digest |
 | Relationship snapshot | `AI_CONFIG["knowledge"]["model_name"]` | Generate mid_term_relationship |
+| Recent headlines extraction | `AI_CONFIG["summary"]["model_name"]` | Generate recent_digest_headlines.json |
 | Knowledge card extraction | `AI_CONFIG["knowledge"]["model_name"]` | Stage 2 RAG DB extraction |
 | Embedding vector generation | `AI_CONFIG["embedding"]["model_name"]` | knowledge_cards.embedding_blob |
 | Tier classification | `AI_CONFIG["gatekeeper"]["model_name"]` | TierClassifier 4-score output |
