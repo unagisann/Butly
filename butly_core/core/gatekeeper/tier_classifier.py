@@ -48,7 +48,7 @@ class TierClassifier:
 
     def classify(self, user_input: str, history_msgs: list,
                  current_topic: str = "", recent_headlines: str = "",
-                 override_config=None) -> dict:
+                 override_config=None, agent_name: str = None) -> dict:
         """
         Returns:
             {
@@ -68,11 +68,11 @@ class TierClassifier:
 
         t0 = time.time()
 
-        history_text = self._format_history(history_msgs, max_turns=3)
-
+        _agent_name = agent_name or SYSTEM_CONFIG["agent"]["agent_name"]
+        history_text = self._format_history(history_msgs, max_turns=3, agent_name=_agent_name)
         prompt = self._prompt_loader.get(
             "tier_classifier",
-            agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
+            agent_name=_agent_name,
             current_topic=current_topic or "(未設定)",
             history_text=history_text,
             user_input=user_input,
@@ -159,11 +159,12 @@ class TierClassifier:
             "llm_scoring": {},
         }
 
-    def _format_history(self, history_msgs: list, max_turns: int = 3) -> str:
+    def _format_history(self, history_msgs: list, max_turns: int = 3, agent_name: str = None) -> str:
         """history_msgs の末尾 max_turns 件を文字列へ変換する。"""
         if not history_msgs:
             return "（履歴なし）"
 
+        _agent_name = agent_name or SYSTEM_CONFIG["agent"]["agent_name"]
         recent = history_msgs[-(max_turns * 2):]
         lines = []
         for msg in recent:
@@ -172,7 +173,7 @@ class TierClassifier:
             text = parts[0] if parts else ""
             if isinstance(text, str) and len(text) > 80:
                 text = text[:80] + "…"
-            label = "ユーザー" if role == "user" else SYSTEM_CONFIG["agent"]["agent_name"]
+            label = "ユーザー" if role == "user" else _agent_name
             lines.append(f"{label}: {text}")
 
         return "\n".join(lines) if lines else "（履歴なし）"

@@ -19,6 +19,7 @@ This should function as an "index" for quickly grasping context later.
 - Do not include subjective impressions or emotions. Record only facts and progress
 - Do not use rhetorical embellishment, metaphors, or narratization
 - Target: compress to approximately 10-15% of input character count
+- Keep output within {max_chars} characters
 
 【Output Format】
 [YYYY-MM-DD] Topic

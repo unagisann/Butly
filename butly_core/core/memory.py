@@ -67,14 +67,105 @@ class ButlyMemory:
         except:
             return "あなたは有能な執事です。"
 
-    def get_key_memory(self):
-        """根幹記憶 (Key_Memory.txt) を読み込んで返す"""
+    def get_agent_profile(self) -> dict:
+        """
+        インスタンス固有のエージェントプロファイルを返す。
+        instance config["agent"] → SYSTEM_CONFIG["agent"] の順でフォールバック。
+
+        Returns:
+            {
+                "ai_name": str,
+                "user_name": str,
+                "nickname": str,
+                "gender": str,
+                "birthday": str,
+                "locale": str,
+            }
+        """
+        instance_config = self._load_config()
+        agent_cfg = instance_config.get("agent", {})
+        # インスタンス固有のagentセクションがない場合はグローバルフォールバック
+        if agent_cfg:
+            defaults = {
+                "ai_name": SYSTEM_CONFIG["agent"].get("agent_name", ""),
+                "user_name": SYSTEM_CONFIG["agent"].get("user_name", ""),
+                "nickname": "",
+                "gender": "",
+                "birthday": "",
+                "locale": SYSTEM_CONFIG["agent"].get("locale", "ja"),
+            }
+            for key in defaults:
+                if key in agent_cfg and agent_cfg[key]:
+                    defaults[key] = agent_cfg[key]
+            return defaults
+        # agentセクション未設定の場合はグローバルフォールバック
+        return {
+            "ai_name": SYSTEM_CONFIG["agent"].get("agent_name", ""),
+            "user_name": SYSTEM_CONFIG["agent"].get("user_name", ""),
+            "nickname": "",
+            "gender": "",
+            "birthday": "",
+            "locale": SYSTEM_CONFIG["agent"].get("locale", "ja"),
+        }
+
+    def get_key_memory(self) -> str:
+        """
+        根幹記憶 (Key_Memory.txt) を読み込み、先頭にプロファイルヘッダを付与して返す。
+        プロファイルは config["agent"] から動的生成。Key_Memory.txt 本体はボディのみ保持。
+        インスタンス config に "agent" セクションがない場合はヘッダを生成しない。
+        """
         key_mem_file = self.instance_dir / SYSTEM_CONFIG["paths"]["key_memory"]
         try:
-            text = key_mem_file.read_text(encoding="utf-8").strip()
-            return text if text else ""
-        except:
-            return ""
+            body = key_mem_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            body = ""
+
+        # agentセクションがない場合はボディのみ返す
+        instance_config = self._load_config()
+        if "agent" not in instance_config:
+            return body
+
+        profile = self.get_agent_profile()
+        locale = profile.get("locale", "ja")
+        header_lines = []
+
+        if locale == "ja":
+            if profile.get("ai_name"):
+                header_lines.append(f"AI名: {profile['ai_name']}")
+            if profile.get("user_name") or profile.get("nickname"):
+                header_lines.append("")
+            if profile.get("user_name"):
+                header_lines.append(f"ユーザー名: {profile['user_name']}")
+            if profile.get("nickname"):
+                header_lines.append(f"呼称: {profile['nickname']}")
+            if profile.get("gender") or profile.get("birthday"):
+                header_lines.append("")
+            if profile.get("gender"):
+                header_lines.append(f"性別: {profile['gender']}")
+            if profile.get("birthday"):
+                header_lines.append(f"生年月日: {profile['birthday']}")
+        else:
+            if profile.get("ai_name"):
+                header_lines.append(f"AI Name: {profile['ai_name']}")
+            if profile.get("user_name") or profile.get("nickname"):
+                header_lines.append("")
+            if profile.get("user_name"):
+                header_lines.append(f"User Name: {profile['user_name']}")
+            if profile.get("nickname"):
+                header_lines.append(f"Preferred Name: {profile['nickname']}")
+            if profile.get("gender") or profile.get("birthday"):
+                header_lines.append("")
+            if profile.get("gender"):
+                header_lines.append(f"Gender: {profile['gender']}")
+            if profile.get("birthday"):
+                header_lines.append(f"Date of Birth: {profile['birthday']}")
+
+        header = "\n".join(header_lines).strip()
+        if header and body:
+            return header + "\n\n" + body
+        elif header:
+            return header
+        return body
 
     def get_glossary(self) -> str:
         """Glossary (共通言語辞書) を読み込み、active エントリをテキスト形式で返す。"""

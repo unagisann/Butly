@@ -9,7 +9,7 @@ class InstanceManager:
         self.instances_dir = self.base_dir / "butly_core" / "instances"
         self.instances_dir.mkdir(parents=True, exist_ok=True)
 
-    def create_instance(self, name, template_text, key_memory=""):
+    def create_instance(self, name, template_text, key_memory="", agent_profile: dict = None):
         """新しい人格フォルダと構成を作成"""
         # 半角英数チェック
         if not re.match(r"^[a-zA-Z0-9_]+$", name):
@@ -28,7 +28,6 @@ class InstanceManager:
             # 1. フォルダ作成
             new_instance_dir.mkdir()
             (new_instance_dir / "short_term_json").mkdir()
-            (new_instance_dir / "mid_term_json").mkdir() # 念のため
             
             # アーカイブ階層
             archive_root = new_instance_dir / "memory_archive"
@@ -45,6 +44,48 @@ class InstanceManager:
             # ユーザー指定のテンプレ + プロジェクト名
             final_instruction = template_text.replace("プロジェクト名：", f"プロジェクト名：{name}")
             (new_instance_dir / "system_instruction.txt").write_text(final_instruction, encoding="utf-8")
+
+            # 4. config.json (デフォルト設定)
+            default_agent = {
+                "ai_name": "",
+                "user_name": "",
+                "nickname": "",
+                "gender": "",
+                "birthday": "",
+                "locale": "ja"
+            }
+            if agent_profile:
+                default_agent.update(agent_profile)
+
+            default_config = {
+                "agent": default_agent,
+                "brain": {
+                    "use_context_cache": False,
+                    "default_use_google_search": True,
+                    "search_limit": 3,
+                    "fallback_fetch_limit": 50,
+                    "keyword_hit_threshold": 5,
+                    "cache_ttl_hours": 3,
+                    "readable_instances": ["self"]
+                },
+                "chat": {},
+                "memory": {},
+                "housekeeper": {
+                    "max_digest_chars": 3000,
+                    "max_relationship_chars": 5000,
+                    "relationship_update_interval_days": 7,
+                    "summary_max_output_tokens": 4096,
+                    "knowledge_max_output_tokens": 8192
+                }
+            }
+            (new_instance_dir / "config.json").write_text(
+                json.dumps(default_config, indent=4, ensure_ascii=False), encoding="utf-8"
+            )
+
+            # 5. glossary.yaml (空の辞書)
+            (new_instance_dir / "glossary.yaml").write_text(
+                "version: 1\nentries: []\n", encoding="utf-8"
+            )
 
             return True, f"プロジェクト '{folder_name}' を作成しました。"
         

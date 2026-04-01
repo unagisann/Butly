@@ -59,11 +59,15 @@ class Gatekeeper:
         # A. headlines 読み込み
         recent_headlines = self._load_headlines(instance_dir)
 
+        # A2. agent_name をインスタンス config から解決
+        agent_name = self._resolve_agent_name(instance_dir)
+
         # B. tier判定（headlines 付き）
         tier_result = self.tier_classifier.classify(
             user_input, history_msgs, current_topic,
             recent_headlines=recent_headlines,
             override_config=override_config,
+            agent_name=agent_name,
         )
         tier = tier_result["tier"]
 
@@ -71,6 +75,7 @@ class Gatekeeper:
         state_delta = self.state_updater.update(
             user_input, history_msgs, session_state,
             override_config=override_config,
+            agent_name=agent_name,
         )
 
         # D. cortex時のみ検索計画
@@ -80,6 +85,7 @@ class Gatekeeper:
             plan = self.search_planner.plan(
                 user_input, history_msgs, current_topic,
                 override_config=override_config,
+                agent_name=agent_name,
             )
             need = plan.get("need")
             search_targets = plan.get("search_targets")
@@ -115,6 +121,21 @@ class Gatekeeper:
             return "\n".join(lines)
         except Exception:
             return "(no recent headlines)"
+
+    def _resolve_agent_name(self, instance_dir: Path = None) -> str:
+        """instance_dir の config.json["agent"]["ai_name"] を読んで返す。見つからない場合は SYSTEM_CONFIG フォールバック。"""
+        if instance_dir:
+            config_path = instance_dir / "config.json"
+            if config_path.exists():
+                try:
+                    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                    name = cfg.get("agent", {}).get("ai_name", "")
+                    if name:
+                        return name
+                except Exception:
+                    pass
+        from butly_core.config import SYSTEM_CONFIG
+        return SYSTEM_CONFIG["agent"].get("agent_name", "Butly")
 
     def classify_tier_only(self, user_input: str, history_msgs: list,
                            current_topic: str = "") -> str:

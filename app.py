@@ -441,30 +441,25 @@ def render_home_screen():
                 import requests
                 api_url = st.session_state.api_base_url
                 try:
+                    _agent_profile = {
+                        "ai_name": ai_name_input,
+                        "user_name": user_name_input,
+                        "nickname": nickname_input if nickname_input else user_name_input,
+                        "gender": gender_input if gender_input else "",
+                        "birthday": _birthday_str,
+                        "locale": _home_locale,
+                    }
                     res = requests.post(
                         f"{api_url}/instances",
                         json={
                             "name": new_proj_name,
                             "template": new_template,
                             "key_memory": _key_memory_preview,
+                            "agent_profile": _agent_profile,
                         },
                         timeout=5,
                     )
                     if res.ok:
-                        # agent_name / user_name をグローバル config に反映
-                        try:
-                            cfg_resp = requests.get(f"{api_url}/config", timeout=5)
-                            if cfg_resp.ok:
-                                global_cfg = cfg_resp.json()
-                                global_cfg.setdefault("SYSTEM_CONFIG", {}).setdefault("agent", {})
-                                global_cfg["SYSTEM_CONFIG"]["agent"]["agent_name"] = ai_name_input
-                                if user_name_input:
-                                    global_cfg["SYSTEM_CONFIG"]["agent"]["user_name"] = (
-                                        nickname_input if nickname_input else user_name_input
-                                    )
-                                requests.post(f"{api_url}/config", json=global_cfg, timeout=5)
-                        except Exception:
-                            pass  # config 更新失敗は致命的ではない
                         st.rerun()
                     else:
                         st.error(f"エラー: {res.text}" if _home_locale == "ja" else f"Error: {res.text}")
@@ -1087,435 +1082,542 @@ def render_instance_settings_screen():
         }
     if "memory" not in config:
         config["memory"] = {"max_mid_term_chars": 30000, "short_term_limit": 6}
+    if "agent" not in config:
+        config["agent"] = {}
+    if "housekeeper" not in config:
+        config["housekeeper"] = {}
 
-    # State elements
-    sys_inst = st.text_area("System Instruction (性格設定)", value=prompts.get("system_instruction", ""), height=150)
-    key_mem = st.text_area("Key Memory (根幹記憶)", value=prompts.get("key_memory", ""), height=150)
+    # =====================
+    # タブ分割: 基本設定 / 詳細設定
+    # =====================
+    tab_basic, tab_advanced = st.tabs(["⚙️ 基本設定", "🔧 詳細設定"])
 
-    st.divider()
-    st.subheader("🤖 生成モデル設定")
-    models = [
-        'gemini-3.1-pro-preview',
-        'gemini-3-flash-preview',
-        'gemini-3.1-flash-lite-preview',
-        'gemini-2.5-pro',
-        'gemini-2.5-flash',
-        'gemini-2.5-flash-lite',
-    ]
-    current_model = config["chat"].get("model_name", "gemini-3-flash-preview")
-    if current_model not in models: models.append(current_model)
-    model_name = st.selectbox("モデル名", models, index=models.index(current_model))
-    gen_config = config["chat"].get("generation_config", {})
-    temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(gen_config.get("temperature", 1.0)))
-    max_tokens = st.number_input("最大出力トークン数", min_value=1, value=int(gen_config.get("max_output_tokens", 8192)))
+    # ==========================================
+    # ⚙️ 基本設定タブ
+    # ==========================================
+    with tab_basic:
+        # ---- エージェントプロファイル ----
+        st.subheader("👤 エージェントプロファイル")
+        _prof = config.get("agent", {})
+        _pf_col1, _pf_col2 = st.columns(2)
+        with _pf_col1:
+            pf_ai_name = st.text_input("AIの名前", value=_prof.get("ai_name", ""), key="pf_ai_name")
+            pf_user_name = st.text_input("あなたの名前", value=_prof.get("user_name", ""), key="pf_user_name")
+            pf_nickname = st.text_input("呼ばれたい名前", value=_prof.get("nickname", ""), key="pf_nickname",
+                                         help="空欄なら「あなたの名前」を使います。")
+        with _pf_col2:
+            _gender_opts_pf = ["", "男性", "女性", "その他"]
+            _current_gender = _prof.get("gender", "")
+            _gender_idx = _gender_opts_pf.index(_current_gender) if _current_gender in _gender_opts_pf else 0
+            pf_gender = st.selectbox("性別", options=_gender_opts_pf, index=_gender_idx, key="pf_gender")
+            _current_bd = _prof.get("birthday", "")
+            try:
+                from datetime import date as _date
+                _bd_val = _date.fromisoformat(_current_bd.replace("/", "-")) if _current_bd else None
+            except Exception:
+                _bd_val = None
+            pf_birthday = st.date_input("生年月日", value=_bd_val, key="pf_birthday", format="YYYY/MM/DD")
+            _locale_opts = ["ja", "en"]
+            _locale_idx = _locale_opts.index(_prof.get("locale", "ja")) if _prof.get("locale", "ja") in _locale_opts else 0
+            pf_locale = st.selectbox("ロケール", options=_locale_opts, index=_locale_idx, key="pf_locale")
 
-    st.divider()
-    st.subheader("📚 記憶の参照範囲")
-    st.caption("このインスタンスがRAG検索時にアクセスできる記憶DBを選択します。")
-    current_readable = config["brain"].get("readable_instances", ["self"])
-    readable_selected = []
-    for inst in available_instances:
-        is_self = (inst == instance_name)
-        is_checked = is_self or inst in current_readable
-        disabled = is_self
-        if st.checkbox(
-            f"{'📌 ' if is_self else ''}{inst}",
-            value=is_checked,
-            disabled=disabled,
-            key=f"readable_{inst}"
-        ):
-            if is_self:
-                readable_selected.append("self")
-            else:
-                readable_selected.append(inst)
-    if "self" not in readable_selected:
-        readable_selected.insert(0, "self")
+        st.divider()
 
-    st.divider()
-    st.subheader("� Gatekeeper 設定")
-    if "gatekeeper" not in config:
-        config["gatekeeper"] = {"enabled": True}
-    gk_enabled = st.toggle(
-        "Gatekeeper (Tier自動判定)",
-        value=config.get("gatekeeper", {}).get("enabled", True),
-        help="OFF にすると常に mid tier で動作します（RAG 検索は行われません）",
-    )
+        # State elements
+        sys_inst = st.text_area("System Instruction (性格設定)", value=prompts.get("system_instruction", ""), height=150)
+        key_mem = st.text_area("Key Memory (根幹記憶 — プロファイル以外の内容)", value=prompts.get("key_memory", ""), height=150,
+                                help="AIの名前・ユーザー名などのプロファイル情報は上の「エージェントプロファイル」セクションで管理されます。")
 
-    st.divider()
-    st.subheader("🧠 RAG・記憶チューニング")
-    use_rag_setting = st.toggle(
-        "RAG検索 (長期記憶の検索)",
-        value=config.get("brain", {}).get("use_rag", True),
-        help="OFF にすると過去の記憶DBからの検索を行いません。短期記憶・中期記憶のみで応答します。",
-    )
-    use_cache = st.toggle("コンテキストキャッシュ (Mid-term Memory)", value=config["brain"].get("use_context_cache", False))
-    _is_gemini_inst = is_gemini_provider(model_name)
-    if _is_gemini_inst:
-        default_gs = st.toggle(
-            "Google検索のデフォルト有効化",
-            value=config["brain"].get("default_use_google_search", False),
+        st.divider()
+        st.subheader("🤖 生成モデル設定")
+        models = [
+            'gemini-3.1-pro-preview',
+            'gemini-3-flash-preview',
+            'gemini-3.1-flash-lite-preview',
+            'gemini-2.5-pro',
+            'gemini-2.5-flash',
+            'gemini-2.5-flash-lite',
+        ]
+        current_model = config["chat"].get("model_name", "gemini-3-flash-preview")
+        if current_model not in models: models.append(current_model)
+        model_name = st.selectbox("モデル名", models, index=models.index(current_model))
+        gen_config = config["chat"].get("generation_config", {})
+        temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(gen_config.get("temperature", 1.0)))
+        max_tokens = st.number_input("最大出力トークン数", min_value=1, value=int(gen_config.get("max_output_tokens", 8192)))
+
+        st.divider()
+        st.subheader("📚 記憶の参照範囲")
+        st.caption("このインスタンスがRAG検索時にアクセスできる記憶DBを選択します。")
+        current_readable = config["brain"].get("readable_instances", ["self"])
+        readable_selected = []
+        for inst in available_instances:
+            is_self = (inst == instance_name)
+            is_checked = is_self or inst in current_readable
+            disabled = is_self
+            if st.checkbox(
+                f"{'📌 ' if is_self else ''}{inst}",
+                value=is_checked,
+                disabled=disabled,
+                key=f"readable_{inst}"
+            ):
+                if is_self:
+                    readable_selected.append("self")
+                else:
+                    readable_selected.append(inst)
+        if "self" not in readable_selected:
+            readable_selected.insert(0, "self")
+
+        st.divider()
+        st.subheader("🛡 Gatekeeper 設定")
+        if "gatekeeper" not in config:
+            config["gatekeeper"] = {"enabled": True}
+        gk_enabled = st.toggle(
+            "Gatekeeper (Tier自動判定)",
+            value=config.get("gatekeeper", {}).get("enabled", True),
+            help="OFF にすると常に mid tier で動作します（RAG 検索は行われません）",
         )
-    else:
-        default_gs = False
-        st.toggle(
-            "Google検索のデフォルト有効化",
-            value=False,
-            disabled=True,
-            help="Google検索はGeminiモデル専用です",
+
+        st.divider()
+
+        # ---- 基本設定タブの保存・削除ボタン ----
+        col_a1, col_a2, col_a3 = st.columns([6, 2, 2])
+        with col_a2:
+            save_basic = st.button("設定を保存", type="primary", use_container_width=True, key="save_basic")
+        with col_a3:
+            with st.popover("🗑️ インスタンスを完全に削除"):
+                st.warning("この操作は取り消せません。インスタンスのフォルダ、設定、短期記憶・長期記憶がすべて完全に削除されます。")
+                if st.button("完全に削除する", type="primary", key="delete_basic"):
+                    try:
+                        del_resp = requests.delete(f"{api_url}/instances/{instance_name}", timeout=5)
+                        if del_resp.ok:
+                            msg = del_resp.json().get("message", "Deleted")
+                            st.success(msg)
+                            time.sleep(1)
+                            st.session_state.current_instance = None
+                            navigate_to("home")
+                        else:
+                            st.error(f"削除エラー: {del_resp.text}")
+                    except Exception as e:
+                        st.error(f"削除エラー: {e}")
+
+    # ==========================================
+    # 🔧 詳細設定タブ
+    # ==========================================
+    with tab_advanced:
+        st.subheader("🧠 RAG・記憶チューニング")
+        use_rag_setting = st.toggle(
+            "RAG検索 (長期記憶の検索)",
+            value=config.get("brain", {}).get("use_rag", True),
+            help="OFF にすると過去の記憶DBからの検索を行いません。短期記憶・中期記憶のみで応答します。",
         )
-    col_r1, col_r2 = st.columns(2)
-    with col_r1:
-        search_lim = st.number_input("検索リミット", min_value=1, max_value=10, value=config["brain"].get("search_limit", 3))
-        fallback_lim = st.slider("フォールバック取得数", min_value=10, max_value=100, step=10, value=config["brain"].get("fallback_fetch_limit", 50))
-        st_limit = st.number_input("短期記憶 保存数", min_value=2, max_value=12, step=2, value=config["memory"].get("short_term_limit", 6))
-    with col_r2:
-        keyword_thr = st.number_input("記憶検索の感度", min_value=1, max_value=10, value=config["brain"].get("keyword_hit_threshold", 5), help="値が大きいほど直近の会話記憶が検索補完に加わりやすくなります。")
-        cache_ttl = st.slider("キャッシュ有効期限 (時間)", min_value=1, max_value=24, step=1, value=config["brain"].get("cache_ttl_hours", 3))
-        mt_max = st.slider("長期記憶 最大文字数", min_value=5000, max_value=100000, step=5000, value=config["memory"].get("max_mid_term_chars", 30000))
-
-    st.divider()
-
-    # ==========================================
-    # 🧩 コンテキスト注入順序
-    # ==========================================
-    st.subheader("🧩 コンテキスト注入順序")
-    st.caption("LLMに渡すコンテキストのセクション順序を変更できます。チェックを外すとそのセクションは注入されません。")
-
-    from butly_core.core.gatekeeper.memory_builder import DEFAULT_CONTEXT_ORDER
-
-    # config から読み込み（なければデフォルト）
-    ctx_order = config.get("context_order", {})
-    _si_order = list(ctx_order.get("system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"]))
-    _cp_order = list(ctx_order.get("context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"]))
-    _si_position = ctx_order.get("system_instruction_position", DEFAULT_CONTEXT_ORDER["system_instruction_position"])
-
-    # セクションの日本語ラベル
-    _SECTION_LABELS = {
-        "system_instruction": "性格設定 (system_instruction)",
-        "key_memory": "根幹記憶 (key_memory)",
-        "glossary": "共通言語辞書 (glossary)",
-        "label_notes": "ラベル・注意文 (label_notes)",
-        "current_time": "現在時刻 (current_time)",
-        "mid_term": "中期記憶 (mid_term)",
-        "rag": "長期記憶 RAG (rag)",
-        "floating": "浮動要約 (floating)",
-        "tier_info": "Tier情報 (tier_info)",
-        "google_search": "Google検索 (google_search)",
-    }
-
-    # --- system_instruction_position ---
-    st.markdown("**▎ System Instruction の配置**")
-    _pos_options = {"top": "先頭 (top) — 標準・Gemini推奨", "bottom": "末尾 (bottom) — SillyTavern方式・OpenAI/Ollama向け"}
-    _si_position = st.radio(
-        "配置位置",
-        options=list(_pos_options.keys()),
-        index=0 if _si_position == "top" else 1,
-        format_func=lambda x: _pos_options[x],
-        key="ctx_si_position",
-        horizontal=True,
-    )
-    st.caption("ℹ️ Gemini API では system_instruction は常に独立パラメータとして渡されるため、この設定は無視されます。")
-
-    # --- session_state 初期化 ---
-    if "ctx_si_order" not in st.session_state:
-        st.session_state.ctx_si_order = _si_order
-    if "ctx_cp_order" not in st.session_state:
-        st.session_state.ctx_cp_order = _cp_order
-
-    # 並べ替えヘルパー
-    def _swap_items(lst_key, idx, direction):
-        lst = st.session_state[lst_key]
-        new_idx = idx + direction
-        if 0 <= new_idx < len(lst):
-            lst[idx], lst[new_idx] = lst[new_idx], lst[idx]
-
-    # --- System Instruction セクション ---
-    st.markdown("**▎ System Instruction**")
-    _all_si_sections = list(DEFAULT_CONTEXT_ORDER["system_instruction"])
-    _si_enabled = {}
-    for i, sid in enumerate(st.session_state.ctx_si_order):
-        with st.container(border=True):
-            c1, c2, c3, c4 = st.columns([0.5, 6, 1, 1])
-            with c1:
-                # system_instruction は除外不可
-                is_disabled = (sid == "system_instruction")
-                is_checked = sid in st.session_state.ctx_si_order
-                _si_enabled[sid] = st.checkbox(
-                    f"有効: {sid}", value=True, disabled=is_disabled, key=f"si_chk_{sid}",
-                    label_visibility="collapsed",
-                )
-            with c2:
-                st.markdown(f"**{i+1}.** {_SECTION_LABELS.get(sid, sid)}")
-            with c3:
-                if i > 0:
-                    if st.button("↑", key=f"si_up_{sid}"):
-                        _swap_items("ctx_si_order", i, -1)
-                        st.rerun()
-            with c4:
-                if i < len(st.session_state.ctx_si_order) - 1:
-                    if st.button("↓", key=f"si_down_{sid}"):
-                        _swap_items("ctx_si_order", i, 1)
-                        st.rerun()
-
-    # --- Context Prefix セクション ---
-    st.markdown("**▎ Context Prefix（会話コンテキスト）**")
-    _cp_enabled = {}
-    for i, sid in enumerate(st.session_state.ctx_cp_order):
-        with st.container(border=True):
-            c1, c2, c3, c4 = st.columns([0.5, 6, 1, 1])
-            with c1:
-                _cp_enabled[sid] = st.checkbox(
-                    f"有効: {sid}", value=True, key=f"cp_chk_{sid}",
-                    label_visibility="collapsed",
-                )
-            with c2:
-                st.markdown(f"**{i+1}.** {_SECTION_LABELS.get(sid, sid)}")
-            with c3:
-                if i > 0:
-                    if st.button("↑", key=f"cp_up_{sid}"):
-                        _swap_items("ctx_cp_order", i, -1)
-                        st.rerun()
-            with c4:
-                if i < len(st.session_state.ctx_cp_order) - 1:
-                    if st.button("↓", key=f"cp_down_{sid}"):
-                        _swap_items("ctx_cp_order", i, 1)
-                        st.rerun()
-
-    # デフォルトに戻すボタン
-    if st.button("デフォルトに戻す", key="ctx_reset_default"):
-        st.session_state.ctx_si_order = list(DEFAULT_CONTEXT_ORDER["system_instruction"])
-        st.session_state.ctx_cp_order = list(DEFAULT_CONTEXT_ORDER["context_prefix"])
-        st.rerun()
-
-    st.divider()
-
-    # ==========================================
-    # 📖 Glossary (共通言語辞書) 管理
-    # ==========================================
-    st.subheader("📖 Glossary（共通言語辞書）")
-    st.caption("GatekeeperとBrainに注入される意味記憶です。未知語のパニックを防ぎます。")
-
-    # Glossary データ読み込み
-    glossary_data = {"version": 1, "entries": []}
-    try:
-        gl_resp = requests.get(f"{api_url}/instances/{instance_name}/glossary", timeout=5)
-        if gl_resp.ok:
-            glossary_data = gl_resp.json()
-    except Exception:
-        pass
-
-    entries = glossary_data.get("entries", [])
-
-    # session_state にエントリコピーを保持（編集用）
-    if "glossary_entries" not in st.session_state or st.session_state.get("glossary_instance") != instance_name:
-        st.session_state.glossary_entries = [dict(e) for e in entries]
-        st.session_state.glossary_instance = instance_name
-
-    gl_entries = st.session_state.glossary_entries
-
-    # --- フィルター ---
-    gl_filter_col1, gl_filter_col2 = st.columns([2, 2])
-    with gl_filter_col1:
-        gl_status_filter = st.selectbox("ステータス", ["all", "active", "pending", "archived"], key="gl_status_filter")
-    with gl_filter_col2:
-        gl_search = st.text_input("🔍 用語検索", key="gl_search", placeholder="用語名で絞り込み")
-
-    # フィルタリング
-    filtered_indices = []
-    for i, entry in enumerate(gl_entries):
-        if gl_status_filter != "all" and entry.get("status") != gl_status_filter:
-            continue
-        if gl_search and gl_search.lower() not in entry.get("term", "").lower():
-            continue
-        filtered_indices.append(i)
-
-    st.caption(f"{len(filtered_indices)} / {len(gl_entries)} 件表示")
-
-    # --- エントリ一覧 ---
-    for idx in filtered_indices:
-        entry = gl_entries[idx]
-        with st.container(border=True):
-            gc1, gc2, gc3 = st.columns([5, 2, 1])
-            with gc1:
-                st.markdown(f"**{entry.get('term', '')}**")
-                st.caption(entry.get("definition", ""))
-                aliases = entry.get("aliases", [])
-                if aliases:
-                    st.caption(f"別名: {', '.join(aliases)}")
-            with gc2:
-                new_status = st.selectbox(
-                    "status",
-                    ["active", "pending", "archived"],
-                    index=["active", "pending", "archived"].index(entry.get("status", "active")),
-                    key=f"gl_status_{idx}",
-                    label_visibility="collapsed",
-                )
-                if new_status != entry.get("status"):
-                    gl_entries[idx]["status"] = new_status
-            with gc3:
-                if st.button("🗑️", key=f"gl_del_{idx}"):
-                    gl_entries.pop(idx)
-                    st.rerun()
-
-    # --- 新規エントリ追加 ---
-    with st.expander("➕ 新しい用語を追加"):
-        new_term = st.text_input("用語名", key="gl_new_term")
-        new_def = st.text_input("定義", key="gl_new_def")
-        new_aliases = st.text_input("別名（カンマ区切り）", key="gl_new_aliases")
-        new_cat = st.selectbox("カテゴリ", ["system", "hardware", "project", "tool", "world", "character", "other"], key="gl_new_cat")
-        if st.button("追加", key="gl_add_entry"):
-            if new_term and new_def:
-                alias_list = [a.strip() for a in new_aliases.split(",") if a.strip()] if new_aliases else []
-                gl_entries.append({
-                    "term": new_term,
-                    "definition": new_def,
-                    "aliases": alias_list,
-                    "category": new_cat,
-                    "status": "active",
-                })
-                st.rerun()
-            else:
-                st.warning("用語名と定義は必須です。")
-
-    # --- Glossary 保存ボタン ---
-    if st.button("💾 Glossary を保存", key="gl_save", use_container_width=True):
-        save_data = {"version": glossary_data.get("version", 1), "entries": gl_entries}
-        try:
-            sv_resp = requests.post(
-                f"{api_url}/instances/{instance_name}/glossary",
-                json=save_data,
-                timeout=5,
+        use_cache = st.toggle("コンテキストキャッシュ (Mid-term Memory)", value=config["brain"].get("use_context_cache", False))
+        _is_gemini_inst = is_gemini_provider(model_name)
+        if _is_gemini_inst:
+            default_gs = st.toggle(
+                "Google検索のデフォルト有効化",
+                value=config["brain"].get("default_use_google_search", False),
             )
-            if sv_resp.ok:
-                st.success("Glossary を保存しました。")
-                # session_state をリセットして再読み込みさせる
-                st.session_state.pop("glossary_entries", None)
-                st.session_state.pop("glossary_instance", None)
+        else:
+            default_gs = False
+            st.toggle(
+                "Google検索のデフォルト有効化",
+                value=False,
+                disabled=True,
+                help="Google検索はGeminiモデル専用です",
+            )
+        col_r1, col_r2 = st.columns(2)
+        with col_r1:
+            search_lim = st.number_input("検索リミット", min_value=1, max_value=10, value=config["brain"].get("search_limit", 3))
+            fallback_lim = st.slider("フォールバック取得数", min_value=10, max_value=100, step=10, value=config["brain"].get("fallback_fetch_limit", 50))
+            st_limit = st.number_input("短期記憶 保存数", min_value=2, max_value=12, step=2, value=config["memory"].get("short_term_limit", 6))
+        with col_r2:
+            keyword_thr = st.number_input("記憶検索の感度", min_value=1, max_value=10, value=config["brain"].get("keyword_hit_threshold", 5), help="値が大きいほど直近の会話記憶が検索補完に加わりやすくなります。")
+            cache_ttl = st.slider("キャッシュ有効期限 (時間)", min_value=1, max_value=24, step=1, value=config["brain"].get("cache_ttl_hours", 3))
+            mt_max = st.slider("長期記憶 最大文字数", min_value=5000, max_value=100000, step=5000, value=config["memory"].get("max_mid_term_chars", 30000))
+
+        st.divider()
+
+        # ==========================================
+        # 📝 Housekeeper 設定
+        # ==========================================
+        st.subheader("📝 Housekeeper 設定")
+        st.caption("記憶の整理・要約・ナレッジ化のパラメータを調整します。")
+        _hk_conf = config.get("housekeeper", {})
+        hk_col1, hk_col2 = st.columns(2)
+        with hk_col1:
+            hk_max_digest = st.number_input(
+                "Digest 最大文字数",
+                min_value=500, max_value=20000, step=500,
+                value=_hk_conf.get("max_digest_chars", 3000),
+                help="中期記憶の要約版（日次ダイジェスト）の最大文字数",
+                key="hk_max_digest",
+            )
+            hk_max_relationship = st.number_input(
+                "Relationship 最大文字数",
+                min_value=500, max_value=20000, step=500,
+                value=_hk_conf.get("max_relationship_chars", 5000),
+                help="関係性スナップショットの最大文字数",
+                key="hk_max_relationship",
+            )
+            hk_relationship_interval = st.number_input(
+                "Relationship 更新間隔 (日)",
+                min_value=1, max_value=30, step=1,
+                value=_hk_conf.get("relationship_update_interval_days", 7),
+                help="関係性スナップショットを更新する間隔",
+                key="hk_rel_interval",
+            )
+        with hk_col2:
+            hk_summary_tokens = st.number_input(
+                "Summary 最大出力トークン数",
+                min_value=256, max_value=16384, step=256,
+                value=_hk_conf.get("summary_max_output_tokens", 4096),
+                help="Digest / Headlines 生成時の最大出力トークン (classify API)",
+                key="hk_summary_tokens",
+            )
+            hk_knowledge_tokens = st.number_input(
+                "Knowledge 最大出力トークン数",
+                min_value=256, max_value=16384, step=256,
+                value=_hk_conf.get("knowledge_max_output_tokens", 8192),
+                help="ナレッジ抽出 / Relationship 生成時の最大出力トークン (classify API)",
+                key="hk_knowledge_tokens",
+            )
+
+        st.divider()
+
+        # ==========================================
+        # 🧩 コンテキスト注入順序
+        # ==========================================
+        st.subheader("🧩 コンテキスト注入順序")
+        st.caption("LLMに渡すコンテキストのセクション順序を変更できます。チェックを外すとそのセクションは注入されません。")
+
+        from butly_core.core.gatekeeper.memory_builder import DEFAULT_CONTEXT_ORDER
+
+        # config から読み込み（なければデフォルト）
+        ctx_order = config.get("context_order", {})
+        _si_order = list(ctx_order.get("system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"]))
+        _cp_order = list(ctx_order.get("context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"]))
+        _si_position = ctx_order.get("system_instruction_position", DEFAULT_CONTEXT_ORDER["system_instruction_position"])
+
+        # セクションの日本語ラベル
+        _SECTION_LABELS = {
+            "system_instruction": "性格設定 (system_instruction)",
+            "key_memory": "根幹記憶 (key_memory)",
+            "glossary": "共通言語辞書 (glossary)",
+            "label_notes": "ラベル・注意文 (label_notes)",
+            "current_time": "現在時刻 (current_time)",
+            "mid_term": "中期記憶 (mid_term)",
+            "rag": "長期記憶 RAG (rag)",
+            "floating": "浮動要約 (floating)",
+            "tier_info": "Tier情報 (tier_info)",
+            "google_search": "Google検索 (google_search)",
+        }
+
+        # --- system_instruction_position ---
+        st.markdown("**▎ System Instruction の配置**")
+        _pos_options = {"top": "先頭 (top) — 標準・Gemini推奨", "bottom": "末尾 (bottom) — SillyTavern方式・OpenAI/Ollama向け"}
+        _si_position = st.radio(
+            "配置位置",
+            options=list(_pos_options.keys()),
+            index=0 if _si_position == "top" else 1,
+            format_func=lambda x: _pos_options[x],
+            key="ctx_si_position",
+            horizontal=True,
+        )
+        st.caption("ℹ️ Gemini API では system_instruction は常に独立パラメータとして渡されるため、この設定は無視されます。")
+
+        # --- session_state 初期化 ---
+        if "ctx_si_order" not in st.session_state:
+            st.session_state.ctx_si_order = _si_order
+        if "ctx_cp_order" not in st.session_state:
+            st.session_state.ctx_cp_order = _cp_order
+
+        # 並べ替えヘルパー
+        def _swap_items(lst_key, idx, direction):
+            lst = st.session_state[lst_key]
+            new_idx = idx + direction
+            if 0 <= new_idx < len(lst):
+                lst[idx], lst[new_idx] = lst[new_idx], lst[idx]
+
+        # --- System Instruction セクション ---
+        st.markdown("**▎ System Instruction**")
+        _all_si_sections = list(DEFAULT_CONTEXT_ORDER["system_instruction"])
+        _si_enabled = {}
+        for i, sid in enumerate(st.session_state.ctx_si_order):
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns([0.5, 6, 1, 1])
+                with c1:
+                    is_disabled = (sid == "system_instruction")
+                    is_checked = sid in st.session_state.ctx_si_order
+                    _si_enabled[sid] = st.checkbox(
+                        f"有効: {sid}", value=True, disabled=is_disabled, key=f"si_chk_{sid}",
+                        label_visibility="collapsed",
+                    )
+                with c2:
+                    st.markdown(f"**{i+1}.** {_SECTION_LABELS.get(sid, sid)}")
+                with c3:
+                    if i > 0:
+                        if st.button("↑", key=f"si_up_{sid}"):
+                            _swap_items("ctx_si_order", i, -1)
+                            st.rerun()
+                with c4:
+                    if i < len(st.session_state.ctx_si_order) - 1:
+                        if st.button("↓", key=f"si_down_{sid}"):
+                            _swap_items("ctx_si_order", i, 1)
+                            st.rerun()
+
+        # --- Context Prefix セクション ---
+        st.markdown("**▎ Context Prefix（会話コンテキスト）**")
+        _cp_enabled = {}
+        for i, sid in enumerate(st.session_state.ctx_cp_order):
+            with st.container(border=True):
+                c1, c2, c3, c4 = st.columns([0.5, 6, 1, 1])
+                with c1:
+                    _cp_enabled[sid] = st.checkbox(
+                        f"有効: {sid}", value=True, key=f"cp_chk_{sid}",
+                        label_visibility="collapsed",
+                    )
+                with c2:
+                    st.markdown(f"**{i+1}.** {_SECTION_LABELS.get(sid, sid)}")
+                with c3:
+                    if i > 0:
+                        if st.button("↑", key=f"cp_up_{sid}"):
+                            _swap_items("ctx_cp_order", i, -1)
+                            st.rerun()
+                with c4:
+                    if i < len(st.session_state.ctx_cp_order) - 1:
+                        if st.button("↓", key=f"cp_down_{sid}"):
+                            _swap_items("ctx_cp_order", i, 1)
+                            st.rerun()
+
+        # デフォルトに戻すボタン
+        if st.button("デフォルトに戻す", key="ctx_reset_default"):
+            st.session_state.ctx_si_order = list(DEFAULT_CONTEXT_ORDER["system_instruction"])
+            st.session_state.ctx_cp_order = list(DEFAULT_CONTEXT_ORDER["context_prefix"])
+            st.rerun()
+
+        st.divider()
+
+        # ==========================================
+        # 📖 Glossary (共通言語辞書) 管理
+        # ==========================================
+        st.subheader("📖 Glossary（共通言語辞書）")
+        st.caption("GatekeeperとBrainに注入される意味記憶です。未知語のパニックを防ぎます。")
+
+        glossary_data = {"version": 1, "entries": []}
+        try:
+            gl_resp = requests.get(f"{api_url}/instances/{instance_name}/glossary", timeout=5)
+            if gl_resp.ok:
+                glossary_data = gl_resp.json()
+        except Exception:
+            pass
+
+        entries = glossary_data.get("entries", [])
+
+        if "glossary_entries" not in st.session_state or st.session_state.get("glossary_instance") != instance_name:
+            st.session_state.glossary_entries = [dict(e) for e in entries]
+            st.session_state.glossary_instance = instance_name
+
+        gl_entries = st.session_state.glossary_entries
+
+        gl_filter_col1, gl_filter_col2 = st.columns([2, 2])
+        with gl_filter_col1:
+            gl_status_filter = st.selectbox("ステータス", ["all", "active", "pending", "archived"], key="gl_status_filter")
+        with gl_filter_col2:
+            gl_search = st.text_input("🔍 用語検索", key="gl_search", placeholder="用語名で絞り込み")
+
+        filtered_indices = []
+        for i, entry in enumerate(gl_entries):
+            if gl_status_filter != "all" and entry.get("status") != gl_status_filter:
+                continue
+            if gl_search and gl_search.lower() not in entry.get("term", "").lower():
+                continue
+            filtered_indices.append(i)
+
+        st.caption(f"{len(filtered_indices)} / {len(gl_entries)} 件表示")
+
+        for idx in filtered_indices:
+            entry = gl_entries[idx]
+            with st.container(border=True):
+                gc1, gc2, gc3 = st.columns([5, 2, 1])
+                with gc1:
+                    st.markdown(f"**{entry.get('term', '')}**")
+                    st.caption(entry.get("definition", ""))
+                    aliases = entry.get("aliases", [])
+                    if aliases:
+                        st.caption(f"別名: {', '.join(aliases)}")
+                with gc2:
+                    new_status = st.selectbox(
+                        "status",
+                        ["active", "pending", "archived"],
+                        index=["active", "pending", "archived"].index(entry.get("status", "active")),
+                        key=f"gl_status_{idx}",
+                        label_visibility="collapsed",
+                    )
+                    if new_status != entry.get("status"):
+                        gl_entries[idx]["status"] = new_status
+                with gc3:
+                    if st.button("🗑️", key=f"gl_del_{idx}"):
+                        gl_entries.pop(idx)
+                        st.rerun()
+
+        with st.expander("➕ 新しい用語を追加"):
+            new_term = st.text_input("用語名", key="gl_new_term")
+            new_def = st.text_input("定義", key="gl_new_def")
+            new_aliases = st.text_input("別名（カンマ区切り）", key="gl_new_aliases")
+            new_cat = st.selectbox("カテゴリ", ["system", "hardware", "project", "tool", "world", "character", "other"], key="gl_new_cat")
+            if st.button("追加", key="gl_add_entry"):
+                if new_term and new_def:
+                    alias_list = [a.strip() for a in new_aliases.split(",") if a.strip()] if new_aliases else []
+                    gl_entries.append({
+                        "term": new_term,
+                        "definition": new_def,
+                        "aliases": alias_list,
+                        "category": new_cat,
+                        "status": "active",
+                    })
+                    st.rerun()
+                else:
+                    st.warning("用語名と定義は必須です。")
+
+        if st.button("💾 Glossary を保存", key="gl_save", use_container_width=True):
+            save_data = {"version": glossary_data.get("version", 1), "entries": gl_entries}
+            try:
+                sv_resp = requests.post(
+                    f"{api_url}/instances/{instance_name}/glossary",
+                    json=save_data,
+                    timeout=5,
+                )
+                if sv_resp.ok:
+                    st.success("Glossary を保存しました。")
+                    st.session_state.pop("glossary_entries", None)
+                    st.session_state.pop("glossary_instance", None)
+                else:
+                    st.error(f"保存エラー: {sv_resp.text}")
+            except Exception as e:
+                st.error(f"保存エラー: {e}")
+
+        st.divider()
+
+        # Housekeeper Button
+        if st.button("🧹 記憶の整理 (Housekeeper)", use_container_width=True):
+            st.session_state.housekeeper_instance = instance_name
+            navigate_to("housekeeper")
+        st.caption("短期記憶を整理し、知識カードとして長期記憶に保存します。")
+
+        st.divider()
+
+        # Rename Instance
+        st.subheader("✏️ インスタンス名の変更")
+        rename_col1, rename_col2 = st.columns([3, 1])
+        with rename_col1:
+            new_inst_name = st.text_input("新しいインスタンス名（半角英数字・_）", placeholder=instance_name, key="rename_input")
+        with rename_col2:
+            st.write("")
+            st.write("")
+            if st.button("変更", key="btn_rename", use_container_width=True):
+                if new_inst_name and new_inst_name != instance_name:
+                    try:
+                        ren_resp = requests.post(
+                            f"{api_url}/instances/{instance_name}/rename",
+                            json={"new_name": new_inst_name},
+                            timeout=10,
+                        )
+                        if ren_resp.ok:
+                            result = ren_resp.json()
+                            new_name = result.get("new_instance_name", new_inst_name)
+                            st.success(f"名前を '{new_name}' に変更しました。")
+                            st.session_state.current_instance = new_name
+                            st.cache_resource.clear()
+                            time.sleep(1)
+                            navigate_to("chat")
+                        else:
+                            st.error(f"リネームエラー: {ren_resp.text}")
+                    except Exception as e:
+                        st.error(f"リネームエラー: {e}")
+                elif new_inst_name == instance_name:
+                    st.warning("現在の名前と同じです。")
+                else:
+                    st.warning("名前を入力してください。")
+        st.caption("記憶DB内のデータと他インスタンスの参照設定も自動で追従します。")
+
+        st.divider()
+
+        # ---- 詳細設定タブの保存ボタン ----
+        col_b1, col_b2 = st.columns([8, 2])
+        with col_b2:
+            save_advanced = st.button("設定を保存", type="primary", use_container_width=True, key="save_advanced")
+
+    # ==========================================
+    # 保存処理（両タブ共通）
+    # ==========================================
+    if save_basic or save_advanced:
+        # Update values
+        config["brain"]["use_context_cache"] = use_cache
+        config["brain"]["default_use_google_search"] = default_gs
+        config["brain"]["readable_instances"] = readable_selected
+        config["brain"].pop("filter_memory_by_type", None)
+        config["brain"]["use_rag"] = use_rag_setting
+        config["brain"]["search_limit"] = search_lim
+        config["brain"]["fallback_fetch_limit"] = fallback_lim
+        config["brain"]["keyword_hit_threshold"] = keyword_thr
+        config["brain"]["cache_ttl_hours"] = cache_ttl
+
+        config["gatekeeper"] = {"enabled": gk_enabled}
+
+        config["memory"]["short_term_limit"] = st_limit
+        config["memory"]["max_mid_term_chars"] = mt_max
+
+        config["chat"]["model_name"] = model_name
+        config["chat"]["generation_config"]["temperature"] = temp
+        config["chat"]["generation_config"]["max_output_tokens"] = max_tokens
+
+        # agent profile の保存
+        config["agent"] = {
+            "ai_name": pf_ai_name,
+            "user_name": pf_user_name,
+            "nickname": pf_nickname if pf_nickname else pf_user_name,
+            "gender": pf_gender,
+            "birthday": pf_birthday.strftime("%Y/%m/%d") if pf_birthday else "",
+            "locale": pf_locale,
+        }
+
+        # housekeeper 設定の保存
+        config["housekeeper"] = {
+            "max_digest_chars": hk_max_digest,
+            "max_relationship_chars": hk_max_relationship,
+            "relationship_update_interval_days": hk_relationship_interval,
+            "summary_max_output_tokens": hk_summary_tokens,
+            "knowledge_max_output_tokens": hk_knowledge_tokens,
+        }
+
+        # context_order の保存
+        _final_si = [s for s in st.session_state.ctx_si_order if _si_enabled.get(s, True)]
+        _final_cp = [s for s in st.session_state.ctx_cp_order if _cp_enabled.get(s, True)]
+        if "system_instruction" not in _final_si:
+            _final_si.insert(0, "system_instruction")
+        config["context_order"] = {
+            "system_instruction": _final_si,
+            "context_prefix": _final_cp,
+            "system_instruction_position": _si_position,
+        }
+
+        # Save configs
+        try:
+            c_resp = requests.post(f"{api_url}/instances/{instance_name}/config", json=config, timeout=5)
+            p_resp = requests.post(f"{api_url}/instances/{instance_name}/prompts", json={
+                "system_instruction": sys_inst,
+                "key_memory": key_mem
+            }, timeout=5)
+
+            if c_resp.ok and p_resp.ok:
+                st.success("設定を保存しました。")
+                time.sleep(1)
+                navigate_to("chat")
             else:
-                st.error(f"保存エラー: {sv_resp.text}")
+                st.error(f"保存エラー: Config[{c_resp.status_code}], Prompts[{p_resp.status_code}]")
         except Exception as e:
             st.error(f"保存エラー: {e}")
 
-    st.divider()
-
-    # Housekeeper Button
-    if st.button("🧹 記憶の整理 (Housekeeper)", use_container_width=True):
-        st.session_state.housekeeper_instance = instance_name
-        navigate_to("housekeeper")
-    st.caption("短期記憶を整理し、知識カードとして長期記憶に保存します。")
-
-    st.divider()
-
-    # Rename Instance
-    st.subheader("✏️ インスタンス名の変更")
-    rename_col1, rename_col2 = st.columns([3, 1])
-    with rename_col1:
-        new_inst_name = st.text_input("新しいインスタンス名（半角英数字・_）", placeholder=instance_name, key="rename_input")
-    with rename_col2:
-        st.write("")  # spacer
-        st.write("")
-        if st.button("変更", key="btn_rename", use_container_width=True):
-            if new_inst_name and new_inst_name != instance_name:
-                try:
-                    ren_resp = requests.post(
-                        f"{api_url}/instances/{instance_name}/rename",
-                        json={"new_name": new_inst_name},
-                        timeout=10,
-                    )
-                    if ren_resp.ok:
-                        result = ren_resp.json()
-                        new_name = result.get("new_instance_name", new_inst_name)
-                        st.success(f"名前を '{new_name}' に変更しました。")
-                        st.session_state.current_instance = new_name
-                        st.cache_resource.clear()
-                        time.sleep(1)
-                        navigate_to("chat")
-                    else:
-                        st.error(f"リネームエラー: {ren_resp.text}")
-                except Exception as e:
-                    st.error(f"リネームエラー: {e}")
-            elif new_inst_name == instance_name:
-                st.warning("現在の名前と同じです。")
-            else:
-                st.warning("名前を入力してください。")
-    st.caption("記憶DB内のデータと他インスタンスの参照設定も自動で追従します。")
-
-    st.divider()
-    
-    # Action Buttons
-    col_a1, col_a2, col_a3 = st.columns([6, 2, 2])
-    with col_a2:
-        if st.button("設定を保存", type="primary", use_container_width=True):
-            # Update values
-            config["brain"]["use_context_cache"] = use_cache
-            config["brain"]["default_use_google_search"] = default_gs
-            config["brain"]["readable_instances"] = readable_selected
-            config["brain"].pop("filter_memory_by_type", None)  # 旧キーを除去
-            config["brain"]["use_rag"] = use_rag_setting
-            config["brain"]["search_limit"] = search_lim
-            config["brain"]["fallback_fetch_limit"] = fallback_lim
-            config["brain"]["keyword_hit_threshold"] = keyword_thr
-            config["brain"]["cache_ttl_hours"] = cache_ttl
-
-            config["gatekeeper"] = {"enabled": gk_enabled}
-
-            config["memory"]["short_term_limit"] = st_limit
-            config["memory"]["max_mid_term_chars"] = mt_max
-
-            config["chat"]["model_name"] = model_name
-            config["chat"]["generation_config"]["temperature"] = temp
-            config["chat"]["generation_config"]["max_output_tokens"] = max_tokens
-
-            # context_order の保存
-            _final_si = [s for s in st.session_state.ctx_si_order if _si_enabled.get(s, True)]
-            _final_cp = [s for s in st.session_state.ctx_cp_order if _cp_enabled.get(s, True)]
-            # system_instruction は必ず含める
-            if "system_instruction" not in _final_si:
-                _final_si.insert(0, "system_instruction")
-            config["context_order"] = {
-                "system_instruction": _final_si,
-                "context_prefix": _final_cp,
-                "system_instruction_position": _si_position,
-            }
-            
-            # Save configs
-            try:
-                c_resp = requests.post(f"{api_url}/instances/{instance_name}/config", json=config, timeout=5)
-                p_resp = requests.post(f"{api_url}/instances/{instance_name}/prompts", json={
-                    "system_instruction": sys_inst,
-                    "key_memory": key_mem
-                }, timeout=5)
-                
-                if c_resp.ok and p_resp.ok:
-                    st.success("設定を保存しました。")
-                    time.sleep(1)
-                    navigate_to("chat")
-                else:
-                    st.error(f"保存エラー: Config[{c_resp.status_code}], Prompts[{p_resp.status_code}]")
-            except Exception as e:
-                st.error(f"保存エラー: {e}")
-            
-    with col_a3:
-        # Delete Instance (Danger Zone)
-        with st.popover("🗑️ インスタンスを完全に削除"):
-            st.warning("この操作は取り消せません。インスタンスのフォルダ、設定、短期記憶・長期記憶がすべて完全に削除されます。")
-            if st.button("完全に削除する", type="primary"):
-                try:
-                    del_resp = requests.delete(f"{api_url}/instances/{instance_name}", timeout=5)
-                    if del_resp.ok:
-                        msg = del_resp.json().get("message", "Deleted")
-                        st.success(msg)
-                        time.sleep(1)
-                        st.session_state.current_instance = None
-                        navigate_to("home")
-                    else:
-                        st.error(f"削除エラー: {del_resp.text}")
-                except Exception as e:
-                    st.error(f"削除エラー: {e}")
-
-# ==========================================
-# 💬 チャット画面 (Chat Screen)
-# ==========================================
 def render_chat_screen():
     instance_name = st.session_state.current_instance
     # 履歴表示用に memory のみ初期化（brain / cached_content は FastAPI 側で管理）

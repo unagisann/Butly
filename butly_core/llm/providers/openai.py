@@ -66,9 +66,10 @@ class OpenAIProvider(BaseProvider):
 
         char_limit = config.get("summary_char_limit", SYSTEM_CONFIG["brain"]["summary_char_limit"])
         loader = PromptLoader()
+        _agent_name = config.get("agent_name") or SYSTEM_CONFIG["agent"]["agent_name"]
         prompt = loader.get(
             "brain_summarize_conversation",
-            agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
+            agent_name=_agent_name,
             char_limit=char_limit,
             conversation_text=conversation_text,
         )
@@ -219,7 +220,11 @@ class OpenAIProvider(BaseProvider):
         h = loader.get_section_header
 
         sections = []
-        agent_name = SYSTEM_CONFIG["agent"]["agent_name"]
+        if memory_manager and hasattr(memory_manager, 'get_agent_profile'):
+            _profile = memory_manager.get_agent_profile()
+            agent_name = _profile.get("ai_name") or SYSTEM_CONFIG["agent"]["agent_name"]
+        else:
+            agent_name = SYSTEM_CONFIG["agent"]["agent_name"]
         sys_inst = memory_manager.get_system_instruction() if memory_manager else f"You are {agent_name}."
         sections.append(f"{h('system_instruction')}\n{sys_inst}")
 

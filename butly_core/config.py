@@ -22,6 +22,7 @@ AI_CONFIG = {
         "model_name": "gemini-3.1-flash-lite-preview", 
         "generation_config": {
             "temperature": 0.3,
+            "max_output_tokens": 4096,
         },
         "safety_settings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -36,6 +37,7 @@ AI_CONFIG = {
         "model_name": "gemini-3.1-pro-preview", 
         "generation_config": {
             "temperature": 0.7, # Consistent output preferred
+            "max_output_tokens": 8192,
         },
         "safety_settings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},

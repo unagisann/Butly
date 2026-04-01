@@ -18,6 +18,7 @@ class CreateInstanceRequest(BaseModel):
     name: str
     template: str = "{agent_name} is a helpful AI assistant."
     key_memory: str = ""
+    agent_profile: dict = {}
 
 class RenameInstanceRequest(BaseModel):
     new_name: str
@@ -42,6 +43,7 @@ def create_instance(request: CreateInstanceRequest):
         request.name,
         request.template,
         key_memory=request.key_memory,
+        agent_profile=request.agent_profile or {},
     )
     if not success:
         raise HTTPException(status_code=400, detail=message)

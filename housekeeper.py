@@ -63,6 +63,47 @@ class ButlyHousekeeper:
                     return content
         return self.instruction
 
+    def get_instance_agent_name(self, instance_name=None) -> str:
+        """インスタンス別の AI 名を取得（フォールバック: グローバル SYSTEM_CONFIG）"""
+        if instance_name:
+            config_path = self.instances_dir / instance_name / "config.json"
+            if config_path.exists():
+                try:
+                    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                    name = cfg.get("agent", {}).get("ai_name", "")
+                    if name:
+                        return name
+                except Exception:
+                    pass
+        return SYSTEM_CONFIG["agent"].get("agent_name", "Butly")
+
+    def get_instance_user_name(self, instance_name=None) -> str:
+        """インスタンス別のユーザー名（呼称優先）を取得（フォールバック: グローバル SYSTEM_CONFIG）"""
+        if instance_name:
+            config_path = self.instances_dir / instance_name / "config.json"
+            if config_path.exists():
+                try:
+                    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                    agent_cfg = cfg.get("agent", {})
+                    # 呼称があればそちらを優先
+                    name = agent_cfg.get("nickname", "") or agent_cfg.get("user_name", "")
+                    if name:
+                        return name
+                except Exception:
+                    pass
+        return SYSTEM_CONFIG["agent"].get("user_name", "User")
+
+    def _get_instance_config(self, instance_name: str) -> dict:
+        """インスタンスの config.json を読み込む（エラー時は空dict）"""
+        if instance_name:
+            config_path = self.instances_dir / instance_name / "config.json"
+            if config_path.exists():
+                try:
+                    return json.loads(config_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+        return {}
+
     def _robust_api_call(self, func, *args, retries=5, base_delay=5, **kwargs):
         """API呼び出しの堅牢化（指数バックオフ付きリトライ）"""
         for i in range(retries):
@@ -114,9 +155,16 @@ class ButlyHousekeeper:
         DBへのTypeには各インスタンス名を使用する。
         """
         
-        # トークン節約のアドバイス：
-        # 大量のデータを一気に処理する場合、ここでCachedContentを使用することも検討できますが、
-        # 現状は1日1回のバッチ処理により、呼び出し回数自体を抑えています。
+        # インスタンス固有のトークン数上書き
+        inst_cfg = self._get_instance_config(db_type)
+        _hk = inst_cfg.get("housekeeper", {})
+        if "knowledge_max_output_tokens" in _hk:
+            k_conf = dict(self.k_conf)
+            gc = dict(k_conf.get("generation_config", {}))
+            gc["max_output_tokens"] = _hk["knowledge_max_output_tokens"]
+            k_conf["generation_config"] = gc
+        else:
+            k_conf = self.k_conf
         
         # ナレッジカード化は各インスタンス固有の人格・記憶で行う
         agent_instruction = self.get_instance_instruction(db_type)
@@ -126,17 +174,17 @@ class ButlyHousekeeper:
         loader = PromptLoader()
         prompt = loader.get(
             "housekeeper_summarize",
-            agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
+            agent_name=self.get_instance_agent_name(db_type),
             system_instruction=agent_instruction,
             key_memory=agent_key_memory,
             session_text=session_text
         )
         try:
             from butly_core.llm.factory import ProviderFactory
-            provider = ProviderFactory.create(self.k_conf["model_name"])
+            provider = ProviderFactory.create(k_conf["model_name"])
 
             def _call():
-                return provider.classify(prompt, self.k_conf)
+                return provider.classify(prompt, k_conf)
 
             text = self._robust_api_call(_call)
             if not text:
@@ -238,8 +286,17 @@ class ButlyHousekeeper:
                         dest = integrated_dir / (stf.stem + "_dup" + stf.suffix)
                     stf.rename(dest)
         
-        # 1. 処理対象を取得
-        json_files = sorted(integrated_dir.glob("*.json"))
+        # 1. 処理対象を取得（Stage1 追記済みファイルはスキップ）
+        tracker_file = integrated_dir / ".mid_term_processed.json"
+        processed_set = set()
+        if tracker_file.exists():
+            try:
+                processed_set = set(json.loads(tracker_file.read_text(encoding="utf-8")))
+            except Exception:
+                processed_set = set()
+
+        all_json_files = sorted(integrated_dir.glob("*.json"))
+        json_files = [f for f in all_json_files if f.name not in processed_set]
         
         if not json_files and not list(floating_summary_dir.glob("*.txt")) and not legacy_floating_file.exists():
             print(f"[Housekeeper] Phase 1: No logs or summaries to process in {instance_name}.")
@@ -249,19 +306,30 @@ class ButlyHousekeeper:
 
         # 2. JSONを読み込み、テキスト形式に整形
         new_text = ""
+        newly_processed = []
         for jf in json_files:
             try:
                 with open(jf, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     ts_raw = data.get('timestamp', 'Unknown')
                     ts = ts_raw.split('.')[0].replace('T', ' ')
+                    _agent_name = self.get_instance_agent_name(instance_name)
+                    _user_name = self.get_instance_user_name(instance_name)
                     for msg in data.get("messages", []):
-                        role_label = SYSTEM_CONFIG["agent"]["user_name"] if msg["role"] == "user" else SYSTEM_CONFIG["agent"]["agent_name"]
+                        role_label = _user_name if msg["role"] == "user" else _agent_name
                         content = msg.get("parts", [""])[0]
                         if isinstance(content, dict): content = content.get("text", "")
                         new_text += f"[{ts}] {role_label}: {content}\n"
+                newly_processed.append(jf.name)
             except Exception as e:
                 print(f"[Housekeeper] Error reading {jf.name}: {e}")
+
+        # 2b. トラッキング更新（mid_term追記前に記録し、追記済みとマーク）
+        if newly_processed:
+            processed_set.update(newly_processed)
+            tracker_file.write_text(
+                json.dumps(sorted(processed_set), ensure_ascii=False), encoding="utf-8"
+            )
 
         # (A) floating_summaries は一時コンテキスト専用ファイル
         # ハウスキーパー時は mid_term へのマージは行わず削除のみ
@@ -339,7 +407,7 @@ class ButlyHousekeeper:
         from butly_core.prompts import PromptLoader
         
         try:
-            summary_conf = AI_CONFIG.get("summary", {})
+            summary_conf = dict(AI_CONFIG.get("summary", {}))
             model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite-preview")
             
             digest_file = instance_path / "mid_term_digest.txt"
@@ -348,17 +416,30 @@ class ButlyHousekeeper:
             
             # インスタンス固有の system_instruction と key_memory を取得
             instance_name = instance_path.name
+            inst_cfg = self._get_instance_config(instance_name)
+            
+            # インスタンス固有のトークン数上書き
+            _hk = inst_cfg.get("housekeeper", {})
+            if "summary_max_output_tokens" in _hk:
+                gc = dict(summary_conf.get("generation_config", {}))
+                gc["max_output_tokens"] = _hk["summary_max_output_tokens"]
+                summary_conf["generation_config"] = gc
             system_instruction = self.get_instance_instruction(instance_name)
             key_memory = self.get_instance_key_memory(instance_name)
+            max_digest = inst_cfg.get("housekeeper", {}).get(
+                "max_digest_chars",
+                SYSTEM_CONFIG.get("memory", {}).get("max_digest_chars", 8000)
+            )
             
             loader = PromptLoader()
             digest_prompt = loader.get(
                 "midterm_digest",
-                agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
-                user_name=SYSTEM_CONFIG["agent"]["user_name"],
+                agent_name=self.get_instance_agent_name(instance_name),
+                user_name=self.get_instance_user_name(instance_name),
                 system_instruction=system_instruction,
                 key_memory=key_memory,
                 raw_text=new_text,
+                max_chars=max_digest,
             )
             provider = self._get_provider(model_name)
             digest_new = provider.classify(digest_prompt, summary_conf)
@@ -370,7 +451,7 @@ class ButlyHousekeeper:
                 combined_digest = current_digest + "\n" + digest_new if current_digest else digest_new
                 
                 # 上限チェック & アーカイブ（mid_term.txtと同じパターン）
-                max_digest_chars = SYSTEM_CONFIG.get("memory", {}).get("max_digest_chars", 8000)
+                max_digest_chars = max_digest
                 
                 if len(combined_digest) > max_digest_chars:
                     min_overflow = len(combined_digest) - max_digest_chars
@@ -430,16 +511,17 @@ class ButlyHousekeeper:
             summary_conf = AI_CONFIG.get("summary", {})
             model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite-preview")
 
+            instance_name = instance_path.name
             loader = PromptLoader()
             prompt = loader.get(
                 "recent_headlines",
-                agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
+                agent_name=self.get_instance_agent_name(instance_name),
                 digest_text=digest_text,
             )
             provider = self._get_provider(model_name)
             raw_response = provider.classify(
                 prompt,
-                {"generation_config": {"temperature": 0.0, "max_output_tokens": 512}},
+                {"model_name": model_name, "generation_config": {"temperature": 0.0, "max_output_tokens": 512}},
             )
 
             # JSON パース
@@ -484,7 +566,12 @@ class ButlyHousekeeper:
         
         rel_file = instance_path / "mid_term_relationship.txt"
         digest_file = instance_path / "mid_term_digest.txt"
-        interval_days = SYSTEM_CONFIG.get("memory", {}).get("relationship_update_interval_days", 7)
+        instance_name = instance_path.name
+        inst_cfg = self._get_instance_config(instance_name)
+        interval_days = inst_cfg.get("housekeeper", {}).get(
+            "relationship_update_interval_days",
+            SYSTEM_CONFIG.get("memory", {}).get("relationship_update_interval_days", 7)
+        )
         
         # 前回更新日の確認
         should_update = False
@@ -516,21 +603,29 @@ class ButlyHousekeeper:
         from butly_core.prompts import PromptLoader
         
         try:
-            k_conf = AI_CONFIG.get("knowledge", {})
+            k_conf = dict(AI_CONFIG.get("knowledge", {}))
             model_name = k_conf.get("model_name", "gemini-3.1-pro-preview")
             
             # インスタンス固有の system_instruction と key_memory を取得
-            instance_name = instance_path.name
             system_instruction = self.get_instance_instruction(instance_name)
             key_memory = self.get_instance_key_memory(instance_name)
+            max_rel_chars = inst_cfg.get("housekeeper", {}).get("max_relationship_chars", 600)
+            
+            # インスタンス固有のトークン数上書き
+            _hk = inst_cfg.get("housekeeper", {})
+            if "knowledge_max_output_tokens" in _hk:
+                gc = dict(k_conf.get("generation_config", {}))
+                gc["max_output_tokens"] = _hk["knowledge_max_output_tokens"]
+                k_conf["generation_config"] = gc
             
             loader = PromptLoader()
             rel_prompt = loader.get(
                 "midterm_relationship",
-                agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
+                agent_name=self.get_instance_agent_name(instance_name),
                 system_instruction=system_instruction,
                 key_memory=key_memory,
                 digest_text=digest_text,
+                max_chars=max_rel_chars,
             )
             provider = self._get_provider(model_name)
             rel_text = provider.classify(rel_prompt, k_conf)
@@ -639,8 +734,10 @@ class ButlyHousekeeper:
                 ts = data.get('timestamp', 'Unknown').replace('T', ' ').split('.')[0]
                 combined_text += f"\n--- Source: {f_path.name} ({ts}) ---\n"
                 
+                _agent_name = self.get_instance_agent_name(db_type)
+                _user_name = self.get_instance_user_name(db_type)
                 for msg in data.get("messages", []):
-                    role_label = SYSTEM_CONFIG["agent"]["user_name"] if msg["role"] == "user" else SYSTEM_CONFIG["agent"]["agent_name"]
+                    role_label = _user_name if msg["role"] == "user" else _agent_name
                     content = msg.get("parts", [""])[0]
                     if isinstance(content, dict): content = content.get("text", "")
                     combined_text += f"[{ts}] {role_label}: {content}\n"
@@ -667,6 +764,22 @@ class ButlyHousekeeper:
                         shutil.move(str(jf_path), str(dest_folder / jf_path.name))
                     except Exception as e:
                         print(f"Move Error: {e}")
+                
+                # トラッキングファイルから移動済みファイルを除去
+                tracker_file = integrated_dir / ".mid_term_processed.json"
+                if tracker_file.exists():
+                    try:
+                        tracked = set(json.loads(tracker_file.read_text(encoding="utf-8")))
+                        moved_names = {f.name for f in files_in_batch}
+                        tracked -= moved_names
+                        if tracked:
+                            tracker_file.write_text(
+                                json.dumps(sorted(tracked), ensure_ascii=False), encoding="utf-8"
+                            )
+                        else:
+                            tracker_file.unlink()
+                    except Exception:
+                        pass
                     
                 print(f"[{db_type}] 処理完了・移動済み: {dest_folder}")
             else:

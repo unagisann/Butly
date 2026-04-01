@@ -25,7 +25,7 @@ Do not re-explain facts. Record only states and trends concisely.
 - Do not duplicate content already in Key Memory
 - Do not simply repeat events from the fact digest
 - Do not narratize or embellish subjectively
-- Keep within 400-600 characters. Conciseness is the top priority
+- Keep within {max_chars} characters. Conciseness is the top priority
 - This is a "reference memo", not a "narrative"
 
 【Output Format】
