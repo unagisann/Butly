@@ -512,6 +512,12 @@ class ButlyHousekeeper:
             model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite-preview")
 
             instance_name = instance_path.name
+            inst_cfg = self._get_instance_config(instance_name)
+            summary_max_tokens = inst_cfg.get("housekeeper", {}).get(
+                "summary_max_output_tokens",
+                summary_conf.get("generation_config", {}).get("max_output_tokens", 4096),
+            )
+
             loader = PromptLoader()
             prompt = loader.get(
                 "recent_headlines",
@@ -521,7 +527,7 @@ class ButlyHousekeeper:
             provider = self._get_provider(model_name)
             raw_response = provider.classify(
                 prompt,
-                {"model_name": model_name, "generation_config": {"temperature": 0.0, "max_output_tokens": 512}},
+                {"model_name": model_name, "generation_config": {"temperature": 0.0, "max_output_tokens": summary_max_tokens}},
             )
 
             # JSON パース
