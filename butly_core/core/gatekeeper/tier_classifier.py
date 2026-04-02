@@ -112,7 +112,7 @@ class TierClassifier:
             return "cortex"
 
         # reflex: 複雑さも記憶参照も低く、連続性も低い
-        if rc <= 0.2 and ml <= 0.3 and cn <= 0.3:
+        if rc <= 0.4 and ml <= 0.3 and cn <= 0.3:
             return "reflex"
 
         # mid: それ以外
