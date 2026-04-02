@@ -78,6 +78,7 @@ class OllamaProvider(BaseProvider):
                 model=_strip_ollama_prefix(config.get("model_name", "llama3.2")),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=config.get("temperature", 0.3),
+                max_tokens=config.get("generation_config", {}).get("max_output_tokens") or None,
             )
             return resp.choices[0].message.content.strip() if resp.choices else "要約なし"
         except Exception as e:
@@ -94,11 +95,13 @@ class OllamaProvider(BaseProvider):
             return None
 
     def classify(self, prompt: str, config: dict) -> str:
+        _gen = config.get("generation_config", {})
         try:
             resp = self.client.chat.completions.create(
                 model=_strip_ollama_prefix(config.get("model_name", "llama3.2")),
                 messages=[{"role": "user", "content": prompt}],
-                temperature=config.get("generation_config", {}).get("temperature", 0.0),
+                temperature=_gen.get("temperature", 0.0),
+                max_tokens=_gen.get("max_output_tokens") or None,
             )
             return resp.choices[0].message.content if resp.choices else ""
         except Exception as e:
@@ -179,11 +182,13 @@ class OllamaProvider(BaseProvider):
         if override_config and "chat" in override_config:
             chat_conf = {**chat_conf, **override_config["chat"]}
 
+        _gen = chat_conf.get("generation_config", {})
         try:
             resp = self.client.chat.completions.create(
                 model=_strip_ollama_prefix(chat_conf.get("model_name", "llama3.2")),
                 messages=messages,
-                temperature=chat_conf.get("generation_config", {}).get("temperature", 0.7),
+                temperature=_gen.get("temperature", 0.7),
+                max_tokens=_gen.get("max_output_tokens") or None,
             )
             response_text = resp.choices[0].message.content if resp.choices else ""
             return ChatResponse(

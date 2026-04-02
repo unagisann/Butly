@@ -1080,12 +1080,66 @@ def render_instance_settings_screen():
             "model_name": "gemini-3-flash-preview",
             "generation_config": {"temperature": 1.0, "top_p": 0.95, "top_k": 40, "max_output_tokens": 8192}
         }
+    config["chat"].setdefault("generation_config", {"temperature": 1.0, "max_output_tokens": 8192})
     if "memory" not in config:
         config["memory"] = {"max_mid_term_chars": 30000, "short_term_limit": 6}
     if "agent" not in config:
         config["agent"] = {}
     if "housekeeper" not in config:
         config["housekeeper"] = {}
+
+    # --- Ollama モデル一覧の動的取得 ---
+    @st.cache_data(ttl=30)
+    def _fetch_ollama_models(_api_url):
+        """Ollama 接続テスト API を経由してモデル一覧を取得する。"""
+        try:
+            from butly_core.config import SYSTEM_CONFIG as _sc
+            _user_cfg_path = Path(__file__).parent / "user_config.json"
+            _ollama_url = "http://localhost:11434"
+            if _user_cfg_path.exists():
+                import json as _json
+                _uc = _json.loads(_user_cfg_path.read_text(encoding="utf-8"))
+                _ollama_url = _uc.get("LLM_PROVIDERS", {}).get("ollama", {}).get("base_url", _ollama_url)
+            resp = requests.post(f"{_api_url}/settings/ollama_test", json=_ollama_url, timeout=5)
+            if resp.ok:
+                data = resp.json()
+                if data.get("status") == "ok":
+                    return [f"ollama/{m}" for m in data.get("models", [])]
+        except Exception:
+            pass
+        return []
+
+    # --- 全プロバイダーのモデル候補リスト ---
+    _gemini_models = [
+        'gemini-3.1-pro-preview',
+        'gemini-3-flash-preview',
+        'gemini-3.1-flash-lite-preview',
+        'gemini-2.5-pro',
+        'gemini-2.5-flash',
+        'gemini-2.5-flash-lite',
+    ]
+    _openai_models = [
+        'gpt-4o',
+        'gpt-4o-mini',
+        'o3',
+        'o4-mini',
+    ]
+    _ollama_models = _fetch_ollama_models(api_url)
+    _embedding_models = [
+        'models/gemini-embedding-001',
+        # Ollama embedding は nomic-embed-text 等の専用モデルが必要です。
+        # ollama pull nomic-embed-text を実行し、ollama/nomic-embed-text を指定してください。
+    ]
+    _all_models = _gemini_models + _openai_models + _ollama_models
+    _all_embedding_models = _embedding_models + _ollama_models
+
+    def _model_selectbox(label, current, candidates, key):
+        """モデル選択ドロップダウン。現在値がリストになければフォールバック追加。"""
+        opts = list(candidates)
+        if current and current not in opts:
+            opts.append(current)
+        idx = opts.index(current) if current in opts else 0
+        return st.selectbox(label, opts, index=idx, key=key)
 
     # =====================
     # タブ分割: 基本設定 / 詳細設定
@@ -1130,20 +1184,74 @@ def render_instance_settings_screen():
 
         st.divider()
         st.subheader("🤖 生成モデル設定")
-        models = [
-            'gemini-3.1-pro-preview',
-            'gemini-3-flash-preview',
-            'gemini-3.1-flash-lite-preview',
-            'gemini-2.5-pro',
-            'gemini-2.5-flash',
-            'gemini-2.5-flash-lite',
-        ]
-        current_model = config["chat"].get("model_name", "gemini-3-flash-preview")
-        if current_model not in models: models.append(current_model)
-        model_name = st.selectbox("モデル名", models, index=models.index(current_model))
-        gen_config = config["chat"].get("generation_config", {})
-        temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(gen_config.get("temperature", 1.0)))
-        max_tokens = st.number_input("最大出力トークン数", min_value=1, value=int(gen_config.get("max_output_tokens", 8192)))
+        st.caption("各ロールのモデルを個別に設定できます。「グローバル設定を使う」をONにすると user_config.json / config.py のデフォルト値が使われます。")
+
+        from butly_core.config import AI_CONFIG as _global_ai
+
+        # ---- Chat モデル（メイン応答） ----
+        with st.expander("💬 Chat（メイン応答）", expanded=True):
+            _chat_gen = config["chat"].get("generation_config", {})
+            model_name = _model_selectbox("モデル名", config["chat"].get("model_name", "gemini-3-flash-preview"), _all_models, "chat_model")
+            temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_chat_gen.get("temperature", 1.0)), key="chat_temp")
+            max_tokens = st.number_input("最大出力トークン数", min_value=1, value=int(_chat_gen.get("max_output_tokens", 8192)), key="chat_max_tokens")
+
+        # ---- Gatekeeper モデル（Tier分類） ----
+        with st.expander("🛡 Gatekeeper（Tier分類）"):
+            if "gatekeeper" not in config:
+                config["gatekeeper"] = {}
+            _gk_use_global = st.toggle("グローバル設定を使う", value=("model_name" not in config.get("gatekeeper", {})), key="gk_global")
+            gk_enabled = st.toggle(
+                "Gatekeeper (Tier自動判定)",
+                value=config.get("gatekeeper", {}).get("enabled", True),
+                help="OFF にすると常に mid tier で動作します（RAG 検索は行われません）",
+            )
+            if _gk_use_global:
+                _gk_default = _global_ai.get("gatekeeper", {})
+                st.info(f"グローバル設定: {_gk_default.get('model_name', '未設定')}")
+                gk_model_name = None
+                gk_temp = None
+            else:
+                _gk_cur = config.get("gatekeeper", {})
+                gk_model_name = _model_selectbox("モデル名", _gk_cur.get("model_name", _global_ai.get("gatekeeper", {}).get("model_name", "")), _all_models, "gk_model")
+                gk_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_gk_cur.get("generation_config", {}).get("temperature", 0.0)), key="gk_temp")
+
+        # ---- Summary モデル（要約） ----
+        with st.expander("📝 Summary（要約）"):
+            _sum_use_global = st.toggle("グローバル設定を使う", value=("summary" not in config), key="sum_global")
+            if _sum_use_global:
+                _sum_default = _global_ai.get("summary", {})
+                st.info(f"グローバル設定: {_sum_default.get('model_name', '未設定')}")
+                sum_model_name = None
+                sum_temp = None
+            else:
+                _sum_cur = config.get("summary", {})
+                sum_model_name = _model_selectbox("モデル名", _sum_cur.get("model_name", _global_ai.get("summary", {}).get("model_name", "")), _all_models, "sum_model")
+                sum_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_sum_cur.get("generation_config", {}).get("temperature", 0.3)), key="sum_temp")
+
+        # ---- Knowledge モデル（知識抽出） ----
+        with st.expander("🧠 Knowledge（知識抽出）"):
+            _know_use_global = st.toggle("グローバル設定を使う", value=("knowledge" not in config), key="know_global")
+            if _know_use_global:
+                _know_default = _global_ai.get("knowledge", {})
+                st.info(f"グローバル設定: {_know_default.get('model_name', '未設定')}")
+                know_model_name = None
+                know_temp = None
+            else:
+                _know_cur = config.get("knowledge", {})
+                know_model_name = _model_selectbox("モデル名", _know_cur.get("model_name", _global_ai.get("knowledge", {}).get("model_name", "")), _all_models, "know_model")
+                know_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_know_cur.get("generation_config", {}).get("temperature", 0.7)), key="know_temp")
+
+        # ---- Embedding モデル（ベクトル検索） ----
+        with st.expander("🔢 Embedding（ベクトル検索）"):
+            st.caption("Ollama で embedding を使う場合は専用モデル (nomic-embed-text 等) が必要です。\n`ollama pull nomic-embed-text` を実行し `ollama/nomic-embed-text` を選択してください。")
+            _emb_use_global = st.toggle("グローバル設定を使う", value=("embedding" not in config), key="emb_global")
+            if _emb_use_global:
+                _emb_default = _global_ai.get("embedding", {})
+                st.info(f"グローバル設定: {_emb_default.get('model_name', '未設定')}")
+                emb_model_name = None
+            else:
+                _emb_cur = config.get("embedding", {})
+                emb_model_name = _model_selectbox("モデル名", _emb_cur.get("model_name", _global_ai.get("embedding", {}).get("model_name", "")), _all_embedding_models, "emb_model")
 
         st.divider()
         st.subheader("📚 記憶の参照範囲")
@@ -1166,16 +1274,6 @@ def render_instance_settings_screen():
                     readable_selected.append(inst)
         if "self" not in readable_selected:
             readable_selected.insert(0, "self")
-
-        st.divider()
-        st.subheader("🛡 Gatekeeper 設定")
-        if "gatekeeper" not in config:
-            config["gatekeeper"] = {"enabled": True}
-        gk_enabled = st.toggle(
-            "Gatekeeper (Tier自動判定)",
-            value=config.get("gatekeeper", {}).get("enabled", True),
-            help="OFF にすると常に mid tier で動作します（RAG 検索は行われません）",
-        )
 
         st.divider()
 
@@ -1562,14 +1660,45 @@ def render_instance_settings_screen():
         config["brain"]["keyword_hit_threshold"] = keyword_thr
         config["brain"]["cache_ttl_hours"] = cache_ttl
 
-        config["gatekeeper"] = {"enabled": gk_enabled}
+        # --- Chat ---
+        config["chat"]["model_name"] = model_name
+        config["chat"].setdefault("generation_config", {})
+        config["chat"]["generation_config"]["temperature"] = temp
+        config["chat"]["generation_config"]["max_output_tokens"] = max_tokens
+
+        # --- Gatekeeper ---
+        _gk_save = {"enabled": gk_enabled}
+        if gk_model_name is not None:  # "グローバル設定を使う" がOFF
+            _gk_save["model_name"] = gk_model_name
+            _gk_save["generation_config"] = {"temperature": gk_temp, "max_output_tokens": 512}
+        config["gatekeeper"] = _gk_save
+
+        # --- Summary ---
+        if sum_model_name is not None:
+            config["summary"] = {
+                "model_name": sum_model_name,
+                "generation_config": {"temperature": sum_temp},
+            }
+        else:
+            config.pop("summary", None)
+
+        # --- Knowledge ---
+        if know_model_name is not None:
+            config["knowledge"] = {
+                "model_name": know_model_name,
+                "generation_config": {"temperature": know_temp},
+            }
+        else:
+            config.pop("knowledge", None)
+
+        # --- Embedding ---
+        if emb_model_name is not None:
+            config["embedding"] = {"model_name": emb_model_name}
+        else:
+            config.pop("embedding", None)
 
         config["memory"]["short_term_limit"] = st_limit
         config["memory"]["max_mid_term_chars"] = mt_max
-
-        config["chat"]["model_name"] = model_name
-        config["chat"]["generation_config"]["temperature"] = temp
-        config["chat"]["generation_config"]["max_output_tokens"] = max_tokens
 
         # agent profile の保存
         config["agent"] = {
@@ -1947,7 +2076,8 @@ def main():
     available_instances = sorted([p.name for p in INSTANCES_DIR.iterdir() if p.is_dir() and not p.name.startswith(".")]) if INSTANCES_DIR.exists() else []
 
     if not available_instances:
-        render_onboarding_screen()
+        # インスタンス未作成でもホーム画面を表示（新規作成UIがホーム画面にある）
+        render_home_screen()
         return
 
     if st.session_state.current_instance is None:
