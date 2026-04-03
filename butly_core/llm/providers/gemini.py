@@ -204,12 +204,43 @@ class GeminiProvider(BaseProvider):
                 print("[GeminiProvider] Got response from Gemini API!")
                 response_text, sources, _ = self._extract_response(response)
 
-            return ChatResponse(
+            # debug_info 構築（Gemini 固有）
+            _debug_sys_inst = ""
+            _debug_ctx_prefix = ""
+            if memory_blocks is not None:
+                from butly_core.core.gatekeeper import (
+                    build_system_instruction_from_blocks,
+                    build_context_prefix,
+                )
+                _debug_sys_inst = build_system_instruction_from_blocks(
+                    blocks=memory_blocks,
+                    memory_manager=memory_manager,
+                    use_google_search=use_google_search,
+                    context_order=context_order,
+                )
+                _debug_ctx_prefix = build_context_prefix(
+                    blocks=memory_blocks,
+                    memory_manager=memory_manager,
+                    use_google_search=use_google_search,
+                    context_order=context_order,
+                )
+
+            result = ChatResponse(
                 text=response_text,
                 keywords=keywords,
                 refs=[dict(k) for k in rag_results] if rag_results else [],
                 sources=sources if sources else [],
             )
+            result.debug_info = {
+                "system_instruction": (_debug_sys_inst[:500] + "...") if len(_debug_sys_inst) > 500 else _debug_sys_inst,
+                "system_instruction_full": _debug_sys_inst,
+                "context_prefix": (_debug_ctx_prefix[:500] + "...") if len(_debug_ctx_prefix) > 500 else _debug_ctx_prefix,
+                "context_prefix_full": _debug_ctx_prefix,
+                "history_count": len(history),
+                "user_input": full_prompt,
+                "raw_response": response_text,
+            }
+            return result
         except Exception as e:
             import traceback
             traceback.print_exc()

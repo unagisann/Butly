@@ -181,6 +181,22 @@ class OpenAIProvider(BaseProvider):
         if override_config and "chat" in override_config:
             chat_conf = {**chat_conf, **override_config["chat"]}
 
+        # debug 用: messages の truncated 版を作成
+        def _debug_content(c) -> str:
+            """content が str / list(multimodal) のどちらでも安全に truncate する。"""
+            if isinstance(c, str):
+                return (c[:500] + "...") if len(c) > 500 else c
+            if isinstance(c, list):
+                texts = [p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"]
+                joined = " ".join(texts)
+                return (joined[:500] + "...") if len(joined) > 500 else joined
+            return str(c)[:500]
+
+        _debug_messages = [
+            {"role": m["role"], "content": _debug_content(m.get("content", ""))}
+            for m in messages
+        ]
+
         try:
             resp = self.client.chat.completions.create(
                 model=chat_conf.get("model_name", "gpt-4o"),
@@ -189,10 +205,16 @@ class OpenAIProvider(BaseProvider):
                 max_tokens=chat_conf.get("generation_config", {}).get("max_output_tokens", 8192),
             )
             response_text = resp.choices[0].message.content if resp.choices else ""
-            return ChatResponse(
+            result = ChatResponse(
                 text=response_text or "",
                 refs=[dict(k) for k in rag_results] if rag_results else [],
             )
+            result.debug_info = {
+                "messages": _debug_messages,
+                "messages_full": [{"role": m["role"], "content": _debug_content(m.get("content", ""))} for m in messages],
+                "raw_response": response_text,
+            }
+            return result
         except Exception as e:
             import traceback
             traceback.print_exc()

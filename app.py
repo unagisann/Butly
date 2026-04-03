@@ -132,6 +132,74 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- 共通ヘルパー関数 ---
+@st.cache_data(ttl=30)
+def _fetch_ollama_models(api_url: str) -> list:
+    """Ollama サーバーからインストール済みモデル一覧を取得する。"""
+    try:
+        import requests as _req
+        import json as _json
+        _user_cfg_path = Path(__file__).parent / "user_config.json"
+        _ollama_url = "http://localhost:11434"
+        if _user_cfg_path.exists():
+            _uc = _json.loads(_user_cfg_path.read_text(encoding="utf-8"))
+            _ollama_url = _uc.get("LLM_PROVIDERS", {}).get("ollama", {}).get("base_url", _ollama_url)
+        resp = _req.post(f"{api_url}/settings/ollama_test", json={"url": _ollama_url}, timeout=5)
+        if resp.ok:
+            data = resp.json()
+            if data.get("status") == "ok":
+                return [f"ollama/{m}" for m in data.get("models", [])]
+    except Exception:
+        pass
+    return []
+
+
+def get_provider_label(model_name: str) -> str:
+    """モデル名からプロバイダーラベルを返す。"""
+    if not model_name:
+        return "❓ 不明"
+    if model_name.startswith("gemini") or model_name.startswith("models/gemini"):
+        return "🟦 Gemini"
+    elif model_name.startswith(("gpt-", "o1-", "o3-", "o4-", "text-embedding")):
+        return "🟩 OpenAI"
+    elif model_name.startswith("ollama/"):
+        return "🟧 Ollama"
+    else:
+        return "❓ 不明"
+
+
+def _model_selector(label: str, current_value: str, candidates: list, key_prefix: str) -> str:
+    """
+    モデル選択の共通ウィジェット。
+    selectbox + 直接入力欄を表示し、最終的なモデル名を返す。
+    """
+    opts = list(candidates)
+
+    # 現在値がリストになければ追加（過去に設定したカスタム値の保持）
+    if current_value and current_value not in opts:
+        opts.append(current_value)
+
+    idx = opts.index(current_value) if current_value in opts else 0
+    selected = st.selectbox(label, opts, index=idx, key=f"{key_prefix}_select")
+
+    # 直接入力欄
+    custom = st.text_input(
+        "または直接入力:",
+        value="",
+        placeholder="例: ollama/my-model / gemini-2.5-pro",
+        key=f"{key_prefix}_custom",
+        label_visibility="visible",
+    )
+
+    # 直接入力があればそちらを優先
+    final = custom.strip() if custom.strip() else selected
+
+    # プロバイダー表示
+    st.caption(f"プロバイダー: {get_provider_label(final)}")
+
+    return final
+
+
 # --- マネージャー初期化 ---
 instance_manager = InstanceManager(BASE_DIR)
 
@@ -566,17 +634,6 @@ def render_settings_screen():
         import requests
         api_url = st.session_state.api_base_url
 
-        # --- プロバイダー判定ヘルパー ---
-        def get_provider_label(model_name: str) -> str:
-            if model_name.startswith("gemini") or model_name.startswith("models/gemini"):
-                return "🟦 Gemini"
-            elif model_name.startswith(("gpt-", "o1-", "o3-", "o4-", "text-embedding")):
-                return "🟩 OpenAI"
-            elif model_name.startswith("ollama/"):
-                return "🟧 Ollama"
-            else:
-                return "❓ 不明"
-
         # --- セクション1: APIキー管理 ---
         st.subheader("🔑 APIキー設定")
 
@@ -662,8 +719,10 @@ def render_settings_screen():
 
         # --- セクション3: 各ロールのモデル選択 ---
         st.subheader("🧠 モデル割り当て")
+        st.caption("💡 ローカルLLM (Ollama) のモデルは自動検出されます。表示されない場合は接続テストを確認してください。")
 
-        MODEL_PRESETS = {
+        # API プロバイダーのプリセット（ハードコード）
+        _API_PRESETS = {
             "chat": [
                 "gemini-3.1-pro-preview",
                 "gemini-3-flash-preview",
@@ -672,31 +731,34 @@ def render_settings_screen():
                 "gemini-2.5-flash",
                 "gpt-4o",
                 "gpt-4o-mini",
-                "o3-mini",
-                "ollama/llama3.2",
-                "ollama/mistral",
-                "ollama/qwen2.5",
+                "o3",
+                "o4-mini",
             ],
             "summary": [
                 "gemini-3.1-flash-lite-preview",
                 "gemini-2.5-flash",
                 "gpt-4o-mini",
-                "ollama/llama3.2",
-                "ollama/mistral",
             ],
             "gatekeeper": [
                 "gemini-3.1-flash-lite-preview",
                 "gemini-2.5-flash-lite",
                 "gpt-4o-mini",
-                "ollama/llama3.2",
             ],
             "embedding": [
                 "models/gemini-embedding-001",
                 "text-embedding-3-small",
                 "text-embedding-3-large",
-                "ollama/nomic-embed-text",
             ],
         }
+
+        # Ollama モデル（動的取得）
+        _ollama_models_global = _fetch_ollama_models(api_url)
+
+        # 各ロールの候補リスト = APIプリセット + Ollama動的
+        def _get_candidates(role: str) -> list:
+            base = list(_API_PRESETS.get(role, []))
+            base += _ollama_models_global
+            return base
 
         ROLE_LABELS = {
             "chat": "Chat (メイン応答)",
@@ -708,30 +770,14 @@ def render_settings_screen():
         provider_ai_cfg = provider_cfg.get("AI_CONFIG", {})
         model_selections = {}
 
-        _CUSTOM_ENTRY = "✏️ カスタム入力..."
-        st.caption("💡 ローカルLLM (Ollama) を使用する場合は、モデル名の前に `ollama/` を付けてください（例: `ollama/llama3.2`）")
-
         for role in ["chat", "summary", "gatekeeper", "embedding"]:
-            current_model = provider_ai_cfg.get(role, {}).get("model_name", MODEL_PRESETS[role][0])
-            opts = list(MODEL_PRESETS[role])
-            if current_model not in opts and current_model:
-                opts.append(current_model)
-            opts.append(_CUSTOM_ENTRY)
-            selected = st.selectbox(
-                ROLE_LABELS[role],
-                opts,
-                index=opts.index(current_model) if current_model in opts else 0,
-                key=f"provider_model_{role}",
+            current_model = provider_ai_cfg.get(role, {}).get("model_name", _API_PRESETS[role][0])
+            model_selections[role] = _model_selector(
+                label=ROLE_LABELS[role],
+                current_value=current_model,
+                candidates=_get_candidates(role),
+                key_prefix=f"provider_model_{role}",
             )
-            if selected == _CUSTOM_ENTRY:
-                selected = st.text_input(
-                    f"{ROLE_LABELS[role]} - モデル名を入力",
-                    value="" if current_model in MODEL_PRESETS[role] else current_model,
-                    placeholder="例: gemini-2.5-pro / ollama/phi3",
-                    key=f"provider_model_custom_{role}",
-                )
-            st.caption(f"プロバイダー: {get_provider_label(selected)}")
-            model_selections[role] = selected
 
         st.divider()
         st.subheader("🌡️ Temperature 設定")
@@ -1088,27 +1134,6 @@ def render_instance_settings_screen():
     if "housekeeper" not in config:
         config["housekeeper"] = {}
 
-    # --- Ollama モデル一覧の動的取得 ---
-    @st.cache_data(ttl=30)
-    def _fetch_ollama_models(_api_url):
-        """Ollama 接続テスト API を経由してモデル一覧を取得する。"""
-        try:
-            from butly_core.config import SYSTEM_CONFIG as _sc
-            _user_cfg_path = Path(__file__).parent / "user_config.json"
-            _ollama_url = "http://localhost:11434"
-            if _user_cfg_path.exists():
-                import json as _json
-                _uc = _json.loads(_user_cfg_path.read_text(encoding="utf-8"))
-                _ollama_url = _uc.get("LLM_PROVIDERS", {}).get("ollama", {}).get("base_url", _ollama_url)
-            resp = requests.post(f"{_api_url}/settings/ollama_test", json=_ollama_url, timeout=5)
-            if resp.ok:
-                data = resp.json()
-                if data.get("status") == "ok":
-                    return [f"ollama/{m}" for m in data.get("models", [])]
-        except Exception:
-            pass
-        return []
-
     # --- 全プロバイダーのモデル候補リスト ---
     _gemini_models = [
         'gemini-3.1-pro-preview',
@@ -1125,21 +1150,12 @@ def render_instance_settings_screen():
         'o4-mini',
     ]
     _ollama_models = _fetch_ollama_models(api_url)
-    _embedding_models = [
-        'models/gemini-embedding-001',
-        # Ollama embedding は nomic-embed-text 等の専用モデルが必要です。
-        # ollama pull nomic-embed-text を実行し、ollama/nomic-embed-text を指定してください。
-    ]
     _all_models = _gemini_models + _openai_models + _ollama_models
-    _all_embedding_models = _embedding_models + _ollama_models
-
-    def _model_selectbox(label, current, candidates, key):
-        """モデル選択ドロップダウン。現在値がリストになければフォールバック追加。"""
-        opts = list(candidates)
-        if current and current not in opts:
-            opts.append(current)
-        idx = opts.index(current) if current in opts else 0
-        return st.selectbox(label, opts, index=idx, key=key)
+    _all_embedding_models = [
+        'models/gemini-embedding-001',
+        'text-embedding-3-small',
+        'text-embedding-3-large',
+    ] + _ollama_models
 
     # =====================
     # タブ分割: 基本設定 / 詳細設定
@@ -1191,7 +1207,7 @@ def render_instance_settings_screen():
         # ---- Chat モデル（メイン応答） ----
         with st.expander("💬 Chat（メイン応答）", expanded=True):
             _chat_gen = config["chat"].get("generation_config", {})
-            model_name = _model_selectbox("モデル名", config["chat"].get("model_name", "gemini-3-flash-preview"), _all_models, "chat_model")
+            model_name = _model_selector("モデル名", config["chat"].get("model_name", "gemini-3-flash-preview"), _all_models, "inst_chat_model")
             temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_chat_gen.get("temperature", 1.0)), key="chat_temp")
             max_tokens = st.number_input("最大出力トークン数", min_value=1, value=int(_chat_gen.get("max_output_tokens", 8192)), key="chat_max_tokens")
 
@@ -1212,7 +1228,7 @@ def render_instance_settings_screen():
                 gk_temp = None
             else:
                 _gk_cur = config.get("gatekeeper", {})
-                gk_model_name = _model_selectbox("モデル名", _gk_cur.get("model_name", _global_ai.get("gatekeeper", {}).get("model_name", "")), _all_models, "gk_model")
+                gk_model_name = _model_selector("モデル名", _gk_cur.get("model_name", _global_ai.get("gatekeeper", {}).get("model_name", "")), _all_models, "inst_gk_model")
                 gk_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_gk_cur.get("generation_config", {}).get("temperature", 0.0)), key="gk_temp")
 
         # ---- Summary モデル（要約） ----
@@ -1225,7 +1241,7 @@ def render_instance_settings_screen():
                 sum_temp = None
             else:
                 _sum_cur = config.get("summary", {})
-                sum_model_name = _model_selectbox("モデル名", _sum_cur.get("model_name", _global_ai.get("summary", {}).get("model_name", "")), _all_models, "sum_model")
+                sum_model_name = _model_selector("モデル名", _sum_cur.get("model_name", _global_ai.get("summary", {}).get("model_name", "")), _all_models, "inst_sum_model")
                 sum_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_sum_cur.get("generation_config", {}).get("temperature", 0.3)), key="sum_temp")
 
         # ---- Knowledge モデル（知識抽出） ----
@@ -1238,7 +1254,7 @@ def render_instance_settings_screen():
                 know_temp = None
             else:
                 _know_cur = config.get("knowledge", {})
-                know_model_name = _model_selectbox("モデル名", _know_cur.get("model_name", _global_ai.get("knowledge", {}).get("model_name", "")), _all_models, "know_model")
+                know_model_name = _model_selector("モデル名", _know_cur.get("model_name", _global_ai.get("knowledge", {}).get("model_name", "")), _all_models, "inst_know_model")
                 know_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_know_cur.get("generation_config", {}).get("temperature", 0.7)), key="know_temp")
 
         # ---- Embedding モデル（ベクトル検索） ----
@@ -1251,7 +1267,7 @@ def render_instance_settings_screen():
                 emb_model_name = None
             else:
                 _emb_cur = config.get("embedding", {})
-                emb_model_name = _model_selectbox("モデル名", _emb_cur.get("model_name", _global_ai.get("embedding", {}).get("model_name", "")), _all_embedding_models, "emb_model")
+                emb_model_name = _model_selector("モデル名", _emb_cur.get("model_name", _global_ai.get("embedding", {}).get("model_name", "")), _all_embedding_models, "inst_emb_model")
 
         st.divider()
         st.subheader("📚 記憶の参照範囲")
@@ -1832,9 +1848,8 @@ def render_chat_screen():
         last_interaction_time=st.session_state.get("last_interaction_time")
     )
 
-    if st.session_state.debug_mode:
-        with st.expander("🕒 Time Context (Debug)"):
-            st.text(sys_note)
+    if False:  # Chronos debug — removed, now part of unified debug panel
+        pass
 
     # --- メッセージの表示 (カスタムCSSを使用) ---
     st.markdown('<div class="clearfix">', unsafe_allow_html=True)
@@ -1858,7 +1873,88 @@ def render_chat_screen():
             st.markdown(f'<div class="chat-bubble-user">{ts_display}{text}{img_html}</div>', unsafe_allow_html=True)
         else:
             st.markdown(f'<div class="chat-bubble-ai">{ts_display}{text}</div>', unsafe_allow_html=True)
-            
+
+            # --- Debug Panel (永続表示: メッセージに紐付けて保存済みデータを描画) ---
+            if st.session_state.get("debug_mode"):
+                debug = msg.get("debug_info") or {}
+                if debug:
+                    with st.expander("🐛 DEBUG", expanded=False):
+                        timing = debug.get("timing", {})
+                        tokens = debug.get("token_estimate", {})
+                        gk = debug.get("gatekeeper", {})
+
+                        st.markdown(f"""
+**Provider:** `{debug.get('provider', '?')}` | **Model:** `{debug.get('model', '?')}`  
+**Tier:** `{gk.get('tier', '?')}` | **Total:** `{timing.get('total_ms', 0)}ms`  
+**Tokens (est.):** Prompt ~{tokens.get('prompt', 0)} / Response ~{tokens.get('response', 0)}
+""")
+
+                        st.caption("⏱️ Timing")
+                        cols = st.columns(4)
+                        cols[0].metric("Gatekeeper", f"{timing.get('gatekeeper_ms', 0)}ms")
+                        cols[1].metric("Memory Build", f"{timing.get('memory_build_ms', 0)}ms")
+                        cols[2].metric("RAG Search", f"{timing.get('rag_search_ms', 0)}ms")
+                        cols[3].metric("Generation", f"{timing.get('generation_ms', 0)}ms")
+
+                        st.caption("🧠 Gatekeeper")
+                        if not gk.get("enabled", True):
+                            st.text("  (disabled)")
+                        else:
+                            scores = gk.get("scores", {})
+                            if scores:
+                                for key in ["response_complexity", "emotional_weight",
+                                            "memory_reference_likelihood", "continuity_need"]:
+                                    val = scores.get(key, 0.0)
+                                    filled = int(val * 10)
+                                    bar = "█" * filled + "░" * (10 - filled)
+                                    st.text(f"  {key:>30s}: {val:.2f} {bar}")
+                            if gk.get("need"):
+                                st.text(f"  Need: {gk['need']}")
+                            if gk.get("search_targets"):
+                                st.text(f"  Search Targets: {gk['search_targets']}")
+
+                        rag = debug.get("rag", {})
+                        if rag.get("results"):
+                            st.caption("🔍 RAG Results")
+                            for r in rag["results"]:
+                                st.markdown(
+                                    f"<div class='rag-ref'>"
+                                    f"<b>{r['title']}</b> (score: {r.get('score', '?')})<br>"
+                                    f"<i>{r.get('episode', '')[:200]}</i></div>",
+                                    unsafe_allow_html=True,
+                                )
+
+                        st.caption("📝 Sent Prompt")
+                        prompt_msgs = debug.get("prompt", [])
+                        if prompt_msgs:
+                            st.json(prompt_msgs)
+
+                        prompt_full = debug.get("prompt_full", [])
+                        if prompt_full:
+                            with st.expander("📝 Full Prompt (untruncated)", expanded=False):
+                                for i, m in enumerate(prompt_full):
+                                    st.text(f"--- [{i}] role={m.get('role','?')} ---")
+                                    st.code(m.get("content", ""), language=None)
+
+                        st.caption("💬 Raw Response")
+                        raw = debug.get("raw_response", "")
+                        if raw:
+                            st.code(raw[:2000], language=None)
+
+                        ss = gk.get("session_state", {})
+                        if ss:
+                            st.caption("📊 Session State")
+                            st.json(ss)
+
+            # --- Google検索ソース (永続表示) ---
+            msg_sources = msg.get("sources", [])
+            if msg_sources:
+                with st.expander("🌐 参照元 (Google検索)", expanded=False):
+                    for src in msg_sources:
+                        url = src.get("url", "")
+                        title = src.get("title", url)
+                        st.markdown(f"- [{title}]({url})")
+
     st.markdown('</div>', unsafe_allow_html=True)
 
     # 上記の描画が行われた後、少しスペースを空ける
@@ -1960,67 +2056,13 @@ def render_chat_screen():
                 st.session_state.messages.append({
                     "role": "model",
                     "parts": [response_text],
-                    "timestamp": datetime.now().isoformat()
+                    "timestamp": datetime.now().isoformat(),
+                    "debug_info": data.get("debug_info"),
+                    "sources": sources,
                 })
                 st.session_state.last_interaction_time = datetime.now()
 
                 # 記憶の保存・整理は main.py 内の /chat で完結しているためここでは不要
-
-                # --- Debug 表示 ---
-                if st.session_state.debug_mode:
-                    if tier:
-                        st.caption(f"🧠 Tier: `{tier}`")
-
-                    # ★ Gatekeeper Scores
-                    gk_scores = data.get("gatekeeper_scores")
-                    if gk_scores:
-                        with st.expander("🧠 Gatekeeper Scores", expanded=False):
-                            score_labels = {
-                                "response_complexity": "response_complexity",
-                                "emotional_weight": "emotional_weight",
-                                "memory_reference_likelihood": "memory_reference_likelihood",
-                                "continuity_need": "continuity_need",
-                            }
-                            for key, label in score_labels.items():
-                                val = gk_scores.get(key, 0.0)
-                                filled = int(val * 10)
-                                bar = "█" * filled + "░" * (10 - filled)
-                                st.text(f"  {label:>30s}: {val:.2f} {bar}")
-                            st.text(f"  → {tier}")
-
-                    # ★ Phase 2: Gatekeeper v2 Details
-                    need = data.get("need")
-                    search_targets = data.get("search_targets")
-                    session_st = data.get("session_state", {})
-
-                    if need or search_targets or session_st:
-                        with st.expander("🧠 Gatekeeper v2 Details", expanded=False):
-                            if need:
-                                st.write(f"**Need:** {need}")
-                            if search_targets:
-                                st.write(f"**Search Targets:** {search_targets}")
-                            if session_st:
-                                st.json(session_st)
-
-                    if keywords or refs:
-                        with st.expander("🧠 Brain Process (RAG / Local Memory)", expanded=False):
-                            st.write(f"**Keywords:** {keywords}")
-                            if refs:
-                                for r in refs:
-                                    st.markdown(
-                                        f"<div class='rag-ref'><b>{r['title']}</b><br><i>{r.get('episode','')}</i></div>",
-                                        unsafe_allow_html=True
-                                    )
-                            else:
-                                st.info("No relevant long-term memories found.")
-
-                # Google検索ソース
-                if sources:
-                    with st.expander("🌐 参照元 (Google検索)", expanded=False):
-                        for src in sources:
-                            url   = src.get("url", "")
-                            title = src.get("title", url)
-                            st.markdown(f"- [{title}]({url})")
 
                 st.rerun()
 

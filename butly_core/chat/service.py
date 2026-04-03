@@ -6,6 +6,8 @@ main.py と brain.py / provider の橋渡しを行う。
 ステートレス設計（リクエストごとに生成）。
 """
 
+import re
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -73,6 +75,8 @@ class ChatService:
         from butly_core.core.gatekeeper import SessionState
         from butly_core.config import AI_CONFIG
 
+        _t_start = time.time()
+
         instance_name = request.instance_name
 
         # --- 添付バリデーション ---
@@ -112,6 +116,8 @@ class ChatService:
 
         gk_enabled = instance_config.get("gatekeeper", {}).get("enabled", True)
 
+        _t_gk_start = time.time()
+
         if gk_enabled:
             try:
                 gk_result = gatekeeper.classify(
@@ -142,10 +148,14 @@ class ChatService:
             tier = "mid"
             print("[ChatService] Gatekeeper disabled — defaulting to mid tier")
 
+        _t_gk_end = time.time()
+
         session_state.increment_turn(tier, history_msgs=history_fmt)
 
         # --- 5. 記憶ブロック構築 ---
         use_rag = instance_config.get("brain", {}).get("use_rag", True)
+
+        _t_mem_start = time.time()
 
         memory_blocks = mem_block_builder.build(
             tier=tier,
@@ -156,6 +166,8 @@ class ChatService:
             override_config=instance_config,
             gatekeeper_output=gk_result,
         )
+
+        _t_mem_end = time.time()
 
         # --- 6. Provider 選択と応答生成 ---
         model_name = request.model_name or AI_CONFIG["chat"]["model_name"]
@@ -227,12 +239,17 @@ class ChatService:
         if has_attachments:
             print(f"[ChatService] Provider: {type(provider).__name__}, attachments={len(request.attachments)}")
 
+        _t_gen_start = time.time()
+
         result = await run_in_threadpool(
             provider.generate,
             text=full_prompt,
             attachments=request.attachments if has_attachments else [],
             context=context,
         )
+
+        _t_gen_end = time.time()
+        _t_total = time.time() - _t_start
 
         # tier / gatekeeper 情報を付与
         result.tier = tier
@@ -244,6 +261,79 @@ class ChatService:
         # Web検索ソースをレスポンスに追加
         if web_sources:
             result.sources = web_sources + (result.sources or [])
+
+        # --- debug_info 統合 ---
+        def _estimate_tokens(text: str) -> int:
+            if not text:
+                return 0
+            ja_chars = len(re.findall(r'[\u3000-\u9fff\uff00-\uffef]', text))
+            en_words = len(re.findall(r'[a-zA-Z]+', text))
+            return int(ja_chars * 1.5 + en_words + len(text) * 0.1)
+
+        provider_debug = result.debug_info or {}
+
+        # トークン概算用のプロンプトテキスト収集
+        total_prompt_text = ""
+        if provider_debug.get("messages_full"):
+            for m in provider_debug["messages_full"]:
+                total_prompt_text += m.get("content", "")
+        elif provider_debug.get("system_instruction_full"):
+            total_prompt_text = (
+                provider_debug.get("system_instruction_full", "")
+                + provider_debug.get("context_prefix_full", "")
+                + provider_debug.get("user_input", "")
+            )
+
+        # RAG 結果がメモリブロックに含まれている場合はそこから取得
+        rag_debug_results = []
+        if memory_blocks and memory_blocks.get("rag_context"):
+            rag_raw = memory_blocks.get("rag_results_raw", [])
+            rag_debug_results = [
+                {"title": r.get("title", ""), "score": r.get("score", 0), "episode": r.get("episode", "")}
+                for r in rag_raw
+            ] if rag_raw else []
+
+        result.debug_info = {
+            "timing": {
+                "gatekeeper_ms": int((_t_gk_end - _t_gk_start) * 1000),
+                "memory_build_ms": int((_t_mem_end - _t_mem_start) * 1000),
+                "rag_search_ms": 0,
+                "generation_ms": int((_t_gen_end - _t_gen_start) * 1000),
+                "total_ms": int(_t_total * 1000),
+            },
+            "token_estimate": {
+                "prompt": _estimate_tokens(total_prompt_text),
+                "response": _estimate_tokens(result.text),
+            },
+            "gatekeeper": {
+                "tier": tier,
+                "enabled": gk_enabled,
+                "scores": gk_result.get("llm_scoring"),
+                "need": gk_result.get("need"),
+                "search_targets": gk_result.get("search_targets"),
+                "session_state": session_state.to_dict(),
+            },
+            "rag": {
+                "query": gk_result.get("need"),
+                "results": rag_debug_results,
+            },
+            "prompt": provider_debug.get("messages", []),
+            "prompt_full": provider_debug.get("messages_full", []),
+            "raw_response": provider_debug.get("raw_response", result.text),
+            "provider": type(provider).__name__,
+            "model": instance_config.get("chat", {}).get("model_name", ""),
+        }
+
+        # Gemini 固有フィールドがあれば追加
+        if provider_debug.get("system_instruction"):
+            result.debug_info["gemini_system_instruction"] = provider_debug["system_instruction"]
+            result.debug_info["gemini_context_prefix"] = provider_debug.get("context_prefix", "")
+            result.debug_info["gemini_history_count"] = provider_debug.get("history_count", 0)
+            result.debug_info["prompt_full"] = [
+                {"role": "system", "content": provider_debug.get("system_instruction_full", "")},
+                {"role": "user", "content": provider_debug.get("context_prefix_full", "")},
+                {"role": "user", "content": provider_debug.get("user_input", "")},
+            ]
 
         # --- 7. 会話保存 ---
         memory.save_single_turn(request.text, result.text)
