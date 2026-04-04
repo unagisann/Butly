@@ -161,6 +161,7 @@ class GeminiProvider(BaseProvider):
         rag_results = context.get("rag_results", [])
         use_rag = context.get("use_rag", True)
         context_order = context.get("context_order")
+        context_levels = context.get("context_levels")
 
         # --- 画像 parts ---
         image_parts = []
@@ -187,6 +188,7 @@ class GeminiProvider(BaseProvider):
                     full_prompt, image_parts, cached_content, history,
                     memory_manager, override_config, memory_blocks,
                     context_order=context_order,
+                    context_levels=context_levels,
                 )
             else:
                 chat_session = self._start_chat(
@@ -197,6 +199,7 @@ class GeminiProvider(BaseProvider):
                     use_google_search=False,
                     memory_blocks=memory_blocks,
                     context_order=context_order,
+                    context_levels=context_levels,
                 )
                 prompt_parts = [full_prompt] + image_parts
                 print("[GeminiProvider] Sending message to Gemini API...")
@@ -217,12 +220,14 @@ class GeminiProvider(BaseProvider):
                     memory_manager=memory_manager,
                     use_google_search=use_google_search,
                     context_order=context_order,
+                    context_levels=context_levels,
                 )
                 _debug_ctx_prefix = build_context_prefix(
                     blocks=memory_blocks,
                     memory_manager=memory_manager,
                     use_google_search=use_google_search,
                     context_order=context_order,
+                    context_levels=context_levels,
                 )
 
             result = ChatResponse(
@@ -335,6 +340,7 @@ class GeminiProvider(BaseProvider):
         use_google_search=False,
         memory_blocks=None,
         context_order=None,
+        context_levels=None,
     ):
         """キャッシュ有無に関わらずチャットセッションを開始する。"""
         from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
@@ -395,6 +401,7 @@ class GeminiProvider(BaseProvider):
                     memory_manager=memory_manager,
                     use_google_search=use_google_search,
                     context_order=context_order,
+                    context_levels=context_levels,
                 )
 
                 # 可変コンテキストを history の先頭に注入
@@ -403,6 +410,7 @@ class GeminiProvider(BaseProvider):
                     memory_manager=memory_manager,
                     use_google_search=use_google_search,
                     context_order=context_order,
+                    context_levels=context_levels,
                 )
                 if context_prefix:
                     prefix_content = types.Content(
@@ -577,6 +585,7 @@ class GeminiProvider(BaseProvider):
         override_config,
         memory_blocks,
         context_order=None,
+        context_levels=None,
     ) -> tuple:
         """Google 検索付きリクエストの 3 段階リトライ。"""
         # === First Try ===
@@ -586,7 +595,7 @@ class GeminiProvider(BaseProvider):
                 cached_content=cached_content, history=history,
                 memory_manager=memory_manager, override_config=override_config,
                 use_google_search=True, memory_blocks=memory_blocks,
-                context_order=context_order,
+                context_order=context_order, context_levels=context_levels,
             )
             prompt_parts = [full_prompt] + image_parts
             print("[GeminiProvider] Sending message to Gemini API...")
@@ -611,7 +620,7 @@ class GeminiProvider(BaseProvider):
                 cached_content=cached_content, history=history,
                 memory_manager=memory_manager, override_config=override_config,
                 use_google_search=True, memory_blocks=memory_blocks,
-                context_order=context_order,
+                context_order=context_order, context_levels=context_levels,
             )
             prompt_parts = [corrected_prompt] + image_parts
             print("[GeminiProvider] Sending message to Gemini API...")
@@ -634,7 +643,7 @@ class GeminiProvider(BaseProvider):
             cached_content=cached_content, history=history,
             memory_manager=memory_manager, override_config=override_config,
             use_google_search=False, memory_blocks=memory_blocks,
-            context_order=context_order,
+            context_order=context_order, context_levels=context_levels,
         )
         prompt_parts = [full_prompt] + image_parts
         print("[GeminiProvider] Sending message to Gemini API...")

@@ -67,6 +67,26 @@ class ButlyMemory:
         except:
             return "あなたは有能な執事です。"
 
+    def get_system_instruction_low(self) -> str:
+        """LOW版system_instructionを取得。ファイルがないか空なら通常版にフォールバック。"""
+        low_path = self.instance_dir / "system_instruction_low.txt"
+        if low_path.exists():
+            content = low_path.read_text(encoding="utf-8").strip()
+            lines = [l for l in content.split("\n") if l.strip() and not l.strip().startswith("#")]
+            if lines:
+                return "\n".join(lines)
+        return self.get_system_instruction()
+
+    def get_key_memory_low(self) -> str:
+        """LOW版Key_Memoryを取得。ファイルがないか空なら通常版にフォールバック。"""
+        low_path = self.instance_dir / "Key_Memory_low.txt"
+        if low_path.exists():
+            content = low_path.read_text(encoding="utf-8").strip()
+            lines = [l for l in content.split("\n") if l.strip() and not l.strip().startswith("#")]
+            if lines:
+                return "\n".join(lines)
+        return self.get_key_memory()
+
     def get_agent_profile(self) -> dict:
         """
         インスタンス固有のエージェントプロファイルを返す。

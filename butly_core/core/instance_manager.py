@@ -45,6 +45,18 @@ class InstanceManager:
             final_instruction = template_text.replace("プロジェクト名：", f"プロジェクト名：{name}")
             (new_instance_dir / "system_instruction.txt").write_text(final_instruction, encoding="utf-8")
 
+            # 3.5 LOW版ファイルの作成
+            (new_instance_dir / "system_instruction_low.txt").write_text(
+                "# LOW版: 通常版を簡略化した性格設定を記述してください。\n"
+                "# 空のままでも動作します（通常版がフォールバックとして使用されます）。\n",
+                encoding="utf-8",
+            )
+            (new_instance_dir / "Key_Memory_low.txt").write_text(
+                "# LOW版: 通常版を簡略化した根幹記憶を記述してください。\n"
+                "# 空のままでも動作します（通常版がフォールバックとして使用されます）。\n",
+                encoding="utf-8",
+            )
+
             # 4. config.json (デフォルト設定)
             default_agent = {
                 "ai_name": "",

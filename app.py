@@ -1399,32 +1399,75 @@ def render_instance_settings_screen():
         st.divider()
 
         # ==========================================
-        # 🧩 コンテキスト注入順序
+        # 🧩 コンテキスト注入設定
         # ==========================================
-        st.subheader("🧩 コンテキスト注入順序")
-        st.caption("LLMに渡すコンテキストのセクション順序を変更できます。チェックを外すとそのセクションは注入されません。")
+        st.subheader("🧩 コンテキスト注入設定")
+        st.caption("LLMに渡すコンテキストのプリセットとレベルを設定できます。")
 
-        from butly_core.core.gatekeeper.memory_builder import DEFAULT_CONTEXT_ORDER
+        from butly_core.core.gatekeeper.memory_builder import DEFAULT_CONTEXT_ORDER, CONTEXT_LEVEL_PRESETS
 
-        # config から読み込み（なければデフォルト）
-        ctx_order = config.get("context_order", {})
-        _si_order = list(ctx_order.get("system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"]))
-        _cp_order = list(ctx_order.get("context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"]))
-        _si_position = ctx_order.get("system_instruction_position", DEFAULT_CONTEXT_ORDER["system_instruction_position"])
+        # config から読み込み（context_levels 優先、なければ context_order から変換）
+        ctx_cfg = config.get("context_levels", {})
+        if not ctx_cfg and "context_order" in config:
+            from butly_core.core.gatekeeper.memory_builder import migrate_context_order_to_levels
+            config = migrate_context_order_to_levels(config)
+            ctx_cfg = config.get("context_levels", {})
+
+        current_preset = ctx_cfg.get("preset", "normal")
+        _si_order = list(ctx_cfg.get("order", {}).get("system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"]))
+        _cp_order = list(ctx_cfg.get("order", {}).get("context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"]))
+        _si_position = ctx_cfg.get("system_instruction_position", DEFAULT_CONTEXT_ORDER.get("system_instruction_position", "top"))
 
         # セクションの日本語ラベル
         _SECTION_LABELS = {
             "system_instruction": "性格設定 (system_instruction)",
             "key_memory": "根幹記憶 (key_memory)",
-            "glossary": "共通言語辞書 (glossary)",
             "label_notes": "ラベル・注意文 (label_notes)",
             "current_time": "現在時刻 (current_time)",
+            "glossary": "共通言語辞書 (glossary)",
             "mid_term": "中期記憶 (mid_term)",
             "rag": "長期記憶 RAG (rag)",
             "floating": "浮動要約 (floating)",
             "tier_info": "Tier情報 (tier_info)",
-            "google_search": "Google検索 (google_search)",
+            "web_search": "Web検索 (web_search)",
         }
+
+        # --- プリセット選択 ---
+        _preset_labels = {
+            "normal": "Normal（API向け・フル情報）",
+            "compact": "Compact（情報量を抑制）",
+            "low": "Low（小規模LLM向け・最小限）",
+            "custom": "Custom（個別設定）",
+        }
+        preset = st.selectbox(
+            "プリセット",
+            options=["normal", "compact", "low", "custom"],
+            index=["normal", "compact", "low", "custom"].index(current_preset) if current_preset in ["normal", "compact", "low", "custom"] else 0,
+            format_func=lambda x: _preset_labels[x],
+            key="ctx_preset",
+        )
+
+        if preset == "low":
+            st.warning("💡 LOWプリセットではGatekeeper OFFを推奨します。")
+
+        if preset != "custom":
+            preset_levels = CONTEXT_LEVEL_PRESETS[preset]
+        else:
+            preset_levels = ctx_cfg.get("levels", CONTEXT_LEVEL_PRESETS["normal"])
+
+        # --- 個別レベル設定 ---
+        _LEVEL_OPTIONS = ["high", "mid", "low", "off"]
+        with st.expander("詳細設定（各要素のレベル）", expanded=(preset == "custom")):
+            level_settings = {}
+            for section_id, label in _SECTION_LABELS.items():
+                current = preset_levels.get(section_id, "high")
+                level_settings[section_id] = st.selectbox(
+                    label,
+                    options=_LEVEL_OPTIONS,
+                    index=_LEVEL_OPTIONS.index(current) if current in _LEVEL_OPTIONS else 0,
+                    key=f"ctx_level_{section_id}",
+                    disabled=(preset != "custom"),
+                )
 
         # --- system_instruction_position ---
         st.markdown("**▎ System Instruction の配置**")
@@ -1453,61 +1496,47 @@ def render_instance_settings_screen():
                 lst[idx], lst[new_idx] = lst[new_idx], lst[idx]
 
         # --- System Instruction セクション ---
-        st.markdown("**▎ System Instruction**")
-        _all_si_sections = list(DEFAULT_CONTEXT_ORDER["system_instruction"])
-        _si_enabled = {}
-        for i, sid in enumerate(st.session_state.ctx_si_order):
-            with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([0.5, 6, 1, 1])
-                with c1:
-                    is_disabled = (sid == "system_instruction")
-                    is_checked = sid in st.session_state.ctx_si_order
-                    _si_enabled[sid] = st.checkbox(
-                        f"有効: {sid}", value=True, disabled=is_disabled, key=f"si_chk_{sid}",
-                        label_visibility="collapsed",
-                    )
-                with c2:
-                    st.markdown(f"**{i+1}.** {_SECTION_LABELS.get(sid, sid)}")
-                with c3:
-                    if i > 0:
-                        if st.button("↑", key=f"si_up_{sid}"):
-                            _swap_items("ctx_si_order", i, -1)
-                            st.rerun()
-                with c4:
-                    if i < len(st.session_state.ctx_si_order) - 1:
-                        if st.button("↓", key=f"si_down_{sid}"):
-                            _swap_items("ctx_si_order", i, 1)
-                            st.rerun()
+        with st.expander("順序設定（↑↓で並べ替え）"):
+            st.markdown("**▎ System Instruction**")
+            for i, sid in enumerate(st.session_state.ctx_si_order):
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([6, 1, 1])
+                    with c1:
+                        st.markdown(f"**{i+1}.** {_SECTION_LABELS.get(sid, sid)}")
+                    with c2:
+                        if i > 0:
+                            if st.button("↑", key=f"si_up_{sid}"):
+                                _swap_items("ctx_si_order", i, -1)
+                                st.rerun()
+                    with c3:
+                        if i < len(st.session_state.ctx_si_order) - 1:
+                            if st.button("↓", key=f"si_down_{sid}"):
+                                _swap_items("ctx_si_order", i, 1)
+                                st.rerun()
 
-        # --- Context Prefix セクション ---
-        st.markdown("**▎ Context Prefix（会話コンテキスト）**")
-        _cp_enabled = {}
-        for i, sid in enumerate(st.session_state.ctx_cp_order):
-            with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([0.5, 6, 1, 1])
-                with c1:
-                    _cp_enabled[sid] = st.checkbox(
-                        f"有効: {sid}", value=True, key=f"cp_chk_{sid}",
-                        label_visibility="collapsed",
-                    )
-                with c2:
-                    st.markdown(f"**{i+1}.** {_SECTION_LABELS.get(sid, sid)}")
-                with c3:
-                    if i > 0:
-                        if st.button("↑", key=f"cp_up_{sid}"):
-                            _swap_items("ctx_cp_order", i, -1)
-                            st.rerun()
-                with c4:
-                    if i < len(st.session_state.ctx_cp_order) - 1:
-                        if st.button("↓", key=f"cp_down_{sid}"):
-                            _swap_items("ctx_cp_order", i, 1)
-                            st.rerun()
+            # --- Context Prefix セクション ---
+            st.markdown("**▎ Context Prefix（会話コンテキスト）**")
+            for i, sid in enumerate(st.session_state.ctx_cp_order):
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([6, 1, 1])
+                    with c1:
+                        st.markdown(f"**{i+1}.** {_SECTION_LABELS.get(sid, sid)}")
+                    with c2:
+                        if i > 0:
+                            if st.button("↑", key=f"cp_up_{sid}"):
+                                _swap_items("ctx_cp_order", i, -1)
+                                st.rerun()
+                    with c3:
+                        if i < len(st.session_state.ctx_cp_order) - 1:
+                            if st.button("↓", key=f"cp_down_{sid}"):
+                                _swap_items("ctx_cp_order", i, 1)
+                                st.rerun()
 
-        # デフォルトに戻すボタン
-        if st.button("デフォルトに戻す", key="ctx_reset_default"):
-            st.session_state.ctx_si_order = list(DEFAULT_CONTEXT_ORDER["system_instruction"])
-            st.session_state.ctx_cp_order = list(DEFAULT_CONTEXT_ORDER["context_prefix"])
-            st.rerun()
+            # デフォルトに戻すボタン
+            if st.button("デフォルトに戻す", key="ctx_reset_default"):
+                st.session_state.ctx_si_order = list(DEFAULT_CONTEXT_ORDER["system_instruction"])
+                st.session_state.ctx_cp_order = list(DEFAULT_CONTEXT_ORDER["context_prefix"])
+                st.rerun()
 
         st.divider()
 
@@ -1735,16 +1764,17 @@ def render_instance_settings_screen():
             "knowledge_max_output_tokens": hk_knowledge_tokens,
         }
 
-        # context_order の保存
-        _final_si = [s for s in st.session_state.ctx_si_order if _si_enabled.get(s, True)]
-        _final_cp = [s for s in st.session_state.ctx_cp_order if _cp_enabled.get(s, True)]
-        if "system_instruction" not in _final_si:
-            _final_si.insert(0, "system_instruction")
-        config["context_order"] = {
-            "system_instruction": _final_si,
-            "context_prefix": _final_cp,
+        # context_levels の保存
+        config["context_levels"] = {
+            "preset": preset,
+            "levels": level_settings if preset == "custom" else CONTEXT_LEVEL_PRESETS[preset],
+            "order": {
+                "system_instruction": list(st.session_state.ctx_si_order),
+                "context_prefix": list(st.session_state.ctx_cp_order),
+            },
             "system_instruction_position": _si_position,
         }
+        config.pop("context_order", None)  # 旧キー削除
 
         # Save configs
         try:

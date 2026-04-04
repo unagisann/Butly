@@ -123,12 +123,14 @@ class OllamaProvider(BaseProvider):
         rag_results = context.get("rag_results", [])
         use_rag = context.get("use_rag", True)
         context_order = context.get("context_order")
+        context_levels = context.get("context_levels")
 
         # --- system instruction ---
         system_instruction = self._build_system_instruction(
             memory_manager=memory_manager,
             memory_blocks=memory_blocks,
             context_order=context_order,
+            context_levels=context_levels,
         )
 
         # --- context prefix (可変コンテキスト) ---
@@ -140,15 +142,19 @@ class OllamaProvider(BaseProvider):
                 memory_manager=memory_manager,
                 use_google_search=False,
                 context_order=context_order,
+                context_levels=context_levels,
             )
 
         full_prompt = text
 
         # --- messages ---
         # system_instruction_position による配置制御
-        position = (context_order or {}).get(
-            "system_instruction_position", "top"
-        )
+        if context_levels:
+            position = context_levels.get("system_instruction_position", "top")
+        else:
+            position = (context_order or {}).get(
+                "system_instruction_position", "top"
+            )
 
         if position == "bottom":
             # Bottom配置: prefix → 履歴 → sys_inst → ユーザー入力
@@ -228,7 +234,7 @@ class OllamaProvider(BaseProvider):
     # ==================================================================
 
     @staticmethod
-    def _build_system_instruction(memory_manager, memory_blocks, context_order=None):
+    def _build_system_instruction(memory_manager, memory_blocks, context_order=None, context_levels=None):
         if memory_blocks is not None:
             from butly_core.core.gatekeeper import build_system_instruction_from_blocks
             return build_system_instruction_from_blocks(
@@ -236,6 +242,7 @@ class OllamaProvider(BaseProvider):
                 memory_manager=memory_manager,
                 use_google_search=False,
                 context_order=context_order,
+                context_levels=context_levels,
             )
 
         from butly_core.config import SYSTEM_CONFIG

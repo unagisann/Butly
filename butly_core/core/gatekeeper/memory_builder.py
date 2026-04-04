@@ -26,6 +26,117 @@ DEFAULT_CONTEXT_ORDER = {
     "system_instruction_position": "top",
 }
 
+# ===================================================================
+# context_levels プリセット定義
+# ===================================================================
+
+CONTEXT_LEVEL_PRESETS = {
+    "normal": {
+        "system_instruction": "high",
+        "key_memory": "high",
+        "label_notes": "high",
+        "current_time": "high",
+        "glossary": "high",
+        "mid_term": "high",
+        "rag": "high",
+        "floating": "high",
+        "tier_info": "high",
+        "web_search": "high",
+    },
+    "compact": {
+        "system_instruction": "high",
+        "key_memory": "low",
+        "label_notes": "off",
+        "current_time": "high",
+        "glossary": "off",
+        "mid_term": "mid",
+        "rag": "high",
+        "floating": "high",
+        "tier_info": "high",
+        "web_search": "high",
+    },
+    "low": {
+        "system_instruction": "low",
+        "key_memory": "low",
+        "label_notes": "off",
+        "current_time": "low",
+        "glossary": "off",
+        "mid_term": "low",
+        "rag": "low",
+        "floating": "off",
+        "tier_info": "off",
+        "web_search": "high",
+    },
+}
+
+
+# ===================================================================
+# 後方互換マイグレーション
+# ===================================================================
+
+def migrate_context_order_to_levels(config: dict) -> dict:
+    """旧 context_order → 新 context_levels への変換。"""
+    old = config.get("context_order")
+    if old is None:
+        return config
+    if "context_levels" in config:
+        return config  # すでに新形式
+
+    si_order = old.get("system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"])
+    cp_order = old.get("context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"])
+    position = old.get("system_instruction_position", "top")
+
+    all_si = DEFAULT_CONTEXT_ORDER["system_instruction"]
+    all_cp = DEFAULT_CONTEXT_ORDER["context_prefix"]
+
+    levels = {}
+    for s in all_si:
+        levels[s] = "high" if s in si_order else "off"
+    for s in all_cp:
+        levels[s] = "high" if s in cp_order else "off"
+
+    config["context_levels"] = {
+        "preset": "custom",
+        "levels": levels,
+        "order": {
+            "system_instruction": si_order,
+            "context_prefix": cp_order,
+        },
+        "system_instruction_position": position,
+    }
+    return config
+
+
+# ===================================================================
+# レベル解決ヘルパー
+# ===================================================================
+
+def _resolve_levels(context_levels: dict | None, context_order: dict | None) -> dict:
+    """context_levels または context_order からレベル辞書を解決する。"""
+    if context_levels:
+        return context_levels.get("levels", {})
+    if context_order:
+        all_sections = (
+            DEFAULT_CONTEXT_ORDER["system_instruction"]
+            + DEFAULT_CONTEXT_ORDER["context_prefix"]
+        )
+        si_order = context_order.get("system_instruction", [])
+        cp_order = context_order.get("context_prefix", [])
+        active = set(si_order + cp_order)
+        return {s: ("high" if s in active else "off") for s in all_sections}
+    return {s: "high" for s in
+            DEFAULT_CONTEXT_ORDER["system_instruction"]
+            + DEFAULT_CONTEXT_ORDER["context_prefix"]}
+
+
+def _resolve_order(context_levels: dict | None, context_order: dict | None, key: str) -> list:
+    """セクション順序を解決する。off要素も順序上は保持される。"""
+    if context_levels and "order" in context_levels:
+        return context_levels["order"].get(key, DEFAULT_CONTEXT_ORDER[key])
+    if context_order:
+        return context_order.get(key, DEFAULT_CONTEXT_ORDER[key])
+    return DEFAULT_CONTEXT_ORDER[key]
+
 
 class MemoryBlockBuilder:
     """
@@ -166,6 +277,7 @@ def build_system_instruction_from_blocks(
     memory_manager,
     use_google_search: bool = False,
     context_order: dict | None = None,
+    context_levels: dict | None = None,
 ) -> str:
     """
     MemoryBlockBuilder.build() の戻り値から system_instruction 文字列を生成する。
@@ -174,8 +286,8 @@ def build_system_instruction_from_blocks(
       1. SYSTEM INSTRUCTION（性格設定）
       2. KEY MEMORY（根幹記憶）
 
-    セクション順序は context_order["system_instruction"] で制御可能。
-    context_order が None の場合はデフォルト順を使用。
+    セクション順序は context_levels["order"]["system_instruction"] または
+    context_order["system_instruction"] で制御可能。
 
     Parameters
     ----------
@@ -186,7 +298,9 @@ def build_system_instruction_from_blocks(
     use_google_search : bool
         （後方互換のため残すが、現在は未使用）
     context_order : dict | None
-        セクション順序設定。None の場合はデフォルト順。
+        セクション順序設定（後方互換）。None の場合はデフォルト順。
+    context_levels : dict | None
+        新形式のレベル設定。
 
     Returns
     -------
@@ -198,20 +312,32 @@ def build_system_instruction_from_blocks(
     loader = PromptLoader()
     h = loader.get_section_header
 
-    order = (context_order or DEFAULT_CONTEXT_ORDER).get(
-        "system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"]
-    )
+    levels = _resolve_levels(context_levels, context_order)
+    order = _resolve_order(context_levels, context_order, "system_instruction")
 
-    sys_inst = memory_manager.get_system_instruction()
-    key_mem = memory_manager.get_key_memory()
+    si_level = levels.get("system_instruction", "high")
+    km_level = levels.get("key_memory", "high")
+
+    # LOW版ファイルの読み取り
+    if si_level == "low" and memory_manager:
+        sys_inst = memory_manager.get_system_instruction_low()
+    else:
+        sys_inst = memory_manager.get_system_instruction() if memory_manager else ""
+
+    if km_level == "low" and memory_manager:
+        key_mem = memory_manager.get_key_memory_low()
+    else:
+        key_mem = memory_manager.get_key_memory() if memory_manager else ""
 
     builders = {
-        "system_instruction": lambda: f"{h('system_instruction')}\n{sys_inst}",
-        "key_memory": lambda: (f"{h('key_memory')}\n{key_mem}" if key_mem else None),
+        "system_instruction": lambda: _build_si_section(sys_inst, si_level, h),
+        "key_memory": lambda: _build_km_section(key_mem, km_level, h),
     }
 
     sections = []
     for section_id in order:
+        if levels.get(section_id, "high") == "off" and section_id != "system_instruction":
+            continue  # off はスキップ。system_instruction は off 不可
         builder = builders.get(section_id)
         if builder:
             result = builder()
@@ -221,18 +347,37 @@ def build_system_instruction_from_blocks(
     return "\n\n".join(sections)
 
 
+def _build_si_section(sys_inst: str, level: str, h) -> str | None:
+    if not sys_inst:
+        return None
+    if level == "low":
+        return sys_inst.strip()  # ヘッダなし
+    # high / mid
+    return f"{h('system_instruction')}\n{sys_inst}"
+
+
+def _build_km_section(key_mem: str, km_level: str, h) -> str | None:
+    if not key_mem or km_level == "off":
+        return None
+    if km_level == "low":
+        return f"[会話核] {key_mem.strip()}"
+    # high / mid
+    return f"{h('key_memory')}\n{key_mem}"
+
+
 def build_context_prefix(
     blocks: dict,
     memory_manager=None,
     use_google_search: bool = False,
     context_order: dict | None = None,
+    context_levels: dict | None = None,
 ) -> str:
     """
     可変コンテキスト（背景情報）を生成する。
     各 Provider が会話履歴の先頭に user メッセージとして注入する。
 
-    セクション順序は context_order["context_prefix"] で制御可能。
-    context_order が None の場合はデフォルト順を使用。
+    セクション順序は context_levels["order"]["context_prefix"] または
+    context_order["context_prefix"] で制御可能。
 
     Parameters
     ----------
@@ -243,7 +388,9 @@ def build_context_prefix(
     use_google_search : bool
         Google 検索使用フラグ（注意書き用）。
     context_order : dict | None
-        セクション順序設定。None の場合はデフォルト順。
+        セクション順序設定（後方互換）。None の場合はデフォルト順。
+    context_levels : dict | None
+        新形式のレベル設定。
 
     Returns
     -------
@@ -256,112 +403,26 @@ def build_context_prefix(
     loader = PromptLoader()
     h = loader.get_section_header
 
+    levels = _resolve_levels(context_levels, context_order)
+    order = _resolve_order(context_levels, context_order, "context_prefix")
     tier = blocks.get("tier", "mid")
 
-    order = (context_order or DEFAULT_CONTEXT_ORDER).get(
-        "context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"]
-    )
-
-    # --- セクションビルダー定義 ---
-    def _build_label_notes():
-        parts = []
-        label = h('context_prefix_label')
-        if label and label != 'context_prefix_label':
-            parts.append(label)
-        note = h('note_context_prefix')
-        if note and note != 'note_context_prefix':
-            parts.append(note)
-        return "\n\n".join(parts) if parts else None
-
-    def _build_current_time():
-        current_time = ButlyChronos().get_system_note()
-        return (
-            f"{h('current_time')}\n{current_time}\n"
-            f"{h('note_current_time')}"
-        )
-
-    def _build_mid_term():
-        if tier not in ("mid", "cortex"):
-            return None
-        mid_term_mode = blocks.get("mid_term_mode", "raw")
-        parts = []
-        if mid_term_mode == "summary":
-            digest = blocks.get("mid_term_digest", "")
-            relationship = blocks.get("mid_term_relationship", "")
-            if digest:
-                parts.append(
-                    f"{h('mid_term_digest')}\n"
-                    f"{h('note_mid_term_digest')}\n"
-                    f"{digest}"
-                )
-            if relationship:
-                parts.append(
-                    f"{h('relationship_snapshot')}\n"
-                    f"{h('note_relationship')}\n"
-                    f"{relationship}"
-                )
-        else:
-            mid_term = blocks.get("mid_term", "")
-            if mid_term:
-                parts.append(f"{h('mid_term_memory')}\n{mid_term}")
-        return "\n\n".join(parts) if parts else None
-
-    def _build_rag():
-        rag_context = blocks.get("rag_context", "")
-        if tier == "cortex" and rag_context:
-            return f"{h('long_term_memory')}\n{h('note_rag')}\n{rag_context}"
-        return None
-
-    def _build_floating():
-        floating = blocks.get("floating", "")
-        if floating:
-            return f"{h('floating_summary')}\n{h('note_floating')}\n{floating.strip()}"
-        return None
-
-    def _build_tier_info():
-        tier_text = h('tier_mode').format(tier=tier)
-        topic = blocks.get("topic", "")
-        if tier in ("mid", "cortex") and topic:
-            tier_text += "\n" + h('tier_topic').format(topic=topic)
-        return f"{h('tier_info')}\n{tier_text}"
-
-    def _build_google_search():
-        if use_google_search:
-            return h('note_google_search')
-        return None
-
-    def _build_web_search():
-        web_search_ctx = blocks.get("web_search_context", "")
-        if web_search_ctx:
-            return f"{h('web_search')}\n{web_search_ctx}"
-        return None
-
-    def _build_glossary():
-        if not memory_manager:
-            return None
-        glossary_text = memory_manager.get_glossary()
-        if glossary_text:
-            return (
-                f"{h('glossary')}\n"
-                f"{h('note_glossary')}\n"
-                f"{glossary_text}"
-            )
-        return None
-
     builders = {
-        "label_notes": _build_label_notes,
-        "current_time": _build_current_time,
-        "glossary": _build_glossary,
-        "mid_term": _build_mid_term,
-        "rag": _build_rag,
-        "floating": _build_floating,
-        "tier_info": _build_tier_info,
-        "google_search": _build_google_search,
-        "web_search": _build_web_search,
+        "label_notes": lambda: _build_label_notes(levels.get("label_notes", "high"), h),
+        "current_time": lambda: _build_current_time(levels.get("current_time", "high"), h),
+        "glossary": lambda: _build_glossary(blocks, memory_manager, levels.get("glossary", "high"), h),
+        "mid_term": lambda: _build_mid_term(blocks, levels.get("mid_term", "high"), tier, h),
+        "rag": lambda: _build_rag(blocks, levels.get("rag", "high"), tier, h),
+        "floating": lambda: _build_floating(blocks, levels.get("floating", "high"), h),
+        "tier_info": lambda: _build_tier_info(blocks, levels.get("tier_info", "high"), h),
+        "google_search": lambda: _build_google_search(levels.get("google_search", "high"), use_google_search, h),
+        "web_search": lambda: _build_web_search(blocks, levels.get("web_search", "high"), h),
     }
 
     sections = []
     for section_id in order:
+        if levels.get(section_id, "high") == "off":
+            continue
         builder = builders.get(section_id)
         if builder:
             result = builder()
@@ -369,3 +430,144 @@ def build_context_prefix(
                 sections.append(result)
 
     return "\n\n".join(sections) if sections else ""
+
+
+# ===================================================================
+# 各要素のレベル別ビルダー関数
+# ===================================================================
+
+
+def _build_label_notes(level: str, h) -> str | None:
+    if level in ("off", "low"):
+        return None
+    parts = []
+    label = h('context_prefix_label')
+    if label and label != 'context_prefix_label':
+        parts.append(label)
+    note = h('note_context_prefix')
+    if note and note != 'note_context_prefix':
+        parts.append(note)
+    return "\n\n".join(parts) if parts else None
+
+
+def _build_current_time(level: str, h) -> str | None:
+    if level == "off":
+        return None
+    from butly_core.core.chronos import ButlyChronos
+    current_time = ButlyChronos().get_system_note()
+    if level == "low":
+        return current_time.split("\n")[0].strip()  # 時刻のみ1行
+    # high / mid
+    return f"{h('current_time')}\n{current_time}\n{h('note_current_time')}"
+
+
+def _build_glossary(blocks: dict, memory_manager, level: str, h) -> str | None:
+    if level in ("off", "low"):
+        return None
+    if not memory_manager:
+        return None
+    glossary_text = memory_manager.get_glossary()
+    if glossary_text:
+        return (
+            f"{h('glossary')}\n"
+            f"{h('note_glossary')}\n"
+            f"{glossary_text}"
+        )
+    return None
+
+
+def _build_mid_term(blocks: dict, level: str, tier: str, h) -> str | None:
+    if level == "off":
+        return None
+    if tier not in ("mid", "cortex"):
+        return None
+
+    mid_term_mode = blocks.get("mid_term_mode", "raw")
+
+    if level == "low":
+        if mid_term_mode == "summary":
+            digest = blocks.get("mid_term_digest", "")
+            relationship = blocks.get("mid_term_relationship", "")
+            text = (digest + "\n" + relationship).strip()
+        else:
+            text = blocks.get("mid_term", "")
+        if not text:
+            return None
+        lines = [l for l in text.strip().split("\n") if l.strip()]
+        truncated = lines[-4:] if len(lines) > 4 else lines
+        return "[直近の背景]\n" + "\n".join(truncated)
+
+    # high / mid
+    parts = []
+    if mid_term_mode == "summary":
+        digest = blocks.get("mid_term_digest", "")
+        relationship = blocks.get("mid_term_relationship", "")
+        if digest:
+            parts.append(
+                f"{h('mid_term_digest')}\n"
+                f"{h('note_mid_term_digest')}\n"
+                f"{digest}"
+            )
+        if relationship:
+            parts.append(
+                f"{h('relationship_snapshot')}\n"
+                f"{h('note_relationship')}\n"
+                f"{relationship}"
+            )
+    else:
+        mid_term = blocks.get("mid_term", "")
+        if mid_term:
+            parts.append(f"{h('mid_term_memory')}\n{mid_term}")
+    return "\n\n".join(parts) if parts else None
+
+
+def _build_rag(blocks: dict, level: str, tier: str, h) -> str | None:
+    if level == "off":
+        return None
+    rag_context = blocks.get("rag_context", "")
+    if tier != "cortex" or not rag_context:
+        return None
+    if level == "low":
+        lines = [l for l in rag_context.strip().split("\n") if l.strip()]
+        truncated = lines[:3] if len(lines) > 3 else lines
+        return "[関連記憶]\n" + "\n".join(truncated)
+    # high / mid
+    return f"{h('long_term_memory')}\n{h('note_rag')}\n{rag_context}"
+
+
+def _build_floating(blocks: dict, level: str, h) -> str | None:
+    if level in ("off", "low"):
+        return None
+    floating = blocks.get("floating", "")
+    if not floating:
+        return None
+    return f"{h('floating_summary')}\n{h('note_floating')}\n{floating.strip()}"
+
+
+def _build_tier_info(blocks: dict, level: str, h) -> str | None:
+    if level in ("off", "low"):
+        return None
+    tier = blocks.get("tier", "mid")
+    tier_text = h('tier_mode').format(tier=tier)
+    topic = blocks.get("topic", "")
+    if tier in ("mid", "cortex") and topic:
+        tier_text += "\n" + h('tier_topic').format(topic=topic)
+    return f"{h('tier_info')}\n{tier_text}"
+
+
+def _build_google_search(level: str, use_google_search: bool, h) -> str | None:
+    if level == "off" or not use_google_search:
+        return None
+    return h('note_google_search')
+
+
+def _build_web_search(blocks: dict, level: str, h) -> str | None:
+    if level == "off":
+        return None
+    web_search_ctx = blocks.get("web_search_context", "")
+    if not web_search_ctx:
+        return None
+    if level == "low":
+        return web_search_ctx.strip()[:300]
+    # high / mid
+    return f"{h('web_search')}\n{web_search_ctx}"

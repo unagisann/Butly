@@ -22,6 +22,8 @@ from butly_core.core.gatekeeper.memory_builder import (
     build_system_instruction_from_blocks,
     build_context_prefix,
     DEFAULT_CONTEXT_ORDER,
+    CONTEXT_LEVEL_PRESETS,
+    migrate_context_order_to_levels,
 )
 
 from pathlib import Path

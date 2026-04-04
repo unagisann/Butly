@@ -140,13 +140,14 @@ class ChatService:
             state_delta = gk_result.get("state_delta", {})
             session_state.apply_delta(state_delta)
         else:
-            # Gatekeeper 無効時: 常に mid 相当で動作（RAG なし）
+            # Gatekeeper 無効時: RAG ON なら cortex（常時RAG検索）、OFF なら mid
+            use_rag = instance_config.get("brain", {}).get("use_rag", True)
+            tier = "cortex" if use_rag else "mid"
             gk_result = {
-                "tier": "mid", "topic": "", "need": None,
+                "tier": tier, "topic": "", "need": "rag_search" if use_rag else None,
                 "search_targets": None, "state_delta": {},
             }
-            tier = "mid"
-            print("[ChatService] Gatekeeper disabled — defaulting to mid tier")
+            print(f"[ChatService] Gatekeeper disabled — defaulting to {tier} tier")
 
         _t_gk_end = time.time()
 
@@ -223,6 +224,13 @@ class ChatService:
         if web_search_context:
             memory_blocks["web_search_context"] = web_search_context
 
+        # --- context_levels 取得（後方互換: 旧 context_order のみの場合は変換） ---
+        context_levels_cfg = instance_config.get("context_levels")
+        if context_levels_cfg is None and "context_order" in instance_config:
+            from butly_core.core.gatekeeper import migrate_context_order_to_levels
+            instance_config = migrate_context_order_to_levels(instance_config)
+            context_levels_cfg = instance_config.get("context_levels")
+
         context = {
             "brain": brain,
             "memory_manager": memory,
@@ -234,6 +242,7 @@ class ChatService:
             "rag_results": rag_results,
             "use_rag": request.use_rag,
             "context_order": instance_config.get("context_order"),
+            "context_levels": context_levels_cfg,
         }
 
         if has_attachments:
