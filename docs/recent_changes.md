@@ -1,5 +1,25 @@
 # Recent Changes
 
+## Housekeeper リソース最適化：Stage 2 スキップ＆チャンク分割 (2026-04-04)
+
+ローカルLLM運用やAPIの長文コンテキスト処理の安定性向上のため、`housekeeper.py` にリソース最適化機能を追加。
+
+### Stage 2 スキップ機能
+- **`skip_knowledge_generation`** (bool): `config.json > housekeeper` セクションに追加。`true` の場合 Stage 2（ナレッジ化）をスキップし、RAWデータを `1_integrated` に保持する。後日高性能モデルで一括処理可能。
+- `process_instance()` と `run_with_progress()` の両方で対応。
+
+### Stage 1 (Digest) チャンク分割
+- **`digest_max_input_chars`** (int): `_generate_daily_digest()` の1回あたりの最大入力文字数。0 = 無制限。
+- 日付ヘッダ `[YYYY-MM-DD ...]` を区切りにして行単位で分割。日付行の途中で切れないよう保証。
+- 新規ヘルパー `_split_text_by_date_headers()` を追加。
+
+### Stage 2 (Knowledge) チャンク分割
+- **`knowledge_max_input_chars`** (int): `stage_2_knowledgeize()` の1回あたりの最大入力文字数。0 = 無制限。
+- JSONファイル単位で分割。「次のファイルを追加すると上限超過 → ここまでで1チャンク」として処理。ファイルの途中で切らない。
+
+### UI (app.py)
+- Housekeeper 設定画面に3項目追加: 「ナレッジ化スキップ」チェックボックス、「Digest 最大入力文字数」、「Knowledge 最大入力文字数」。
+
 ## 汎用Web検索モジュール追加 (2026-03-31)
 
 Gemini 以外のプロバイダー（OpenAI / Ollama）で Web 検索を利用可能にする汎用検索モジュールを実装。

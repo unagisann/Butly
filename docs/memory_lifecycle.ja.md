@@ -108,6 +108,7 @@ SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True で要約注�
 | **場所** | `instances/{name}/mid_term_digest.txt` |
 | **書き込み** | Housekeeper Stage 1 内 `_generate_daily_digest()` — 当日の生ログを LLM で事実抽出し差分追記 |
 | **入力** | 当日の生ログテキスト（`new_text`）のみ。要約の要約は絶対にしない |
+| **入力チャンク分割** | `digest_max_input_chars` が設定されている場合、日付ヘッダ `[YYYY-MM-DD ...]` を区切りにチャンク分割し、各チャンクごとにLLMへ送信→結果を結合 |
 | **上限** | `max_digest_chars`（デフォルト 8,000 文字） |
 | **オーバーフロー** | `memory_archive/3_log/archive_digest.txt` に追記後、最新部分のみ残す |
 | **Gatekeeper注入** | `use_summarized_mid_term = True`（要約モード）の場合に mid / cortex tier へ MID-TERM DIGEST ブロックとして注入 |
@@ -118,6 +119,8 @@ SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True で要約注�
 ```python
 SYSTEM_CONFIG["memory"]["generate_mid_term_summaries"] = True
 SYSTEM_CONFIG["memory"]["max_digest_chars"] = 8000
+# config.json > housekeeper セクション:
+digest_max_input_chars = 0   # 1回あたりの最大入力文字数。0=無制限
 ```
 
 ---
@@ -163,6 +166,8 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | **場所** | `instances/{name}/butly_memory.db` |
 | **書き込み** | Housekeeper Stage 2 (`stage_2_knowledgeize`) — 日付グループ単位でLLMがナレッジカードを抽出しINSERT |
 | **入力** | 1_integrated の生 JSON を日付ごとにまとめたテキスト |
+| **入力チャンク分割** | `knowledge_max_input_chars` が設定されている場合、JSONファイル単位で分割。「次のファイルを追加すると上限超過→ここまでで1チャンク」として処理 |
+| **スキップ機能** | `skip_knowledge_generation = true` の場合、Stage 2 を完全にスキップ。RAWデータは 1_integrated に保持され、後日高性能モデルで一括処理可能 |
 | **スキーマ** | `knowledge_cards` テーブル（下記参照） |
 | **Embedding** | `title + tags + summary` を `AI_CONFIG["embedding"]["model_name"]` で埋め込み → BLOB保存 |
 | **検索** | `ButlyBrain.search_memories()` がクエリ埋め込みとコサイン類似度でリランキング |
@@ -201,12 +206,15 @@ ButlyHousekeeper.run()
     │     ├── [Step 2] floating_summaries/* を削除（一時コンテキストのクリア）
     │     ├── [Step 3] mid_term.txt に追記（オーバーフロー時は 3_log へアーカイブ）
     │     ├── [Step 4] _generate_daily_digest() → mid_term_digest.txt 差分追記
+    │     │          └── ★ digest_max_input_chars 超過時は日付ヘッダ区切りでチャンク分割
     │     ├── [Step 5] _generate_recent_headlines() → recent_digest_headlines.json（最大 4 見出し）
     │     └── [Step 6] _update_relationship_if_due() → mid_term_relationship.txt（7日間隔）
     │
     └── stage_2_knowledgeize(instance_path, db_type)
+          ├── ★ skip_knowledge_generation チェック（true ならスキップ）
           ├── 1_integrated JSON を日付でグループ化
-          ├── 日付ごとに ask_gemini_to_summarize() → knowledge_cards 生成
+          ├── ファイル単位でチャンク分割（knowledge_max_input_chars で制御）
+          ├── チャンクごとに ask_gemini_to_summarize() → knowledge_cards 生成
           ├── 各カードに embedding 生成 → butly_memory.db に INSERT
           └── 処理済み JSON → 2_knowledgeized/{date}/ へ移動
 ```

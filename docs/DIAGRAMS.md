@@ -93,8 +93,10 @@ The configuration of daily and weekly batch processing.
 flowchart TD
     subgraph "Daily Batch"
         S1a["Stage 1a<br/>Mid-term RAW accumulation"]
-        S1b["Stage 1b ★<br/>Episode-tagged Digest generation<br/><i>Today's RAW → append to digest</i>"]
-        S2["Stage 2<br/>Knowledge card generation<br/><i>RAW → episode cards</i>"]
+        S1b["Stage 1b ★<br/>Episode-tagged Digest generation<br/><i>Today's RAW → append to digest</i><br/><i>★ Date-header-aware chunk splitting</i>"]
+        SKIP{★ skip_knowledge?}
+        S2["Stage 2<br/>Knowledge card generation<br/><i>RAW → episode cards</i><br/><i>★ File-boundary chunk splitting</i>"]
+        S2SKIP["Skip<br/>Keep RAW in 1_integrated"]
     end
     subgraph "Weekly Batch"
         S1c["Stage 1c ★<br/>Relationship Snapshot update<br/><i>digest → overwrite relationship</i>"]
@@ -102,12 +104,16 @@ flowchart TD
     end
 
     S1a --> S1b --> S1c
-    S1a --> S2
+    S1a --> SKIP
+    SKIP -->|false| S2
+    SKIP -->|true| S2SKIP
     S2 -.-> S3
 
     style S1b fill:#065f46,color:#10b981
     style S1c fill:#4c1d95,color:#8b5cf6
     style S3 fill:#1f2937,color:#556677,stroke-dasharray: 5 5
+    style SKIP fill:#92400e,color:#fbbf24
+    style S2SKIP fill:#1f2937,color:#8899aa,stroke-dasharray: 5 5
 ```
 
 ---
@@ -216,6 +222,10 @@ timeline
              : session_state goals/unresolved removal
              : recent_digest_headlines introduction
              : StateUpdater output simplification
+    Phase 5.6 ✅ : Housekeeper resource optimization
+             : Stage 2 skip feature
+             : Digest date-header chunk splitting
+             : Knowledge file-boundary chunk splitting
     Phase 6 : Integrated memory generation
              : Housekeeper Stage3
              : reflection / generalization

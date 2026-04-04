@@ -109,6 +109,7 @@ SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True = summary inje
 | **Location** | `instances/{name}/mid_term_digest.txt` |
 | **Written by** | Housekeeper Stage 1 `_generate_daily_digest()` — extracts facts from today's raw log via LLM, incremental append |
 | **Input** | Only today's raw log text (`new_text`). Never summarizes a summary |
+| **Input chunking** | When `digest_max_input_chars` is set, splits at date headers `[YYYY-MM-DD ...]` into chunks, sends each to LLM, then combines results |
 | **Limit** | `max_digest_chars` (default: 8,000 characters) |
 | **Overflow** | Appended to `memory_archive/3_log/archive_digest.txt`; only recent portion retained |
 | **Injected by Gatekeeper** | When `use_summarized_mid_term = True` (summary mode): injected as MID-TERM DIGEST block at mid / cortex tiers |
@@ -119,6 +120,8 @@ SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True = summary inje
 ```python
 SYSTEM_CONFIG["memory"]["generate_mid_term_summaries"] = True
 SYSTEM_CONFIG["memory"]["max_digest_chars"] = 8000
+# config.json > housekeeper section:
+digest_max_input_chars = 0   # Max input chars per LLM call. 0 = unlimited
 ```
 
 ---
@@ -164,6 +167,8 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | **Location** | `instances/{name}/butly_memory.db` |
 | **Written by** | Housekeeper Stage 2 (`stage_2_knowledgeize`) — LLM extracts knowledge cards per date group, INSERTs into DB |
 | **Input** | Raw JSON from 1_integrated, combined per date |
+| **Input chunking** | When `knowledge_max_input_chars` is set, splits at JSON file boundaries. "Adding the next file would exceed the limit → commit current chunk" |
+| **Skip feature** | When `skip_knowledge_generation = true`, Stage 2 is skipped entirely. RAW data remains in 1_integrated for later batch processing with a higher-capability model |
 | **Schema** | `knowledge_cards` table (see below) |
 | **Embedding** | `title + tags + summary` embedded via `AI_CONFIG["embedding"]["model_name"]` → stored as BLOB |
 | **Search** | `ButlyBrain.search_memories()` re-ranks by cosine similarity between query and embedding_blob |
@@ -202,12 +207,15 @@ ButlyHousekeeper.run()
     │     ├── [Step 2] Delete floating_summaries/* (clear temporary context)
     │     ├── [Step 3] Append to mid_term.txt (archive overflow to 3_log/)
     │     ├── [Step 4] _generate_daily_digest() → incremental update mid_term_digest.txt
+    │     │          └── ★ Chunks by date headers when digest_max_input_chars is exceeded
     │     ├── [Step 5] _generate_recent_headlines() → recent_digest_headlines.json (up to 4 headlines)
     │     └── [Step 6] _update_relationship_if_due() → mid_term_relationship.txt (7-day interval)
     │
     └── stage_2_knowledgeize(instance_path, db_type)
+          ├── ★ skip_knowledge_generation check (skip if true)
           ├── Group 1_integrated JSONs by date
-          ├── Per date group: ask_gemini_to_summarize() → generate knowledge_cards
+          ├── Chunk by file boundary (controlled by knowledge_max_input_chars)
+          ├── Per chunk: ask_gemini_to_summarize() → generate knowledge_cards
           ├── Generate embedding per card → INSERT into butly_memory.db
           └── Move processed JSONs → 2_knowledgeized/{date}/
 ```

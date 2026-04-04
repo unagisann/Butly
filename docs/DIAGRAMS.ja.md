@@ -93,8 +93,10 @@ flowchart LR
 flowchart TD
     subgraph "日次バッチ"
         S1a["Stage 1a<br/>Mid-term RAW蓄積"]
-        S1b["Stage 1b ★<br/>エピソード付きDigest生成<br/><i>当日RAW → digest追記</i>"]
-        S2["Stage 2<br/>ナレッジカード生成<br/><i>RAW → episode cards</i>"]
+        S1b["Stage 1b ★<br/>エピソード付きDigest生成<br/><i>当日RAW → digest追記</i><br/><i>★ 日付ヘッダ区切りチャンク分割対応</i>"]
+        SKIP{★ skip_knowledge?}
+        S2["Stage 2<br/>ナレッジカード生成<br/><i>RAW → episode cards</i><br/><i>★ ファイル単位チャンク分割対応</i>"]
+        S2SKIP["スキップ<br/>RAWを 1_integrated に保持"]
     end
     subgraph "週次バッチ"
         S1c["Stage 1c ★<br/>関係性Snapshot更新<br/><i>digest → relationship上書き</i>"]
@@ -102,12 +104,16 @@ flowchart TD
     end
 
     S1a --> S1b --> S1c
-    S1a --> S2
+    S1a --> SKIP
+    SKIP -->|false| S2
+    SKIP -->|true| S2SKIP
     S2 -.-> S3
 
     style S1b fill:#065f46,color:#10b981
     style S1c fill:#4c1d95,color:#8b5cf6
     style S3 fill:#1f2937,color:#556677,stroke-dasharray: 5 5
+    style SKIP fill:#92400e,color:#fbbf24
+    style S2SKIP fill:#1f2937,color:#8899aa,stroke-dasharray: 5 5
 ```
 
 ---
@@ -216,6 +222,10 @@ timeline
              : session_state goals/unresolved 廃止
              : recent_digest_headlines 導入
              : StateUpdater 出力簡素化
+    Phase 5.6 ✅ : Housekeeper リソース最適化
+             : Stage 2 スキップ機能
+             : Digest 日付ヘッダチャンク分割
+             : Knowledge ファイル単位チャンク分割
     Phase 6 : 統合記憶生成
              : Housekeeper Stage3
              : reflection / generalization

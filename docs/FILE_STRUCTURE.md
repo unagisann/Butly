@@ -63,10 +63,13 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 - `ButlyHousekeeper` — 整理処理の本体クラス
   - `get_instance_key_memory(instance_name)` — インスタンス別 Key_Memory 取得
   - `get_instance_instruction(instance_name)` — インスタンス別 system_instruction 取得
-  - `summarize_files(instance_name)` — short_term_json を floating_summary に折りたたむ
-  - `integrate_summaries(instance_name)` — floating → mid_term への統合
-  - `knowledgeize(instance_name)` — mid_term から knowledge_cards を生成して DB 登録
-  - `run_with_progress(instance_name)` — 上記を順番に実行し進捗を更新
+  - `process_instance(instance_path)` — Stage 1 → Stage 2 の順に実行（`skip_knowledge_generation` による Stage 2 スキップ対応）
+  - `stage_1_cleanup(instance_path)` — short_term_json flush、mid_term 追記、digest・headlines・relationship 生成
+  - `_generate_daily_digest(instance_path, new_text)` — 当日RAWからダイジェスト生成（`digest_max_input_chars` 超過時は日付ヘッダ区切りでチャンク分割）
+  - `_split_text_by_date_headers(text, max_chars)` — 日付ヘッダ `[YYYY-MM-DD ...]` を区切りにテキストをチャンク分割するヘルパー
+  - `stage_2_knowledgeize(instance_path, db_type)` — 1_integrated JSON を日付グループ化し、ファイル単位のチャンク分割でナレッジカードを生成・DB登録（`knowledge_max_input_chars` で制御）
+  - `ask_gemini_to_summarize(session_text, db_type)` — LLM にナレッジカード抽出を依頼
+  - `run_with_progress(instance_name)` — 上記を順番に実行し進捗を更新（`skip_knowledge_generation` 対応）
   - `estimate_workload(instance_name)` — 処理量の見積もりを返す
   - `update_status(instance_name, state, progress, message)` — 実行ステータス更新
 - `housekeeper_store` — インスタンス別の実行ステータスを保持するグローバル dict

@@ -1357,6 +1357,14 @@ def render_instance_settings_screen():
         st.subheader("📝 Housekeeper 設定")
         st.caption("記憶の整理・要約・ナレッジ化のパラメータを調整します。")
         _hk_conf = config.get("housekeeper", {})
+
+        hk_skip_knowledge = st.checkbox(
+            "ナレッジ化 (Stage 2) をスキップ",
+            value=_hk_conf.get("skip_knowledge_generation", False),
+            help="有効にすると Stage 2 をスキップし、RAWデータを 1_integrated に保持します。後日高性能モデルで一括処理可能。",
+            key="hk_skip_knowledge",
+        )
+
         hk_col1, hk_col2 = st.columns(2)
         with hk_col1:
             hk_max_digest = st.number_input(
@@ -1380,6 +1388,13 @@ def render_instance_settings_screen():
                 help="関係性スナップショットを更新する間隔",
                 key="hk_rel_interval",
             )
+            hk_digest_max_input = st.number_input(
+                "Digest 1回あたり最大入力文字数",
+                min_value=0, max_value=100000, step=1000,
+                value=_hk_conf.get("digest_max_input_chars", 0),
+                help="Stage 1 (Digest) の1回あたりの最大入力文字数。0 = 無制限。",
+                key="hk_digest_max_input",
+            )
         with hk_col2:
             hk_summary_tokens = st.number_input(
                 "Summary 最大出力トークン数",
@@ -1394,6 +1409,13 @@ def render_instance_settings_screen():
                 value=_hk_conf.get("knowledge_max_output_tokens", 8192),
                 help="ナレッジ抽出 / Relationship 生成時の最大出力トークン (classify API)",
                 key="hk_knowledge_tokens",
+            )
+            hk_knowledge_max_input = st.number_input(
+                "Knowledge 1回あたり最大入力文字数",
+                min_value=0, max_value=100000, step=1000,
+                value=_hk_conf.get("knowledge_max_input_chars", 0),
+                help="Stage 2 (Knowledge) の1回あたりの最大入力文字数。0 = 無制限。",
+                key="hk_knowledge_max_input",
             )
 
         st.divider()
@@ -1757,11 +1779,14 @@ def render_instance_settings_screen():
 
         # housekeeper 設定の保存
         config["housekeeper"] = {
+            "skip_knowledge_generation": hk_skip_knowledge,
             "max_digest_chars": hk_max_digest,
             "max_relationship_chars": hk_max_relationship,
             "relationship_update_interval_days": hk_relationship_interval,
             "summary_max_output_tokens": hk_summary_tokens,
             "knowledge_max_output_tokens": hk_knowledge_tokens,
+            "digest_max_input_chars": hk_digest_max_input,
+            "knowledge_max_input_chars": hk_knowledge_max_input,
         }
 
         # context_levels の保存

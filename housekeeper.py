@@ -253,7 +253,11 @@ class ButlyHousekeeper:
         # Stage 1: 整理
         self.stage_1_cleanup(instance_path)
         
-        # Stage 2: ナレッジ化
+        # Stage 2: ナレッジ化（skip_knowledge_generation で抑制可能）
+        inst_cfg = self._get_instance_config(instance_id)
+        if inst_cfg.get("housekeeper", {}).get("skip_knowledge_generation", False):
+            print(f"[Housekeeper] Stage 2 skipped for {instance_id} (skip_knowledge_generation=true)")
+            return
         self.stage_2_knowledgeize(instance_path, db_type)
 
     def stage_1_cleanup(self, instance_name):
@@ -378,6 +382,42 @@ class ButlyHousekeeper:
         # （7日インターバルで制御されるため、毎日呼んでも問題ない）
         self._update_relationship_if_due(instance_path)
 
+    # --- Chunk Splitting Helpers ---
+    @staticmethod
+    def _split_text_by_date_headers(text: str, max_chars: int) -> list:
+        """
+        テキストを日付ヘッダ ([YYYY-MM-DD ...]) を区切りとして
+        max_chars 以内のチャンクに分割する。
+        max_chars が 0 以下の場合は分割せず全体を1チャンクとして返す。
+        """
+        if max_chars <= 0 or len(text) <= max_chars:
+            return [text]
+
+        # 日付ヘッダパターン: 行頭の [YYYY-MM-DD ...]
+        date_header_re = re.compile(r'^(\[\d{4}-\d{2}-\d{2})', re.MULTILINE)
+
+        lines = text.split('\n')
+        chunks = []
+        current_lines = []
+        current_len = 0
+
+        for line in lines:
+            line_len = len(line) + 1  # +1 for '\n'
+
+            # 日付ヘッダ行で、追加すると上限超過する場合 → ここで区切る
+            if date_header_re.match(line) and current_lines and (current_len + line_len) > max_chars:
+                chunks.append('\n'.join(current_lines))
+                current_lines = []
+                current_len = 0
+
+            current_lines.append(line)
+            current_len += line_len
+
+        if current_lines:
+            chunks.append('\n'.join(current_lines))
+
+        return chunks
+
     # --- Mid-term Summaries (Phase 3) ---
     def _get_provider(self, model_name=None):
         """指定モデル名の Provider を取得する。"""
@@ -430,20 +470,37 @@ class ButlyHousekeeper:
                 "max_digest_chars",
                 SYSTEM_CONFIG.get("memory", {}).get("max_digest_chars", 8000)
             )
-            
+            digest_max_input = _hk.get("digest_max_input_chars", 0)
+
+            # チャンク分割: 日付ヘッダ ([YYYY-MM-DD ...]) を区切りにして上限内に収める
+            text_chunks = self._split_text_by_date_headers(new_text, digest_max_input)
+            if len(text_chunks) > 1:
+                print(f"[Housekeeper] Daily digest: Split into {len(text_chunks)} chunks (limit: {digest_max_input} chars)")
+
             loader = PromptLoader()
-            digest_prompt = loader.get(
-                "midterm_digest",
-                agent_name=self.get_instance_agent_name(instance_name),
-                user_name=self.get_instance_user_name(instance_name),
-                system_instruction=system_instruction,
-                key_memory=key_memory,
-                raw_text=new_text,
-                max_chars=max_digest,
-            )
             provider = self._get_provider(model_name)
-            digest_new = provider.classify(digest_prompt, summary_conf)
-            digest_new = digest_new.strip() if digest_new else ""
+            digest_parts = []
+
+            for ci, chunk in enumerate(text_chunks):
+                if len(text_chunks) > 1:
+                    print(f"[Housekeeper] Daily digest: Processing chunk {ci+1}/{len(text_chunks)} ({len(chunk)} chars)")
+                digest_prompt = loader.get(
+                    "midterm_digest",
+                    agent_name=self.get_instance_agent_name(instance_name),
+                    user_name=self.get_instance_user_name(instance_name),
+                    system_instruction=system_instruction,
+                    key_memory=key_memory,
+                    raw_text=chunk,
+                    max_chars=max_digest,
+                )
+                result = provider.classify(digest_prompt, summary_conf)
+                if result and result.strip():
+                    digest_parts.append(result.strip())
+                # チャンク間のAPI待機
+                if ci < len(text_chunks) - 1:
+                    time.sleep(3)
+
+            digest_new = "\n".join(digest_parts)
             
             if digest_new:
                 # 既存digestに追記
@@ -722,6 +779,10 @@ class ButlyHousekeeper:
             except Exception as e:
                 print(f"[Stage2] Error grouping file {f.name}: {e}")
         
+        # チャンク分割の上限文字数を取得
+        inst_cfg = self._get_instance_config(db_type)
+        knowledge_max_chars = inst_cfg.get("housekeeper", {}).get("knowledge_max_input_chars", 0)
+
         # グループごとに処理
         for date_str, items in grouped_files.items():
             print(f"[{db_type}] Processing items for {date_str} ({len(items)} files)...")
@@ -729,54 +790,81 @@ class ButlyHousekeeper:
             # 時系列順にソート
             items.sort(key=lambda x: x[1].get("timestamp", ""))
             
-            # テキスト統合
-            combined_text = ""
-            files_in_batch = []
-            
+            instance_db_path = str(INSTANCES_DIR / target_instance / "butly_memory.db")
+            _agent_name = self.get_instance_agent_name(db_type)
+            _user_name = self.get_instance_user_name(db_type)
+
+            # ファイル単位でテキストを事前生成
+            file_texts = []  # [(f_path, text_for_this_file)]
             for f_path, data in items:
-                files_in_batch.append(f_path)
-                
-                # 表示用時刻
                 ts = data.get('timestamp', 'Unknown').replace('T', ' ').split('.')[0]
-                combined_text += f"\n--- Source: {f_path.name} ({ts}) ---\n"
-                
-                _agent_name = self.get_instance_agent_name(db_type)
-                _user_name = self.get_instance_user_name(db_type)
+                file_text = f"\n--- Source: {f_path.name} ({ts}) ---\n"
                 for msg in data.get("messages", []):
                     role_label = _user_name if msg["role"] == "user" else _agent_name
                     content = msg.get("parts", [""])[0]
                     if isinstance(content, dict): content = content.get("text", "")
-                    combined_text += f"[{ts}] {role_label}: {content}\n"
+                    file_text += f"[{ts}] {role_label}: {content}\n"
+                file_texts.append((f_path, file_text))
 
-            # AIによるナレッジ抽出 (RAWデータを使用)
-            # 以前のコードでの引数不足バグもここで修正 (db_typeを追加)
-            cards = self.ask_gemini_to_summarize(combined_text, db_type)
-            
-            instance_db_path = str(INSTANCES_DIR / target_instance / "butly_memory.db")
-            
-            if cards:
-                print(f"[{db_type}] Generated {len(cards)} knowledge cards.")
-                for card in cards:
-                    db_id = self._get_next_id(db_type, date_str, instance_db_path)
-                    self.insert_knowledge(card, db_id, db_type, f"{date_str}_raw_combined", instance_db_path)
-                
-                # 移動処理: 日付フォルダを作成して移動
-                # ユーザー要望: 確実に日付フォルダに格納する
+            # チャンク分割: ファイル単位で上限を超えない範囲にまとめる
+            chunks = []  # [(combined_text, [f_path, ...])]
+            current_text = ""
+            current_files = []
+
+            for f_path, file_text in file_texts:
+                if knowledge_max_chars > 0 and current_text and (len(current_text) + len(file_text)) > knowledge_max_chars:
+                    # 現在のチャンクを確定し、新しいチャンクを開始
+                    chunks.append((current_text, current_files))
+                    current_text = ""
+                    current_files = []
+                current_text += file_text
+                current_files.append(f_path)
+
+            # 残りを最後のチャンクとして追加
+            if current_text:
+                chunks.append((current_text, current_files))
+
+            if len(chunks) > 1:
+                print(f"[{db_type}] Split into {len(chunks)} chunks (limit: {knowledge_max_chars} chars)")
+
+            # チャンクごとにナレッジ抽出
+            all_processed_files = []
+            for chunk_idx, (combined_text, files_in_batch) in enumerate(chunks):
+                if len(chunks) > 1:
+                    print(f"[{db_type}]   Chunk {chunk_idx+1}/{len(chunks)}: {len(combined_text)} chars, {len(files_in_batch)} files")
+
+                cards = self.ask_gemini_to_summarize(combined_text, db_type)
+
+                if cards:
+                    print(f"[{db_type}] Generated {len(cards)} knowledge cards.")
+                    for card in cards:
+                        db_id = self._get_next_id(db_type, date_str, instance_db_path)
+                        self.insert_knowledge(card, db_id, db_type, f"{date_str}_raw_combined", instance_db_path)
+                    all_processed_files.extend(files_in_batch)
+                else:
+                    print(f"[{db_type}] ナレッジ抽出なし（スキップまたはエラー） for {date_str} chunk {chunk_idx+1}")
+
+                # チャンク間のAPI待機
+                if chunk_idx < len(chunks) - 1:
+                    time.sleep(5)
+
+            # 移動処理: 正常に処理できたファイルのみ移動
+            if all_processed_files:
                 dest_folder = knowledgeized_root / date_str
                 dest_folder.mkdir(parents=True, exist_ok=True)
-                
-                for jf_path in files_in_batch:
+
+                for jf_path in all_processed_files:
                     try:
                         shutil.move(str(jf_path), str(dest_folder / jf_path.name))
                     except Exception as e:
                         print(f"Move Error: {e}")
-                
+
                 # トラッキングファイルから移動済みファイルを除去
                 tracker_file = integrated_dir / ".mid_term_processed.json"
                 if tracker_file.exists():
                     try:
                         tracked = set(json.loads(tracker_file.read_text(encoding="utf-8")))
-                        moved_names = {f.name for f in files_in_batch}
+                        moved_names = {f.name for f in all_processed_files}
                         tracked -= moved_names
                         if tracked:
                             tracker_file.write_text(
@@ -786,12 +874,10 @@ class ButlyHousekeeper:
                             tracker_file.unlink()
                     except Exception:
                         pass
-                    
+
                 print(f"[{db_type}] 処理完了・移動済み: {dest_folder}")
-            else:
-                print(f"[{db_type}] ナレッジ抽出なし（スキップまたはエラー） for {date_str}")
             
-            # APIレート制限対策: バッチ間に少し待機
+            # APIレート制限対策: 日付グループ間に少し待機
             time.sleep(5)
 
 
@@ -900,7 +986,12 @@ class ButlyHousekeeper:
             
             # "Master" への変換は廃止。インスタンス名をそのまま使用する
             db_type = instance_name
-            self.stage_2_knowledgeize(instance_name, db_type)
+            inst_cfg = self._get_instance_config(instance_name)
+            if inst_cfg.get("housekeeper", {}).get("skip_knowledge_generation", False):
+                print(f"[Housekeeper] Stage 2 skipped for {instance_name} (skip_knowledge_generation=true)")
+                self.update_status(instance_name, "running", 85.0, "ナレッジ化をスキップしました")
+            else:
+                self.stage_2_knowledgeize(instance_name, db_type)
             
             # Phase 3
             self.update_status(instance_name, "running", 90.0, "データベースのバックアップ中...")
