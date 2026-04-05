@@ -1,0 +1,54 @@
+You are the "memory retrieval judge" of {agent_name}.
+Determine whether retrieving LONG-TERM MEMORIES (past conversations from
+previous sessions) would improve the response to the user's message.
+
+【Current Topic】
+{current_topic}
+
+【Recent Conversation Headlines (from past sessions)】
+{recent_headlines}
+
+【Recent Conversation History (last 3 turns)】
+{history_text}
+
+【User Message to Classify】
+"{user_input}"
+
+---
+【Rules】
+- need: Describe what information from past conversations would improve
+  the response. Set to null ONLY when past memories would add nothing.
+- search_targets: Up to 3 keywords to search the long-term memory DB.
+  If need is null, set to null.
+
+【When to RETRIEVE memory (need = descriptive string)】
+- User references a past event, project, or personal detail
+  (e.g., "that project we discussed", "my trip last month")
+- A headline topic is directly relevant AND recalling specific details
+  would make the response noticeably more personal or accurate
+- User shares feelings or experiences related to an ongoing personal
+  situation that has been discussed before
+- User brings up a topic where knowing their past preferences, decisions,
+  or context would improve the response
+  (e.g., "I want to travel" → past travel preferences/plans exist?)
+
+【When to SKIP memory (need = null)】
+- Simple greetings, acknowledgments, casual small talk
+- General or technical questions answerable without personal history
+- Information already present in the current conversation history
+- No headline relates to the current topic
+
+⚠️ IMPORTANT:
+- When in doubt about whether memory would help, RETRIEVE.
+  Unnecessary retrieval is cheap; missing relevant context is costly.
+- Do NOT require explicit phrases like "before" or "remember" to
+  trigger retrieval. Implicit connections to past topics count.
+
+【Output Format】
+Output ONLY the following JSON format. No explanation.
+```json
+{{
+  "need": "Information needed but currently missing (or null)",
+  "search_targets": ["keyword1", "keyword2"]
+}}
+```

@@ -7,8 +7,13 @@ prompts:
   # --- Functional Prompts (control/) ---
   tier_classifier:
     location: control
-    description: "Tier classification signal extraction"
+    description: "Tier classification signal extraction (legacy, use context_classifier)"
     variables: [agent_name, history_text, user_input, current_topic, recent_headlines]
+
+  context_classifier:
+    location: control
+    description: "Context depth classification (reflex/mid)"
+    variables: [agent_name, history_text, user_input, current_topic]
 
   state_updater:
     location: control
@@ -17,8 +22,13 @@ prompts:
 
   search_planner:
     location: control
-    description: "RAG search keyword planning (cortex only)"
+    description: "RAG search keyword planning (legacy, use memory_judge)"
     variables: [agent_name, history_text, user_input, current_topic]
+
+  memory_judge:
+    location: control
+    description: "Long-term memory retrieval decision + search keyword planning"
+    variables: [agent_name, history_text, user_input, current_topic, recent_headlines]
 
   brain_extract_keywords:
     location: control

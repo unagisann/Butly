@@ -66,7 +66,13 @@ AI_CONFIG = {
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
         ]
-    }
+    },
+
+    # 6. ContextClassifier Model (未設定時は gatekeeper にフォールバック)
+    "context_classifier": {},
+
+    # 7. MemoryJudge Model (未設定時は gatekeeper にフォールバック)
+    "memory_judge": {},
 }
 
 # System Configuration (Paths, Thresholds, Limits)

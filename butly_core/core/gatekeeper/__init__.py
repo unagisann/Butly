@@ -12,11 +12,14 @@ Re-exports:
 """
 
 import json
+import concurrent.futures
 
 from butly_core.core.gatekeeper.session_state import SessionState
 from butly_core.core.gatekeeper.tier_classifier import TierClassifier
+from butly_core.core.gatekeeper.context_classifier import ContextClassifier
 from butly_core.core.gatekeeper.state_updater import StateUpdater
 from butly_core.core.gatekeeper.search_planner import SearchPlanner
+from butly_core.core.gatekeeper.memory_judge import MemoryJudge
 from butly_core.core.gatekeeper.memory_builder import (
     MemoryBlockBuilder,
     build_system_instruction_from_blocks,
@@ -32,14 +35,19 @@ from pathlib import Path
 class Gatekeeper:
     """
     外部API互換の facade。
-    ChatService からの呼び出しインターフェースを維持する。
+    Phase 1: ContextClassifier + MemoryJudge + StateUpdater の 3 並列実行。
+    互換レイヤーにより返却値の tier は既存と同じ reflex/mid/cortex。
     """
 
     def __init__(self, base_dir: Path = None):
         self.base_dir = base_dir
-        self.tier_classifier = TierClassifier(base_dir)
+        self.context_classifier = ContextClassifier(base_dir)
+        self.memory_judge = MemoryJudge(base_dir)
         self.state_updater = StateUpdater(base_dir)
-        self.search_planner = SearchPlanner(base_dir)
+
+        # 後方互換: 旧属性名でもアクセス可能
+        self.tier_classifier = self.context_classifier
+        self.search_planner = self.memory_judge
 
     def classify(
         self,
@@ -56,7 +64,7 @@ class Gatekeeper:
         Returns
         -------
         dict
-            tier, topic, need, search_targets, state_delta, llm_scoring
+            tier, topic, need, search_targets, state_delta, llm_scoring, _internal_tier
         """
         # A. headlines 読み込み
         recent_headlines = self._load_headlines(instance_dir)
@@ -64,44 +72,52 @@ class Gatekeeper:
         # A2. agent_name をインスタンス config から解決
         agent_name = self._resolve_agent_name(instance_dir)
 
-        # B. tier判定（headlines 付き）
-        tier_result = self.tier_classifier.classify(
-            user_input, history_msgs, current_topic,
-            recent_headlines=recent_headlines,
-            override_config=override_config,
-            agent_name=agent_name,
-        )
-        tier = tier_result["tier"]
-
-        # C. state_delta生成
-        state_delta = self.state_updater.update(
-            user_input, history_msgs, session_state,
-            override_config=override_config,
-            agent_name=agent_name,
-        )
-
-        # D. cortex時のみ検索計画
-        need = None
-        search_targets = None
-        if tier == "cortex":
-            plan = self.search_planner.plan(
+        # B. 3 並列実行: ContextClassifier + MemoryJudge + StateUpdater
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            future_ctx = executor.submit(
+                self.context_classifier.classify,
                 user_input, history_msgs, current_topic,
+                recent_headlines=recent_headlines,
                 override_config=override_config,
                 agent_name=agent_name,
             )
-            need = plan.get("need")
-            search_targets = plan.get("search_targets")
+            future_mem = executor.submit(
+                self.memory_judge.judge,
+                user_input, history_msgs, current_topic,
+                recent_headlines=recent_headlines,
+                override_config=override_config,
+                agent_name=agent_name,
+            )
+            future_state = executor.submit(
+                self.state_updater.update,
+                user_input, history_msgs, session_state,
+                override_config=override_config,
+                agent_name=agent_name,
+            )
 
-        # 既存と同じ返却形式
+            ctx_result = future_ctx.result()
+            mem_result = future_mem.result()
+            state_delta = future_state.result()
+
+        tier = ctx_result["tier"]          # "reflex" or "mid"
+        need = mem_result.get("need")
+        search_targets = mem_result.get("search_targets")
+
+        # --- 互換レイヤー (Phase 2 で削除) ---
+        compat_tier = tier
+        if tier == "mid" and need is not None:
+            compat_tier = "cortex"
+
         return {
-            "tier": tier,
+            "tier": compat_tier,           # Phase 2 で tier に戻す
             "topic": state_delta.get("topic") or
                      (session_state.get("topic", current_topic) if isinstance(session_state, dict) else current_topic),
             "need": need,
             "search_targets": search_targets,
             "state_delta": state_delta,
-            # デバッグ用
-            "llm_scoring": tier_result.get("llm_scoring"),
+            "llm_scoring": ctx_result.get("llm_scoring"),
+            # デバッグ用: 内部 tier（Phase 2 で compat_tier と統合）
+            "_internal_tier": tier,
         }
 
     def _load_headlines(self, instance_dir: Path = None) -> str:
@@ -155,7 +171,10 @@ __all__ = [
     "MemoryBlockBuilder",
     "build_system_instruction_from_blocks",
     "build_context_prefix",
-    "TierClassifier",
+    "ContextClassifier",
+    "MemoryJudge",
     "StateUpdater",
+    # 後方互換
+    "TierClassifier",
     "SearchPlanner",
 ]
