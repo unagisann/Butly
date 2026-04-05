@@ -240,34 +240,28 @@ class MemoryBlockBuilder:
         if tier == "mid":
             return blocks
 
-        # --- cortex のみ: RAG 検索を実施 ---
-        need = blocks.get("need")
-        if brain and user_input and need:
-            try:
-                keyword_data = brain.extract_keywords(user_input, override_config)
-                keywords = keyword_data.get("keywords", [])
-                limit = SYSTEM_CONFIG["brain"]["search_limit"]
-                knowledge_list = brain.search_knowledge(
-                    keywords,
-                    user_input,
-                    instance_name=instance_name,
-                    limit=limit,
-                    override_config=override_config,
-                )
-                if knowledge_list:
-                    rag_lines = ["【過去の記憶（RAG）】"]
-                    for k in knowledge_list:
-                        rag_lines.append(f"・{k['title']}: {k['summary']}")
-                        if k.get("episode"):
-                            rag_lines.append(f"  (補足: {k['episode']})")
-                    blocks["rag_context"] = "\n".join(rag_lines)
-                    print(f"[Gatekeeper] MemoryBlock: cortex（RAG hits={len(knowledge_list)}）")
-            except Exception as e:
-                print(f"[Gatekeeper] RAG 検索エラー: {e}")
-        elif not need:
-            print("[Gatekeeper] MemoryBlock: cortex（need=null のため RAG スキップ）")
+        # --- cortex: probe candidates から RAG コンテキストを構築 ---
+        probe = gatekeeper_output.get("memory_probe", {}) if gatekeeper_output else {}
+        candidates = probe.get("candidates", [])
+        glossary_hits = probe.get("glossary_hits", [])
+
+        if glossary_hits:
+            blocks["glossary_hits"] = glossary_hits
+
+        if candidates:
+            rag_lines = ["【過去の記憶（RAG）】"]
+            for c in candidates:
+                rag_lines.append(f"・{c['title']}: {c['summary']}")
+                if c.get("episode"):
+                    rag_lines.append(f"  (補足: {c['episode']})")
+            blocks["rag_context"] = "\n".join(rag_lines)
+            print(f"[Gatekeeper] MemoryBlock: cortex（RAG probe hits={len(candidates)}）")
         else:
-            print("[Gatekeeper] MemoryBlock: cortex（brain/user_input 未指定のため RAG スキップ）")
+            need = blocks.get("need")
+            if not need:
+                print("[Gatekeeper] MemoryBlock: cortex（need=null のため RAG スキップ）")
+            else:
+                print("[Gatekeeper] MemoryBlock: cortex（probe candidates なし）")
 
         return blocks
 
@@ -464,6 +458,20 @@ def _build_current_time(level: str, h) -> str | None:
 def _build_glossary(blocks: dict, memory_manager, level: str, h) -> str | None:
     if level in ("off", "low"):
         return None
+
+    # Phase 1.5: probe の glossary_hits があればそれだけ注入
+    glossary_hits = blocks.get("glossary_hits", [])
+    if glossary_hits:
+        lines = []
+        for hit in glossary_hits:
+            lines.append(f"- {hit['term']}: {hit['definition']}")
+        return (
+            f"{h('glossary')}\n"
+            f"{h('note_glossary')}\n"
+            + "\n".join(lines)
+        )
+
+    # フォールバック: 従来の全件注入
     if not memory_manager:
         return None
     glossary_text = memory_manager.get_glossary()

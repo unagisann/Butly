@@ -135,13 +135,27 @@ class TestCortexTier:
     """cortex tier のブロック構築テスト"""
 
     def test_cortex_has_rag_context(self, memory_manager, mock_brain):
-        """cortex: RAG 検索結果が含まれる"""
+        """cortex: probe candidates から RAG コンテキストが構築される"""
         builder = MemoryBlockBuilder()
 
         gk_output = {
             "tier": "cortex",
-            "need": "過去のプロジェクト情報",
-            "search_targets": ["プロジェクト", "進捗"],
+            "need": "memory_probe_hit",
+            "search_targets": ["テストプロジェクト"],
+            "memory_probe": {
+                "status": "hit",
+                "candidates": [
+                    {
+                        "id": "test_001",
+                        "title": "テストプロジェクト",
+                        "summary": "テスト用のナレッジカード",
+                        "episode": "テスト中に生成されたカード",
+                        "score": 0.85,
+                        "source": "vector",
+                    }
+                ],
+                "glossary_hits": [],
+            },
         }
 
         blocks = builder.build(

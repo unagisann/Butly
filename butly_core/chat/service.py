@@ -126,6 +126,8 @@ class ChatService:
                     session_state=session_state.to_dict(),
                     override_config=instance_config,
                     instance_dir=instance_dir,
+                    brain=brain,
+                    memory_manager=memory,
                 )
                 tier = gk_result.get("tier", "mid")
             except Exception as e:

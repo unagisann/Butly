@@ -71,7 +71,7 @@ AI_CONFIG = {
     # 6. ContextClassifier Model (未設定時は gatekeeper にフォールバック)
     "context_classifier": {},
 
-    # 7. MemoryJudge Model (未設定時は gatekeeper にフォールバック)
+    # 7. MemoryJudge Model (Phase 1.5 で廃止 — MemoryProbe は LLM 不使用)
     "memory_judge": {},
 }
 
@@ -115,7 +115,12 @@ SYSTEM_CONFIG = {
         "provider": "tavily",
         "max_results": 3,
         "search_depth": "basic",
-    }
+    },
+    "memory_probe": {
+        "vector_search_limit": 3,
+        "vector_search_threshold": 0.6,
+        "deep_search_enabled": True,
+    },
 }
 
 # --- User Config Override ---

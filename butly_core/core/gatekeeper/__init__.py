@@ -19,7 +19,7 @@ from butly_core.core.gatekeeper.tier_classifier import TierClassifier
 from butly_core.core.gatekeeper.context_classifier import ContextClassifier
 from butly_core.core.gatekeeper.state_updater import StateUpdater
 from butly_core.core.gatekeeper.search_planner import SearchPlanner
-from butly_core.core.gatekeeper.memory_judge import MemoryJudge
+from butly_core.core.gatekeeper.memory_probe import MemoryProbe
 from butly_core.core.gatekeeper.memory_builder import (
     MemoryBlockBuilder,
     build_system_instruction_from_blocks,
@@ -35,19 +35,19 @@ from pathlib import Path
 class Gatekeeper:
     """
     外部API互換の facade。
-    Phase 1: ContextClassifier + MemoryJudge + StateUpdater の 3 並列実行。
+    Phase 1.5: ContextClassifier + StateUpdater の 2 並列 + MemoryProbe（LLM不要）即実行。
     互換レイヤーにより返却値の tier は既存と同じ reflex/mid/cortex。
     """
 
     def __init__(self, base_dir: Path = None):
         self.base_dir = base_dir
         self.context_classifier = ContextClassifier(base_dir)
-        self.memory_judge = MemoryJudge(base_dir)
+        self.memory_probe = MemoryProbe(base_dir)
         self.state_updater = StateUpdater(base_dir)
 
         # 後方互換: 旧属性名でもアクセス可能
         self.tier_classifier = self.context_classifier
-        self.search_planner = self.memory_judge
+        self.search_planner = self.memory_probe
 
     def classify(
         self,
@@ -57,14 +57,17 @@ class Gatekeeper:
         current_topic: str = "",
         override_config: dict = None,
         instance_dir: Path = None,
+        brain=None,
+        memory_manager=None,
     ) -> dict:
         """
-        既存と同じシグネチャ・同じ返却形式を維持。
+        既存と同じ返却形式を維持 + Phase 1.5 の memory_probe を追加。
 
         Returns
         -------
         dict
-            tier, topic, need, search_targets, state_delta, llm_scoring, _internal_tier
+            tier, topic, need, search_targets, state_delta, llm_scoring,
+            _internal_tier, memory_probe
         """
         # A. headlines 読み込み
         recent_headlines = self._load_headlines(instance_dir)
@@ -72,17 +75,12 @@ class Gatekeeper:
         # A2. agent_name をインスタンス config から解決
         agent_name = self._resolve_agent_name(instance_dir)
 
-        # B. 3 並列実行: ContextClassifier + MemoryJudge + StateUpdater
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        # B. 2 並列実行: ContextClassifier + StateUpdater
+        instance_name = instance_dir.name if instance_dir else "00_master"
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_ctx = executor.submit(
                 self.context_classifier.classify,
-                user_input, history_msgs, current_topic,
-                recent_headlines=recent_headlines,
-                override_config=override_config,
-                agent_name=agent_name,
-            )
-            future_mem = executor.submit(
-                self.memory_judge.judge,
                 user_input, history_msgs, current_topic,
                 recent_headlines=recent_headlines,
                 override_config=override_config,
@@ -96,17 +94,36 @@ class Gatekeeper:
             )
 
             ctx_result = future_ctx.result()
-            mem_result = future_mem.result()
             state_delta = future_state.result()
 
+        # C. MemoryProbe（LLM不要、並列の外で即実行）
+        if brain:
+            probe_result = self.memory_probe.probe(
+                user_input=user_input,
+                brain=brain,
+                memory_manager=memory_manager,
+                instance_name=instance_name,
+                recent_headlines=recent_headlines,
+                override_config=override_config,
+            )
+        else:
+            probe_result = {"status": "no_hit", "candidates": [], "glossary_hits": []}
+
         tier = ctx_result["tier"]          # "reflex" or "mid"
-        need = mem_result.get("need")
-        search_targets = mem_result.get("search_targets")
+        status = probe_result["status"]
+        candidates = probe_result.get("candidates", [])
 
         # --- 互換レイヤー (Phase 2 で削除) ---
         compat_tier = tier
-        if tier == "mid" and need is not None:
+        if tier == "mid" and status != "no_hit" and candidates:
             compat_tier = "cortex"
+
+        # need 互換値
+        need = None
+        search_targets = None
+        if status != "no_hit" and candidates:
+            need = f"memory_probe_{status}"
+            search_targets = [c.get("title", "") for c in candidates[:3]]
 
         return {
             "tier": compat_tier,           # Phase 2 で tier に戻す
@@ -118,6 +135,8 @@ class Gatekeeper:
             "llm_scoring": ctx_result.get("llm_scoring"),
             # デバッグ用: 内部 tier（Phase 2 で compat_tier と統合）
             "_internal_tier": tier,
+            # Phase 1.5 新規
+            "memory_probe": probe_result,
         }
 
     def _load_headlines(self, instance_dir: Path = None) -> str:
@@ -172,7 +191,7 @@ __all__ = [
     "build_system_instruction_from_blocks",
     "build_context_prefix",
     "ContextClassifier",
-    "MemoryJudge",
+    "MemoryProbe",
     "StateUpdater",
     # 後方互換
     "TierClassifier",

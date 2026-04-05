@@ -22,13 +22,10 @@ prompts:
 
   search_planner:
     location: control
-    description: "RAG search keyword planning (legacy, use memory_judge)"
+    description: "RAG search keyword planning (legacy)"
     variables: [agent_name, history_text, user_input, current_topic]
 
-  memory_judge:
-    location: control
-    description: "Long-term memory retrieval decision + search keyword planning"
-    variables: [agent_name, history_text, user_input, current_topic, recent_headlines]
+  # memory_judge: Phase 1.5 で廃止（MemoryProbe は LLM 不使用）
 
   brain_extract_keywords:
     location: control

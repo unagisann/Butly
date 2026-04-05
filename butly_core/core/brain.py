@@ -126,6 +126,117 @@ class ButlyBrain:
             print(f"[Brain] Keyword Extraction Error: {e}")
             return {"keywords": []}
 
+    def quick_vector_search(
+        self, user_input: str, instance_name: str,
+        limit: int = 3, threshold: float = 0.6,
+        override_config: dict = None,
+    ) -> list:
+        """
+        キーワード抽出なしの純粋なベクトル検索。
+        user_input の embedding と knowledge_cards の cosine similarity で上位を返す。
+        threshold 未満はフィルタ。
+        """
+        brain_conf = SYSTEM_CONFIG["brain"].copy()
+        if override_config and "brain" in override_config:
+            brain_conf.update(override_config["brain"])
+
+        # readable_instances の解決
+        readable = brain_conf.get("readable_instances", ["self"])
+        target_instances = []
+        for r in readable:
+            if r == "self":
+                target_instances.append(instance_name)
+            else:
+                target_instances.append(r)
+        target_instances = list(dict.fromkeys(target_instances))
+
+        all_results = []
+        for inst in target_instances:
+            results = self._quick_vector_search_single(
+                user_input, inst, limit, threshold, brain_conf
+            )
+            all_results.extend(results)
+
+        all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return all_results[:limit]
+
+    def _quick_vector_search_single(
+        self, user_input: str, instance_name: str,
+        limit: int, threshold: float, brain_conf: dict,
+    ) -> list:
+        """単一インスタンスDBに対する純粋ベクトル検索。"""
+        instance_db_path = self._get_db_path(instance_name)
+        if not instance_db_path.exists():
+            return []
+
+        query_embedding = self.get_embedding(user_input)
+        if not query_embedding:
+            return []
+
+        try:
+            conn = sqlite3.connect(instance_db_path)
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            fetch_limit = brain_conf.get("fallback_fetch_limit", 50)
+            select_cols = "id, title, summary, episode, type, embedding_blob, created_at, is_archived"
+            query = f"""
+                SELECT {select_cols}
+                FROM knowledge_cards
+                ORDER BY created_at DESC
+                LIMIT {fetch_limit}
+            """
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            conn.close()
+
+            if not rows:
+                return []
+
+            decay_rate = brain_conf.get("time_decay_rate", 0.005)
+            now = datetime.now()
+            scored_results = []
+
+            for row in rows:
+                row_dict = dict(row)
+                blob_data = row_dict.pop("embedding_blob")
+                created_at_str = row_dict.get("created_at")
+                is_archived = row_dict.get("is_archived") or 0
+
+                score = 0.0
+                if blob_data:
+                    try:
+                        db_emb = np.frombuffer(blob_data, dtype=np.float32)
+                        score = float(self._calculate_cosine_similarity(query_embedding, db_emb))
+
+                        if created_at_str:
+                            try:
+                                created_at_dt = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+                                days_diff = (now - created_at_dt).days
+                                if days_diff > 0:
+                                    decay_factor = math.exp(-decay_rate * days_diff)
+                                    score *= decay_factor
+                            except ValueError:
+                                pass
+
+                        if is_archived:
+                            score *= 0.5
+                    except Exception:
+                        pass
+
+                if score >= threshold:
+                    row_dict["score"] = float(score)
+                    row_dict["source"] = "vector"
+                    scored_results.append(row_dict)
+
+            scored_results.sort(key=lambda x: x["score"], reverse=True)
+            return scored_results[:limit]
+
+        except Exception as e:
+            print(f"[Brain] Quick Vector Search Error: {e}")
+            return []
+
     def search_knowledge(self, keywords, user_query, instance_name="00_master", limit=None, override_config=None):
         """
         ハイブリッド検索: キーワードフィルター + ベクトル類似度
