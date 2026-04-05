@@ -14,12 +14,13 @@ Butlyは、高度な記憶管理機能（短期記憶・中期記憶・長期記
   - `butly_core/llm/providers/openai.py`: OpenAI プロバイダー（GPT-4o 等、Vision 対応）
   - `butly_core/llm/providers/ollama.py`: Ollama プロバイダー（ローカル LLM、OpenAI 互換 API 経由）
 - **コアモジュール:** `butly_core/`
-  - `gatekeeper/`: ユーザー発言のティア(reflex/mid/cortex)判定、セッション状態更新、RAG 検索計画、プロンプト構成ブロックの構築
+  - `gatekeeper/`: ユーザー発言のティア(reflex/mid)判定（ContextClassifier）、事実ベース記憶検索（MemoryProbe）、セッション状態更新（StateUpdater）、プロンプト構成ブロックの構築（MemoryBlockBuilder）
   - `memory.py`: 記憶ファイル（RAW/Digest/Relationship）のI/O管理とフローティングサマリー制御
-  - `brain.py`: RAG検索エンジン（キーワード抽出 + ベクトル類似度リランキング）— LLM 非依存
+  - `brain.py`: RAG検索エンジン（キーワード抽出 + ベクトル類似度リランキング + quick_vector_search）— LLM 非依存
   - `housekeeper.py`: バックグラウンドでの記憶の抽象化（事実ダイジェスト・関係性のスナップショット生成）
 
 ## 現在のフェーズとステータス
+- **Gatekeeper Phase 1.5: 事実ベース MemoryProbe (2026-04-06)**: MemoryJudge（LLM ~2s）を MemoryProbe（LLM不使用 ~100ms）に置換。3層構造: Layer 1 quick_vector_search / Layer 1.5 glossary match / Layer 2 deep search（条件付き）。Gatekeeper 並列実行を 3→2 に削減。memory_builder 内の Brain RAG 呼び出しを廃止し probe candidates から直接注入。Glossary の選択的注入を実現。想定レイテンシ: Gatekeeper+MemBuild ~5s → ~1.5s。テスト 330 件全パス。
 - **Housekeeper リソース最適化 (2026-04-04)**: ローカルLLM運用やAPI長文コンテキスト処理の安定性向上。Stage 2（ナレッジ化）のスキップ機能（`skip_knowledge_generation`）、Stage 1 Digest の日付ヘッダ区切りチャンク分割（`digest_max_input_chars`）、Stage 2 Knowledge のファイル単位チャンク分割（`knowledge_max_input_chars`）を実装。UIにも3項目追加。
 - **汎用Web検索モジュール追加 (2026-03-31)**: Gemini 以外のプロバイダー（OpenAI / Ollama）でもWeb検索を利用可能に。`butly_core/search/` パッケージとして Tavily Search API を統合。検索結果は `ChatService` が `context_prefix` に注入し、LLM には通常のコンテキストとして渡すパターンA方式を採用。Gemini は従来通り Native Grounding を使用。UI では非 Gemini 時に 🔍 トグルを表示し、月次使用量トラッキングも搭載。
 - **Provider 同期/非同期統一完了 (2026-03-23)**: 全プロバイダーの `generate()` / `summarize()` を `async def` → `def`（同期）に統一。FastAPI の実行中イベントループと `asyncio.run()` が競合する問題を根本解決。`ChatService` 側で `run_in_threadpool()` に逃がす設計に変更。`BaseProvider` に将来の段階的非同期移行用として `async_generate()` / `async_summarize()` / `async_embed()` のデフォルト実装（同期版ラップ）を追備。

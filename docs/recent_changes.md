@@ -1,5 +1,34 @@
 # Recent Changes
 
+## Gatekeeper Phase 1.5: MemoryJudge → MemoryProbe 事実ベース判定 (2026-04-06)
+
+MemoryJudge の LLM 呼び出しを廃止し、実際の検索結果に基づく事実ベース判定に置換。レイテンシ削減 + Glossary の選択的注入を実現。
+
+### MemoryProbe 3層構造
+- **Layer 1: Quick Vector Search (~100ms)**: `Brain.quick_vector_search()` を新設。キーワード抽出なしで user_input の embedding と knowledge_cards の cosine similarity を直接比較。閾値（デフォルト 0.6）以上のヒットを candidates に格納。
+- **Layer 1.5: Glossary Match (数ms)**: user_input の単語と glossary entries の term/aliases をマッチング。ヒットした glossary エントリを `glossary_hits` に格納。
+- **Layer 2: Deep Search (1-2s, 条件付き)**: Layer 1 でヒットなし、かつ具体的な過去参照パターン（「前に」「覚えてる」「だっけ」等）がある場合のみ `Brain.extract_keywords()` + `search_knowledge()` を実行。
+
+### Gatekeeper Facade 変更
+- **並列実行**: 3並列（CC + MemoryJudge + StateUpdater）→ 2並列（CC + StateUpdater）。MemoryProbe は LLM 不要のため並列の外で即実行。
+- **引数追加**: `Gatekeeper.classify()` に `brain` / `memory_manager` パラメータを追加。`chat/service.py` から渡す。
+- **互換レイヤー**: probe `status != "no_hit"` + candidates あり → cortex として返却。`need` に `"memory_probe_hit"` / `"memory_probe_deep_search"` を設定。
+- **返却値**: `memory_probe` dict（status / candidates / glossary_hits）を追加。
+
+### MemoryBlockBuilder 変更
+- **RAG 検索廃止**: `build()` 内の `brain.extract_keywords()` + `brain.search_knowledge()` 呼び出しを削除。probe candidates から直接 `rag_context` を構築。
+- **Glossary 選択的注入**: `_build_glossary()` で `glossary_hits` があれば関連エントリのみ注入、なければ従来通り全件注入。
+
+### 設定・ファイル変更
+- **config.py**: `SYSTEM_CONFIG["memory_probe"]` 追加（`vector_search_limit` / `vector_search_threshold` / `deep_search_enabled`）。
+- **prompt_registry.yaml**: `memory_judge` エントリ削除。
+- **削除**: `memory_judge.py`、`control/memory_judge.txt`、`test_memory_judge.py`。
+
+### テスト
+- `tests/test_memory_probe.py` 新規作成（46 テスト）: パターン検出、Layer 2 トリガー判定、Glossary マッチ、Headline マッチ、probe 統合、Gatekeeper 統合。
+- 既存テスト含む全 330 件パス。
+- **想定レイテンシ削減**: Gatekeeper + MemoryBuild 合計 ~5s → ~1.5s。
+
 ## Housekeeper リソース最適化：Stage 2 スキップ＆チャンク分割 (2026-04-04)
 
 ローカルLLM運用やAPIの長文コンテキスト処理の安定性向上のため、`housekeeper.py` にリソース最適化機能を追加。
