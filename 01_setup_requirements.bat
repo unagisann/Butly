@@ -44,6 +44,5 @@ if not exist "user_config.json" if exist "user_config.json.example" (
 
 echo.
 echo セットアップ完了です。
-echo 次は APIkey.env と user_config.json を編集してください。
 pause
 endlocal
