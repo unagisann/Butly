@@ -22,7 +22,7 @@ router = APIRouter()
 # --- Pydantic Models ---
 
 class SettingsRequest(BaseModel):
-    use_context_cache: Optional[bool] = None
+    pass
 
 class ApiKeyRequest(BaseModel):
     api_key: str
@@ -54,9 +54,7 @@ def save_settings_to_file(settings: dict):
 
 def apply_startup_settings():
     """起動時に永続化設定を適用する。main.py から呼ばれる。"""
-    current = load_settings_from_file()
-    if "use_context_cache" in current:
-        SYSTEM_CONFIG["brain"]["use_context_cache"] = current["use_context_cache"]
+    pass
 
 # --- Editable Prompts ---
 EDITABLE_PROMPTS = [
@@ -72,21 +70,11 @@ EDITABLE_PROMPTS = [
 @router.get("/settings")
 def get_settings():
     """Get current system settings."""
-    return {
-        "use_context_cache": SYSTEM_CONFIG["brain"].get("use_context_cache", True)
-    }
+    return {}
 
 @router.post("/settings")
 def update_settings(request: SettingsRequest):
     """Update system settings."""
-    if request.use_context_cache is not None:
-        SYSTEM_CONFIG["brain"]["use_context_cache"] = request.use_context_cache
-
-    current = load_settings_from_file()
-    if request.use_context_cache is not None:
-        current["use_context_cache"] = request.use_context_cache
-    save_settings_to_file(current)
-
     return {"message": "Settings updated", "settings": get_settings()}
 
 @router.post("/settings/api_key")

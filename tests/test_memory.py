@@ -31,7 +31,6 @@ class TestMemoryInit:
         """初期化時にデフォルトファイルが存在する"""
         mem = ButlyMemory(base_dir, instance_name="99_test_instance")
 
-        assert mem.mid_term_file.exists()
         assert mem.instruction_file.exists()
 
 
@@ -77,28 +76,6 @@ class TestKeyMemory:
 
 class TestMidTermMemory:
     """mid_term の読み込みテスト"""
-
-    def test_read_mid_term(self, memory_manager, test_instance_dir):
-        """mid_term.txt の内容が読み込まれる"""
-        (test_instance_dir / "mid_term.txt").write_text(
-            "テスト用の中期記憶です。",
-            encoding="utf-8",
-        )
-
-        text = memory_manager.get_mid_term_text_content()
-
-        assert "テスト用の中期記憶" in text
-
-    def test_mid_term_truncation(self, memory_manager, test_instance_dir):
-        """mid_term が上限を超えた場合に切り詰められる"""
-        # 大量のテキストを書き込み
-        long_text = "テスト行です。\n" * 10000
-        (test_instance_dir / "mid_term.txt").write_text(long_text, encoding="utf-8")
-
-        text = memory_manager.get_mid_term_text_content()
-
-        # 切り詰められて省略マーカーがある
-        assert len(text) <= len(long_text)
 
     def test_read_digest(self, memory_manager, test_instance_dir):
         """mid_term_digest.txt が読み込まれる"""

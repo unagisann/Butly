@@ -40,7 +40,6 @@ class BaseProvider(ABC):
               - "brain": ButlyBrain インスタンス
               - "memory_manager": ButlyMemory インスタンス
               - "history": 会話履歴
-              - "cached_content": キャッシュ
               - "override_config": インスタンス設定
               - "memory_blocks": Gatekeeper 記憶ブロック
               - "use_google_search": bool

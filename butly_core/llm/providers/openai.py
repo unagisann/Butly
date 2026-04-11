@@ -133,16 +133,14 @@ class OpenAIProvider(BaseProvider):
         )
 
         # --- context prefix (可変コンテキスト) ---
-        context_prefix = ""
-        if memory_blocks is not None:
-            from butly_core.core.gatekeeper import build_context_prefix
-            context_prefix = build_context_prefix(
-                blocks=memory_blocks,
-                memory_manager=memory_manager,
-                use_google_search=False,
-                context_order=context_order,
-                context_levels=context_levels,
-            )
+        from butly_core.core.gatekeeper import build_context_prefix
+        context_prefix = build_context_prefix(
+            blocks=memory_blocks,
+            memory_manager=memory_manager,
+            use_google_search=False,
+            context_order=context_order,
+            context_levels=context_levels,
+        )
 
         full_prompt = text
 
@@ -232,49 +230,14 @@ class OpenAIProvider(BaseProvider):
 
     def _build_system_instruction(self, memory_manager, memory_blocks, override_config, context_order=None, context_levels=None):
         """system instruction を構築する。"""
-        if memory_blocks is not None:
-            from butly_core.core.gatekeeper import build_system_instruction_from_blocks
-            return build_system_instruction_from_blocks(
-                blocks=memory_blocks,
-                memory_manager=memory_manager,
-                use_google_search=False,
-                context_order=context_order,
-                context_levels=context_levels,
-            )
-
-        from butly_core.config import SYSTEM_CONFIG
-        from butly_core.prompts import PromptLoader
-
-        loader = PromptLoader()
-        h = loader.get_section_header
-
-        sections = []
-        if memory_manager and hasattr(memory_manager, 'get_agent_profile'):
-            _profile = memory_manager.get_agent_profile()
-            agent_name = _profile.get("ai_name") or SYSTEM_CONFIG["agent"]["agent_name"]
-        else:
-            agent_name = SYSTEM_CONFIG["agent"]["agent_name"]
-        sys_inst = memory_manager.get_system_instruction() if memory_manager else f"You are {agent_name}."
-        sections.append(f"{h('system_instruction')}\n{sys_inst}")
-
-        if memory_manager:
-            key_mem = memory_manager.get_key_memory()
-            if key_mem:
-                sections.append(f"{h('key_memory')}\n{key_mem}")
-            mid_term = memory_manager.get_mid_term_text_content()
-            if mid_term:
-                sections.append(f"{h('mid_term_memory')}\n{mid_term}")
-            floating = memory_manager.get_floating_summary()
-            if floating:
-                sections.append(f"{h('floating_summary')}\n{floating.strip()}")
-
-        from butly_core.core.chronos import ButlyChronos
-        current_time = ButlyChronos().get_system_note()
-        sections.append(
-            f"{h('current_time')}\n{current_time}\n"
-            f"{h('note_current_time')}"
+        from butly_core.core.gatekeeper import build_system_instruction_from_blocks
+        return build_system_instruction_from_blocks(
+            blocks=memory_blocks,
+            memory_manager=memory_manager,
+            use_google_search=False,
+            context_order=context_order,
+            context_levels=context_levels,
         )
-        return "\n\n".join(sections)
 
     @staticmethod
     def _build_user_content(text: str, attachments: List[Attachment]):

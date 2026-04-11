@@ -19,7 +19,6 @@ class ButlyMemory:
         self.instance_dir = self.base_dir / "butly_core" / "instances" / instance_name
         
         # 各種パス定義
-        self.mid_term_file = self.instance_dir / SYSTEM_CONFIG["paths"]["mid_term"]
         self.instruction_file = self.instance_dir / SYSTEM_CONFIG["paths"]["system_instruction"]
         self.short_term_json_dir = self.instance_dir / "short_term_json"
         self.floating_summary_dir = self.instance_dir / "floating_summaries"
@@ -34,8 +33,6 @@ class ButlyMemory:
         for p in [self.short_term_json_dir, self.archive_integrated, self.archive_knowledgeized, self.archive_log, self.floating_summary_dir]:
             p.mkdir(parents=True, exist_ok=True)
             
-        if not self.mid_term_file.exists():
-            self.mid_term_file.write_text("", encoding="utf-8")
         if not self.instruction_file.exists():
             self.instruction_file.write_text("あなたは有能なAIアシスタントです。", encoding="utf-8")
 
@@ -237,20 +234,18 @@ class ButlyMemory:
             print(f"[Memory] Failed to save glossary: {e}")
             return False
 
-    def get_mid_term_text_content(self):
+    def get_raw_memory(self) -> str:
+        """raw_memory_cache.txt を読み込んで返す。
+        キャッシュは Housekeeper 実行時に生成される。"""
+        from butly_core.core.raw_memory_reader import CACHE_FILENAME
+
+        cache_path = self.instance_dir / CACHE_FILENAME
         try:
-            text = self.mid_term_file.read_text(encoding="utf-8").strip()
-            # ★ 修正: Configから制限文字数を取得
-            max_chars = self._get_config_value("memory", "max_mid_term_chars", SYSTEM_CONFIG["memory"]["max_mid_term_chars"])
-            if len(text) > max_chars:
-                # 安全なカット処理: 改行を探す
-                cut_idx = text.find("\n", len(text) - max_chars)
-                if cut_idx != -1:
-                    return "...(古い記録を省略)...\n" + text[cut_idx+1:]
-                return "...(古い記録を省略)...\n" + text[-max_chars:]
-            return text
-        except:
-            return ""
+            if cache_path.exists():
+                return cache_path.read_text(encoding="utf-8").strip()
+        except Exception as e:
+            print(f"[Memory] Failed to read raw_memory_cache: {e}")
+        return ""
 
     def get_mid_term_digest(self):
         """エピソード付き事実ダイジェスト (mid_term_digest.txt) を読み込んで返す"""

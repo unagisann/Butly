@@ -8,6 +8,7 @@ fastapi
 uvicorn
 pyyaml
 tavily-python>=0.5.0
+tiktoken
 
 # Optional (for development/testing)
 # pandas

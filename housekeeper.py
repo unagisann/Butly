@@ -26,7 +26,6 @@ except ImportError:
 # --- 設定エリア ---
 BASE_DIR = Path(__file__).resolve().parent
 INSTANCES_DIR = BASE_DIR / "butly_core" / "instances"
-MAX_MID_TERM_CHARS = SYSTEM_CONFIG["memory"]["max_mid_term_chars"]
 
 class ButlyHousekeeper:
     def __init__(self):
@@ -262,16 +261,13 @@ class ButlyHousekeeper:
 
     def stage_1_cleanup(self, instance_name):
         """
-        Phase 1: 中期記憶の更新
-        1_integrated にある生ログを読んで mid_term.txt に追記する。
-        溌れた古い記憶は archive_long_term.txt の末尾に追記する。
-        floating_summaryは Housekeeper 実行時にリセットされる。
+        Phase 1: 整理と要約生成
+        1_integrated にある生ログから daily digest を生成し、
+        floating_summary をクリアする。
+        mid_term.txt への追記は廃止（RAW は JSON 正本から直接読み込み）。
         """
         instance_path = INSTANCES_DIR / instance_name
         integrated_dir = instance_path / "memory_archive" / "1_integrated"
-        mid_term_file = instance_path / "mid_term.txt"
-        long_term_file = instance_path / "memory_archive" / "3_log" / "archive_long_term.txt"
-        long_term_file.parent.mkdir(parents=True, exist_ok=True)
         
         legacy_floating_file = instance_path / "floating_summary.txt"
         floating_summary_dir = instance_path / "floating_summaries"
@@ -347,25 +343,21 @@ class ButlyHousekeeper:
         if legacy_floating_file.exists():
             legacy_floating_file.write_text("", encoding="utf-8")
 
-        # 3. 中期記憶の更新と長期アーカイブ処理
-        current = mid_term_file.read_text(encoding="utf-8") if mid_term_file.exists() else ""
-        combined = current + "\n" + new_text
-        
-        if len(combined) > MAX_MID_TERM_CHARS:
-            min_overflow = len(combined) - MAX_MID_TERM_CHARS
-            cut_point = combined.find('\n', min_overflow)
-            if cut_point == -1:
-                cut_point = min_overflow
-            else:
-                cut_point += 1
-            overflow_text = combined[:cut_point]
-            kept_text = combined[cut_point:]
-            with open(long_term_file, "a", encoding="utf-8") as f:
-                f.write(overflow_text)
-            print(f"[Housekeeper] Archived {len(overflow_text)} chars to archive_long_term.txt.")
-            mid_term_file.write_text(kept_text, encoding="utf-8")
-        else:
-            mid_term_file.write_text(combined, encoding="utf-8")
+        # 3. RAW メモリキャッシュの再生成（2_knowledgeized から）
+        from butly_core.core.raw_memory_reader import build_raw_memory_cache
+        inst_cfg = self._get_instance_config(instance_name)
+        mem_cfg = inst_cfg.get("memory", {})
+        max_raw_tokens = mem_cfg.get("max_raw_tokens", SYSTEM_CONFIG["memory"].get("max_raw_tokens", 4096))
+        raw_format = mem_cfg.get("raw_injection_format", SYSTEM_CONFIG["memory"].get("raw_injection_format", "plaintext"))
+        _agent_name_cache = self.get_instance_agent_name(instance_name)
+        _user_name_cache = self.get_instance_user_name(instance_name)
+        build_raw_memory_cache(
+            instance_path,
+            max_tokens=max_raw_tokens,
+            injection_format=raw_format,
+            agent_name=_agent_name_cache,
+            user_name=_user_name_cache,
+        )
 
         # 4. Short Term JSON の空フォルダ削除
         short_term_dir = instance_path / "short_term_json"
@@ -507,7 +499,7 @@ class ButlyHousekeeper:
                 current_digest = digest_file.read_text(encoding="utf-8") if digest_file.exists() else ""
                 combined_digest = current_digest + "\n" + digest_new if current_digest else digest_new
                 
-                # 上限チェック & アーカイブ（mid_term.txtと同じパターン）
+                # 上限チェック & アーカイブ
                 max_digest_chars = max_digest
                 
                 if len(combined_digest) > max_digest_chars:

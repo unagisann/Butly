@@ -210,11 +210,7 @@ def initialize_system(base_dir, instance_name):
     memory = ButlyMemory(base_dir, instance_name=instance_name)
     brain = ButlyBrain(base_dir) 
     chronos = ButlyChronos()
-    from butly_core.llm.factory import ProviderFactory
-    from butly_core.config import AI_CONFIG
-    provider = ProviderFactory.create(AI_CONFIG["chat"]["model_name"])
-    cached_content = provider.prepare_cache(memory, ttl_hours=3) if hasattr(provider, "prepare_cache") else None
-    return memory, brain, chronos, cached_content
+    return memory, brain, chronos
 
 # --- 初期化・ディレクトリ作成 ---
 if not INSTANCES_DIR.exists():
@@ -1120,7 +1116,7 @@ def render_instance_settings_screen():
     
     # Initialize defaults if empty
     if "brain" not in config:
-        config["brain"] = {"use_context_cache": False, "readable_instances": ["self"]} # Context Cache DEFAULT OFF
+        config["brain"] = {"readable_instances": ["self"]}
     if "chat" not in config:
         config["chat"] = {
             "model_name": "gemini-3-flash-preview",
@@ -1128,7 +1124,7 @@ def render_instance_settings_screen():
         }
     config["chat"].setdefault("generation_config", {"temperature": 1.0, "max_output_tokens": 8192})
     if "memory" not in config:
-        config["memory"] = {"max_mid_term_chars": 30000, "short_term_limit": 6}
+        config["memory"] = {"max_raw_tokens": 4096, "raw_injection_format": "plaintext", "short_term_limit": 6}
     if "agent" not in config:
         config["agent"] = {}
     if "housekeeper" not in config:
@@ -1324,7 +1320,6 @@ def render_instance_settings_screen():
             value=config.get("brain", {}).get("use_rag", True),
             help="OFF にすると過去の記憶DBからの検索を行いません。短期記憶・中期記憶のみで応答します。",
         )
-        use_cache = st.toggle("コンテキストキャッシュ (Mid-term Memory)", value=config["brain"].get("use_context_cache", False))
         _is_gemini_inst = is_gemini_provider(model_name)
         if _is_gemini_inst:
             default_gs = st.toggle(
@@ -1346,8 +1341,18 @@ def render_instance_settings_screen():
             st_limit = st.number_input("短期記憶 保存数", min_value=2, max_value=12, step=2, value=config["memory"].get("short_term_limit", 6))
         with col_r2:
             keyword_thr = st.number_input("記憶検索の感度", min_value=1, max_value=10, value=config["brain"].get("keyword_hit_threshold", 5), help="値が大きいほど直近の会話記憶が検索補完に加わりやすくなります。")
-            cache_ttl = st.slider("キャッシュ有効期限 (時間)", min_value=1, max_value=24, step=1, value=config["brain"].get("cache_ttl_hours", 3))
-            mt_max = st.slider("長期記憶 最大文字数", min_value=5000, max_value=100000, step=5000, value=config["memory"].get("max_mid_term_chars", 30000))
+            raw_tokens = st.slider("RAW記憶 トークン上限", min_value=1024, max_value=16384, step=1024, value=config["memory"].get("max_raw_tokens", 4096))
+            raw_format = st.selectbox("RAW注入形式", ["plaintext", "markdown", "compact"], index=["plaintext", "markdown", "compact"].index(config["memory"].get("raw_injection_format", "plaintext")))
+            if st.button("🔄 RAWキャッシュ再生成", help="設定変更後にキャッシュを即座に再生成します"):
+                try:
+                    resp = requests.post(f"{API_BASE}/instances/{instance_name}/rebuild_raw_cache")
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        st.success(f"再生成完了: {data.get('sessions', 0)}セッション, {data.get('tokens', 0)}トークン")
+                    else:
+                        st.error(f"再生成失敗: {resp.text}")
+                except Exception as e:
+                    st.error(f"エラー: {e}")
 
         st.divider()
 
@@ -1717,7 +1722,6 @@ def render_instance_settings_screen():
     # ==========================================
     if save_basic or save_advanced:
         # Update values
-        config["brain"]["use_context_cache"] = use_cache
         config["brain"]["default_use_google_search"] = default_gs
         config["brain"]["readable_instances"] = readable_selected
         config["brain"].pop("filter_memory_by_type", None)
@@ -1725,7 +1729,6 @@ def render_instance_settings_screen():
         config["brain"]["search_limit"] = search_lim
         config["brain"]["fallback_fetch_limit"] = fallback_lim
         config["brain"]["keyword_hit_threshold"] = keyword_thr
-        config["brain"]["cache_ttl_hours"] = cache_ttl
 
         # --- Chat ---
         config["chat"]["model_name"] = model_name
@@ -1765,7 +1768,8 @@ def render_instance_settings_screen():
             config.pop("embedding", None)
 
         config["memory"]["short_term_limit"] = st_limit
-        config["memory"]["max_mid_term_chars"] = mt_max
+        config["memory"]["max_raw_tokens"] = raw_tokens
+        config["memory"]["raw_injection_format"] = raw_format
 
         # agent profile の保存
         config["agent"] = {
@@ -1820,8 +1824,8 @@ def render_instance_settings_screen():
 
 def render_chat_screen():
     instance_name = st.session_state.current_instance
-    # 履歴表示用に memory のみ初期化（brain / cached_content は FastAPI 側で管理）
-    memory, brain, chronos, cached_content = initialize_system(BASE_DIR, instance_name)
+    # 履歴表示用に memory のみ初期化（brain は FastAPI 側で管理）
+    memory, brain, chronos = initialize_system(BASE_DIR, instance_name)
     api_url = st.session_state.api_base_url
 
     # --- チャットヘッダー ---

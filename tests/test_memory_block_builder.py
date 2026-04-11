@@ -65,9 +65,10 @@ class TestMidTier:
 
     def test_mid_has_mid_term(self, memory_manager, mock_brain, test_instance_dir):
         """mid: mid_term が含まれる"""
-        # mid_term にテストデータを書き込み
-        (test_instance_dir / "mid_term.txt").write_text(
-            "昨日はPythonのテストについて話しました。",
+        # raw_memory_cache.txt にテストデータを配置
+        (test_instance_dir / "raw_memory_cache.txt").write_text(
+            "[2026-04-10 21:00:00] User: Pythonのテストについて話しましょう\n"
+            "[2026-04-10 21:00:00] Agent: 承知しました。pytestについてですね。",
             encoding="utf-8",
         )
 

@@ -166,3 +166,38 @@ def update_glossary(instance_name: str, data: Dict[str, Any] = Body(...)):
     if not success:
         raise HTTPException(status_code=500, detail="Glossary の保存に失敗しました。")
     return {"message": "Glossary を保存しました。"}
+
+
+# ==========================================
+# 🔄 RAW Memory Cache エンドポイント
+# ==========================================
+
+@router.post("/instances/{instance_name}/rebuild_raw_cache")
+def rebuild_raw_cache(instance_name: str):
+    """RAW メモリキャッシュを即座に再生成する。"""
+    from butly_core.config import SYSTEM_CONFIG
+    from butly_core.core.raw_memory_reader import build_raw_memory_cache
+
+    instance_dir = deps.INSTANCES_DIR / instance_name
+    if not instance_dir.exists():
+        raise HTTPException(status_code=404, detail="インスタンスが存在しません。")
+
+    # インスタンス設定を読み込み
+    config = deps.instance_manager.get_instance_config(instance_name)
+    mem_cfg = config.get("memory", {})
+    agent_cfg = config.get("agent", {})
+
+    max_tokens = mem_cfg.get("max_raw_tokens", SYSTEM_CONFIG["memory"].get("max_raw_tokens", 4096))
+    injection_format = mem_cfg.get("raw_injection_format", SYSTEM_CONFIG["memory"].get("raw_injection_format", "plaintext"))
+    agent_name = agent_cfg.get("ai_name") or SYSTEM_CONFIG["agent"].get("agent_name", "Agent")
+    user_name = agent_cfg.get("nickname") or agent_cfg.get("user_name") or SYSTEM_CONFIG["agent"].get("user_name", "User")
+
+    result = build_raw_memory_cache(
+        instance_dir,
+        max_tokens=max_tokens,
+        injection_format=injection_format,
+        agent_name=agent_name,
+        user_name=user_name,
+    )
+
+    return {"status": "ok", **result}

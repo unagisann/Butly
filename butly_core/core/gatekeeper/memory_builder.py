@@ -226,13 +226,13 @@ class MemoryBlockBuilder:
                 print(f"[Gatekeeper] MemoryBlock: {tier}（+ digest {len(digest)}文字 + relationship {len(relationship)}文字 = {total_chars}文字）")
             else:
                 # 要約ファイルが存在しない → RAWにフォールバック
-                mid_term = memory_manager.get_mid_term_text_content()
+                mid_term = memory_manager.get_raw_memory()
                 blocks["mid_term"] = mid_term
                 blocks["mid_term_mode"] = "raw_fallback"
                 print(f"[Gatekeeper] MemoryBlock: {tier}（要約なし → RAWフォールバック {len(mid_term)}文字）")
         else:
-            # RAWモード: 従来通り
-            mid_term = memory_manager.get_mid_term_text_content()
+            # RAWモード: 1_integrated + 2_knowledgeized から読み込み
+            mid_term = memory_manager.get_raw_memory()
             blocks["mid_term"] = mid_term
             blocks["mid_term_mode"] = "raw"
             print(f"[Gatekeeper] MemoryBlock: {tier}（+ mid_term RAW {len(mid_term)}文字）")

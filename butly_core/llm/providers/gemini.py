@@ -146,7 +146,7 @@ class GeminiProvider(BaseProvider):
         テキスト（+ 添付画像）を Gemini API で処理する。
 
         context に含まれるキー:
-          - brain, memory_manager, history, cached_content, override_config
+          - brain, memory_manager, history, override_config
           - memory_blocks, use_google_search
           - rag_results: ChatService が構築した RAG 検索結果リスト
           - use_rag: bool
@@ -154,7 +154,6 @@ class GeminiProvider(BaseProvider):
         brain = context["brain"]
         memory_manager = context["memory_manager"]
         history = context.get("history", [])
-        cached_content = context.get("cached_content")
         override_config = context.get("override_config")
         memory_blocks = context.get("memory_blocks")
         use_google_search = context.get("use_google_search", False)
@@ -185,14 +184,13 @@ class GeminiProvider(BaseProvider):
         try:
             if use_google_search:
                 response_text, sources = self._try_search_with_retry(
-                    full_prompt, image_parts, cached_content, history,
+                    full_prompt, image_parts, history,
                     memory_manager, override_config, memory_blocks,
                     context_order=context_order,
                     context_levels=context_levels,
                 )
             else:
                 chat_session = self._start_chat(
-                    cached_content=cached_content,
                     history=history,
                     memory_manager=memory_manager,
                     override_config=override_config,
@@ -208,27 +206,24 @@ class GeminiProvider(BaseProvider):
                 response_text, sources, _ = self._extract_response(response)
 
             # debug_info 構築（Gemini 固有）
-            _debug_sys_inst = ""
-            _debug_ctx_prefix = ""
-            if memory_blocks is not None:
-                from butly_core.core.gatekeeper import (
-                    build_system_instruction_from_blocks,
-                    build_context_prefix,
-                )
-                _debug_sys_inst = build_system_instruction_from_blocks(
-                    blocks=memory_blocks,
-                    memory_manager=memory_manager,
-                    use_google_search=use_google_search,
-                    context_order=context_order,
-                    context_levels=context_levels,
-                )
-                _debug_ctx_prefix = build_context_prefix(
-                    blocks=memory_blocks,
-                    memory_manager=memory_manager,
-                    use_google_search=use_google_search,
-                    context_order=context_order,
-                    context_levels=context_levels,
-                )
+            from butly_core.core.gatekeeper import (
+                build_system_instruction_from_blocks,
+                build_context_prefix,
+            )
+            _debug_sys_inst = build_system_instruction_from_blocks(
+                blocks=memory_blocks,
+                memory_manager=memory_manager,
+                use_google_search=use_google_search,
+                context_order=context_order,
+                context_levels=context_levels,
+            )
+            _debug_ctx_prefix = build_context_prefix(
+                blocks=memory_blocks,
+                memory_manager=memory_manager,
+                use_google_search=use_google_search,
+                context_order=context_order,
+                context_levels=context_levels,
+            )
 
             result = ChatResponse(
                 text=response_text,
@@ -333,7 +328,6 @@ class GeminiProvider(BaseProvider):
 
     def _start_chat(
         self,
-        cached_content=None,
         history=None,
         memory_manager=None,
         override_config=None,
@@ -342,17 +336,11 @@ class GeminiProvider(BaseProvider):
         context_order=None,
         context_levels=None,
     ):
-        """キャッシュ有無に関わらずチャットセッションを開始する。"""
+        """チャットセッションを開始する。"""
         from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
 
         if history is None:
             history = []
-
-        floating_summary = ""
-        if memory_manager:
-            raw_summary = memory_manager.get_floating_summary()
-            if raw_summary:
-                floating_summary = raw_summary
 
         chat_conf = AI_CONFIG["chat"]
         if override_config and "chat" in override_config:
@@ -388,72 +376,34 @@ class GeminiProvider(BaseProvider):
 
         model_name = chat_conf["model_name"]
 
-        if cached_content:
-            generate_config.cached_content = cached_content.name
-        else:
-            if memory_blocks is not None:
-                from butly_core.core.gatekeeper import (
-                    build_system_instruction_from_blocks,
-                    build_context_prefix,
-                )
-                base_instruction = build_system_instruction_from_blocks(
-                    blocks=memory_blocks,
-                    memory_manager=memory_manager,
-                    use_google_search=use_google_search,
-                    context_order=context_order,
-                    context_levels=context_levels,
-                )
+        from butly_core.core.gatekeeper import (
+            build_system_instruction_from_blocks,
+            build_context_prefix,
+        )
+        base_instruction = build_system_instruction_from_blocks(
+            blocks=memory_blocks,
+            memory_manager=memory_manager,
+            use_google_search=use_google_search,
+            context_order=context_order,
+            context_levels=context_levels,
+        )
 
-                # 可変コンテキストを history の先頭に注入
-                context_prefix = build_context_prefix(
-                    blocks=memory_blocks,
-                    memory_manager=memory_manager,
-                    use_google_search=use_google_search,
-                    context_order=context_order,
-                    context_levels=context_levels,
-                )
-                if context_prefix:
-                    prefix_content = types.Content(
-                        role="user",
-                        parts=[types.Part(text=context_prefix)]
-                    )
-                    history_contents = [prefix_content] + history_contents
-            else:
-                from butly_core.prompts import PromptLoader
-                loader = PromptLoader()
-                h = loader.get_section_header
+        # 可変コンテキストを history の先頭に注入
+        context_prefix = build_context_prefix(
+            blocks=memory_blocks,
+            memory_manager=memory_manager,
+            use_google_search=use_google_search,
+            context_order=context_order,
+            context_levels=context_levels,
+        )
+        if context_prefix:
+            prefix_content = types.Content(
+                role="user",
+                parts=[types.Part(text=context_prefix)]
+            )
+            history_contents = [prefix_content] + history_contents
 
-                sections = []
-                agent_name = SYSTEM_CONFIG["agent"]["agent_name"]
-                sys_inst = memory_manager.get_system_instruction() if memory_manager else f"You are {agent_name}."
-                sections.append(f"{h('system_instruction')}\n{sys_inst}")
-
-                if memory_manager:
-                    key_mem = memory_manager.get_key_memory()
-                    if key_mem:
-                        sections.append(f"{h('key_memory')}\n{key_mem}")
-
-                if memory_manager:
-                    mid_term = memory_manager.get_mid_term_text_content()
-                    if mid_term:
-                        sections.append(f"{h('mid_term_memory')}\n{mid_term}")
-
-                from butly_core.core.chronos import ButlyChronos
-                current_time = ButlyChronos().get_system_note()
-                sections.append(
-                    f"{h('current_time')}\n{current_time}\n"
-                    f"{h('note_current_time')}"
-                )
-
-                if floating_summary:
-                    sections.append(f"{h('floating_summary')}\n{floating_summary.strip()}")
-
-                if not use_google_search:
-                    sections.append("")
-
-                base_instruction = "\n\n".join(sections)
-
-            generate_config.system_instruction = base_instruction
+        generate_config.system_instruction = base_instruction
 
         chat = self.client.chats.create(
             model=model_name,
@@ -461,63 +411,6 @@ class GeminiProvider(BaseProvider):
             history=history_contents,
         )
         return chat
-
-    def prepare_cache(self, memory_manager, ttl_hours=None, override_config=None):
-        """中期記憶をコンテキストキャッシュ化する。"""
-        from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
-
-        if ttl_hours is None:
-            ttl_hours = SYSTEM_CONFIG["brain"]["cache_ttl_hours"]
-
-        use_cache = True
-        if override_config and "brain" in override_config and "use_context_cache" in override_config["brain"]:
-            use_cache = override_config["brain"]["use_context_cache"]
-        else:
-            use_cache = SYSTEM_CONFIG["brain"].get("use_context_cache", True)
-
-        if not use_cache:
-            return None
-
-        system_instruction = memory_manager.get_system_instruction()
-        mid_term_text = memory_manager.get_mid_term_text_content()
-        combined_context = f"【中期記憶（過去の重要な記録）】\n{mid_term_text}"
-
-        cache_id_file = memory_manager.instance_dir / "current_cache_id.txt"
-
-        if cache_id_file.exists():
-            cached_name = cache_id_file.read_text(encoding="utf-8").strip()
-            if cached_name:
-                try:
-                    cache = self.client.caches.get(name=cached_name)
-                    return cache
-                except Exception:
-                    pass
-
-        try:
-            if len(combined_context) < 1000:
-                return None
-
-            contents = [types.Content(parts=[types.Part(text=combined_context)])]
-            chat_conf = AI_CONFIG["chat"]
-            if override_config and "chat" in override_config:
-                chat_conf = {**chat_conf, **override_config["chat"]}
-            model_name = chat_conf["model_name"]
-
-            new_cache = self.client.caches.create(
-                model=model_name,
-                config=types.CreateCachedContentConfig(
-                    system_instruction=types.Content(parts=[types.Part(text=system_instruction)]),
-                    contents=contents,
-                    ttl=f"{int(ttl_hours * 3600)}s",
-                ),
-            )
-            cache_id_file.write_text(new_cache.name, encoding="utf-8")
-            return new_cache
-        except Exception as e:
-            if "too small" in str(e) or "400" in str(e):
-                return None
-            print(f"[GeminiProvider] Cache Error: {e}")
-            return None
 
     # ------------------------------------------------------------------
     # 内部: 画像変換
@@ -579,7 +472,6 @@ class GeminiProvider(BaseProvider):
         self,
         full_prompt: str,
         image_parts: list,
-        cached_content,
         history: list,
         memory_manager,
         override_config,
@@ -592,7 +484,7 @@ class GeminiProvider(BaseProvider):
         print("[GeminiProvider] Search: First Try")
         try:
             chat_session = self._start_chat(
-                cached_content=cached_content, history=history,
+                history=history,
                 memory_manager=memory_manager, override_config=override_config,
                 use_google_search=True, memory_blocks=memory_blocks,
                 context_order=context_order, context_levels=context_levels,
@@ -617,7 +509,7 @@ class GeminiProvider(BaseProvider):
         try:
             corrected_prompt = full_prompt + "\n\n【システム注意】前回のGoogle検索ツール呼び出しが不正な形式でした。google_searchツールは自動的に実行されます。関数を明示的に呼び出す必要はありません。通常通り回答してください。"
             chat_session = self._start_chat(
-                cached_content=cached_content, history=history,
+                history=history,
                 memory_manager=memory_manager, override_config=override_config,
                 use_google_search=True, memory_blocks=memory_blocks,
                 context_order=context_order, context_levels=context_levels,
@@ -640,7 +532,7 @@ class GeminiProvider(BaseProvider):
         # === Fallback ===
         print("[GeminiProvider] Search: Fallback (without search)")
         chat_session = self._start_chat(
-            cached_content=cached_content, history=history,
+            history=history,
             memory_manager=memory_manager, override_config=override_config,
             use_google_search=False, memory_blocks=memory_blocks,
             context_order=context_order, context_levels=context_levels,

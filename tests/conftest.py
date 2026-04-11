@@ -99,7 +99,6 @@ def test_instance_dir(base_dir: Path) -> Path:
         "テストユーザーはプログラマーです。好きな言語はPythonです。",
         encoding="utf-8",
     )
-    (inst_dir / "mid_term.txt").write_text("", encoding="utf-8")
     (inst_dir / "mid_term_digest.txt").write_text("", encoding="utf-8")
     (inst_dir / "mid_term_relationship.txt").write_text("", encoding="utf-8")
     (inst_dir / "floating_summary.txt").write_text("", encoding="utf-8")

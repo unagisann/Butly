@@ -85,11 +85,11 @@ SYSTEM_CONFIG = {
     "paths": {
         "db_name": "butly_memory.db",
         "system_instruction": "system_instruction.txt",
-        "key_memory": "Key_Memory.txt",
-        "mid_term": "mid_term.txt"
+        "key_memory": "Key_Memory.txt"
     },
     "memory": {
-        "max_mid_term_chars": 30000,
+        "max_raw_tokens": 4096,                 # RAW 読み込みトークン上限
+        "raw_injection_format": "plaintext",     # "markdown" | "plaintext" | "compact"
         "short_term_limit": 6,
         "generate_mid_term_summaries": True,   # Phase 3: 二層要約の生成を有効化
         "max_digest_chars": 8000,              # Phase 3: digest上限（超過分はアーカイブ）
@@ -100,9 +100,7 @@ SYSTEM_CONFIG = {
         "search_limit": 3,
         "keyword_hit_threshold": 5,
         "fallback_fetch_limit": 50,
-        "cache_ttl_hours": 3,
         "summary_char_limit": 200,
-        "use_context_cache": False, # Set to False to disable Context Caching
         "readable_instances": ["self"], # ["self"], ["self", "00_master"] 等で横断検索
         "dynamic_threshold": 0.6, # Google Search Dynamic Retrieval Threshold (0.0 - 1.0)
         "default_use_google_search": False # デフォルトでGoogle検索グラウンディングを使用するか

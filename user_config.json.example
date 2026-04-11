@@ -126,20 +126,18 @@
         "paths": {
             "db_name": "butly_memory.db",
             "system_instruction": "system_instruction.txt",
-            "key_memory": "Key_Memory.txt",
-            "mid_term": "mid_term.txt"
+            "key_memory": "Key_Memory.txt"
         },
         "memory": {
-            "max_mid_term_chars": 30000,
+            "max_raw_tokens": 4096,
+            "raw_injection_format": "plaintext",
             "short_term_limit": 6
         },
         "brain": {
             "search_limit": 3,
             "keyword_hit_threshold": 5,
             "fallback_fetch_limit": 50,
-            "cache_ttl_hours": 3,
             "summary_char_limit": 200,
-            "use_context_cache": false,
             "readable_instances": ["self"],
             "dynamic_threshold": 0.6,
             "default_use_google_search": false

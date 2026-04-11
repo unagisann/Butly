@@ -90,7 +90,6 @@ class ChatService:
         memory = components["memory"]
         brain = components["brain"]
         chronos = components["chronos"]
-        cached_content = components["cache"]
 
         # --- 2. 時刻コンテキスト ---
         last_ts = memory.get_last_interaction_time()
@@ -237,7 +236,6 @@ class ChatService:
             "brain": brain,
             "memory_manager": memory,
             "history": history_fmt,
-            "cached_content": cached_content,
             "override_config": instance_config,
             "memory_blocks": memory_blocks,
             "use_google_search": request.use_google_search,
