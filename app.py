@@ -1338,17 +1338,25 @@ def render_instance_settings_screen():
         with col_r1:
             search_lim = st.number_input("検索リミット", min_value=1, max_value=10, value=config["brain"].get("search_limit", 3))
             fallback_lim = st.slider("フォールバック取得数", min_value=10, max_value=100, step=10, value=config["brain"].get("fallback_fetch_limit", 50))
-            st_limit = st.number_input("短期記憶 保存数", min_value=2, max_value=12, step=2, value=config["memory"].get("short_term_limit", 6))
+            st_limit = st.number_input("短期記憶 保存数", min_value=1, max_value=12, step=1, value=config["memory"].get("short_term_limit", 6), help="保持するセッション数")
         with col_r2:
             keyword_thr = st.number_input("記憶検索の感度", min_value=1, max_value=10, value=config["brain"].get("keyword_hit_threshold", 5), help="値が大きいほど直近の会話記憶が検索補完に加わりやすくなります。")
-            raw_tokens = st.slider("RAW記憶 トークン上限", min_value=1024, max_value=16384, step=1024, value=config["memory"].get("max_raw_tokens", 4096))
-            raw_format = st.selectbox("RAW注入形式", ["plaintext", "markdown", "compact"], index=["plaintext", "markdown", "compact"].index(config["memory"].get("raw_injection_format", "plaintext")))
-            if st.button("🔄 RAWキャッシュ再生成", help="設定変更後にキャッシュを即座に再生成します"):
+            use_summarized = st.toggle(
+                "中期記憶に要約版を使用",
+                value=config["memory"].get("use_summarized_mid_term", True),
+                help="ON: digest + relationship（トークン効率◎）/ OFF: RAWキャッシュ（詳細だがトークン消費大）",
+            )
+            raw_tokens = st.slider("RAW記憶 トークン上限", min_value=1024, max_value=16384, step=1024, value=config["memory"].get("max_raw_tokens", 4096), disabled=use_summarized)
+            raw_format = st.selectbox("RAW注入形式", ["plaintext", "markdown", "compact"], index=["plaintext", "markdown", "compact"].index(config["memory"].get("raw_injection_format", "plaintext")), disabled=use_summarized)
+            if st.button("🔄 RAWキャッシュ再生成", help="現在のスライダー/セレクトの値で即座に再生成します", disabled=use_summarized):
                 try:
-                    resp = requests.post(f"{API_BASE}/instances/{instance_name}/rebuild_raw_cache")
+                    resp = requests.post(
+                        f"{st.session_state.api_base_url}/instances/{instance_name}/rebuild_raw_cache",
+                        json={"max_tokens": raw_tokens, "injection_format": raw_format},
+                    )
                     if resp.status_code == 200:
                         data = resp.json()
-                        st.success(f"再生成完了: {data.get('sessions', 0)}セッション, {data.get('tokens', 0)}トークン")
+                        st.success(f"再生成完了: {data.get('sessions', 0)}セッション, {data.get('tokens', 0)}トークン ({data.get('format', 'plaintext')})")
                     else:
                         st.error(f"再生成失敗: {resp.text}")
                 except Exception as e:
@@ -1768,6 +1776,7 @@ def render_instance_settings_screen():
             config.pop("embedding", None)
 
         config["memory"]["short_term_limit"] = st_limit
+        config["memory"]["use_summarized_mid_term"] = use_summarized
         config["memory"]["max_raw_tokens"] = raw_tokens
         config["memory"]["raw_injection_format"] = raw_format
 

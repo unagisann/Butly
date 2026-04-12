@@ -13,15 +13,35 @@ from pathlib import Path
 from butly_core.core.tokenizer import count_tokens
 
 # ファイル名からタイムスタンプを抽出する正規表現
-_TS_PATTERN = re.compile(r"session_(\d{8}_\d{6})")
+_TS_PATTERN_8 = re.compile(r"session_(\d{8}_\d{6})")       # session_YYYYMMDD_HHMMSS
+_TS_PATTERN_6D = re.compile(r"session_(\d{6}_\d{6})")      # session_YYMMDD_HHMMSS
+_TS_PATTERN_TIME = re.compile(r"session_(\d{6})\.json$")    # session_HHMMSS.json
+_DIR_DATE_PATTERN = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")  # YYYY-MM-DD
 
 CACHE_FILENAME = "raw_memory_cache.txt"
 
 
 def _extract_sort_key(filepath: Path) -> str:
-    """ファイル名の session_YYYYMMDD_HHMMSS 部分をソートキーとして抽出。"""
-    m = _TS_PATTERN.search(filepath.name)
-    return m.group(1) if m else filepath.name
+    """ファイルパスから YYYYMMDD_HHMMSS 形式のソートキーを生成。
+
+    3 つのファイル名形式に対応:
+      - session_YYYYMMDD_HHMMSS.json  → そのまま
+      - session_YYMMDD_HHMMSS.json    → 20 を前置
+      - session_HHMMSS.json           → 親ディレクトリ名から日付を補完
+    """
+    m = _TS_PATTERN_8.search(filepath.name)
+    if m:
+        return m.group(1)
+    m = _TS_PATTERN_6D.search(filepath.name)
+    if m:
+        return "20" + m.group(1)
+    # 時刻のみの場合 → 親ディレクトリ名 (YYYY-MM-DD) から日付を取得
+    m_time = _TS_PATTERN_TIME.search(filepath.name)
+    if m_time:
+        m_dir = _DIR_DATE_PATTERN.search(filepath.parent.name)
+        if m_dir:
+            return f"{m_dir.group(1)}{m_dir.group(2)}{m_dir.group(3)}_{m_time.group(1)}"
+    return filepath.name
 
 
 def _format_timestamp(raw_ts: str) -> str:
@@ -49,7 +69,7 @@ def collect_raw_sessions(
     # 2_knowledgeized/ 配下の全日付フォルダを走査
     if knowledgeized_dir.exists():
         for date_dir in knowledgeized_dir.iterdir():
-            if date_dir.is_dir():
+            if date_dir.is_dir() and not date_dir.name.startswith("processed_"):
                 all_files.extend(date_dir.glob("*.json"))
 
     if not all_files:

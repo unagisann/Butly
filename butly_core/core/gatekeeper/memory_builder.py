@@ -210,7 +210,12 @@ class MemoryBlockBuilder:
             return blocks
 
         # --- mid 以上: mid_term を追加 ---
-        use_summary = SYSTEM_CONFIG.get("memory", {}).get("use_summarized_mid_term", False)
+        # インスタンス設定を優先、なければシステムデフォルト
+        _inst_mem = override_config.get("memory", {}) if override_config else {}
+        use_summary = _inst_mem.get(
+            "use_summarized_mid_term",
+            SYSTEM_CONFIG.get("memory", {}).get("use_summarized_mid_term", True),
+        )
 
         if use_summary:
             # 要約モード: digest + relationship を使用
