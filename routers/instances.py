@@ -19,6 +19,7 @@ class CreateInstanceRequest(BaseModel):
     template: str = "{agent_name} is a helpful AI assistant."
     key_memory: str = ""
     agent_profile: dict = {}
+    user_profile: dict = {}
 
 class RenameInstanceRequest(BaseModel):
     new_name: str
@@ -44,6 +45,7 @@ def create_instance(request: CreateInstanceRequest):
         request.template,
         key_memory=request.key_memory,
         agent_profile=request.agent_profile or {},
+        user_profile=request.user_profile or {},
     )
     if not success:
         raise HTTPException(status_code=400, detail=message)
@@ -189,16 +191,18 @@ def rebuild_raw_cache(instance_name: str, params: dict | None = None):
 
     params = params or {}
 
-    # インスタンス設定を読み込み
-    config = deps.instance_manager.get_instance_config(instance_name)
+    # インスタンス設定を読み込み（旧 agent → agent_profile/user_profile 変換込み）
+    from butly_core.core.memory import _migrate_legacy_agent
+    config = _migrate_legacy_agent(deps.instance_manager.get_instance_config(instance_name))
     mem_cfg = config.get("memory", {})
-    agent_cfg = config.get("agent", {})
+    agent_profile = config.get("agent_profile", {})
+    user_profile = config.get("user_profile", {})
 
     # リクエストボディの値を優先、なければ config → SYSTEM_CONFIG
     max_tokens = params.get("max_tokens") or mem_cfg.get("max_raw_tokens", SYSTEM_CONFIG["memory"].get("max_raw_tokens", 4096))
     injection_format = params.get("injection_format") or mem_cfg.get("raw_injection_format", SYSTEM_CONFIG["memory"].get("raw_injection_format", "plaintext"))
-    agent_name = agent_cfg.get("ai_name") or SYSTEM_CONFIG["agent"].get("agent_name", "Agent")
-    user_name = agent_cfg.get("nickname") or agent_cfg.get("user_name") or SYSTEM_CONFIG["agent"].get("user_name", "User")
+    agent_name = agent_profile.get("ai_name") or SYSTEM_CONFIG["agent"].get("agent_name", "Agent")
+    user_name = user_profile.get("preferred_call") or user_profile.get("user_name") or SYSTEM_CONFIG["agent"].get("user_name", "User")
 
     result = build_raw_memory_cache(
         instance_dir,

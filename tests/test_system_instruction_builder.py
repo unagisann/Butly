@@ -23,6 +23,163 @@ from butly_core.core.gatekeeper import (
 # ==================================================================
 
 
+class TestAgentProfileInjection:
+    """Agent Profile が SI 先頭に注入されるかを検証"""
+
+    def _write_config(self, test_instance_dir, cfg):
+        import json
+        (test_instance_dir / "config.json").write_text(
+            json.dumps(cfg, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def test_si_contains_agent_name(self, memory_manager, test_instance_dir):
+        """config に agent_profile.ai_name があると SI に注入される"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "アドラス", "locale": "ja"},
+            "user_profile": {"user_name": "悠希"},
+        })
+        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        result = build_system_instruction_from_blocks(blocks, memory_manager)
+        assert "アドラス" in result
+        assert "# Agent Profile" in result
+
+    def test_si_agent_profile_before_body(self, memory_manager, test_instance_dir):
+        """Agent Profile は本文（Identity 等）より前に配置される"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "Atlas", "locale": "en"},
+            "user_profile": {},
+        })
+        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        result = build_system_instruction_from_blocks(blocks, memory_manager)
+        idx_ap = result.index("# Agent Profile")
+        idx_si = result.index("=== SYSTEM INSTRUCTION ===")
+        # SI header is above body, Agent Profile sits between header and body
+        assert idx_si < idx_ap
+
+    def test_si_omits_empty_agent_profile(self, memory_manager, test_instance_dir):
+        """ai_name が空なら Agent Profile ブロック全体が出ない"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "", "locale": "ja"},
+            "user_profile": {},
+        })
+        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        result = build_system_instruction_from_blocks(blocks, memory_manager)
+        assert "# Agent Profile" not in result
+
+    def test_si_excludes_user_profile(self, memory_manager, test_instance_dir):
+        """User Profile ブロック（セクションヘッダと構造化ラベル）が SI セクションに含まれない
+
+        ※ build_system_instruction_from_blocks() の戻り値は SI + KM 連結。
+        User Profile は KM 側に属するブロックなので、SI セクション部分のみで不在を判定する。
+        """
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "アドラス", "locale": "ja"},
+            "user_profile": {
+                "user_name": "悠希",
+                "preferred_call": "マスター",
+                "gender": "male",
+            },
+        })
+        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        result = build_system_instruction_from_blocks(blocks, memory_manager)
+
+        # SI セクションだけを切り出す（KEY MEMORY 以降は KM ブロック）
+        si_end = result.find("=== KEY MEMORY")
+        si_section = result if si_end == -1 else result[:si_end]
+
+        # ブロック単位で判定: セクションヘッダ + 構造化ラベルの不在を確認
+        assert "=== User Profile ===" not in si_section
+        assert "- Preferred call:" not in si_section
+        assert "- Name:" not in si_section
+
+    def test_si_ai_gender_when_set(self, memory_manager, test_instance_dir):
+        """ai_gender が設定されていれば Gender 行が出る"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "Atlas", "ai_gender": "neutral", "locale": "en"},
+            "user_profile": {},
+        })
+        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        result = build_system_instruction_from_blocks(blocks, memory_manager)
+        assert "Gender: neutral" in result
+
+    def test_si_omits_empty_ai_gender(self, memory_manager, test_instance_dir):
+        """ai_gender が空なら Gender 行は出ない"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "Atlas", "ai_gender": "", "locale": "en"},
+            "user_profile": {},
+        })
+        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        result = build_system_instruction_from_blocks(blocks, memory_manager)
+        assert "Gender:" not in result
+
+
+class TestKeyMemoryUserProfileInjection:
+    """User Profile が KM に注入されるかを検証"""
+
+    def _write_config(self, test_instance_dir, cfg):
+        import json
+        (test_instance_dir / "config.json").write_text(
+            json.dumps(cfg, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def test_km_contains_user_profile(self, memory_manager, test_instance_dir):
+        """get_key_memory() の戻り値に User Profile ブロックが含まれる"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "Atlas", "locale": "ja"},
+            "user_profile": {"user_name": "悠希", "preferred_call": "マスター"},
+        })
+        result = memory_manager.get_key_memory()
+        assert "=== User Profile ===" in result
+        assert "- Name: 悠希" in result
+        assert "- Preferred call: マスター" in result
+
+    def test_km_omits_empty_location(self, memory_manager, test_instance_dir):
+        """location が空なら Location 行は出ない"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "Atlas", "locale": "en"},
+            "user_profile": {"user_name": "Taro", "location": ""},
+        })
+        result = memory_manager.get_key_memory()
+        assert "Location:" not in result
+
+    def test_km_core_memories_subheader(self, memory_manager, test_instance_dir):
+        """User Profile と本文の両方がある場合、Core Memories サブヘッダが付く"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "Atlas", "locale": "en"},
+            "user_profile": {"user_name": "Taro"},
+        })
+        result = memory_manager.get_key_memory()
+        assert "=== Core Memories ===" in result
+
+
+class TestLegacyAgentFallback:
+    """旧 agent セクションからのフォールバック"""
+
+    def test_legacy_agent_migrates_in_memory(self, memory_manager, test_instance_dir):
+        """config.json に旧 agent のみの場合でも agent_profile/user_profile が取得できる"""
+        import json
+        (test_instance_dir / "config.json").write_text(
+            json.dumps({
+                "agent": {
+                    "ai_name": "レガシー",
+                    "user_name": "旧ユーザー",
+                    "nickname": "旧呼称",
+                    "gender": "男性",
+                    "birthday": "1990/01/01",
+                    "locale": "ja",
+                }
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        ap = memory_manager.get_agent_profile()
+        up = memory_manager.get_user_profile()
+        assert ap["ai_name"] == "レガシー"
+        assert up["user_name"] == "旧ユーザー"
+        assert up["preferred_call"] == "旧呼称"
+        assert up["gender"] == "男性"
+        assert up["birthday"] == "1990/01/01"
+
+
 class TestReflexInstruction:
     """reflex tier の system_instruction テスト"""
 

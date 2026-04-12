@@ -328,8 +328,12 @@ def build_system_instruction_from_blocks(
     else:
         key_mem = memory_manager.get_key_memory() if memory_manager else ""
 
+    agent_profile_header = (
+        memory_manager.get_agent_profile_header() if memory_manager else ""
+    )
+
     builders = {
-        "system_instruction": lambda: _build_si_section(sys_inst, si_level, h),
+        "system_instruction": lambda: _build_si_section(sys_inst, si_level, h, agent_profile_header),
         "key_memory": lambda: _build_km_section(key_mem, km_level, h),
     }
 
@@ -346,13 +350,17 @@ def build_system_instruction_from_blocks(
     return "\n\n".join(sections)
 
 
-def _build_si_section(sys_inst: str, level: str, h) -> str | None:
-    if not sys_inst:
+def _build_si_section(sys_inst: str, level: str, h, agent_profile_header: str = "") -> str | None:
+    if not sys_inst and not agent_profile_header:
         return None
+    body = (sys_inst or "").strip()
+    header = (agent_profile_header or "").strip()
     if level == "low":
-        return sys_inst.strip()  # ヘッダなし
+        parts = [p for p in (header, body) if p]
+        return "\n\n".join(parts) if parts else None
     # high / mid
-    return f"{h('system_instruction')}\n{sys_inst}"
+    combined = "\n\n".join(p for p in (header, body) if p)
+    return f"{h('system_instruction')}\n{combined}" if combined else None
 
 
 def _build_km_section(key_mem: str, km_level: str, h) -> str | None:

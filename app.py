@@ -278,41 +278,6 @@ def load_personality_templates(base_dir, locale="ja"):
     return templates
 
 # Key Memory ビルダー
-def build_key_memory(ai_name, user_name, nickname, gender, birthday, locale="en"):
-    """入力値から Key Memory テキストを生成する。未入力項目は省略。"""
-    lines = []
-    if locale == "ja":
-        if ai_name:
-            lines.append(f"AI名: {ai_name}")
-        if user_name or nickname:
-            lines.append("")
-        if user_name:
-            lines.append(f"ユーザー名: {user_name}")
-        if nickname:
-            lines.append(f"呼称: {nickname}")
-        if gender or birthday:
-            lines.append("")
-        if gender:
-            lines.append(f"性別: {gender}")
-        if birthday:
-            lines.append(f"生年月日: {birthday}")
-    else:
-        if ai_name:
-            lines.append(f"AI Name: {ai_name}")
-        if user_name or nickname:
-            lines.append("")
-        if user_name:
-            lines.append(f"User Name: {user_name}")
-        if nickname:
-            lines.append(f"Preferred Name: {nickname}")
-        if gender or birthday:
-            lines.append("")
-        if gender:
-            lines.append(f"Gender: {gender}")
-        if birthday:
-            lines.append(f"Date of Birth: {birthday}")
-    return "\n".join(lines)
-
 def is_gemini_provider(model_name: str) -> bool:
     """model_name がGeminiプロバイダーかどうかを判定する。"""
     if not model_name:
@@ -482,18 +447,6 @@ def render_home_screen():
             )
 
         _birthday_str = birthday_input.strftime("%Y/%m/%d") if birthday_input else ""
-        _key_memory_preview = build_key_memory(
-            ai_name=ai_name_input,
-            user_name=user_name_input,
-            nickname=nickname_input,
-            gender=gender_input if gender_input else "",
-            birthday=_birthday_str,
-            locale=_home_locale,
-        )
-
-        if _key_memory_preview.strip():
-            with st.expander("📋 Key Memory プレビュー" if _home_locale == "ja" else "📋 Key Memory Preview"):
-                st.code(_key_memory_preview, language=None)
         # --- Key Memory 初期設定（ここまで） ---
 
         if st.button("作成" if _home_locale == "ja" else "Create", type="primary"):
@@ -507,19 +460,24 @@ def render_home_screen():
                 try:
                     _agent_profile = {
                         "ai_name": ai_name_input,
+                        "ai_gender": "",
+                        "locale": _home_locale,
+                    }
+                    _user_profile = {
                         "user_name": user_name_input,
-                        "nickname": nickname_input if nickname_input else user_name_input,
+                        "preferred_call": nickname_input if nickname_input else user_name_input,
                         "gender": gender_input if gender_input else "",
                         "birthday": _birthday_str,
-                        "locale": _home_locale,
+                        "location": "",
                     }
                     res = requests.post(
                         f"{api_url}/instances",
                         json={
                             "name": new_proj_name,
                             "template": new_template,
-                            "key_memory": _key_memory_preview,
+                            "key_memory": "",
                             "agent_profile": _agent_profile,
+                            "user_profile": _user_profile,
                         },
                         timeout=5,
                     )
@@ -1125,8 +1083,13 @@ def render_instance_settings_screen():
     config["chat"].setdefault("generation_config", {"temperature": 1.0, "max_output_tokens": 8192})
     if "memory" not in config:
         config["memory"] = {"max_raw_tokens": 4096, "raw_injection_format": "plaintext", "short_term_limit": 6}
-    if "agent" not in config:
-        config["agent"] = {}
+    # 旧 agent セクション → agent_profile / user_profile 変換（UI 表示用に in-memory マイグレーション）
+    from butly_core.core.memory import _migrate_legacy_agent
+    config = _migrate_legacy_agent(config)
+    if "agent_profile" not in config:
+        config["agent_profile"] = {}
+    if "user_profile" not in config:
+        config["user_profile"] = {}
     if "housekeeper" not in config:
         config["housekeeper"] = {}
 
@@ -1162,30 +1125,44 @@ def render_instance_settings_screen():
     # ⚙️ 基本設定タブ
     # ==========================================
     with tab_basic:
-        # ---- エージェントプロファイル ----
-        st.subheader("👤 エージェントプロファイル")
-        _prof = config.get("agent", {})
-        _pf_col1, _pf_col2 = st.columns(2)
-        with _pf_col1:
-            pf_ai_name = st.text_input("AIの名前", value=_prof.get("ai_name", ""), key="pf_ai_name")
-            pf_user_name = st.text_input("あなたの名前", value=_prof.get("user_name", ""), key="pf_user_name")
-            pf_nickname = st.text_input("呼ばれたい名前", value=_prof.get("nickname", ""), key="pf_nickname",
-                                         help="空欄なら「あなたの名前」を使います。")
-        with _pf_col2:
+        # ---- エージェントプロファイル（AI 側）----
+        st.subheader("🤖 エージェントプロファイル")
+        st.caption("AI 側の自己認識情報。SI 先頭に注入されます。")
+        _ap = config.get("agent_profile", {})
+        _ap_col1, _ap_col2 = st.columns(2)
+        with _ap_col1:
+            pf_ai_name = st.text_input("AIの名前", value=_ap.get("ai_name", ""), key="pf_ai_name")
+            pf_ai_gender = st.text_input("AIの性別表現（任意）", value=_ap.get("ai_gender", ""), key="pf_ai_gender",
+                                          help="空欄なら SI に出力されません。")
+        with _ap_col2:
+            _locale_opts = ["ja", "en"]
+            _locale_idx = _locale_opts.index(_ap.get("locale", "ja")) if _ap.get("locale", "ja") in _locale_opts else 0
+            pf_locale = st.selectbox("ロケール", options=_locale_opts, index=_locale_idx, key="pf_locale")
+
+        st.divider()
+
+        # ---- ユーザープロファイル（ユーザー側）----
+        st.subheader("👤 ユーザープロファイル")
+        st.caption("ユーザーに関する事実情報。Key Memory 先頭に注入されます。")
+        _up = config.get("user_profile", {})
+        _up_col1, _up_col2 = st.columns(2)
+        with _up_col1:
+            pf_user_name = st.text_input("あなたの名前", value=_up.get("user_name", ""), key="pf_user_name")
+            pf_preferred_call = st.text_input("呼ばれたい名前", value=_up.get("preferred_call", ""), key="pf_preferred_call",
+                                               help="空欄なら「あなたの名前」を使います。")
+            pf_location = st.text_input("居住地（任意）", value=_up.get("location", ""), key="pf_location")
+        with _up_col2:
             _gender_opts_pf = ["", "男性", "女性", "その他"]
-            _current_gender = _prof.get("gender", "")
+            _current_gender = _up.get("gender", "")
             _gender_idx = _gender_opts_pf.index(_current_gender) if _current_gender in _gender_opts_pf else 0
             pf_gender = st.selectbox("性別", options=_gender_opts_pf, index=_gender_idx, key="pf_gender")
-            _current_bd = _prof.get("birthday", "")
+            _current_bd = _up.get("birthday", "")
             try:
                 from datetime import date as _date
                 _bd_val = _date.fromisoformat(_current_bd.replace("/", "-")) if _current_bd else None
             except Exception:
                 _bd_val = None
             pf_birthday = st.date_input("生年月日", value=_bd_val, key="pf_birthday", format="YYYY/MM/DD")
-            _locale_opts = ["ja", "en"]
-            _locale_idx = _locale_opts.index(_prof.get("locale", "ja")) if _prof.get("locale", "ja") in _locale_opts else 0
-            pf_locale = st.selectbox("ロケール", options=_locale_opts, index=_locale_idx, key="pf_locale")
 
         st.divider()
 
@@ -1780,15 +1757,20 @@ def render_instance_settings_screen():
         config["memory"]["max_raw_tokens"] = raw_tokens
         config["memory"]["raw_injection_format"] = raw_format
 
-        # agent profile の保存
-        config["agent"] = {
+        # profile の保存（新スキーマ。旧 agent は除去）
+        config["agent_profile"] = {
             "ai_name": pf_ai_name,
-            "user_name": pf_user_name,
-            "nickname": pf_nickname if pf_nickname else pf_user_name,
-            "gender": pf_gender,
-            "birthday": pf_birthday.strftime("%Y/%m/%d") if pf_birthday else "",
+            "ai_gender": pf_ai_gender,
             "locale": pf_locale,
         }
+        config["user_profile"] = {
+            "user_name": pf_user_name,
+            "preferred_call": pf_preferred_call if pf_preferred_call else pf_user_name,
+            "gender": pf_gender,
+            "birthday": pf_birthday.strftime("%Y/%m/%d") if pf_birthday else "",
+            "location": pf_location,
+        }
+        config.pop("agent", None)
 
         # housekeeper 設定の保存
         config["housekeeper"] = {

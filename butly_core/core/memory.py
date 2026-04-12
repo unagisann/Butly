@@ -12,6 +12,25 @@ except ImportError:
     sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
     from butly_core.config import SYSTEM_CONFIG
 
+def _migrate_legacy_agent(config: dict) -> dict:
+    """旧 `agent` セクションを `agent_profile` + `user_profile` に変換（in-memory、ファイルは変更しない）。"""
+    if "agent" in config and "agent_profile" not in config and "user_profile" not in config:
+        old = config["agent"]
+        config["agent_profile"] = {
+            "ai_name": old.get("ai_name", ""),
+            "ai_gender": "",
+            "locale": old.get("locale", "ja"),
+        }
+        config["user_profile"] = {
+            "user_name": old.get("user_name", ""),
+            "preferred_call": old.get("nickname", ""),
+            "gender": old.get("gender", ""),
+            "birthday": old.get("birthday", ""),
+            "location": "",
+        }
+    return config
+
+
 class ButlyMemory:
     def __init__(self, base_dir, instance_name="00_master"):
         self.base_dir = Path(base_dir)
@@ -81,106 +100,104 @@ class ButlyMemory:
             content = low_path.read_text(encoding="utf-8").strip()
             lines = [l for l in content.split("\n") if l.strip() and not l.strip().startswith("#")]
             if lines:
-                return "\n".join(lines)
+                return self._compose_key_memory("\n".join(lines))
         return self.get_key_memory()
+
+    def _load_config_migrated(self) -> dict:
+        """config.json を読み込み、旧 `agent` セクションを in-memory で新スキーマへ変換する。"""
+        return _migrate_legacy_agent(self._load_config())
 
     def get_agent_profile(self) -> dict:
         """
-        インスタンス固有のエージェントプロファイルを返す。
-        instance config["agent"] → SYSTEM_CONFIG["agent"] の順でフォールバック。
+        AI 側プロファイル（SI 注入用）を返す。
+        instance config["agent_profile"]（旧 agent セクションからのマイグレーション含む）を返す。
+        インスタンス config に該当セクションがない場合は空値辞書を返す。
 
         Returns:
-            {
-                "ai_name": str,
-                "user_name": str,
-                "nickname": str,
-                "gender": str,
-                "birthday": str,
-                "locale": str,
-            }
+            {"ai_name": str, "ai_gender": str, "locale": str}
         """
-        instance_config = self._load_config()
-        agent_cfg = instance_config.get("agent", {})
-        # インスタンス固有のagentセクションがない場合はグローバルフォールバック
-        if agent_cfg:
-            defaults = {
-                "ai_name": SYSTEM_CONFIG["agent"].get("agent_name", ""),
-                "user_name": SYSTEM_CONFIG["agent"].get("user_name", ""),
-                "nickname": "",
-                "gender": "",
-                "birthday": "",
-                "locale": SYSTEM_CONFIG["agent"].get("locale", "ja"),
-            }
-            for key in defaults:
-                if key in agent_cfg and agent_cfg[key]:
-                    defaults[key] = agent_cfg[key]
-            return defaults
-        # agentセクション未設定の場合はグローバルフォールバック
+        cfg = self._load_config_migrated()
+        ap = cfg.get("agent_profile", {})
         return {
-            "ai_name": SYSTEM_CONFIG["agent"].get("agent_name", ""),
-            "user_name": SYSTEM_CONFIG["agent"].get("user_name", ""),
-            "nickname": "",
-            "gender": "",
-            "birthday": "",
-            "locale": SYSTEM_CONFIG["agent"].get("locale", "ja"),
+            "ai_name": ap.get("ai_name", ""),
+            "ai_gender": ap.get("ai_gender", ""),
+            "locale": ap.get("locale", "ja"),
         }
+
+    def get_user_profile(self) -> dict:
+        """
+        ユーザー側プロファイル（KM 注入用）を返す。
+        instance config["user_profile"]（旧 agent セクションからのマイグレーション含む）を返す。
+        インスタンス config に該当セクションがない場合は空値辞書を返す。
+
+        Returns:
+            {"user_name": str, "preferred_call": str, "gender": str,
+             "birthday": str, "location": str}
+        """
+        cfg = self._load_config_migrated()
+        up = cfg.get("user_profile", {})
+        return {
+            "user_name": up.get("user_name", ""),
+            "preferred_call": up.get("preferred_call", ""),
+            "gender": up.get("gender", ""),
+            "birthday": up.get("birthday", ""),
+            "location": up.get("location", ""),
+        }
+
+    def get_agent_profile_header(self) -> str:
+        """SI 先頭に注入する Agent Profile ブロックを生成する。ai_name が空なら空文字。"""
+        profile = self.get_agent_profile()
+        ai_name = profile.get("ai_name", "").strip()
+        if not ai_name:
+            return ""
+
+        locale = profile.get("locale", "ja")
+        lines = ["# Agent Profile"]
+        if locale == "ja":
+            lines.append(f"私は {ai_name}。")
+        else:
+            lines.append(f"I am {ai_name}.")
+
+        ai_gender = profile.get("ai_gender", "").strip()
+        if ai_gender:
+            lines.append(f"Gender: {ai_gender}")
+
+        return "\n".join(lines)
+
+    def get_user_profile_header(self) -> str:
+        """KM 先頭に注入する User Profile ブロックを生成する。全項目空なら空文字。"""
+        profile = self.get_user_profile()
+        order = [
+            ("Name", profile.get("user_name", "")),
+            ("Preferred call", profile.get("preferred_call", "")),
+            ("Gender", profile.get("gender", "")),
+            ("Location", profile.get("location", "")),
+            ("Date of Birth", profile.get("birthday", "")),
+        ]
+        lines = [f"- {label}: {value}" for label, value in order if value]
+        if not lines:
+            return ""
+        return "=== User Profile ===\n" + "\n".join(lines)
 
     def get_key_memory(self) -> str:
         """
-        根幹記憶 (Key_Memory.txt) を読み込み、先頭にプロファイルヘッダを付与して返す。
-        プロファイルは config["agent"] から動的生成。Key_Memory.txt 本体はボディのみ保持。
-        インスタンス config に "agent" セクションがない場合はヘッダを生成しない。
+        根幹記憶 (Key_Memory.txt) を読み込み、User Profile ブロックを先頭に付与して返す。
+        プロファイルは config["user_profile"] から動的生成。Key_Memory.txt 本体はボディのみ保持。
         """
         key_mem_file = self.instance_dir / SYSTEM_CONFIG["paths"]["key_memory"]
         try:
             body = key_mem_file.read_text(encoding="utf-8").strip()
         except Exception:
             body = ""
+        return self._compose_key_memory(body)
 
-        # agentセクションがない場合はボディのみ返す
-        instance_config = self._load_config()
-        if "agent" not in instance_config:
-            return body
-
-        profile = self.get_agent_profile()
-        locale = profile.get("locale", "ja")
-        header_lines = []
-
-        if locale == "ja":
-            if profile.get("ai_name"):
-                header_lines.append(f"AI名: {profile['ai_name']}")
-            if profile.get("user_name") or profile.get("nickname"):
-                header_lines.append("")
-            if profile.get("user_name"):
-                header_lines.append(f"ユーザー名: {profile['user_name']}")
-            if profile.get("nickname"):
-                header_lines.append(f"呼称: {profile['nickname']}")
-            if profile.get("gender") or profile.get("birthday"):
-                header_lines.append("")
-            if profile.get("gender"):
-                header_lines.append(f"性別: {profile['gender']}")
-            if profile.get("birthday"):
-                header_lines.append(f"生年月日: {profile['birthday']}")
-        else:
-            if profile.get("ai_name"):
-                header_lines.append(f"AI Name: {profile['ai_name']}")
-            if profile.get("user_name") or profile.get("nickname"):
-                header_lines.append("")
-            if profile.get("user_name"):
-                header_lines.append(f"User Name: {profile['user_name']}")
-            if profile.get("nickname"):
-                header_lines.append(f"Preferred Name: {profile['nickname']}")
-            if profile.get("gender") or profile.get("birthday"):
-                header_lines.append("")
-            if profile.get("gender"):
-                header_lines.append(f"Gender: {profile['gender']}")
-            if profile.get("birthday"):
-                header_lines.append(f"Date of Birth: {profile['birthday']}")
-
-        header = "\n".join(header_lines).strip()
+    def _compose_key_memory(self, body: str) -> str:
+        """User Profile ヘッダと Core Memories 本文を合成する。"""
+        header = self.get_user_profile_header()
+        body = (body or "").strip()
         if header and body:
-            return header + "\n\n" + body
-        elif header:
+            return header + "\n\n=== Core Memories ===\n" + body
+        if header:
             return header
         return body
 

@@ -9,7 +9,7 @@ class InstanceManager:
         self.instances_dir = self.base_dir / "butly_core" / "instances"
         self.instances_dir.mkdir(parents=True, exist_ok=True)
 
-    def create_instance(self, name, template_text, key_memory="", agent_profile: dict = None):
+    def create_instance(self, name, template_text, key_memory="", agent_profile: dict = None, user_profile: dict = None):
         """新しい人格フォルダと構成を作成"""
         # 半角英数チェック
         if not re.match(r"^[a-zA-Z0-9_]+$", name):
@@ -58,19 +58,27 @@ class InstanceManager:
             )
 
             # 4. config.json (デフォルト設定)
-            default_agent = {
+            default_agent_profile = {
                 "ai_name": "",
-                "user_name": "",
-                "nickname": "",
-                "gender": "",
-                "birthday": "",
-                "locale": "ja"
+                "ai_gender": "",
+                "locale": "ja",
             }
             if agent_profile:
-                default_agent.update(agent_profile)
+                default_agent_profile.update(agent_profile)
+
+            default_user_profile = {
+                "user_name": "",
+                "preferred_call": "",
+                "gender": "",
+                "birthday": "",
+                "location": "",
+            }
+            if user_profile:
+                default_user_profile.update(user_profile)
 
             default_config = {
-                "agent": default_agent,
+                "agent_profile": default_agent_profile,
+                "user_profile": default_user_profile,
                 "brain": {
                     "use_context_cache": False,
                     "default_use_google_search": True,

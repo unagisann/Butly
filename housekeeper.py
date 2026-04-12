@@ -68,8 +68,9 @@ class ButlyHousekeeper:
             config_path = self.instances_dir / instance_name / "config.json"
             if config_path.exists():
                 try:
-                    cfg = json.loads(config_path.read_text(encoding="utf-8"))
-                    name = cfg.get("agent", {}).get("ai_name", "")
+                    from butly_core.core.memory import _migrate_legacy_agent
+                    cfg = _migrate_legacy_agent(json.loads(config_path.read_text(encoding="utf-8")))
+                    name = cfg.get("agent_profile", {}).get("ai_name", "")
                     if name:
                         return name
                 except Exception:
@@ -82,10 +83,10 @@ class ButlyHousekeeper:
             config_path = self.instances_dir / instance_name / "config.json"
             if config_path.exists():
                 try:
-                    cfg = json.loads(config_path.read_text(encoding="utf-8"))
-                    agent_cfg = cfg.get("agent", {})
-                    # 呼称があればそちらを優先
-                    name = agent_cfg.get("nickname", "") or agent_cfg.get("user_name", "")
+                    from butly_core.core.memory import _migrate_legacy_agent
+                    cfg = _migrate_legacy_agent(json.loads(config_path.read_text(encoding="utf-8")))
+                    up = cfg.get("user_profile", {})
+                    name = up.get("preferred_call", "") or up.get("user_name", "")
                     if name:
                         return name
                 except Exception:
