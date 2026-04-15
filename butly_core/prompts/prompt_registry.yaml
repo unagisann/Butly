@@ -55,10 +55,20 @@ prompts:
 
   midterm_relationship:
     location: locales
-    description: "Weekly relationship snapshot"
-    variables: [agent_name, system_instruction, key_memory, digest_text]
+    description: "(deprecated → recent_snapshot)"
+    variables: [agent_name, system_instruction, key_memory, digest_text, max_chars]
+
+  recent_snapshot:
+    location: locales
+    description: "Recent snapshot generation (replaces midterm_relationship)"
+    variables: [agent_name, system_instruction, key_memory, digest_text, max_chars]
 
   web_ui_default_template:
     location: locales
     description: "Default template for new instances"
     variables: [agent_name]
+
+  key_memory_proposal:
+    location: locales
+    description: "Key Memory update proposal generation"
+    variables: [agent_name, current_key_memory, digest_text]

@@ -1365,17 +1365,17 @@ def render_instance_settings_screen():
                 key="hk_max_digest",
             )
             hk_max_relationship = st.number_input(
-                "Relationship 最大文字数",
+                "Recent Snapshot 最大文字数",
                 min_value=500, max_value=20000, step=500,
                 value=_hk_conf.get("max_relationship_chars", 5000),
-                help="関係性スナップショットの最大文字数",
+                help="近況スナップショットの最大文字数",
                 key="hk_max_relationship",
             )
             hk_relationship_interval = st.number_input(
-                "Relationship 更新間隔 (日)",
+                "Recent Snapshot 更新間隔 (日)",
                 min_value=1, max_value=30, step=1,
                 value=_hk_conf.get("relationship_update_interval_days", 7),
-                help="関係性スナップショットを更新する間隔",
+                help="近況スナップショットを更新する間隔",
                 key="hk_rel_interval",
             )
             hk_digest_max_input = st.number_input(
@@ -1397,7 +1397,7 @@ def render_instance_settings_screen():
                 "Knowledge 最大出力トークン数",
                 min_value=256, max_value=16384, step=256,
                 value=_hk_conf.get("knowledge_max_output_tokens", 8192),
-                help="ナレッジ抽出 / Relationship 生成時の最大出力トークン (classify API)",
+                help="ナレッジ抽出 / Recent Snapshot 生成時の最大出力トークン (classify API)",
                 key="hk_knowledge_tokens",
             )
             hk_knowledge_max_input = st.number_input(

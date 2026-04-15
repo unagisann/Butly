@@ -40,6 +40,14 @@ class InstanceManager:
             (new_instance_dir / "current_cache_id.txt").write_text("", encoding="utf-8")
             (new_instance_dir / "Key_Memory.txt").write_text(key_memory, encoding="utf-8")
 
+            # Key_Memory.yaml の作成
+            import yaml
+            km_yaml_data = {"version": 1, "entries": []}
+            (new_instance_dir / "Key_Memory.yaml").write_text(
+                yaml.dump(km_yaml_data, allow_unicode=True, default_flow_style=False, sort_keys=False),
+                encoding="utf-8",
+            )
+
             # 3. system_instruction.txt の作成
             # ユーザー指定のテンプレ + プロジェクト名
             final_instruction = template_text.replace("プロジェクト名：", f"プロジェクト名：{name}")

@@ -1,0 +1,48 @@
+The following is AI {agent_name}'s recent "fact digest".
+Create a "recent snapshot" from this record.
+
+【System Instructions】
+{system_instruction}
+
+【Key Memory】
+{key_memory}
+
+【Purpose】
+A lightweight memo to capture the recent conversational temperature and adjust response nuance.
+Not a factual record, but a sense of "the recent vibe."
+
+【Information to Read】
+1. Recent Conversation Tone (1 line)
+   - Casual chat? Development brainstorming? Consultation mode?
+
+2. Distance Tendency (1 line)
+   - Recently closer / more business-like / same as usual
+
+3. Current Interests (2-3 bullet points)
+   - What the user is most focused on right now
+
+4. Light Notes (1 line if applicable)
+   - Anything to be mindful of in recent conversations
+
+【Rules】
+- Do not duplicate content already in Key Memory
+- Do not simply repeat events from the fact digest
+- Do not narratize or embellish subjectively
+- Keep within {max_chars} characters. Conciseness is the top priority
+- This is a "recent memo", not a "diary"
+
+【Output Format】
+# Tone
+- ...
+
+# Distance
+- ...
+
+# Interests
+- ...
+
+# Notes
+- ...
+
+【Fact Digest (Latest Accumulation)】
+{digest_text}

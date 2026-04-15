@@ -83,7 +83,7 @@ class TestMidTier:
 
         assert blocks["tier"] == "mid"
         # RAW モードの場合、mid_term に内容が入る
-        # summary モードの場合は mid_term_digest / mid_term_relationship
+        # summary モードの場合は mid_term_digest / mid_term_recent_snapshot
         has_content = (
             bool(blocks.get("mid_term"))
             or bool(blocks.get("mid_term_digest"))
@@ -104,13 +104,13 @@ class TestMidTier:
         assert blocks["rag_context"] == ""
 
     def test_mid_summary_mode(self, memory_manager, mock_brain, test_instance_dir):
-        """mid: 要約モード時に digest + relationship が含まれる"""
+        """mid: 要約モード時に digest + recent_snapshot が含まれる"""
         (test_instance_dir / "mid_term_digest.txt").write_text(
             "[2026-03-21] テスト実装\n- pytest基盤の整備を開始",
             encoding="utf-8",
         )
-        (test_instance_dir / "mid_term_relationship.txt").write_text(
-            "# 空気感\n- 開発に集中している",
+        (test_instance_dir / "recent_snapshot.txt").write_text(
+            "# トーン\n- 開発に集中している",
             encoding="utf-8",
         )
 
@@ -129,7 +129,7 @@ class TestMidTier:
 
         if blocks.get("mid_term_mode") == "summary":
             assert "テスト実装" in blocks.get("mid_term_digest", "")
-            assert "空気感" in blocks.get("mid_term_relationship", "")
+            assert "トーン" in blocks.get("mid_term_recent_snapshot", "")
 
 
 class TestCortexTier:

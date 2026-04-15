@@ -94,55 +94,79 @@ class ButlyMemory:
         return self.get_system_instruction()
 
     def get_key_memory_low(self) -> str:
-        """LOW版Key_Memoryを取得。ファイルがないか空なら通常版にフォールバック。"""
+        """LOW版Key_Memoryを取得。Key_Memory_low.txt → YAML low モード → 通常版にフォールバック。"""
         low_path = self.instance_dir / "Key_Memory_low.txt"
         if low_path.exists():
             content = low_path.read_text(encoding="utf-8").strip()
             lines = [l for l in content.split("\n") if l.strip() and not l.strip().startswith("#")]
             if lines:
                 return self._compose_key_memory("\n".join(lines))
+
+        # YAML low モード
+        from butly_core.core.key_memory import load_yaml, yaml_to_text, YAML_FILENAME
+        yaml_path = self.instance_dir / YAML_FILENAME
+        if yaml_path.exists():
+            entries = load_yaml(yaml_path)
+            if entries:
+                body = yaml_to_text(entries, mode="low")
+                return body
+
         return self.get_key_memory()
 
     def _load_config_migrated(self) -> dict:
         """config.json を読み込み、旧 `agent` セクションを in-memory で新スキーマへ変換する。"""
         return _migrate_legacy_agent(self._load_config())
 
+    _AGENT_KNOWN_KEYS = {"ai_name", "ai_gender", "locale"}
+
     def get_agent_profile(self) -> dict:
         """
         AI 側プロファイル（SI 注入用）を返す。
         instance config["agent_profile"]（旧 agent セクションからのマイグレーション含む）を返す。
         インスタンス config に該当セクションがない場合は空値辞書を返す。
+        固定キーに加え、ユーザーが追加したカスタムフィールドもそのまま含む。
 
         Returns:
-            {"ai_name": str, "ai_gender": str, "locale": str}
+            {"ai_name": str, "ai_gender": str, "locale": str, ...custom_fields}
         """
         cfg = self._load_config_migrated()
         ap = cfg.get("agent_profile", {})
-        return {
+        result = {
             "ai_name": ap.get("ai_name", ""),
             "ai_gender": ap.get("ai_gender", ""),
             "locale": ap.get("locale", "ja"),
         }
+        for key, value in ap.items():
+            if key not in self._AGENT_KNOWN_KEYS:
+                result[key] = value
+        return result
+
+    _USER_KNOWN_KEYS = {"user_name", "preferred_call", "gender", "birthday", "location"}
 
     def get_user_profile(self) -> dict:
         """
         ユーザー側プロファイル（KM 注入用）を返す。
         instance config["user_profile"]（旧 agent セクションからのマイグレーション含む）を返す。
         インスタンス config に該当セクションがない場合は空値辞書を返す。
+        固定キーに加え、ユーザーが追加したカスタムフィールドもそのまま含む。
 
         Returns:
             {"user_name": str, "preferred_call": str, "gender": str,
-             "birthday": str, "location": str}
+             "birthday": str, "location": str, ...custom_fields}
         """
         cfg = self._load_config_migrated()
         up = cfg.get("user_profile", {})
-        return {
+        result = {
             "user_name": up.get("user_name", ""),
             "preferred_call": up.get("preferred_call", ""),
             "gender": up.get("gender", ""),
             "birthday": up.get("birthday", ""),
             "location": up.get("location", ""),
         }
+        for key, value in up.items():
+            if key not in self._USER_KNOWN_KEYS:
+                result[key] = value
+        return result
 
     def get_agent_profile_header(self) -> str:
         """SI 先頭に注入する Agent Profile ブロックを生成する。ai_name が空なら空文字。"""
@@ -162,6 +186,12 @@ class ButlyMemory:
         if ai_gender:
             lines.append(f"Gender: {ai_gender}")
 
+        # カスタムフィールドを追加
+        for key, value in profile.items():
+            if key not in self._AGENT_KNOWN_KEYS and value:
+                label = key.replace("_", " ").title()
+                lines.append(f"{label}: {value}")
+
         return "\n".join(lines)
 
     def get_user_profile_header(self) -> str:
@@ -174,6 +204,12 @@ class ButlyMemory:
             ("Location", profile.get("location", "")),
             ("Date of Birth", profile.get("birthday", "")),
         ]
+        # カスタムフィールドを追加
+        for key, value in profile.items():
+            if key not in self._USER_KNOWN_KEYS and value:
+                label = key.replace("_", " ").title()
+                order.append((label, value))
+
         lines = [f"- {label}: {value}" for label, value in order if value]
         if not lines:
             return ""
@@ -181,15 +217,38 @@ class ButlyMemory:
 
     def get_key_memory(self) -> str:
         """
-        根幹記憶 (Key_Memory.txt) を読み込み、User Profile ブロックを先頭に付与して返す。
-        プロファイルは config["user_profile"] から動的生成。Key_Memory.txt 本体はボディのみ保持。
+        根幹記憶を読み込み、User Profile ブロックを先頭に付与して返す。
+        Key_Memory.yaml を先に探し、なければ Key_Memory.txt にフォールバック。
+        プロファイルは config["user_profile"] から動的生成。
         """
+        from butly_core.core.key_memory import load_yaml, yaml_to_text, YAML_FILENAME
+
+        yaml_path = self.instance_dir / YAML_FILENAME
+        if yaml_path.exists():
+            entries = load_yaml(yaml_path)
+            if entries:
+                body = yaml_to_text(entries, mode="high")
+                return self._compose_key_memory(body)
+
+        # フォールバック: 旧 Key_Memory.txt
         key_mem_file = self.instance_dir / SYSTEM_CONFIG["paths"]["key_memory"]
         try:
             body = key_mem_file.read_text(encoding="utf-8").strip()
         except Exception:
             body = ""
         return self._compose_key_memory(body)
+
+    def get_key_memory_entries(self) -> list[dict]:
+        """Key_Memory.yaml のエントリ一覧を返す。YAML がなければ空リスト。"""
+        from butly_core.core.key_memory import load_yaml, YAML_FILENAME
+        yaml_path = self.instance_dir / YAML_FILENAME
+        return load_yaml(yaml_path)
+
+    def save_key_memory_entries(self, entries: list[dict]) -> None:
+        """Key_Memory.yaml にエントリを保存する。"""
+        from butly_core.core.key_memory import save_yaml, YAML_FILENAME
+        yaml_path = self.instance_dir / YAML_FILENAME
+        save_yaml(entries, yaml_path)
 
     def _compose_key_memory(self, body: str) -> str:
         """User Profile ヘッダと Core Memories 本文を合成する。"""
@@ -275,16 +334,23 @@ class ButlyMemory:
             print(f"[Memory] Failed to read mid_term_digest: {e}")
         return ""
 
-    def get_mid_term_relationship(self):
-        """関係性スナップショット (mid_term_relationship.txt) を読み込んで返す"""
-        rel_file = self.instance_dir / "mid_term_relationship.txt"
-        try:
-            if rel_file.exists():
-                text = rel_file.read_text(encoding="utf-8").strip()
-                return text if text else ""
-        except Exception as e:
-            print(f"[Memory] Failed to read mid_term_relationship: {e}")
+    def get_recent_snapshot(self):
+        """近況スナップショット (recent_snapshot.txt) を読み込んで返す。
+        旧ファイル mid_term_relationship.txt へのフォールバック付き。"""
+        for filename in ("recent_snapshot.txt", "mid_term_relationship.txt"):
+            rel_file = self.instance_dir / filename
+            try:
+                if rel_file.exists():
+                    text = rel_file.read_text(encoding="utf-8").strip()
+                    if text:
+                        return text
+            except Exception as e:
+                print(f"[Memory] Failed to read {filename}: {e}")
         return ""
+
+    # 後方互換エイリアス
+    def get_mid_term_relationship(self):
+        return self.get_recent_snapshot()
 
     def load_recent_sessions(self, limit=None):
         """

@@ -43,12 +43,20 @@ class ButlyHousekeeper:
         self.instances_dir = BASE_DIR / "butly_core" / "instances"
 
     def get_instance_key_memory(self, instance_name=None):
-        """インスタンス別の Key_Memory を取得（フォールバック: グローバル）"""
+        """インスタンス別の Key_Memory を取得（YAML → TXT → グローバル フォールバック）"""
         if instance_name:
+            # YAML を優先
+            from butly_core.core.key_memory import load_yaml, yaml_to_text, YAML_FILENAME
+            yaml_path = self.instances_dir / instance_name / YAML_FILENAME
+            if yaml_path.exists():
+                entries = load_yaml(yaml_path)
+                if entries:
+                    return yaml_to_text(entries, mode="high")
+            # フォールバック: TXT
             instance_km_path = self.instances_dir / instance_name / "Key_Memory.txt"
             if instance_km_path.exists():
                 content = instance_km_path.read_text(encoding="utf-8").strip()
-                if content:  # 空でなければインスタンス固有を使用
+                if content:
                     return content
         return self.key_memory
 
@@ -103,6 +111,22 @@ class ButlyHousekeeper:
                 except Exception:
                     pass
         return {}
+
+    def _should_update(self, inst_cfg: dict, target: str) -> bool:
+        """update_targets 設定に基づいて更新すべきかを判定する。"""
+        targets = inst_cfg.get("housekeeper", {}).get("update_targets", {})
+        defaults = {
+            "digest": True,
+            "recent_snapshot": True,
+            "key_memory": False,
+            "knowledge_cards": True,
+            "raw_memory_cache": True,
+        }
+        # skip_knowledge_generation 後方互換
+        if target == "knowledge_cards":
+            if inst_cfg.get("housekeeper", {}).get("skip_knowledge_generation", False):
+                return False
+        return targets.get(target, defaults.get(target, True))
 
     def _robust_api_call(self, func, *args, retries=5, base_delay=5, **kwargs):
         """API呼び出しの堅牢化（指数バックオフ付きリトライ）"""
@@ -253,10 +277,10 @@ class ButlyHousekeeper:
         # Stage 1: 整理
         self.stage_1_cleanup(instance_path)
         
-        # Stage 2: ナレッジ化（skip_knowledge_generation で抑制可能）
+        # Stage 2: ナレッジ化（update_targets で抑制可能）
         inst_cfg = self._get_instance_config(instance_id)
-        if inst_cfg.get("housekeeper", {}).get("skip_knowledge_generation", False):
-            print(f"[Housekeeper] Stage 2 skipped for {instance_id} (skip_knowledge_generation=true)")
+        if not self._should_update(inst_cfg, "knowledge_cards"):
+            print(f"[Housekeeper] Stage 2 skipped for {instance_id} (knowledge_cards disabled)")
             return
         self.stage_2_knowledgeize(instance_path, db_type)
 
@@ -348,32 +372,44 @@ class ButlyHousekeeper:
         from butly_core.core.raw_memory_reader import build_raw_memory_cache
         inst_cfg = self._get_instance_config(instance_name)
         mem_cfg = inst_cfg.get("memory", {})
-        max_raw_tokens = mem_cfg.get("max_raw_tokens", SYSTEM_CONFIG["memory"].get("max_raw_tokens", 4096))
-        raw_format = mem_cfg.get("raw_injection_format", SYSTEM_CONFIG["memory"].get("raw_injection_format", "plaintext"))
-        _agent_name_cache = self.get_instance_agent_name(instance_name)
-        _user_name_cache = self.get_instance_user_name(instance_name)
-        build_raw_memory_cache(
-            instance_path,
-            max_tokens=max_raw_tokens,
-            injection_format=raw_format,
-            agent_name=_agent_name_cache,
-            user_name=_user_name_cache,
-        )
+        if self._should_update(inst_cfg, "raw_memory_cache"):
+            max_raw_tokens = mem_cfg.get("max_raw_tokens", SYSTEM_CONFIG["memory"].get("max_raw_tokens", 4096))
+            raw_format = mem_cfg.get("raw_injection_format", SYSTEM_CONFIG["memory"].get("raw_injection_format", "plaintext"))
+            _agent_name_cache = self.get_instance_agent_name(instance_name)
+            _user_name_cache = self.get_instance_user_name(instance_name)
+            build_raw_memory_cache(
+                instance_path,
+                max_tokens=max_raw_tokens,
+                injection_format=raw_format,
+                agent_name=_agent_name_cache,
+                user_name=_user_name_cache,
+            )
+        else:
+            print(f"[Housekeeper] RAW memory cache rebuild skipped (raw_memory_cache disabled)")
 
         # 4. Short Term JSON の空フォルダ削除
         short_term_dir = instance_path / "short_term_json"
         self.remove_empty_folders(short_term_dir)
 
         # --- 6. ★NEW: 二層要約の日次生成 ---
-        if new_text.strip():
+        if new_text.strip() and self._should_update(inst_cfg, "digest"):
             self._generate_daily_digest(instance_path, new_text)
 
         # --- 7. recent_digest_headlines 生成 ---
         self._generate_recent_headlines(instance_path)
 
-        # 関係性更新は新規ログの有無に関わらず常時チェック
+        # 近況スナップショット更新は新規ログの有無に関わらず常時チェック
         # （7日インターバルで制御されるため、毎日呼んでも問題ない）
-        self._update_relationship_if_due(instance_path)
+        if self._should_update(inst_cfg, "recent_snapshot"):
+            self._update_recent_snapshot_if_due(instance_path)
+        else:
+            print(f"[Housekeeper] Recent snapshot update skipped (recent_snapshot disabled)")
+
+        # --- 8. Key Memory 提案生成（デフォルト OFF） ---
+        if self._should_update(inst_cfg, "key_memory"):
+            self._propose_key_memory_updates_if_due(instance_path)
+        else:
+            print(f"[Housekeeper] Key Memory proposal skipped (key_memory disabled)")
 
     # --- Chunk Splitting Helpers ---
     @staticmethod
@@ -601,16 +637,16 @@ class ButlyHousekeeper:
         except Exception as e:
             print(f"[Housekeeper] recent_headlines generation error: {e}")
 
-    def _update_relationship_if_due(self, instance_path: Path):
+    def _update_recent_snapshot_if_due(self, instance_path: Path):
         """
-        関係性スナップショットを条件付きで更新する。
+        近況スナップショットを条件付きで更新する。
         前回の更新から relationship_update_interval_days（デフォルト7日）以上
         経過している場合のみ再生成する。
         
         入力は mid_term_digest.txt（蓄積された事実ダイジェスト）を使用する。
-        日々の断片ではなく、最近の全体像から関係性パターンを抽出するため。
+        日々の断片ではなく、最近の全体像から近況パターンを抽出するため。
         
-        関係性は緩やかに変化するもの。毎日書き換えると不安定になるため、
+        近況は緩やかに変化するもの。毎日書き換えると不安定になるため、
         週次程度の頻度で更新する。
         """
         from butly_core.config import SYSTEM_CONFIG, AI_CONFIG
@@ -620,7 +656,9 @@ class ButlyHousekeeper:
         if not SYSTEM_CONFIG.get("memory", {}).get("generate_mid_term_summaries", True):
             return
         
-        rel_file = instance_path / "mid_term_relationship.txt"
+        # 新ファイル名を優先し、旧ファイル名にフォールバック
+        rel_file = instance_path / "recent_snapshot.txt"
+        legacy_rel_file = instance_path / "mid_term_relationship.txt"
         digest_file = instance_path / "mid_term_digest.txt"
         instance_name = instance_path.name
         inst_cfg = self._get_instance_config(instance_name)
@@ -629,31 +667,32 @@ class ButlyHousekeeper:
             SYSTEM_CONFIG.get("memory", {}).get("relationship_update_interval_days", 7)
         )
         
-        # 前回更新日の確認
+        # 前回更新日の確認（新旧どちらのファイルも確認）
         should_update = False
-        if not rel_file.exists():
+        check_file = rel_file if rel_file.exists() else legacy_rel_file
+        if not check_file.exists():
             should_update = True
-            print("[Housekeeper] Relationship: File not found, creating initial snapshot.")
+            print("[Housekeeper] Recent snapshot: File not found, creating initial snapshot.")
         else:
-            last_modified = datetime.fromtimestamp(os.path.getmtime(rel_file))
+            last_modified = datetime.fromtimestamp(os.path.getmtime(check_file))
             days_since = (datetime.now() - last_modified).days
             if days_since >= interval_days:
                 should_update = True
-                print(f"[Housekeeper] Relationship: {days_since} days since last update (interval: {interval_days}), updating.")
+                print(f"[Housekeeper] Recent snapshot: {days_since} days since last update (interval: {interval_days}), updating.")
             else:
-                print(f"[Housekeeper] Relationship: {days_since} days since last update (interval: {interval_days}), skipping.")
+                print(f"[Housekeeper] Recent snapshot: {days_since} days since last update (interval: {interval_days}), skipping.")
         
         if not should_update:
             return
         
         # 入力: 蓄積された事実ダイジェスト
         if not digest_file.exists():
-            print("[Housekeeper] Relationship: No digest file yet, skipping.")
+            print("[Housekeeper] Recent snapshot: No digest file yet, skipping.")
             return
         
         digest_text = digest_file.read_text(encoding="utf-8").strip()
         if len(digest_text) < 200:
-            print("[Housekeeper] Relationship: digest too short, skipping.")
+            print("[Housekeeper] Recent snapshot: digest too short, skipping.")
             return
         
         from butly_core.prompts import PromptLoader
@@ -676,7 +715,7 @@ class ButlyHousekeeper:
             
             loader = PromptLoader()
             rel_prompt = loader.get(
-                "midterm_relationship",
+                "recent_snapshot",
                 agent_name=self.get_instance_agent_name(instance_name),
                 system_instruction=system_instruction,
                 key_memory=key_memory,
@@ -689,10 +728,104 @@ class ButlyHousekeeper:
             
             if rel_text:
                 rel_file.write_text(rel_text, encoding="utf-8")
-                print(f"[Housekeeper] Relationship snapshot updated: {len(rel_text)} chars.")
+                print(f"[Housekeeper] Recent snapshot updated: {len(rel_text)} chars.")
             
         except Exception as e:
-            print(f"[Housekeeper] Relationship generation error: {e}")
+            print(f"[Housekeeper] Recent snapshot generation error: {e}")
+
+    def _propose_key_memory_updates_if_due(self, instance_path: Path):
+        """
+        Key Memory の更新提案を生成して key_memory_proposals.json に保存する。
+        前回の提案生成から key_memory_proposal_interval_days（デフォルト180日）
+        以上経過している場合のみ実行する。YAML は変更しない（承認時に適用）。
+        """
+        from butly_core.config import SYSTEM_CONFIG, AI_CONFIG
+        from butly_core.core.key_memory import (
+            load_yaml, yaml_to_llm_format, parse_proposals,
+            load_proposals, save_proposals, YAML_FILENAME, PROPOSALS_FILENAME,
+        )
+
+        instance_name = instance_path.name
+        inst_cfg = self._get_instance_config(instance_name)
+        interval_days = inst_cfg.get("housekeeper", {}).get(
+            "key_memory_proposal_interval_days",
+            SYSTEM_CONFIG.get("memory", {}).get("key_memory_proposal_interval_days", 180),
+        )
+
+        # インターバルチェック: proposals ファイルの mtime で判定
+        proposals_file = instance_path / PROPOSALS_FILENAME
+        if proposals_file.exists():
+            import os
+            last_modified = datetime.fromtimestamp(os.path.getmtime(proposals_file))
+            days_since = (datetime.now() - last_modified).days
+            if days_since < interval_days:
+                print(
+                    f"[Housekeeper] Key Memory proposal: {days_since} days since last "
+                    f"(interval: {interval_days}), skipping."
+                )
+                return
+
+        # 入力: Key Memory + digest
+        yaml_path = instance_path / YAML_FILENAME
+        entries = load_yaml(yaml_path) if yaml_path.exists() else []
+        current_key_memory = yaml_to_llm_format(entries) if entries else "(なし)"
+
+        digest_file = instance_path / "mid_term_digest.txt"
+        if not digest_file.exists():
+            print("[Housekeeper] Key Memory proposal: No digest file yet, skipping.")
+            return
+        digest_text = digest_file.read_text(encoding="utf-8").strip()
+        if len(digest_text) < 200:
+            print("[Housekeeper] Key Memory proposal: digest too short, skipping.")
+            return
+
+        from butly_core.prompts import PromptLoader
+
+        try:
+            k_conf = dict(AI_CONFIG.get("knowledge", {}))
+            model_name = k_conf.get("model_name", "gemini-3.1-pro-preview")
+
+            _hk = inst_cfg.get("housekeeper", {})
+            if "knowledge_max_output_tokens" in _hk:
+                gc = dict(k_conf.get("generation_config", {}))
+                gc["max_output_tokens"] = _hk["knowledge_max_output_tokens"]
+                k_conf["generation_config"] = gc
+
+            loader = PromptLoader()
+            prompt = loader.get(
+                "key_memory_proposal",
+                agent_name=self.get_instance_agent_name(instance_name),
+                current_key_memory=current_key_memory,
+                digest_text=digest_text,
+            )
+
+            provider = self._get_provider(model_name)
+            llm_output = provider.classify(prompt, k_conf)
+            llm_output = llm_output.strip() if llm_output else ""
+
+            if not llm_output or "NO_PROPOSALS" in llm_output:
+                print("[Housekeeper] Key Memory proposal: LLM returned no proposals.")
+                # proposals ファイルを更新して次回インターバルをリセット
+                save_proposals([], instance_path)
+                return
+
+            proposals = parse_proposals(llm_output, entries)
+            if not proposals:
+                print("[Housekeeper] Key Memory proposal: No parseable proposals.")
+                save_proposals([], instance_path)
+                return
+
+            # status=pending を付与して保存
+            now = datetime.now().isoformat()
+            for p in proposals:
+                p["status"] = "pending"
+                p["proposed_at"] = now
+
+            save_proposals(proposals, instance_path)
+            print(f"[Housekeeper] Key Memory proposal: {len(proposals)} proposals saved.")
+
+        except Exception as e:
+            print(f"[Housekeeper] Key Memory proposal generation error: {e}")
 
     # --- Backup Logic ---
     def backup_database(self, instance_name):
@@ -980,8 +1113,8 @@ class ButlyHousekeeper:
             # "Master" への変換は廃止。インスタンス名をそのまま使用する
             db_type = instance_name
             inst_cfg = self._get_instance_config(instance_name)
-            if inst_cfg.get("housekeeper", {}).get("skip_knowledge_generation", False):
-                print(f"[Housekeeper] Stage 2 skipped for {instance_name} (skip_knowledge_generation=true)")
+            if not self._should_update(inst_cfg, "knowledge_cards"):
+                print(f"[Housekeeper] Stage 2 skipped for {instance_name} (knowledge_cards disabled)")
                 self.update_status(instance_name, "running", 85.0, "ナレッジ化をスキップしました")
             else:
                 self.stage_2_knowledgeize(instance_name, db_type)

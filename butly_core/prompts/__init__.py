@@ -33,6 +33,7 @@ _LEGACY_KEY_MAP = {
     "tier_classifier": "GATEKEEPER_CLASSIFY_PROMPT",
     "midterm_digest": "MIDTERM_DIGEST_PROMPT",
     "midterm_relationship": "MIDTERM_RELATIONSHIP_PROMPT",
+    "recent_snapshot": "RECENT_SNAPSHOT_PROMPT",
     "web_ui_default_template": "WEB_UI_DEFAULT_TEMPLATE",
 }
 
@@ -187,6 +188,7 @@ BRAIN_SUMMARIZE_CONVERSATION_PROMPT = _loader.get_template("brain_summarize_conv
 GATEKEEPER_CLASSIFY_PROMPT = _loader.get_template("tier_classifier")
 MIDTERM_DIGEST_PROMPT = _loader.get_template("midterm_digest")
 MIDTERM_RELATIONSHIP_PROMPT = _loader.get_template("midterm_relationship")
+RECENT_SNAPSHOT_PROMPT = _loader.get_template("recent_snapshot")
 WEB_UI_DEFAULT_TEMPLATE = _loader.get_template("web_ui_default_template")
 
 # USER_PROMPTS_PATH を公開（main.py 等で参照されている）

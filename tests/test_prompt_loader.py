@@ -39,6 +39,7 @@ class TestPromptLoaderBasic:
             "brain_summarize_conversation",
             "midterm_digest",
             "midterm_relationship",
+            "recent_snapshot",
             "web_ui_default_template",
         ]
         for name in names:
@@ -135,6 +136,7 @@ class TestBackwardCompat:
             GATEKEEPER_CLASSIFY_PROMPT,
             MIDTERM_DIGEST_PROMPT,
             MIDTERM_RELATIONSHIP_PROMPT,
+            RECENT_SNAPSHOT_PROMPT,
             WEB_UI_DEFAULT_TEMPLATE,
         )
         assert len(HOUSEKEEPER_SUMMARIZE_PROMPT) > 0
@@ -143,6 +145,7 @@ class TestBackwardCompat:
         assert len(GATEKEEPER_CLASSIFY_PROMPT) > 0
         assert len(MIDTERM_DIGEST_PROMPT) > 0
         assert len(MIDTERM_RELATIONSHIP_PROMPT) > 0
+        assert len(RECENT_SNAPSHOT_PROMPT) > 0
         assert len(WEB_UI_DEFAULT_TEMPLATE) > 0
 
     def test_user_prompts_path_available(self):

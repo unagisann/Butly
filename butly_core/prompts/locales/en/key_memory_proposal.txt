@@ -1,0 +1,34 @@
+The following is AI {agent_name}'s "Key Memory" and recent "Fact Digest".
+Create update proposals for the Key Memory.
+
+【Current Key Memory】
+{current_key_memory}
+
+【Fact Digest (Latest Accumulation)】
+{digest_text}
+
+【Purpose】
+Key Memory is the foundational memory of the relationship between user and AI.
+Reviewed on a semi-annual basis — facts and relationship foundations that should not drift.
+Propose changes only if significant changes have occurred. Otherwise return "no proposals."
+
+【Proposal Rules】
+- Do not propose information managed by user_profile (name, preferred call, etc.)
+- Propose additions for major changes (job change, relocation, significant policy shifts)
+- Propose removal or update for outdated information
+- If no changes needed, return "NO_PROPOSALS"
+- Include a one-line reason for each proposal
+
+【Output Format】
+If proposals exist:
+ADD [target] content
+REASON: reason
+
+REMOVE [target] content to remove (exact match with current entry)
+REASON: reason
+
+UPDATE [target] before content (exact match with current entry) → after content
+REASON: reason
+
+If no proposals:
+NO_PROPOSALS

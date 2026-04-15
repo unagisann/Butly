@@ -213,3 +213,150 @@ def rebuild_raw_cache(instance_name: str, params: dict | None = None):
     )
 
     return {"status": "ok", **result}
+
+
+# ==========================================
+# 🔑 Key Memory CRUD エンドポイント
+# ==========================================
+
+@router.get("/instances/{instance_name}/key_memory")
+def get_key_memory(instance_name: str):
+    """Key Memory エントリ一覧を返す。"""
+    components = deps.get_instance_components(instance_name)
+    memory = components["memory"]
+    return {"entries": memory.get_key_memory_entries()}
+
+
+@router.post("/instances/{instance_name}/key_memory")
+def add_key_memory(instance_name: str, data: Dict[str, str] = Body(...)):
+    """Key Memory にエントリを追加する。ID は自動採番。"""
+    from butly_core.core.key_memory import next_id
+
+    components = deps.get_instance_components(instance_name)
+    memory = components["memory"]
+    entries = memory.get_key_memory_entries()
+
+    target = data.get("target", "human")
+    content = data.get("content", "").strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="content は必須です。")
+
+    new_entry = {"id": next_id(entries), "target": target, "content": content}
+    entries.append(new_entry)
+    memory.save_key_memory_entries(entries)
+    return new_entry
+
+
+@router.put("/instances/{instance_name}/key_memory/{entry_id}")
+def update_key_memory(instance_name: str, entry_id: str, data: Dict[str, str] = Body(...)):
+    """指定 ID の Key Memory エントリを更新する。"""
+    components = deps.get_instance_components(instance_name)
+    memory = components["memory"]
+    entries = memory.get_key_memory_entries()
+
+    for e in entries:
+        if e["id"] == entry_id:
+            if "target" in data:
+                e["target"] = data["target"]
+            if "content" in data:
+                e["content"] = data["content"]
+            memory.save_key_memory_entries(entries)
+            return e
+
+    raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found.")
+
+
+@router.delete("/instances/{instance_name}/key_memory/{entry_id}")
+def delete_key_memory(instance_name: str, entry_id: str):
+    """指定 ID の Key Memory エントリを削除する。"""
+    components = deps.get_instance_components(instance_name)
+    memory = components["memory"]
+    entries = memory.get_key_memory_entries()
+
+    new_entries = [e for e in entries if e["id"] != entry_id]
+    if len(new_entries) == len(entries):
+        raise HTTPException(status_code=404, detail=f"Entry {entry_id} not found.")
+
+    memory.save_key_memory_entries(new_entries)
+    return {"message": f"Entry {entry_id} deleted."}
+
+
+# ==========================================
+# 📝 Key Memory Proposals エンドポイント
+# ==========================================
+
+@router.get("/instances/{instance_name}/key_memory/proposals")
+def get_key_memory_proposals(instance_name: str):
+    """Key Memory 更新提案の一覧を返す。"""
+    from butly_core.core.key_memory import load_proposals
+
+    instance_dir = deps.INSTANCES_DIR / instance_name
+    if not instance_dir.exists():
+        raise HTTPException(status_code=404, detail="インスタンスが存在しません。")
+    return {"proposals": load_proposals(instance_dir)}
+
+
+@router.post("/instances/{instance_name}/key_memory/proposals/{proposal_idx}/approve")
+def approve_key_memory_proposal(
+    instance_name: str,
+    proposal_idx: int,
+    body: Dict[str, str] | None = Body(None),
+):
+    """提案を承認して Key Memory YAML に適用する。
+
+    body (optional):
+        content: str — 承認時に内容を上書きする場合に指定。
+    """
+    from butly_core.core.key_memory import (
+        load_proposals, save_proposals, apply_proposal, YAML_FILENAME,
+    )
+
+    instance_dir = deps.INSTANCES_DIR / instance_name
+    if not instance_dir.exists():
+        raise HTTPException(status_code=404, detail="インスタンスが存在しません。")
+
+    proposals = load_proposals(instance_dir)
+    if proposal_idx < 0 or proposal_idx >= len(proposals):
+        raise HTTPException(status_code=404, detail=f"Proposal index {proposal_idx} not found.")
+
+    proposal = proposals[proposal_idx]
+    if proposal.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="この提案は既に処理済みです。")
+
+    # 承認時の内容上書き
+    if body and "content" in body:
+        if proposal["action"] == "update":
+            proposal["new_content"] = body["content"]
+        else:
+            proposal["content"] = body["content"]
+
+    yaml_path = instance_dir / YAML_FILENAME
+    ok = apply_proposal(proposal, yaml_path)
+    if not ok:
+        raise HTTPException(status_code=500, detail="提案の適用に失敗しました。")
+
+    proposal["status"] = "approved"
+    save_proposals(proposals, instance_dir)
+    return {"message": "提案を承認し適用しました。", "proposal": proposal}
+
+
+@router.post("/instances/{instance_name}/key_memory/proposals/{proposal_idx}/reject")
+def reject_key_memory_proposal(instance_name: str, proposal_idx: int):
+    """提案を却下する。YAML は変更しない。"""
+    from butly_core.core.key_memory import load_proposals, save_proposals
+
+    instance_dir = deps.INSTANCES_DIR / instance_name
+    if not instance_dir.exists():
+        raise HTTPException(status_code=404, detail="インスタンスが存在しません。")
+
+    proposals = load_proposals(instance_dir)
+    if proposal_idx < 0 or proposal_idx >= len(proposals):
+        raise HTTPException(status_code=404, detail=f"Proposal index {proposal_idx} not found.")
+
+    proposal = proposals[proposal_idx]
+    if proposal.get("status") != "pending":
+        raise HTTPException(status_code=400, detail="この提案は既に処理済みです。")
+
+    proposal["status"] = "rejected"
+    save_proposals(proposals, instance_dir)
+    return {"message": "提案を却下しました。", "proposal": proposal}

@@ -88,16 +88,27 @@ class TestMidTermMemory:
 
         assert "ダイジェストテスト" in text
 
-    def test_read_relationship(self, memory_manager, test_instance_dir):
-        """mid_term_relationship.txt が読み込まれる"""
-        (test_instance_dir / "mid_term_relationship.txt").write_text(
-            "# 空気感\n- テスト中",
+    def test_read_recent_snapshot(self, memory_manager, test_instance_dir):
+        """recent_snapshot.txt が読み込まれる"""
+        (test_instance_dir / "recent_snapshot.txt").write_text(
+            "# トーン\n- テスト中",
             encoding="utf-8",
         )
 
-        text = memory_manager.get_mid_term_relationship()
+        text = memory_manager.get_recent_snapshot()
 
         assert "テスト中" in text
+
+    def test_recent_snapshot_fallback_to_legacy(self, memory_manager, test_instance_dir):
+        """recent_snapshot.txt がなければ mid_term_relationship.txt にフォールバック"""
+        (test_instance_dir / "mid_term_relationship.txt").write_text(
+            "# 空気感\n- レガシーテスト",
+            encoding="utf-8",
+        )
+
+        text = memory_manager.get_recent_snapshot()
+
+        assert "レガシーテスト" in text
 
 
 class TestShortTermSaveLoad:

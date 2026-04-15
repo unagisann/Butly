@@ -152,6 +152,78 @@ class TestKeyMemoryUserProfileInjection:
         assert "=== Core Memories ===" in result
 
 
+class TestCustomProfileFields:
+    """カスタムフィールドが SI / KM に反映されるかを検証"""
+
+    def _write_config(self, test_instance_dir, cfg):
+        import json
+        (test_instance_dir / "config.json").write_text(
+            json.dumps(cfg, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def test_agent_custom_field_in_header(self, memory_manager, test_instance_dir):
+        """agent_profile のカスタムフィールドが SI に反映される"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {
+                "ai_name": "ジャービス",
+                "ai_gender": "男性",
+                "locale": "ja",
+                "ai_hobby": "意味のない会話",
+            },
+            "user_profile": {},
+        })
+        header = memory_manager.get_agent_profile_header()
+        assert "Ai Hobby: 意味のない会話" in header
+
+    def test_agent_custom_field_in_dict(self, memory_manager, test_instance_dir):
+        """get_agent_profile() がカスタムフィールドを含む"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {
+                "ai_name": "ジャービス",
+                "locale": "ja",
+                "favorite_topic": "宇宙",
+            },
+            "user_profile": {},
+        })
+        profile = memory_manager.get_agent_profile()
+        assert profile["favorite_topic"] == "宇宙"
+
+    def test_user_custom_field_in_header(self, memory_manager, test_instance_dir):
+        """user_profile のカスタムフィールドが KM に反映される"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "Atlas", "locale": "en"},
+            "user_profile": {
+                "user_name": "悠希",
+                "occupation": "エンジニア",
+            },
+        })
+        header = memory_manager.get_user_profile_header()
+        assert "- Occupation: エンジニア" in header
+
+    def test_user_custom_field_in_dict(self, memory_manager, test_instance_dir):
+        """get_user_profile() がカスタムフィールドを含む"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "Atlas", "locale": "en"},
+            "user_profile": {
+                "user_name": "悠希",
+                "hobby": "ゲーム",
+            },
+        })
+        profile = memory_manager.get_user_profile()
+        assert profile["hobby"] == "ゲーム"
+
+    def test_empty_custom_field_omitted(self, memory_manager, test_instance_dir):
+        """空のカスタムフィールドはヘッダに出力されない"""
+        self._write_config(test_instance_dir, {
+            "agent_profile": {"ai_name": "Atlas", "locale": "en", "motto": ""},
+            "user_profile": {"user_name": "悠希", "hobby": ""},
+        })
+        agent_header = memory_manager.get_agent_profile_header()
+        user_header = memory_manager.get_user_profile_header()
+        assert "Motto:" not in agent_header
+        assert "Hobby:" not in user_header
+
+
 class TestLegacyAgentFallback:
     """旧 agent セクションからのフォールバック"""
 
@@ -421,8 +493,8 @@ class TestContextPrefixMidTerm:
         assert "=== MID-TERM MEMORY" in result
         assert "昨日の会話ログ" in result
 
-    def test_mid_tier_includes_digest_and_relationship(self, memory_manager):
-        """mid（要約モード）: DIGEST + RELATIONSHIP が context_prefix に含まれる"""
+    def test_mid_tier_includes_digest_and_recent_snapshot(self, memory_manager):
+        """mid（要約モード）: DIGEST + RECENT SNAPSHOT が context_prefix に含まれる"""
         blocks = {
             "tier": "mid",
             "short_term": [],
@@ -430,7 +502,7 @@ class TestContextPrefixMidTerm:
             "mid_term": "",
             "mid_term_mode": "summary",
             "mid_term_digest": "[2026-03-21] テスト\n- pytest導入",
-            "mid_term_relationship": "# 空気感\n- 集中モード",
+            "mid_term_recent_snapshot": "# トーン\n- 集中モード",
             "rag_context": "",
         }
 
@@ -438,7 +510,7 @@ class TestContextPrefixMidTerm:
 
         assert "=== MID-TERM DIGEST" in result
         assert "pytest導入" in result
-        assert "=== RELATIONSHIP SNAPSHOT" in result
+        assert "=== RECENT SNAPSHOT" in result
         assert "集中モード" in result
 
     def test_reflex_no_mid_term(self, memory_manager):

@@ -218,17 +218,17 @@ class MemoryBlockBuilder:
         )
 
         if use_summary:
-            # 要約モード: digest + relationship を使用
+            # 要約モード: digest + recent_snapshot を使用
             digest = memory_manager.get_mid_term_digest()
-            relationship = memory_manager.get_mid_term_relationship()
+            recent_snapshot = memory_manager.get_recent_snapshot()
 
-            if digest or relationship:
+            if digest or recent_snapshot:
                 blocks["mid_term_digest"] = digest
-                blocks["mid_term_relationship"] = relationship
+                blocks["mid_term_recent_snapshot"] = recent_snapshot
                 blocks["mid_term"] = ""  # RAWは空にする
                 blocks["mid_term_mode"] = "summary"
-                total_chars = len(digest) + len(relationship)
-                print(f"[Gatekeeper] MemoryBlock: {tier}（+ digest {len(digest)}文字 + relationship {len(relationship)}文字 = {total_chars}文字）")
+                total_chars = len(digest) + len(recent_snapshot)
+                print(f"[Gatekeeper] MemoryBlock: {tier}（+ digest {len(digest)}文字 + recent_snapshot {len(recent_snapshot)}文字 = {total_chars}文字）")
             else:
                 # 要約ファイルが存在しない → RAWにフォールバック
                 mid_term = memory_manager.get_raw_memory()
@@ -508,8 +508,8 @@ def _build_mid_term(blocks: dict, level: str, tier: str, h) -> str | None:
     if level == "low":
         if mid_term_mode == "summary":
             digest = blocks.get("mid_term_digest", "")
-            relationship = blocks.get("mid_term_relationship", "")
-            text = (digest + "\n" + relationship).strip()
+            recent_snapshot = blocks.get("mid_term_recent_snapshot", "")
+            text = (digest + "\n" + recent_snapshot).strip()
         else:
             text = blocks.get("mid_term", "")
         if not text:
@@ -522,18 +522,18 @@ def _build_mid_term(blocks: dict, level: str, tier: str, h) -> str | None:
     parts = []
     if mid_term_mode == "summary":
         digest = blocks.get("mid_term_digest", "")
-        relationship = blocks.get("mid_term_relationship", "")
+        recent_snapshot = blocks.get("mid_term_recent_snapshot", "")
         if digest:
             parts.append(
                 f"{h('mid_term_digest')}\n"
                 f"{h('note_mid_term_digest')}\n"
                 f"{digest}"
             )
-        if relationship:
+        if recent_snapshot:
             parts.append(
-                f"{h('relationship_snapshot')}\n"
-                f"{h('note_relationship')}\n"
-                f"{relationship}"
+                f"{h('recent_snapshot')}\n"
+                f"{h('note_recent_snapshot')}\n"
+                f"{recent_snapshot}"
             )
     else:
         mid_term = blocks.get("mid_term", "")
