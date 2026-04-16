@@ -312,7 +312,7 @@ class ButlyMemory:
 
     def get_raw_memory(self) -> str:
         """raw_memory_cache.txt を読み込んで返す。
-        キャッシュは Housekeeper 実行時に生成される。"""
+        キャッシュは Sleeptime 実行時に生成される。"""
         from butly_core.core.raw_memory_reader import CACHE_FILENAME
 
         cache_path = self.instance_dir / CACHE_FILENAME

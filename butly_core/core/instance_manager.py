@@ -98,7 +98,7 @@ class InstanceManager:
                 },
                 "chat": {},
                 "memory": {},
-                "housekeeper": {
+                "sleeptime": {
                     "max_digest_chars": 3000,
                     "max_relationship_chars": 5000,
                     "relationship_update_interval_days": 7,

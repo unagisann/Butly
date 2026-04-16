@@ -11,7 +11,7 @@
 | `main.py` | FastAPI アプリの起動エントリポイント |
 | `app.py` | Streamlit Web UI（FastAPI バックエンド経由で動作） |
 | `dependencies.py` | ルーター間共有のグローバル状態・ヘルパー |
-| `housekeeper.py` | 記憶自動整理スクリプト（単体実行 & APIから呼び出し可） |
+| `sleeptime.py` | 記憶自動整理スクリプト（単体実行 & APIから呼び出し可） |
 | `migrate_embeddings.py` | プロバイダー切り替え時の embedding 再生成ユーティリティ |
 
 ---
@@ -38,7 +38,7 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 - `render_chat_screen()` — チャット画面。`POST /chat` で応答取得、デバッグ表示
 - `render_settings_screen()` — グローバル設定・APIキー・プロバイダー設定
 - `render_instance_settings_screen()` — インスタンス個別の性格設定・config 編集
-- `render_housekeeper_screen()` — Housekeeper の実行・進捗表示
+- `render_sleeptime_screen()` — Sleeptime の実行・進捗表示
 - `render_database_browser_screen()` — ナレッジカード一覧
 - `render_card_edit_screen()` — カード詳細・編集
 - `render_onboarding_screen()` — 初回セットアップウィザード
@@ -55,12 +55,12 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 
 ---
 
-### `housekeeper.py`
+### `sleeptime.py`
 蓄積された short_term_json を要約・ナレッジカード化・DB 登録する記憶整理エンジン。  
-`python housekeeper.py` でも、HTTP API 経由でも実行できる。
+`python sleeptime.py` でも、HTTP API 経由でも実行できる。
 
 **主要クラス・関数**
-- `ButlyHousekeeper` — 整理処理の本体クラス
+- `ButlySleeptime` — 整理処理の本体クラス
   - `get_instance_key_memory(instance_name)` — インスタンス別 Key_Memory 取得
   - `get_instance_instruction(instance_name)` — インスタンス別 system_instruction 取得
   - `process_instance(instance_path)` — Stage 1 → Stage 2 の順に実行（`skip_knowledge_generation` による Stage 2 スキップ対応）
@@ -72,7 +72,7 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
   - `run_with_progress(instance_name)` — 上記を順番に実行し進捗を更新（`skip_knowledge_generation` 対応）
   - `estimate_workload(instance_name)` — 処理量の見積もりを返す
   - `update_status(instance_name, state, progress, message)` — 実行ステータス更新
-- `housekeeper_store` — インスタンス別の実行ステータスを保持するグローバル dict
+- `sleeptime_store` — インスタンス別の実行ステータスを保持するグローバル dict
 
 ---
 
@@ -93,7 +93,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 |---|---|
 | `chat.py` | `/chat` (REST) / `/ws/chat` (WebSocket) |
 | `instances.py` | `/instances` CRUD、`/config`、`/history`、`/glossary` |
-| `housekeeper.py` | `/housekeeper/run`、`/housekeeper/status`、`/housekeeper/estimate` |
+| `sleeptime.py` | `/sleeptime/run`、`/sleeptime/status`、`/sleeptime/estimate` |
 | `database.py` | `/database/cards` CRUD（ナレッジカード管理） |
 | `settings.py` | `/settings`、`/api-key`、`/config`、`/prompts` |
 | `dashboard.py` | `/status`（CPU/MEM）、`/discovery`、`/news` |
@@ -258,10 +258,13 @@ ADB over TCP で Fire TV を制御するモジュール。ADB 未インストー
 
 ```
 Gatekeeper.classify(user_input, history, session_state)
-    ├─ TierClassifier.classify()    → tier (reflex / mid / cortex) を決定
-    ├─ StateUpdater.update()        → session_state の差分を生成
-    └─ SearchPlanner.plan()         → cortex 時のみ RAG 検索キーワードを生成
+    ├─ ContextClassifier.classify()  → tier (reflex / mid) を決定（3スコア: rc/ew/cn）
+    ├─ StateUpdater.update()         → session_state の差分を生成
+    └─ MemoryProbe.probe()           → LLM不要の事実ベース記憶検索（ベクトル検索 + 用語集マッチ）
+    ※ mid + probe ヒット → 互換レイヤーで cortex に昇格
 ```
+
+> **備考:** `TierClassifier`（旧 4 スコア方式）と `SearchPlanner` はコード上残存していますが、アクティブパスでは使用されていません。
 
 ---
 
@@ -269,12 +272,12 @@ Gatekeeper.classify(user_input, history, session_state)
 外部 API 互換の Facade。`ChatService` からはここだけを呼ぶ。
 
 - `Gatekeeper(base_dir)`
-  - `classify(user_input, history_msgs, session_state, current_topic, override_config, instance_dir)` — 上記 3 サブクラスを協調実行し、統合結果を返す。`instance_dir` を受け取り、`recent_digest_headlines.json` を読み込んで TierClassifier に渡す
+  - `classify(user_input, history_msgs, session_state, current_topic, override_config, instance_dir)` — ContextClassifier + StateUpdater を並列実行し、MemoryProbe で記憶を検索。統合結果を返す。`instance_dir` を受け取り、`recent_digest_headlines.json` を読み込んで ContextClassifier に渡す
 
 **返却値の構造:**
 ```python
 {
-    "tier": "reflex" | "mid" | "cortex",
+    "tier": "reflex" | "mid" | "cortex",  # cortex = mid + probe ヒット（互換レイヤー）
     "topic": str,
     "need": str | None,           # cortex のみ
     "search_targets": list | None, # cortex のみ
@@ -284,26 +287,52 @@ Gatekeeper.classify(user_input, history, session_state)
     "llm_scoring": {
         "response_complexity": float,
         "emotional_weight": float,
-        "memory_reference_likelihood": float,
         "continuity_need": float,
+    },
+    "memory_probe": {
+        "status": "hit" | "no_hit" | "deep_search",
+        "candidates": list[dict],
+        "glossary_hits": list[dict],
     }
 }
 ```
 
 ---
 
-### `gatekeeper/tier_classifier.py`
-LLM に 4 スコア（0–1）を出力させ、Python 側でルールに基づき tier を決定する。
+### `gatekeeper/context_classifier.py`
+LLM に 3 スコア（0–1）を出力させ、Python 側でルールに基づき tier を決定する。
 
-- `TierClassifier(base_dir)`
+- `ContextClassifier(base_dir)`
   - `classify(user_input, history_msgs, current_topic, recent_headlines, override_config)` — tier 判定を実行。`recent_headlines` でダイジェストから抽出した見出しを注入
 
 **tier 決定ロジック:**
 | tier | 条件 |
 |---|---|
-| `cortex` | `memory_reference_likelihood >= 0.7` |
-| `reflex` | `response_complexity <= 0.2` AND `memory_reference_likelihood <= 0.3` AND `continuity_need <= 0.3` |
+| `reflex` | `response_complexity <= 0.4` AND `continuity_need <= 0.3` |
 | `mid` | それ以外 |
+
+---
+
+### `gatekeeper/memory_probe.py`
+LLM 呼び出しなしの事実ベース記憶検索。3 レイヤー構成。
+
+- `MemoryProbe()`
+  - `probe(user_input, brain, memory_manager)` — ベクトル検索 + 用語集マッチ + 条件付き深層検索
+
+**検索レイヤー:**
+| レイヤー | 内容 | 条件 |
+|---|---|---|
+| Layer 1 | Quick Vector Search（コサイン類似度） | 常時実行 |
+| Layer 1.5 | Glossary Match（term/aliases） | 常時実行 |
+| Layer 2 | Deep Search | 過去参照パターン検出時のみ |
+
+---
+
+### `gatekeeper/tier_classifier.py`（レガシー・後方互換）
+旧 4 スコア方式の tier 判定。アクティブパスでは使用されていない。
+
+- `TierClassifier(base_dir)`
+  - `classify(...)` — 後方互換エイリアスとして残存
 
 ---
 
@@ -323,13 +352,11 @@ LLM に 4 スコア（0–1）を出力させ、Python 側でルールに基づ�
 
 ---
 
-### `gatekeeper/search_planner.py`
-`cortex` tier 判定時のみ呼ばれ、RAG 検索に必要なキーワードを LLM で生成する。
-`need: null` / `search_targets: null` を返すことで、cortex でも RAG 検索をスキップできる。
-LLM が返す `"None"` / `"null"` 文字列は Python の `None` に正規化される。
+### `gatekeeper/search_planner.py`（レガシー・後方互換）
+旧 cortex tier 判定時に RAG 検索キーワードを生成していた。MemoryProbe に置き換え済み。
 
 - `SearchPlanner(base_dir)`
-  - `plan(user_input, history_msgs, current_topic, override_config)` — `{need, search_targets}` を返す
+  - `plan(...)` — 後方互換として残存
 
 ---
 
@@ -470,7 +497,7 @@ OpenAI (GPT) / Azure OpenAI 互換プロバイダー。
 プロンプトのロード・管理パッケージ。
 
 ### `butly_core/prompts.py`（後方互換ラッパー）
-旧定数名（`HOUSEKEEPER_SUMMARIZE_PROMPT` 等）でのアクセスを維持するためのラッパー。  
+旧定数名（`SLEEPTIME_SUMMARIZE_PROMPT` 等）でのアクセスを維持するためのラッパー。  
 実体は `butly_core/prompts/__init__.py` の `PromptLoader`。旧コードからの import を壊さないために残されている。
 
 ---
@@ -493,11 +520,12 @@ user_prompts.json (ユーザーオーバーライド)
 **プロンプト名と配置:**
 | プロンプト名 | 配置 | 用途 |
 |---|---|---|
-| `tier_classifier` | control/ | Gatekeeper の tier 判定 |
+| `context_classifier` | control/ | Gatekeeper の tier 判定（Phase 1.5、3スコア方式） |
+| `tier_classifier` | control/ | Gatekeeper の tier 判定（レガシー、4スコア方式） |
 | `state_updater` | control/ | session_state の差分生成 |
-| `search_planner` | control/ | RAG 検索キーワード生成 |
+| `search_planner` | control/ | RAG 検索キーワード生成（レガシー） |
 | `brain_extract_keywords` | control/ | キーワード抽出 |
-| `housekeeper_summarize` | locales/ | 会話の要約 |
+| `sleeptime_summarize` | locales/ | 会話の要約 |
 | `brain_summarize_conversation` | locales/ | 会話の折りたたみ要約 |
 | `midterm_digest` | locales/ | 中期ダイジェスト生成 |
 | `midterm_relationship` | locales/ | 関係性グラフ生成 |
@@ -551,4 +579,4 @@ cortex: ①②③④⑤⑥⑦⑧⑩⑪  (RAG あり。need=null 時はスキッ�
 | モード | 使用ファイル | 説明 |
 |---|---|---|
 | `raw`（デフォルト） | `mid_term.txt` | 生の会話要約テキストをそのまま使用 |
-| `summary` | `mid_term_digest.txt` + `mid_term_relationship.txt` | Housekeeper が生成した構造化ダイジェスト + 関係性スナップショット |
+| `summary` | `mid_term_digest.txt` + `mid_term_relationship.txt` | Sleeptime が生成した構造化ダイジェスト + 関係性スナップショット |

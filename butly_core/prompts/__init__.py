@@ -27,7 +27,7 @@ _USER_PROMPTS_PATH = _PROMPTS_DIR.parent.parent / "user_prompts.json"
 
 # プロンプト名 → user_prompts.json の旧キー名 マッピング
 _LEGACY_KEY_MAP = {
-    "housekeeper_summarize": "HOUSEKEEPER_SUMMARIZE_PROMPT",
+    "sleeptime_summarize": "SLEEPTIME_SUMMARIZE_PROMPT",
     "brain_extract_keywords": "BRAIN_EXTRACT_KEYWORDS_PROMPT",
     "brain_summarize_conversation": "BRAIN_SUMMARIZE_CONVERSATION_PROMPT",
     "tier_classifier": "GATEKEEPER_CLASSIFY_PROMPT",
@@ -182,7 +182,7 @@ class PromptLoader:
 
 _loader = PromptLoader()
 
-HOUSEKEEPER_SUMMARIZE_PROMPT = _loader.get_template("housekeeper_summarize")
+SLEEPTIME_SUMMARIZE_PROMPT = _loader.get_template("sleeptime_summarize")
 BRAIN_EXTRACT_KEYWORDS_PROMPT = _loader.get_template("brain_extract_keywords")
 BRAIN_SUMMARIZE_CONVERSATION_PROMPT = _loader.get_template("brain_summarize_conversation")
 GATEKEEPER_CLASSIFY_PROMPT = _loader.get_template("tier_classifier")

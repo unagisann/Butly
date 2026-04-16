@@ -3,7 +3,7 @@
 Butly Project Prompts Configuration
 ------------------------------------
 後方互換ラッパー。実体は butly_core/prompts/ パッケージの PromptLoader。
-旧定数名（HOUSEKEEPER_SUMMARIZE_PROMPT 等）でのアクセスを維持する。
+旧定数名（SLEEPTIME_SUMMARIZE_PROMPT 等）でのアクセスを維持する。
 """
 
 from pathlib import Path
@@ -15,7 +15,7 @@ _loader = PromptLoader()
 # ==========================================
 # 後方互換: 旧定数名でテンプレート文字列を公開
 # ==========================================
-HOUSEKEEPER_SUMMARIZE_PROMPT = _loader.get_template("housekeeper_summarize")
+SLEEPTIME_SUMMARIZE_PROMPT = _loader.get_template("sleeptime_summarize")
 BRAIN_EXTRACT_KEYWORDS_PROMPT = _loader.get_template("brain_extract_keywords")
 BRAIN_SUMMARIZE_CONVERSATION_PROMPT = _loader.get_template("brain_summarize_conversation")
 GATEKEEPER_CLASSIFY_PROMPT = _loader.get_template("tier_classifier")

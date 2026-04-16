@@ -27,7 +27,7 @@ except ImportError:
 BASE_DIR = Path(__file__).resolve().parent
 INSTANCES_DIR = BASE_DIR / "butly_core" / "instances"
 
-class ButlyHousekeeper:
+class ButlySleeptime:
     def __init__(self):
         # Configからナレッジモデル設定を使用
         self.k_conf = AI_CONFIG["knowledge"]
@@ -114,7 +114,7 @@ class ButlyHousekeeper:
 
     def _should_update(self, inst_cfg: dict, target: str) -> bool:
         """update_targets 設定に基づいて更新すべきかを判定する。"""
-        targets = inst_cfg.get("housekeeper", {}).get("update_targets", {})
+        targets = inst_cfg.get("sleeptime", {}).get("update_targets", {})
         defaults = {
             "digest": True,
             "recent_snapshot": True,
@@ -124,7 +124,7 @@ class ButlyHousekeeper:
         }
         # skip_knowledge_generation 後方互換
         if target == "knowledge_cards":
-            if inst_cfg.get("housekeeper", {}).get("skip_knowledge_generation", False):
+            if inst_cfg.get("sleeptime", {}).get("skip_knowledge_generation", False):
                 return False
         return targets.get(target, defaults.get(target, True))
 
@@ -181,7 +181,7 @@ class ButlyHousekeeper:
         
         # インスタンス固有のトークン数上書き
         inst_cfg = self._get_instance_config(db_type)
-        _hk = inst_cfg.get("housekeeper", {})
+        _hk = inst_cfg.get("sleeptime", {})
         if "knowledge_max_output_tokens" in _hk:
             k_conf = dict(self.k_conf)
             gc = dict(k_conf.get("generation_config", {}))
@@ -197,7 +197,7 @@ class ButlyHousekeeper:
         from butly_core.prompts import PromptLoader
         loader = PromptLoader()
         prompt = loader.get(
-            "housekeeper_summarize",
+            "sleeptime_summarize",
             agent_name=self.get_instance_agent_name(db_type),
             system_instruction=agent_instruction,
             key_memory=agent_key_memory,
@@ -280,7 +280,7 @@ class ButlyHousekeeper:
         # Stage 2: ナレッジ化（update_targets で抑制可能）
         inst_cfg = self._get_instance_config(instance_id)
         if not self._should_update(inst_cfg, "knowledge_cards"):
-            print(f"[Housekeeper] Stage 2 skipped for {instance_id} (knowledge_cards disabled)")
+            print(f"[Sleeptime] Stage 2 skipped for {instance_id} (knowledge_cards disabled)")
             return
         self.stage_2_knowledgeize(instance_path, db_type)
 
@@ -303,7 +303,7 @@ class ButlyHousekeeper:
         if short_term_json_dir.exists():
             short_term_files = sorted(short_term_json_dir.glob("*.json"))
             if short_term_files:
-                print(f"[Housekeeper] Flushing {len(short_term_files)} short-term files to 1_integrated...")
+                print(f"[Sleeptime] Flushing {len(short_term_files)} short-term files to 1_integrated...")
                 for stf in short_term_files:
                     dest = integrated_dir / stf.name
                     # ファイル名重複を避けるため、既存ファイルがあればサフィックスを付与
@@ -324,10 +324,10 @@ class ButlyHousekeeper:
         json_files = [f for f in all_json_files if f.name not in processed_set]
         
         if not json_files and not list(floating_summary_dir.glob("*.txt")) and not legacy_floating_file.exists():
-            print(f"[Housekeeper] Phase 1: No logs or summaries to process in {instance_name}.")
+            print(f"[Sleeptime] Phase 1: No logs or summaries to process in {instance_name}.")
             return
 
-        print(f"[Housekeeper] Phase 1: Appending {len(json_files)} logs to mid_term...")
+        print(f"[Sleeptime] Phase 1: Appending {len(json_files)} logs to mid_term...")
 
         # 2. JSONを読み込み、テキスト形式に整形
         new_text = ""
@@ -347,7 +347,7 @@ class ButlyHousekeeper:
                         new_text += f"[{ts}] {role_label}: {content}\n"
                 newly_processed.append(jf.name)
             except Exception as e:
-                print(f"[Housekeeper] Error reading {jf.name}: {e}")
+                print(f"[Sleeptime] Error reading {jf.name}: {e}")
 
         # 2b. トラッキング更新（mid_term追記前に記録し、追記済みとマーク）
         if newly_processed:
@@ -362,7 +362,7 @@ class ButlyHousekeeper:
         if floating_summary_dir.exists():
             for summary_file in floating_summary_dir.glob("*.txt"):
                 summary_file.unlink()
-                print(f"[Housekeeper] Cleared temp floating summary: {summary_file.name}")
+                print(f"[Sleeptime] Cleared temp floating summary: {summary_file.name}")
 
         # (B) 旧方式: floating_summary.txt もクリアのみ（互換性維持）
         if legacy_floating_file.exists():
@@ -385,7 +385,7 @@ class ButlyHousekeeper:
                 user_name=_user_name_cache,
             )
         else:
-            print(f"[Housekeeper] RAW memory cache rebuild skipped (raw_memory_cache disabled)")
+            print(f"[Sleeptime] RAW memory cache rebuild skipped (raw_memory_cache disabled)")
 
         # 4. Short Term JSON の空フォルダ削除
         short_term_dir = instance_path / "short_term_json"
@@ -403,13 +403,13 @@ class ButlyHousekeeper:
         if self._should_update(inst_cfg, "recent_snapshot"):
             self._update_recent_snapshot_if_due(instance_path)
         else:
-            print(f"[Housekeeper] Recent snapshot update skipped (recent_snapshot disabled)")
+            print(f"[Sleeptime] Recent snapshot update skipped (recent_snapshot disabled)")
 
         # --- 8. Key Memory 提案生成（デフォルト OFF） ---
         if self._should_update(inst_cfg, "key_memory"):
             self._propose_key_memory_updates_if_due(instance_path)
         else:
-            print(f"[Housekeeper] Key Memory proposal skipped (key_memory disabled)")
+            print(f"[Sleeptime] Key Memory proposal skipped (key_memory disabled)")
 
     # --- Chunk Splitting Helpers ---
     @staticmethod
@@ -464,14 +464,14 @@ class ButlyHousekeeper:
         from butly_core.config import SYSTEM_CONFIG, AI_CONFIG
         
         if not SYSTEM_CONFIG.get("memory", {}).get("generate_mid_term_summaries", True):
-            print("[Housekeeper] Mid-term summary generation is disabled in config.")
+            print("[Sleeptime] Mid-term summary generation is disabled in config.")
             return
         
         if len(new_text.strip()) < 200:
-            print(f"[Housekeeper] Daily digest: new_text too short ({len(new_text)} chars), skipping.")
+            print(f"[Sleeptime] Daily digest: new_text too short ({len(new_text)} chars), skipping.")
             return
         
-        print(f"[Housekeeper] Daily digest: Generating from {len(new_text)} chars of today's raw text...")
+        print(f"[Sleeptime] Daily digest: Generating from {len(new_text)} chars of today's raw text...")
         
         from butly_core.prompts import PromptLoader
         
@@ -488,14 +488,14 @@ class ButlyHousekeeper:
             inst_cfg = self._get_instance_config(instance_name)
             
             # インスタンス固有のトークン数上書き
-            _hk = inst_cfg.get("housekeeper", {})
+            _hk = inst_cfg.get("sleeptime", {})
             if "summary_max_output_tokens" in _hk:
                 gc = dict(summary_conf.get("generation_config", {}))
                 gc["max_output_tokens"] = _hk["summary_max_output_tokens"]
                 summary_conf["generation_config"] = gc
             system_instruction = self.get_instance_instruction(instance_name)
             key_memory = self.get_instance_key_memory(instance_name)
-            max_digest = inst_cfg.get("housekeeper", {}).get(
+            max_digest = inst_cfg.get("sleeptime", {}).get(
                 "max_digest_chars",
                 SYSTEM_CONFIG.get("memory", {}).get("max_digest_chars", 8000)
             )
@@ -504,7 +504,7 @@ class ButlyHousekeeper:
             # チャンク分割: 日付ヘッダ ([YYYY-MM-DD ...]) を区切りにして上限内に収める
             text_chunks = self._split_text_by_date_headers(new_text, digest_max_input)
             if len(text_chunks) > 1:
-                print(f"[Housekeeper] Daily digest: Split into {len(text_chunks)} chunks (limit: {digest_max_input} chars)")
+                print(f"[Sleeptime] Daily digest: Split into {len(text_chunks)} chunks (limit: {digest_max_input} chars)")
 
             loader = PromptLoader()
             provider = self._get_provider(model_name)
@@ -512,7 +512,7 @@ class ButlyHousekeeper:
 
             for ci, chunk in enumerate(text_chunks):
                 if len(text_chunks) > 1:
-                    print(f"[Housekeeper] Daily digest: Processing chunk {ci+1}/{len(text_chunks)} ({len(chunk)} chars)")
+                    print(f"[Sleeptime] Daily digest: Processing chunk {ci+1}/{len(text_chunks)} ({len(chunk)} chars)")
                 digest_prompt = loader.get(
                     "midterm_digest",
                     agent_name=self.get_instance_agent_name(instance_name),
@@ -551,15 +551,15 @@ class ButlyHousekeeper:
                     
                     with open(archive_digest_file, "a", encoding="utf-8") as f:
                         f.write(overflow_text)
-                    print(f"[Housekeeper] Digest archived: {len(overflow_text)} chars to archive_digest.txt")
+                    print(f"[Sleeptime] Digest archived: {len(overflow_text)} chars to archive_digest.txt")
                     digest_file.write_text(kept_text, encoding="utf-8")
                 else:
                     digest_file.write_text(combined_digest, encoding="utf-8")
                 
-                print(f"[Housekeeper] Digest updated: +{len(digest_new)} chars")
+                print(f"[Sleeptime] Digest updated: +{len(digest_new)} chars")
             
         except Exception as e:
-            print(f"[Housekeeper] Daily digest generation error: {e}")
+            print(f"[Sleeptime] Daily digest generation error: {e}")
 
     def _generate_recent_headlines(self, instance_path: Path):
         """
@@ -573,12 +573,12 @@ class ButlyHousekeeper:
         headlines_file = instance_path / "recent_digest_headlines.json"
 
         if not digest_file.exists():
-            print("[Housekeeper] recent_headlines: mid_term_digest.txt not found, skipping.")
+            print("[Sleeptime] recent_headlines: mid_term_digest.txt not found, skipping.")
             return
 
         digest_text = digest_file.read_text(encoding="utf-8")
         if len(digest_text.strip()) < 100:
-            print(f"[Housekeeper] recent_headlines: digest too short ({len(digest_text)} chars), skipping.")
+            print(f"[Sleeptime] recent_headlines: digest too short ({len(digest_text)} chars), skipping.")
             headlines_file.write_text(
                 json.dumps({"generated_at": datetime.now().isoformat(), "headlines": []},
                            ensure_ascii=False, indent=2),
@@ -590,7 +590,7 @@ class ButlyHousekeeper:
         if len(digest_text) > 10000:
             digest_text = digest_text[-10000:]
 
-        print(f"[Housekeeper] recent_headlines: Generating from {len(digest_text)} chars of digest...")
+        print(f"[Sleeptime] recent_headlines: Generating from {len(digest_text)} chars of digest...")
 
         from butly_core.prompts import PromptLoader
         try:
@@ -599,7 +599,7 @@ class ButlyHousekeeper:
 
             instance_name = instance_path.name
             inst_cfg = self._get_instance_config(instance_name)
-            summary_max_tokens = inst_cfg.get("housekeeper", {}).get(
+            summary_max_tokens = inst_cfg.get("sleeptime", {}).get(
                 "summary_max_output_tokens",
                 summary_conf.get("generation_config", {}).get("max_output_tokens", 4096),
             )
@@ -632,10 +632,10 @@ class ButlyHousekeeper:
                 json.dumps(output, ensure_ascii=False, indent=2),
                 encoding="utf-8"
             )
-            print(f"[Housekeeper] recent_headlines: Generated {len(headlines)} headlines.")
+            print(f"[Sleeptime] recent_headlines: Generated {len(headlines)} headlines.")
 
         except Exception as e:
-            print(f"[Housekeeper] recent_headlines generation error: {e}")
+            print(f"[Sleeptime] recent_headlines generation error: {e}")
 
     def _update_recent_snapshot_if_due(self, instance_path: Path):
         """
@@ -662,7 +662,7 @@ class ButlyHousekeeper:
         digest_file = instance_path / "mid_term_digest.txt"
         instance_name = instance_path.name
         inst_cfg = self._get_instance_config(instance_name)
-        interval_days = inst_cfg.get("housekeeper", {}).get(
+        interval_days = inst_cfg.get("sleeptime", {}).get(
             "relationship_update_interval_days",
             SYSTEM_CONFIG.get("memory", {}).get("relationship_update_interval_days", 7)
         )
@@ -672,27 +672,27 @@ class ButlyHousekeeper:
         check_file = rel_file if rel_file.exists() else legacy_rel_file
         if not check_file.exists():
             should_update = True
-            print("[Housekeeper] Recent snapshot: File not found, creating initial snapshot.")
+            print("[Sleeptime] Recent snapshot: File not found, creating initial snapshot.")
         else:
             last_modified = datetime.fromtimestamp(os.path.getmtime(check_file))
             days_since = (datetime.now() - last_modified).days
             if days_since >= interval_days:
                 should_update = True
-                print(f"[Housekeeper] Recent snapshot: {days_since} days since last update (interval: {interval_days}), updating.")
+                print(f"[Sleeptime] Recent snapshot: {days_since} days since last update (interval: {interval_days}), updating.")
             else:
-                print(f"[Housekeeper] Recent snapshot: {days_since} days since last update (interval: {interval_days}), skipping.")
+                print(f"[Sleeptime] Recent snapshot: {days_since} days since last update (interval: {interval_days}), skipping.")
         
         if not should_update:
             return
         
         # 入力: 蓄積された事実ダイジェスト
         if not digest_file.exists():
-            print("[Housekeeper] Recent snapshot: No digest file yet, skipping.")
+            print("[Sleeptime] Recent snapshot: No digest file yet, skipping.")
             return
         
         digest_text = digest_file.read_text(encoding="utf-8").strip()
         if len(digest_text) < 200:
-            print("[Housekeeper] Recent snapshot: digest too short, skipping.")
+            print("[Sleeptime] Recent snapshot: digest too short, skipping.")
             return
         
         from butly_core.prompts import PromptLoader
@@ -704,10 +704,10 @@ class ButlyHousekeeper:
             # インスタンス固有の system_instruction と key_memory を取得
             system_instruction = self.get_instance_instruction(instance_name)
             key_memory = self.get_instance_key_memory(instance_name)
-            max_rel_chars = inst_cfg.get("housekeeper", {}).get("max_relationship_chars", 600)
+            max_rel_chars = inst_cfg.get("sleeptime", {}).get("max_relationship_chars", 600)
             
             # インスタンス固有のトークン数上書き
-            _hk = inst_cfg.get("housekeeper", {})
+            _hk = inst_cfg.get("sleeptime", {})
             if "knowledge_max_output_tokens" in _hk:
                 gc = dict(k_conf.get("generation_config", {}))
                 gc["max_output_tokens"] = _hk["knowledge_max_output_tokens"]
@@ -728,10 +728,10 @@ class ButlyHousekeeper:
             
             if rel_text:
                 rel_file.write_text(rel_text, encoding="utf-8")
-                print(f"[Housekeeper] Recent snapshot updated: {len(rel_text)} chars.")
+                print(f"[Sleeptime] Recent snapshot updated: {len(rel_text)} chars.")
             
         except Exception as e:
-            print(f"[Housekeeper] Recent snapshot generation error: {e}")
+            print(f"[Sleeptime] Recent snapshot generation error: {e}")
 
     def _propose_key_memory_updates_if_due(self, instance_path: Path):
         """
@@ -747,7 +747,7 @@ class ButlyHousekeeper:
 
         instance_name = instance_path.name
         inst_cfg = self._get_instance_config(instance_name)
-        interval_days = inst_cfg.get("housekeeper", {}).get(
+        interval_days = inst_cfg.get("sleeptime", {}).get(
             "key_memory_proposal_interval_days",
             SYSTEM_CONFIG.get("memory", {}).get("key_memory_proposal_interval_days", 180),
         )
@@ -760,7 +760,7 @@ class ButlyHousekeeper:
             days_since = (datetime.now() - last_modified).days
             if days_since < interval_days:
                 print(
-                    f"[Housekeeper] Key Memory proposal: {days_since} days since last "
+                    f"[Sleeptime] Key Memory proposal: {days_since} days since last "
                     f"(interval: {interval_days}), skipping."
                 )
                 return
@@ -772,11 +772,11 @@ class ButlyHousekeeper:
 
         digest_file = instance_path / "mid_term_digest.txt"
         if not digest_file.exists():
-            print("[Housekeeper] Key Memory proposal: No digest file yet, skipping.")
+            print("[Sleeptime] Key Memory proposal: No digest file yet, skipping.")
             return
         digest_text = digest_file.read_text(encoding="utf-8").strip()
         if len(digest_text) < 200:
-            print("[Housekeeper] Key Memory proposal: digest too short, skipping.")
+            print("[Sleeptime] Key Memory proposal: digest too short, skipping.")
             return
 
         from butly_core.prompts import PromptLoader
@@ -785,7 +785,7 @@ class ButlyHousekeeper:
             k_conf = dict(AI_CONFIG.get("knowledge", {}))
             model_name = k_conf.get("model_name", "gemini-3.1-pro-preview")
 
-            _hk = inst_cfg.get("housekeeper", {})
+            _hk = inst_cfg.get("sleeptime", {})
             if "knowledge_max_output_tokens" in _hk:
                 gc = dict(k_conf.get("generation_config", {}))
                 gc["max_output_tokens"] = _hk["knowledge_max_output_tokens"]
@@ -804,14 +804,14 @@ class ButlyHousekeeper:
             llm_output = llm_output.strip() if llm_output else ""
 
             if not llm_output or "NO_PROPOSALS" in llm_output:
-                print("[Housekeeper] Key Memory proposal: LLM returned no proposals.")
+                print("[Sleeptime] Key Memory proposal: LLM returned no proposals.")
                 # proposals ファイルを更新して次回インターバルをリセット
                 save_proposals([], instance_path)
                 return
 
             proposals = parse_proposals(llm_output, entries)
             if not proposals:
-                print("[Housekeeper] Key Memory proposal: No parseable proposals.")
+                print("[Sleeptime] Key Memory proposal: No parseable proposals.")
                 save_proposals([], instance_path)
                 return
 
@@ -822,10 +822,10 @@ class ButlyHousekeeper:
                 p["proposed_at"] = now
 
             save_proposals(proposals, instance_path)
-            print(f"[Housekeeper] Key Memory proposal: {len(proposals)} proposals saved.")
+            print(f"[Sleeptime] Key Memory proposal: {len(proposals)} proposals saved.")
 
         except Exception as e:
-            print(f"[Housekeeper] Key Memory proposal generation error: {e}")
+            print(f"[Sleeptime] Key Memory proposal generation error: {e}")
 
     # --- Backup Logic ---
     def backup_database(self, instance_name):
@@ -907,7 +907,7 @@ class ButlyHousekeeper:
         
         # チャンク分割の上限文字数を取得
         inst_cfg = self._get_instance_config(db_type)
-        knowledge_max_chars = inst_cfg.get("housekeeper", {}).get("knowledge_max_input_chars", 0)
+        knowledge_max_chars = inst_cfg.get("sleeptime", {}).get("knowledge_max_input_chars", 0)
 
         # グループごとに処理
         for date_str, items in grouped_files.items():
@@ -1023,7 +1023,7 @@ class ButlyHousekeeper:
                 try:
                     # 空なら削除 (rmdir は空でないとエラーになるので安全)
                     d_path.rmdir()
-                    print(f"[Housekeeper] Removed empty folder: {d_path.name}")
+                    print(f"[Sleeptime] Removed empty folder: {d_path.name}")
                 except OSError:
                     # 中身がある場合は無視
                     pass
@@ -1032,8 +1032,8 @@ class ButlyHousekeeper:
 
     # --- Status Management ---
     def update_status(self, instance_name, state, progress=0.0, message=""):
-        global housekeeper_store
-        housekeeper_store[instance_name] = {
+        global sleeptime_store
+        sleeptime_store[instance_name] = {
             "state": state, # "idle", "running", "completed", "error"
             "progress": progress,
             "message": message,
@@ -1114,7 +1114,7 @@ class ButlyHousekeeper:
             db_type = instance_name
             inst_cfg = self._get_instance_config(instance_name)
             if not self._should_update(inst_cfg, "knowledge_cards"):
-                print(f"[Housekeeper] Stage 2 skipped for {instance_name} (knowledge_cards disabled)")
+                print(f"[Sleeptime] Stage 2 skipped for {instance_name} (knowledge_cards disabled)")
                 self.update_status(instance_name, "running", 85.0, "ナレッジ化をスキップしました")
             else:
                 self.stage_2_knowledgeize(instance_name, db_type)
@@ -1126,14 +1126,14 @@ class ButlyHousekeeper:
             self.update_status(instance_name, "completed", 100.0, "完了しました")
             
         except Exception as e:
-            print(f"[Housekeeper] Error: {e}")
+            print(f"[Sleeptime] Error: {e}")
             self.update_status(instance_name, "error", 0.0, str(e))
 
 # Global Status Store
-housekeeper_store = {}
+sleeptime_store = {}
 
 if __name__ == "__main__":
-    hk = ButlyHousekeeper()
+    hk = ButlySleeptime()
     # 全インスタンスを処理
     hk.run()
     

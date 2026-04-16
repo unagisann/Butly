@@ -38,7 +38,7 @@ prompts:
     variables: [agent_name, digest_text]
 
   # --- Persona Prompts (locales/) ---
-  housekeeper_summarize:
+  sleeptime_summarize:
     location: locales
     description: "Knowledge card generation with AI persona"
     variables: [agent_name, system_instruction, key_memory, session_text]

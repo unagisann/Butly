@@ -115,19 +115,19 @@ Debug モードの「Brain Process」セクションに RAG 検索のスコア�
 
 ---
 
-### Issue #6: Housekeeper 管理画面に実行履歴を追加
+### Issue #6: Sleeptime 管理画面に実行履歴を追加
 
 **Priority**: Low  
 **Labels**: `ui`, `enhancement`
 
 #### 概要
-Housekeeper の最終実行日時と、最後に生成されたナレッジカードの情報を表示する。
+Sleeptime の最終実行日時と、最後に生成されたナレッジカードの情報を表示する。
 
 #### タスク
-- [ ] Housekeeper 実行完了時にタイムスタンプを保存する仕組みを追加
-  - `instance_dir/housekeeper_last_run.json` など
+- [ ] Sleeptime 実行完了時にタイムスタンプを保存する仕組みを追加
+  - `instance_dir/sleeptime_last_run.json` など
   - 内容: `{"last_run": "2026-03-29T03:00:00", "cards_created": 5}`
-- [ ] `render_housekeeper_screen()` に最終実行日時と作成カード数を表示
+- [ ] `render_sleeptime_screen()` に最終実行日時と作成カード数を表示
 - [ ] DB ブラウザ画面に最新カードの作成日時を表示（既存の `created_at` フィールドを利用）
 
 ---
@@ -141,7 +141,7 @@ Housekeeper の最終実行日時と、最後に生成されたナレッジカ�
 Part A で Interactions API のコードは削除済みだが、既存インスタンスに `last_interaction_id.txt` が残っている可能性がある。
 
 #### タスク
-- [ ] マイグレーションスクリプト or Housekeeper に `last_interaction_id.txt` の自動削除を追加
+- [ ] マイグレーションスクリプト or Sleeptime に `last_interaction_id.txt` の自動削除を追加
   - 実害はないが、ファイル構成の清潔さのために
 - [ ] README のファイル構成から `last_interaction_id.txt` の記載がないことを確認
 
@@ -498,7 +498,7 @@ SillyTavern ではチャットの任意の地点に Bookmark を打ち、そこ�
 | **Medium** | #14 | 記憶 DB の UI 分離（通常記憶 vs Lorebook） | 新機能 |
 | **Low** | #3 | モデルパラメータ拡充（top_p 等） | UI 正常化 |
 | **Low** | #5 | RAG スコア表示 | UI 正常化 |
-| **Low** | #6 | Housekeeper 実行履歴 | UI 正常化 |
+| **Low** | #6 | Sleeptime 実行履歴 | UI 正常化 |
 | **Low** | #11 | TTS 統合 | 新機能 |
 | **Low** | #12 | 表情・スプライト（mood 連動） | 新機能 |
 | **Low** | #13 | Author's Note（動的注入位置制御） | 新機能 |

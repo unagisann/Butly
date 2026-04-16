@@ -18,7 +18,7 @@ Butly の記憶システムは、会話の鮮度と重要度に応じて複数�
   ↓
 [3] memory_archive/1_integrated/  ← 中間待機ゾーン
 
-──── Housekeeper 実行時 ────────────────────────────────
+──── Sleeptime 実行時 ────────────────────────────────
 
 [Stage 0] short_term_json/* → 1_integrated/ へ全移動
 
@@ -62,7 +62,7 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # 保持ファイル数
 | **書き込み** | `memory.maintain_memory()` が short_term 溢れ時に `brain.summarize_conversation()` を呼び出し生成 |
 | **形式** | `Time: {timestamp}\n{要約テキスト}` の txt ファイル（1会話 = 1ファイル） |
 | **Gatekeeper注入** | FLOATING SUMMARY ブロックとして全 tier に注入（最新の会話文脈として機能） |
-| **ライフサイクル** | Housekeeper 実行時に全ファイルを削除（1_integrated の生JSONが存在するため二重書き込みにならない） |
+| **ライフサイクル** | Sleeptime 実行時に全ファイルを削除（1_integrated の生JSONが存在するため二重書き込みにならない） |
 | **使用モデル** | `AI_CONFIG["summary"]["model_name"]`（低コスト・長文コンテキスト向け） |
 
 > **設計意図:** floating_summary は「今のセッションの流れ」を伝えるための一時的なコンテキストです。
@@ -75,7 +75,7 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # 保持ファイル数
 | 項目 | 内容 |
 |---|---|
 | **場所** | `instances/{name}/memory_archive/1_integrated/` |
-| **書き込み** | ① `maintain_memory()` がオーバーフロー時に移動 ② Housekeeper Stage 0 が short_term_json/* を全移動 |
+| **書き込み** | ① `maintain_memory()` がオーバーフロー時に移動 ② Sleeptime Stage 0 が short_term_json/* を全移動 |
 | **内容** | short_term_json と同じ生 JSON ファイル |
 | **役割** | Stage 1（mid_term 更新）と Stage 2（ナレッジ化）の両方がここから読む |
 | **後処理** | Stage 2 完了後、`2_knowledgeized/{date}/` へ移動 |
@@ -87,7 +87,7 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # 保持ファイル数
 | 項目 | 内容 |
 |---|---|
 | **場所** | `instances/{name}/mid_term.txt` |
-| **書き込み** | Housekeeper Stage 1 (`stage_1_cleanup`) が 1_integrated JSON をテキスト整形して追記 |
+| **書き込み** | Sleeptime Stage 1 (`stage_1_cleanup`) が 1_integrated JSON をテキスト整形して追記 |
 | **上限** | `max_mid_term_chars`（デフォルト 30,000 文字） |
 | **オーバーフロー** | 先頭から溢れた分を `memory_archive/3_log/archive_long_term.txt` に追記後、最新部分のみ残す |
 | **Gatekeeper注入** | `use_summarized_mid_term = False`（RAWモード）の場合に mid / cortex tier へ MID-TERM MEMORY ブロックとして注入 |
@@ -106,7 +106,7 @@ SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True で要約注�
 | 項目 | 内容 |
 |---|---|
 | **場所** | `instances/{name}/mid_term_digest.txt` |
-| **書き込み** | Housekeeper Stage 1 内 `_generate_daily_digest()` — 当日の生ログを LLM で事実抽出し差分追記 |
+| **書き込み** | Sleeptime Stage 1 内 `_generate_daily_digest()` — 当日の生ログを LLM で事実抽出し差分追記 |
 | **入力** | 当日の生ログテキスト（`new_text`）のみ。要約の要約は絶対にしない |
 | **入力チャンク分割** | `digest_max_input_chars` が設定されている場合、日付ヘッダ `[YYYY-MM-DD ...]` を区切りにチャンク分割し、各チャンクごとにLLMへ送信→結果を結合 |
 | **上限** | `max_digest_chars`（デフォルト 8,000 文字） |
@@ -119,7 +119,7 @@ SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True で要約注�
 ```python
 SYSTEM_CONFIG["memory"]["generate_mid_term_summaries"] = True
 SYSTEM_CONFIG["memory"]["max_digest_chars"] = 8000
-# config.json > housekeeper セクション:
+# config.json > sleeptime セクション:
 digest_max_input_chars = 0   # 1回あたりの最大入力文字数。0=無制限
 ```
 
@@ -130,11 +130,11 @@ digest_max_input_chars = 0   # 1回あたりの最大入力文字数。0=無制�
 | 項目 | 内容 |
 |---|---|
 | **場所** | `instances/{name}/recent_digest_headlines.json` |
-| **書き込み** | Housekeeper Stage 1 内 `_generate_recent_headlines()` — ダイジェストから LLM で最大 4 件のヘッドラインを抽出 |
+| **書き込み** | Sleeptime Stage 1 内 `_generate_recent_headlines()` — ダイジェストから LLM で最大 4 件のヘッドラインを抽出 |
 | **入力** | `mid_term_digest.txt` の末尾（最大 10,000 文字） |
 | **形式** | `{"type": "topic" or "event", "headline": "20〜40文字の要約"}` の JSON 配列 |
-| **使用先** | `Gatekeeper.__init__()` がヘッドラインを読み込み TierClassifier に渡し、memory_reference_likelihood のスコアリングに使用 |
-| **ライフサイクル** | Housekeeper 実行のたびに上書き |
+| **使用先** | `Gatekeeper.__init__()` がヘッドラインを読み込み ContextClassifier に渡しスコアリングに使用 |
+| **ライフサイクル** | Sleeptime 実行のたびに上書き |
 | **使用モデル** | `AI_CONFIG["summary"]["model_name"]`（Flash Lite 系） |
 
 ---
@@ -144,7 +144,7 @@ digest_max_input_chars = 0   # 1回あたりの最大入力文字数。0=無制�
 | 項目 | 内容 |
 |---|---|
 | **場所** | `instances/{name}/mid_term_relationship.txt` |
-| **書き込み** | Housekeeper Stage 1 内 `_update_relationship_if_due()` — 7 日間隔で全上書き |
+| **書き込み** | Sleeptime Stage 1 内 `_update_relationship_if_due()` — 7 日間隔で全上書き |
 | **入力** | `mid_term_digest.txt`（蓄積された事実ダイジェスト）— 日々の断片は使わない |
 | **更新頻度** | `relationship_update_interval_days`（デフォルト 7 日）以上経過した場合のみ更新 |
 | **Gatekeeper注入** | `use_summarized_mid_term = True` の場合に mid / cortex tier へ RELATIONSHIP SNAPSHOT ブロックとして注入 |
@@ -164,14 +164,14 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | 項目 | 内容 |
 |---|---|
 | **場所** | `instances/{name}/butly_memory.db` |
-| **書き込み** | Housekeeper Stage 2 (`stage_2_knowledgeize`) — 日付グループ単位でLLMがナレッジカードを抽出しINSERT |
+| **書き込み** | Sleeptime Stage 2 (`stage_2_knowledgeize`) — 日付グループ単位でLLMがナレッジカードを抽出しINSERT |
 | **入力** | 1_integrated の生 JSON を日付ごとにまとめたテキスト |
 | **入力チャンク分割** | `knowledge_max_input_chars` が設定されている場合、JSONファイル単位で分割。「次のファイルを追加すると上限超過→ここまでで1チャンク」として処理 |
 | **スキップ機能** | `skip_knowledge_generation = true` の場合、Stage 2 を完全にスキップ。RAWデータは 1_integrated に保持され、後日高性能モデルで一括処理可能 |
 | **スキーマ** | `knowledge_cards` テーブル（下記参照） |
 | **Embedding** | `title + tags + summary` を `AI_CONFIG["embedding"]["model_name"]` で埋め込み → BLOB保存 |
 | **検索** | `ButlyBrain.search_memories()` がクエリ埋め込みとコサイン類似度でリランキング |
-| **Gatekeeper注入** | cortex tier のみ、`SearchPlanner` が生成した `search_targets` をキーワードに RAG 検索した結果を LONG-TERM MEMORY ブロックとして注入 |
+| **Gatekeeper注入** | cortex tier のみ、`MemoryProbe` が返した候補をもとに RAG 検索した結果を LONG-TERM MEMORY ブロックとして注入 |
 | **後処理** | 処理済み JSON は `memory_archive/2_knowledgeized/{date}/` へ移動 |
 | **バックアップ** | `butly_core/db_backups/` にローテーション保存（世代数: `backup.generations`） |
 
@@ -192,12 +192,12 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 
 ---
 
-## Housekeeper の実行フロー詳細
+## Sleeptime の実行フロー詳細
 
-Housekeeper は手動トリガーまたはスケジュール実行され、全インスタンスに対して以下の処理を順次実行します。
+Sleeptime は手動トリガーまたはスケジュール実行され、全インスタンスに対して以下の処理を順次実行します。
 
 ```
-ButlyHousekeeper.run()
+ButlySleeptime.run()
   ↓
   process_instance(instance_path) ← 各インスタンスに対して
     ├── stage_1_cleanup(instance_path)
@@ -223,7 +223,7 @@ ButlyHousekeeper.run()
 
 ## チャット中のリアルタイム処理
 
-Housekeeper とは独立して、チャット中にも以下の処理が行われます。
+Sleeptime とは独立して、チャット中にも以下の処理が行われます。
 
 ```
 1. ユーザー発言受信
@@ -263,7 +263,7 @@ instances/{name}/
 ├── recent_digest_headlines.json  # 最近の会話ヘッドライン（Gatekeeper 入力）
 ├── butly_memory.db            # ⑦ 長期記憶ベクトルDB
 └── memory_archive/
-    ├── 1_integrated/          # ③ Housekeeper 処理待ち生 JSON
+    ├── 1_integrated/          # ③ Sleeptime 処理待ち生 JSON
     ├── 2_knowledgeized/       # ナレッジ化済み JSON（日付フォルダ）
     │   └── {YYYY-MM-DD}/
     └── 3_log/
@@ -284,4 +284,4 @@ instances/{name}/
 | ヘッドライン抽出 | `AI_CONFIG["summary"]["model_name"]` | recent_digest_headlines.json 生成 |
 | ナレッジカード抽出 | `AI_CONFIG["knowledge"]["model_name"]` | Stage 2 RAG DB への抽出 |
 | 埋め込みベクトル生成 | `AI_CONFIG["embedding"]["model_name"]` | knowledge_cards.embedding_blob |
-| Tier 判定 | `AI_CONFIG["gatekeeper"]["model_name"]` | TierClassifier 4スコア出力 |
+| Tier 判定 | `AI_CONFIG["gatekeeper"]["model_name"]` | ContextClassifier 3スコア出力 |

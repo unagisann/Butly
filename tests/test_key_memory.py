@@ -406,14 +406,14 @@ class TestProposalDefaultOff:
 
     def test_default_off(self):
         """_should_update のデフォルト値が False"""
-        from housekeeper import ButlyHousekeeper
-        hk = ButlyHousekeeper()
+        from sleeptime import ButlySleeptime
+        hk = ButlySleeptime()
         # 空の inst_cfg → defaults を使用
         assert hk._should_update({}, "key_memory") is False
 
     def test_enabled_via_config(self):
-        """housekeeper.update_targets.key_memory = true で有効化"""
-        from housekeeper import ButlyHousekeeper
-        hk = ButlyHousekeeper()
-        cfg = {"housekeeper": {"update_targets": {"key_memory": True}}}
+        """sleeptime.update_targets.key_memory = true で有効化"""
+        from sleeptime import ButlySleeptime
+        hk = ButlySleeptime()
+        cfg = {"sleeptime": {"update_targets": {"key_memory": True}}}
         assert hk._should_update(cfg, "key_memory") is True

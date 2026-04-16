@@ -29,12 +29,12 @@ MemoryJudge の LLM 呼び出しを廃止し、実際の検索結果に基づく
 - 既存テスト含む全 330 件パス。
 - **想定レイテンシ削減**: Gatekeeper + MemoryBuild 合計 ~5s → ~1.5s。
 
-## Housekeeper リソース最適化：Stage 2 スキップ＆チャンク分割 (2026-04-04)
+## Sleeptime リソース最適化：Stage 2 スキップ＆チャンク分割 (2026-04-04)
 
-ローカルLLM運用やAPIの長文コンテキスト処理の安定性向上のため、`housekeeper.py` にリソース最適化機能を追加。
+ローカルLLM運用やAPIの長文コンテキスト処理の安定性向上のため、`sleeptime.py` にリソース最適化機能を追加。
 
 ### Stage 2 スキップ機能
-- **`skip_knowledge_generation`** (bool): `config.json > housekeeper` セクションに追加。`true` の場合 Stage 2（ナレッジ化）をスキップし、RAWデータを `1_integrated` に保持する。後日高性能モデルで一括処理可能。
+- **`skip_knowledge_generation`** (bool): `config.json > sleeptime` セクションに追加。`true` の場合 Stage 2（ナレッジ化）をスキップし、RAWデータを `1_integrated` に保持する。後日高性能モデルで一括処理可能。
 - `process_instance()` と `run_with_progress()` の両方で対応。
 
 ### Stage 1 (Digest) チャンク分割
@@ -47,7 +47,7 @@ MemoryJudge の LLM 呼び出しを廃止し、実際の検索結果に基づく
 - JSONファイル単位で分割。「次のファイルを追加すると上限超過 → ここまでで1チャンク」として処理。ファイルの途中で切らない。
 
 ### UI (app.py)
-- Housekeeper 設定画面に3項目追加: 「ナレッジ化スキップ」チェックボックス、「Digest 最大入力文字数」、「Knowledge 最大入力文字数」。
+- Sleeptime 設定画面に3項目追加: 「ナレッジ化スキップ」チェックボックス、「Digest 最大入力文字数」、「Knowledge 最大入力文字数」。
 
 ## 汎用Web検索モジュール追加 (2026-03-31)
 
@@ -125,7 +125,7 @@ Gemini 以外のプロバイダー（OpenAI / Ollama）で Web 検索を利用�
 - **`GeminiProvider` 全同期化**: `generate()`, `summarize()`, `_start_chat()`, `_try_search_with_retry()` の4メソッドを `def` に変更。`client.aio.chats.create()` → `client.chats.create()` に切り替え。全 `await` 除去。
 - **`OpenAIProvider` / `OllamaProvider`**: `generate()`, `summarize()` を `def` に変更（中身の変更なし）。
 - **`ChatService` 修正**: `await provider.generate(...)` → `await run_in_threadpool(provider.generate, ...)` に変更。`from starlette.concurrency import run_in_threadpool` を追追。
-- **クリーンアップ**: `housekeeper.py` の `generate_embedding()` 内の不要な `import asyncio` を削除。`migrate_embeddings.py` の不要な `import asyncio` を削除。
+- **クリーンアップ**: `sleeptime.py` の `generate_embedding()` 内の不要な `import asyncio` を削除。`migrate_embeddings.py` の不要な `import asyncio` を削除。
 - **プロジェクト全体**: `asyncio.run()` 使用箇所 **0件** を確認。テスト **137件全パス**。
 
 ## マルチプロバイダー対応リファクタリング (2026-03-22)
@@ -137,7 +137,7 @@ Gemini 専用だったアーキテクチャを **プロバイダー非依存** �
 - **GeminiProvider 完成**: brain.py から移管した Gemini 固有ロジック（検索リトライ、コンテキストキャッシュ、ハルシネーションフィルタ）を集約。
 - **OpenAIProvider 追加**: GPT-4o 等対応。Vision、embed（text-embedding-3-small）、classify を実装。
 - **OllamaProvider 追加**: ローカル LLM 対応。OpenAI 互換 API（`localhost:11434/v1`）経由。
-- **Gatekeeper / Housekeeper**: `google.genai` 依存を除去し、Provider.classify() / embed() 経由に切り替え。
+- **Gatekeeper / Sleeptime**: `google.genai` 依存を除去し、Provider.classify() / embed() 経由に切り替え。
 - **埋め込みマイグレーション**: プロバイダー切り替え時に embedding_blob を再生成する `migrate_embeddings.py` を追加。
 - **設定ファイル整理**: `.env.example` に全プロバイダーのキーテンプレート、`user_config.json.example` に OpenAI / Ollama の設定例を追加。
 - **app.py / main.py**: `brain.prepare_cache()` を Provider 経由に修正（hasattr チェックで非 Gemini 対応）。
@@ -151,12 +151,12 @@ Gemini 専用だったアーキテクチャを **プロバイダー非依存** �
 ## 直近の主要な実装履歴
 1. **Phase 4 中期記憶要約の動的注入切替**:
 1. **Phase 3 二層要約パイプラインの実装**:
-   - `housekeeper.py` における中期記憶の整理機能を拡張し、出来事と決定事項をまとめた「事実ダイジェスト」と、AIとユーザーの距離感を示す「関係性スナップショット」の二層ファイル生成パイプラインを構築。
+   - `sleeptime.py` における中期記憶の整理機能を拡張し、出来事と決定事項をまとめた「事実ダイジェスト」と、AIとユーザーの距離感を示す「関係性スナップショット」の二層ファイル生成パイプラインを構築。
 2. **OSS向けオープン化準備 / リファクタリング**:
    - 「Jarvis」などのハードコードされた初期名や個人情報を排除し、設定ファイルやテンプレートから動的に読み込む汎用的な「Butly」プラットフォームへと改修。
 3. **ステートフルAPI (Interactions API) の導入** *(削除済み — マルチプロバイダ統一のため廃止)*:
    - 会話ターンごとに長期履歴を全て手動で挿入する状態から、Google Gemini側のセッション履歴保持機構に移行し、不要なトークン消費を抑制。
 4. **FastAPI + Streamlit への分離**:
-   - 処理の非同期化とバックグラウンドタスク（Housekeeper）の安定稼働、UI側のレスポンス向上のため、単一スクリプトからAPIサーバーとフロントエンドの構成に分離。
+   - 処理の非同期化とバックグラウンドタスク（Sleeptime）の安定稼働、UI側のレスポンス向上のため、単一スクリプトからAPIサーバーとフロントエンドの構成に分離。
 5. **インスタンス別記憶の分離**:
    - 複数の別キャラクター・別用途AIを同時に動かせるよう、`butly_core/instances/` ディレクトリ配下で記憶DBとファイルを完全分離。

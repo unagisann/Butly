@@ -28,7 +28,7 @@ flowchart TD
     WS -->|検索結果をcontextに注入| J
     J --> K((返答))
     K --> L["▣ short_term_json 保存"]
-    L -.->|定期処理| M["⚙ Housekeeper<br/>日次 + 週次バッチ"]
+    L -.->|定期処理| M["⚙ Sleeptime<br/>日次 + 週次バッチ"]
     M -.->|統合記憶生成| I
 ```
 
@@ -85,7 +85,7 @@ flowchart LR
 
 ---
 
-## 4. Housekeeper ステージ構成
+## 4. Sleeptime ステージ構成
 
 日次・週次バッチ処理の構成です。
 
@@ -126,7 +126,7 @@ LLM プロバイダー抽象化レイヤーの構成です。
 flowchart TD
     CS["ChatService<br/>(オーケストレーション)"]
     GK["Gatekeeper<br/>(tier 判定)"]
-    HK["Housekeeper<br/>(記憶整理)"]
+    HK["Sleeptime<br/>(記憶整理)"]
     PF["ProviderFactory<br/>(model_name → プロバイダー自動ルーティング)"]
     GE["GeminiProvider<br/>gemini-*"]
     OA["OpenAIProvider<br/>gpt-* / o1 / o3 / o4"]
@@ -182,58 +182,4 @@ flowchart TD
     AR --> A1
     AR --> A2
     AR --> A3
-```
-
----
-
-## 7. 実装ロードマップ
-
-```mermaid
-timeline
-    title Butly Memory Architecture v2 — 実装ロードマップ
-    Phase 1 ✅ : Gatekeeper v2
-                : Gemini API移行
-                : 構造化JSON出力
-                : SessionState導入
-    Phase 2 ✅ : 呼び出し側統合
-                : classify()切替
-                : SessionState実稼働
-                : 記憶注入順序最適化
-    Phase 3 ✅ : 二層要約パイプライン
-                : エピソード付きDigest（日次）
-                : 関係性Snapshot（週次）
-                : sys_inst+key_memory参照
-    Phase 4 ✅ : 要約注入切替
-             : build_system_instruction改修
-             : RAW→要約の切替スイッチ
-             : 品質検証
-    Multi-Provider ✅ : マルチプロバイダー対応
-    Web Search ✅ : 汎用Web検索モジュール
-                  : Tavily API統合
-                  : 非Geminiプロバイダー対応
-             : OpenAI / Ollama 追加
-             : google.genai 隔離
-             : 埋め込みマイグレーション
-    Phase 5 ✅ : Glossary（意味記憶）
-             : need:null RAG スキップ
-             : ChatService RAG 一元化
-             : Gatekeeper / RAG ON/OFF
-    Phase 5.5 ✅ : Gatekeeper headlines + session_state コンパクト化
-             : session_state goals/unresolved 廃止
-             : recent_digest_headlines 導入
-             : StateUpdater 出力簡素化
-    Phase 5.6 ✅ : Housekeeper リソース最適化
-             : Stage 2 スキップ機能
-             : Digest 日付ヘッダチャンク分割
-             : Knowledge ファイル単位チャンク分割
-    Phase 6 : 統合記憶生成
-             : Housekeeper Stage3
-             : reflection / generalization
-             : self_model蓄積開始
-    Phase 6 : GK脳科学チューニング
-             : 意味記憶 vs エピソード記憶
-             : tier判定精度向上
-    最終形 : 完全自律
-            : system_instruction 1行化
-            : 人格の記憶からの自律再構成
 ```

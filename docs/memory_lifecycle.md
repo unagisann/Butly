@@ -18,7 +18,7 @@ During chat (every turn)
   ↓
 [3] memory_archive/1_integrated/  ← transit staging zone
 
-──── During Housekeeper run ───────────────────────────────
+──── During Sleeptime run ───────────────────────────────
 
 [Stage 0] short_term_json/* → moved entirely to 1_integrated/
 
@@ -63,7 +63,7 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # number of files to retain
 | **Written by** | `memory.maintain_memory()` calls `brain.summarize_conversation()` on overflow |
 | **Format** | txt file per conversation: `Time: {timestamp}\n{summary text}` |
 | **Injected by Gatekeeper** | FLOATING SUMMARY block — injected at all tiers (serves as recent conversation context) |
-| **Lifecycle** | All files deleted at Housekeeper run (no data loss since raw JSON exists in 1_integrated) |
+| **Lifecycle** | All files deleted at Sleeptime run (no data loss since raw JSON exists in 1_integrated) |
 | **Model used** | `AI_CONFIG["summary"]["model_name"]` (cost-effective, long-context) |
 
 > **Design intent:** floating_summaries provide temporary context for "the current conversation flow."
@@ -76,7 +76,7 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # number of files to retain
 | Item | Content |
 |---|---|
 | **Location** | `instances/{name}/memory_archive/1_integrated/` |
-| **Written by** | ① `maintain_memory()` moves overflow files here; ② Housekeeper Stage 0 flushes all short_term_json/* here |
+| **Written by** | ① `maintain_memory()` moves overflow files here; ② Sleeptime Stage 0 flushes all short_term_json/* here |
 | **Content** | Same raw JSON files as short_term_json |
 | **Role** | Both Stage 1 (mid_term update) and Stage 2 (knowledgeize) read from here |
 | **Post-processing** | Moved to `2_knowledgeized/{date}/` after Stage 2 completion |
@@ -88,7 +88,7 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # number of files to retain
 | Item | Content |
 |---|---|
 | **Location** | `instances/{name}/mid_term.txt` |
-| **Written by** | Housekeeper Stage 1 (`stage_1_cleanup`) — formats 1_integrated JSONs as text and appends |
+| **Written by** | Sleeptime Stage 1 (`stage_1_cleanup`) — formats 1_integrated JSONs as text and appends |
 | **Limit** | `max_mid_term_chars` (default: 30,000 characters) |
 | **Overflow** | Oldest characters archived to `memory_archive/3_log/archive_long_term.txt`; only recent portion retained |
 | **Injected by Gatekeeper** | When `use_summarized_mid_term = False` (RAW mode): injected as MID-TERM MEMORY block at mid / cortex tiers |
@@ -107,7 +107,7 @@ SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True = summary inje
 | Item | Content |
 |---|---|
 | **Location** | `instances/{name}/mid_term_digest.txt` |
-| **Written by** | Housekeeper Stage 1 `_generate_daily_digest()` — extracts facts from today's raw log via LLM, incremental append |
+| **Written by** | Sleeptime Stage 1 `_generate_daily_digest()` — extracts facts from today's raw log via LLM, incremental append |
 | **Input** | Only today's raw log text (`new_text`). Never summarizes a summary |
 | **Input chunking** | When `digest_max_input_chars` is set, splits at date headers `[YYYY-MM-DD ...]` into chunks, sends each to LLM, then combines results |
 | **Limit** | `max_digest_chars` (default: 8,000 characters) |
@@ -120,7 +120,7 @@ SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True = summary inje
 ```python
 SYSTEM_CONFIG["memory"]["generate_mid_term_summaries"] = True
 SYSTEM_CONFIG["memory"]["max_digest_chars"] = 8000
-# config.json > housekeeper section:
+# config.json > sleeptime section:
 digest_max_input_chars = 0   # Max input chars per LLM call. 0 = unlimited
 ```
 
@@ -131,11 +131,11 @@ digest_max_input_chars = 0   # Max input chars per LLM call. 0 = unlimited
 | Item | Content |
 |---|---|
 | **Location** | `instances/{name}/recent_digest_headlines.json` |
-| **Written by** | Housekeeper Stage 1 `_generate_recent_headlines()` — extracts up to 4 headlines from digest via LLM |
+| **Written by** | Sleeptime Stage 1 `_generate_recent_headlines()` — extracts up to 4 headlines from digest via LLM |
 | **Input** | Tail of `mid_term_digest.txt` (max 10,000 chars) |
 | **Format** | JSON array of `{"type": "topic" or "event", "headline": "20-40 char summary"}` |
-| **Used by** | `Gatekeeper.__init__()` loads headlines and passes to TierClassifier for memory_reference_likelihood scoring |
-| **Lifecycle** | Overwritten on every Housekeeper run |
+| **Used by** | `Gatekeeper.__init__()` loads headlines and passes to ContextClassifier for scoring |
+| **Lifecycle** | Overwritten on every Sleeptime run |
 | **Model used** | `AI_CONFIG["summary"]["model_name"]` (Flash Lite class) |
 
 ---
@@ -145,7 +145,7 @@ digest_max_input_chars = 0   # Max input chars per LLM call. 0 = unlimited
 | Item | Content |
 |---|---|
 | **Location** | `instances/{name}/mid_term_relationship.txt` |
-| **Written by** | Housekeeper Stage 1 `_update_relationship_if_due()` — full overwrite every 7 days |
+| **Written by** | Sleeptime Stage 1 `_update_relationship_if_due()` — full overwrite every 7 days |
 | **Input** | `mid_term_digest.txt` (accumulated fact digest) — does NOT use daily fragments directly |
 | **Update frequency** | Only updated when `relationship_update_interval_days` (default: 7 days) have elapsed since last update |
 | **Injected by Gatekeeper** | When `use_summarized_mid_term = True`: injected as RELATIONSHIP SNAPSHOT block at mid / cortex tiers |
@@ -165,14 +165,14 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | Item | Content |
 |---|---|
 | **Location** | `instances/{name}/butly_memory.db` |
-| **Written by** | Housekeeper Stage 2 (`stage_2_knowledgeize`) — LLM extracts knowledge cards per date group, INSERTs into DB |
+| **Written by** | Sleeptime Stage 2 (`stage_2_knowledgeize`) — LLM extracts knowledge cards per date group, INSERTs into DB |
 | **Input** | Raw JSON from 1_integrated, combined per date |
 | **Input chunking** | When `knowledge_max_input_chars` is set, splits at JSON file boundaries. "Adding the next file would exceed the limit → commit current chunk" |
 | **Skip feature** | When `skip_knowledge_generation = true`, Stage 2 is skipped entirely. RAW data remains in 1_integrated for later batch processing with a higher-capability model |
 | **Schema** | `knowledge_cards` table (see below) |
 | **Embedding** | `title + tags + summary` embedded via `AI_CONFIG["embedding"]["model_name"]` → stored as BLOB |
 | **Search** | `ButlyBrain.search_memories()` re-ranks by cosine similarity between query and embedding_blob |
-| **Injected by Gatekeeper** | cortex tier only: RAG search using `search_targets` from SearchPlanner, injected as LONG-TERM MEMORY block |
+| **Injected by Gatekeeper** | cortex tier only: RAG search using candidates from MemoryProbe, injected as LONG-TERM MEMORY block |
 | **Post-processing** | Processed JSONs moved to `memory_archive/2_knowledgeized/{date}/` |
 | **Backup** | Rotation backup saved to `butly_core/db_backups/` (generations: `backup.generations`) |
 
@@ -193,12 +193,12 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 
 ---
 
-## Housekeeper Execution Flow (Detailed)
+## Sleeptime Execution Flow (Detailed)
 
-The Housekeeper runs via manual trigger or scheduled execution, processing each instance in sequence.
+The Sleeptime runs via manual trigger or scheduled execution, processing each instance in sequence.
 
 ```
-ButlyHousekeeper.run()
+ButlySleeptime.run()
   ↓
   process_instance(instance_path)  ← called for each instance
     ├── stage_1_cleanup(instance_path)
@@ -224,7 +224,7 @@ ButlyHousekeeper.run()
 
 ## Real-Time Processing During Chat
 
-Independent of the Housekeeper, the following processing occurs during every chat turn:
+Independent of the Sleeptime, the following processing occurs during every chat turn:
 
 ```
 1. User message received
@@ -264,7 +264,7 @@ instances/{name}/
 ├── recent_digest_headlines.json  # recent conversation headlines (Gatekeeper input)
 ├── butly_memory.db            # ⑦ long-term vector DB
 └── memory_archive/
-    ├── 1_integrated/          # ③ raw JSONs awaiting Housekeeper processing
+    ├── 1_integrated/          # ③ raw JSONs awaiting Sleeptime processing
     ├── 2_knowledgeized/       # knowledgeized JSONs (per-date folders)
     │   └── {YYYY-MM-DD}/
     └── 3_log/
@@ -285,4 +285,4 @@ instances/{name}/
 | Recent headlines extraction | `AI_CONFIG["summary"]["model_name"]` | Generate recent_digest_headlines.json |
 | Knowledge card extraction | `AI_CONFIG["knowledge"]["model_name"]` | Stage 2 RAG DB extraction |
 | Embedding vector generation | `AI_CONFIG["embedding"]["model_name"]` | knowledge_cards.embedding_blob |
-| Tier classification | `AI_CONFIG["gatekeeper"]["model_name"]` | TierClassifier 4-score output |
+| Tier classification | `AI_CONFIG["gatekeeper"]["model_name"]` | ContextClassifier 3-score output |

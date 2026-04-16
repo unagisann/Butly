@@ -23,7 +23,7 @@ class TestPromptLoaderBasic:
     def test_load_locales_template(self):
         """locales プロンプト（人格）を読み込める"""
         loader = PromptLoader(locale="ja")
-        template = loader.get_template("housekeeper_summarize")
+        template = loader.get_template("sleeptime_summarize")
         assert len(template) > 0
         assert "{agent_name}" in template
 
@@ -34,7 +34,7 @@ class TestPromptLoaderBasic:
             "tier_classifier",
             "state_updater",
             "search_planner",
-            "housekeeper_summarize",
+            "sleeptime_summarize",
             "brain_extract_keywords",
             "brain_summarize_conversation",
             "midterm_digest",
@@ -75,13 +75,13 @@ class TestPromptLoaderFallback:
     def test_en_locale_loads_locales(self):
         """en locale で locales プロンプトが読み込める"""
         loader = PromptLoader(locale="en")
-        template = loader.get_template("housekeeper_summarize")
+        template = loader.get_template("sleeptime_summarize")
         assert len(template) > 0
 
     def test_unknown_locale_falls_back_to_en(self):
         """未定義localeは en にフォールバック"""
         loader = PromptLoader(locale="ko")
-        template = loader.get_template("housekeeper_summarize")
+        template = loader.get_template("sleeptime_summarize")
         assert len(template) > 0
 
     def test_unknown_locale_unknown_template_raises(self):
@@ -130,7 +130,7 @@ class TestBackwardCompat:
     def test_legacy_constants_available(self):
         """旧定数名がimportできる"""
         from butly_core.prompts import (
-            HOUSEKEEPER_SUMMARIZE_PROMPT,
+            SLEEPTIME_SUMMARIZE_PROMPT,
             BRAIN_EXTRACT_KEYWORDS_PROMPT,
             BRAIN_SUMMARIZE_CONVERSATION_PROMPT,
             GATEKEEPER_CLASSIFY_PROMPT,
@@ -139,7 +139,7 @@ class TestBackwardCompat:
             RECENT_SNAPSHOT_PROMPT,
             WEB_UI_DEFAULT_TEMPLATE,
         )
-        assert len(HOUSEKEEPER_SUMMARIZE_PROMPT) > 0
+        assert len(SLEEPTIME_SUMMARIZE_PROMPT) > 0
         assert len(BRAIN_EXTRACT_KEYWORDS_PROMPT) > 0
         assert len(BRAIN_SUMMARIZE_CONVERSATION_PROMPT) > 0
         assert len(GATEKEEPER_CLASSIFY_PROMPT) > 0
@@ -156,5 +156,5 @@ class TestBackwardCompat:
     def test_module_import_style(self):
         """from butly_core import prompts スタイルのimport"""
         from butly_core import prompts
-        assert hasattr(prompts, "HOUSEKEEPER_SUMMARIZE_PROMPT")
+        assert hasattr(prompts, "SLEEPTIME_SUMMARIZE_PROMPT")
         assert hasattr(prompts, "PromptLoader")

@@ -19,12 +19,12 @@
   },
   {
     "title": "v0.11 — 設定画面の拡充",
-    "description": "モデルパラメータ・Memory設定・Housekeeper履歴など、設定周りの機能を充実させる。",
+    "description": "モデルパラメータ・Memory設定・Sleeptime履歴など、設定周りの機能を充実させる。",
     "due_on": null,
     "issue_titles": [
       "モデルパラメータ設定の拡充（top_p 等）",
       "Memory 設定の補完（digest/relationship サイズ制御）",
-      "Housekeeper 管理画面に実行履歴を追加"
+      "Sleeptime 管理画面に実行履歴を追加"
     ]
   },
   {

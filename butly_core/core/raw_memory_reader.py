@@ -196,7 +196,7 @@ def build_raw_memory_cache(
 ) -> dict:
     """2_knowledgeized/ の JSON からキャッシュファイルを生成する。
 
-    Housekeeper 実行時や手動再生成時に呼ばれる。
+    Sleeptime 実行時や手動再生成時に呼ばれる。
     毎回全体を再構築する（インクリメンタル追記ではない）。
 
     Args:

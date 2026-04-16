@@ -245,8 +245,8 @@ if "api_base_url" not in st.session_state:
 # テーマカラー (Butlyアプリ対応)
 if "theme_color" not in st.session_state:
     st.session_state.theme_color = "teal"
-if "housekeeper_instance" not in st.session_state:
-    st.session_state.housekeeper_instance = None
+if "sleeptime_instance" not in st.session_state:
+    st.session_state.sleeptime_instance = None
 if "db_browser_instance" not in st.session_state:
     st.session_state.db_browser_instance = None
 if "card_edit_id" not in st.session_state:
@@ -791,11 +791,11 @@ def render_settings_screen():
 
 
 # ==========================================
-# 🧹 Housekeeper画面
+# 🧹 Sleeptime画面
 # ==========================================
-def render_housekeeper_screen():
+def render_sleeptime_screen():
     import requests
-    instance_name = st.session_state.housekeeper_instance or st.session_state.current_instance
+    instance_name = st.session_state.sleeptime_instance or st.session_state.current_instance
     api_url = st.session_state.api_base_url
 
     col1, col2 = st.columns([1, 8])
@@ -808,7 +808,7 @@ def render_housekeeper_screen():
     # 実行中かどうかをまずサーバーに確認
     is_running = st.session_state.get("hk_running", False)
     try:
-        status_resp = requests.get(f"{api_url}/housekeeper/status/{instance_name}", timeout=5)
+        status_resp = requests.get(f"{api_url}/sleeptime/status/{instance_name}", timeout=5)
         if status_resp.ok:
             server_status = status_resp.json()
             if server_status.get("state") == "running":
@@ -824,7 +824,7 @@ def render_housekeeper_screen():
         progress_bar = st.progress(0)
         for _ in range(600):  # 最大10分ポーリング
             try:
-                r = requests.get(f"{api_url}/housekeeper/status/{instance_name}", timeout=5)
+                r = requests.get(f"{api_url}/sleeptime/status/{instance_name}", timeout=5)
                 status = r.json() if r.ok else {}
             except Exception:
                 status = {}
@@ -846,7 +846,7 @@ def render_housekeeper_screen():
         # --- 待機中UI ---
         # 推定情報の取得
         try:
-            resp = requests.get(f"{api_url}/housekeeper/estimate/{instance_name}", timeout=5)
+            resp = requests.get(f"{api_url}/sleeptime/estimate/{instance_name}", timeout=5)
             est = resp.json() if resp.ok else {}
         except Exception:
             est = {}
@@ -876,7 +876,7 @@ def render_housekeeper_screen():
         else:
             if st.button("▶ 整理を開始する", type="primary", use_container_width=True):
                 try:
-                    r = requests.post(f"{api_url}/housekeeper/run", json={"instance_name": instance_name}, timeout=5)
+                    r = requests.post(f"{api_url}/sleeptime/run", json={"instance_name": instance_name}, timeout=5)
                     if r.ok:
                         st.session_state["hk_running"] = True
                         st.rerun()
@@ -1090,8 +1090,8 @@ def render_instance_settings_screen():
         config["agent_profile"] = {}
     if "user_profile" not in config:
         config["user_profile"] = {}
-    if "housekeeper" not in config:
-        config["housekeeper"] = {}
+    if "sleeptime" not in config:
+        config["sleeptime"] = {}
 
     # --- 全プロバイダーのモデル候補リスト ---
     _gemini_models = [
@@ -1342,11 +1342,11 @@ def render_instance_settings_screen():
         st.divider()
 
         # ==========================================
-        # 📝 Housekeeper 設定
+        # 📝 Sleeptime 設定
         # ==========================================
-        st.subheader("📝 Housekeeper 設定")
+        st.subheader("📝 Sleeptime 設定")
         st.caption("記憶の整理・要約・ナレッジ化のパラメータを調整します。")
-        _hk_conf = config.get("housekeeper", {})
+        _hk_conf = config.get("sleeptime", {})
 
         hk_skip_knowledge = st.checkbox(
             "ナレッジ化 (Stage 2) をスキップ",
@@ -1653,10 +1653,10 @@ def render_instance_settings_screen():
 
         st.divider()
 
-        # Housekeeper Button
-        if st.button("🧹 記憶の整理 (Housekeeper)", use_container_width=True):
-            st.session_state.housekeeper_instance = instance_name
-            navigate_to("housekeeper")
+        # Sleeptime Button
+        if st.button("🧹 記憶の整理 (Sleeptime)", use_container_width=True):
+            st.session_state.sleeptime_instance = instance_name
+            navigate_to("sleeptime")
         st.caption("短期記憶を整理し、知識カードとして長期記憶に保存します。")
 
         st.divider()
@@ -1772,8 +1772,8 @@ def render_instance_settings_screen():
         }
         config.pop("agent", None)
 
-        # housekeeper 設定の保存
-        config["housekeeper"] = {
+        # sleeptime 設定の保存
+        config["sleeptime"] = {
             "skip_knowledge_generation": hk_skip_knowledge,
             "max_digest_chars": hk_max_digest,
             "max_relationship_chars": hk_max_relationship,
@@ -1829,9 +1829,9 @@ def render_chat_screen():
         if st.button("⚙️", help="インスタンス設定"):
             navigate_to("instance_settings")
     with col4:
-        if st.button("🧹", help="記憶の整理 (Housekeeper)"):
-            st.session_state.housekeeper_instance = instance_name
-            navigate_to("housekeeper")
+        if st.button("🧹", help="記憶の整理 (Sleeptime)"):
+            st.session_state.sleeptime_instance = instance_name
+            navigate_to("sleeptime")
     with col5:
         if st.button("🔄", help="履歴をリロード"):
             st.session_state.messages = []
@@ -2183,8 +2183,8 @@ def main():
         render_settings_screen()
     elif st.session_state.current_page == "instance_settings":
         render_instance_settings_screen()
-    elif st.session_state.current_page == "housekeeper":
-        render_housekeeper_screen()
+    elif st.session_state.current_page == "sleeptime":
+        render_sleeptime_screen()
     elif st.session_state.current_page == "database_browser":
         render_database_browser_screen()
     elif st.session_state.current_page == "card_edit":

@@ -133,12 +133,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from routers import chat, instances, settings, housekeeper, database, devices, dashboard
+from routers import chat, instances, settings, sleeptime, database, devices, dashboard
 
 app.include_router(chat.router)
 app.include_router(instances.router)
 app.include_router(settings.router)
-app.include_router(housekeeper.router)
+app.include_router(sleeptime.router)
 app.include_router(database.router)
 app.include_router(devices.router)
 app.include_router(dashboard.router)

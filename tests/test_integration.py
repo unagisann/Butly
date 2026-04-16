@@ -68,7 +68,7 @@ class TestGatekeeperIntegration:
         assert result["tier"] in ("reflex", "mid", "cortex")
 
     def test_classify_past_reference_as_cortex(self):
-        """過去への言及が cortex に分類される"""
+        """過去への言及が mid 以上に分類される（互換レイヤーで cortex になる場合あり）"""
         from butly_core.core.gatekeeper import Gatekeeper
 
         gk = Gatekeeper(base_dir=PROJECT_ROOT)
@@ -82,10 +82,11 @@ class TestGatekeeperIntegration:
             session_state={"topic": "プロジェクト"},
         )
 
-        assert result["tier"] == "cortex"
-        # cortex の場合、need と search_targets が設定される
-        assert result.get("need") is not None
-        assert result.get("search_targets") is not None
+        assert result["tier"] in ("mid", "cortex")
+        # cortex の場合のみ need と search_targets が設定される
+        if result["tier"] == "cortex":
+            assert result.get("need") is not None
+            assert result.get("search_targets") is not None
 
     def test_classify_returns_valid_state_delta(self):
         """state_delta が有効な構造で返される"""

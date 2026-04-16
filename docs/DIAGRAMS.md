@@ -28,7 +28,7 @@ flowchart TD
     WS -->|inject results into context| J
     J --> K((Response))
     K --> L["▣ short_term_json save"]
-    L -.->|scheduled| M["⚙ Housekeeper<br/>Daily + Weekly batch"]
+    L -.->|scheduled| M["⚙ Sleeptime<br/>Daily + Weekly batch"]
     M -.->|integrated memory generation| I
 ```
 
@@ -85,7 +85,7 @@ flowchart LR
 
 ---
 
-## 4. Housekeeper Stage Configuration
+## 4. Sleeptime Stage Configuration
 
 The configuration of daily and weekly batch processing.
 
@@ -126,7 +126,7 @@ The structure of the LLM provider abstraction layer.
 flowchart TD
     CS["ChatService<br/>(Orchestration)"]
     GK["Gatekeeper<br/>(Tier classification)"]
-    HK["Housekeeper<br/>(Memory maintenance)"]
+    HK["Sleeptime<br/>(Memory maintenance)"]
     PF["ProviderFactory<br/>(model_name → provider auto-routing)"]
     GE["GeminiProvider<br/>gemini-*"]
     OA["OpenAIProvider<br/>gpt-* / o1 / o3 / o4"]
@@ -182,58 +182,4 @@ flowchart TD
     AR --> A1
     AR --> A2
     AR --> A3
-```
-
----
-
-## 7. Implementation Roadmap
-
-```mermaid
-timeline
-    title Butly Memory Architecture v2 — Implementation Roadmap
-    Phase 1 ✅ : Gatekeeper v2
-                : Gemini API migration
-                : Structured JSON output
-                : SessionState introduction
-    Phase 2 ✅ : Caller-side integration
-                : classify() switch
-                : SessionState live operation
-                : Memory injection order optimization
-    Phase 3 ✅ : Two-layer summary pipeline
-                : Episode-tagged Digest (daily)
-                : Relationship Snapshot (weekly)
-                : sys_inst+key_memory reference
-    Phase 4 ✅ : Summary injection switch
-             : build_system_instruction refactor
-             : RAW→Summary toggle switch
-             : Quality validation
-    Multi-Provider ✅ : Multi-provider support
-    Web Search ✅ : Generic web search module
-                  : Tavily API integration
-                  : Non-Gemini provider support
-             : OpenAI / Ollama added
-             : google.genai isolation
-             : Embedding migration
-    Phase 5 ✅ : Glossary (Semantic memory)
-             : need:null RAG skip
-             : ChatService RAG consolidation
-             : Gatekeeper / RAG ON/OFF
-    Phase 5.5 ✅ : Gatekeeper headlines + session_state compactification
-             : session_state goals/unresolved removal
-             : recent_digest_headlines introduction
-             : StateUpdater output simplification
-    Phase 5.6 ✅ : Housekeeper resource optimization
-             : Stage 2 skip feature
-             : Digest date-header chunk splitting
-             : Knowledge file-boundary chunk splitting
-    Phase 6 : Integrated memory generation
-             : Housekeeper Stage3
-             : reflection / generalization
-             : self_model accumulation start
-    Phase 6 : GK neuroscience tuning
-             : Semantic memory vs Episodic memory
-             : Tier classification accuracy improvement
-    Final Form : Full autonomy
-                : system_instruction single line
-                : Autonomous persona reconstruction from memory
 ```

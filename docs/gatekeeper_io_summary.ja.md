@@ -6,28 +6,35 @@
 
 ---
 
-## アーキテクチャ概要
+## アーキテクチャ概要（Phase 1.5）
 
 Gatekeeper は以下の 4 コンポーネントに分割されています。
 `Gatekeeper` クラスが facade として各コンポーネントをオーケストレーションします。
 
 | コンポーネント | ファイル | 役割 |
 |---|---|---|
-| `TierClassifier` | `tier_classifier.py` | LLM に 4 スコアを出力させ、Python 側で tier を最終決定 |
+| `ContextClassifier` | `context_classifier.py` | LLM に 3 スコア（`rc`/`ew`/`cn`）を出力させ、Python 側で reflex か mid を決定 |
 | `StateUpdater` | `state_updater.py` | ユーザー発言から session_state の差分（state_delta）を生成 |
-| `SearchPlanner` | `search_planner.py` | cortex 時のみ呼び出され、RAG 検索キーワードを生成。`need: null` で RAG スキップ可 |
+| `MemoryProbe` | `memory_probe.py` | LLM呼び出しなしの事実ベース記憶検索（ベクトル検索 + 用語集マッチ） |
 | `MemoryBlockBuilder` | `memory_builder.py` | tier に応じた記憶ブロック辞書を構築し Brain へ渡す |
+
+> **備考:** `TierClassifier`（4スコア・3値tier）と `SearchPlanner` は後方互換のため残存していますが、アクティブパスでは使用されていません。
 
 ### 処理フロー
 
 ```
 ユーザー発言
   ↓
-[A] TierClassifier.classify()   ← LLM呼び出し（並列実行）
-[B] StateUpdater.update()       ← LLM呼び出し（並列実行）
-[C] SearchPlanner.plan()        ← cortex 時のみ
+[A] ContextClassifier.classify()   ← LLM呼び出し（並列実行）
+[B] StateUpdater.update()          ← LLM呼び出し（並列実行）
   ↓
-Gatekeeper.classify() が結果をマージして返却
+[C] MemoryProbe.probe()            ← LLM不要（~100ms）
+    ├─ Layer 1: Quick Vector Search（コサイン類似度）
+    ├─ Layer 1.5: Glossary Match（term/aliases）
+    └─ Layer 2: Deep Search（条件付き — 過去参照パターン検出時のみ）
+  ↓
+Gatekeeper.classify() が結果をマージ
+  （mid + probe ヒット → 互換レイヤーで cortex に昇格）
   ↓
 MemoryBlockBuilder.build()  → Brain へのプロンプト構築
 ```
@@ -36,12 +43,12 @@ MemoryBlockBuilder.build()  → Brain へのプロンプト構築
 
 ## 1. Gatekeeper が【受け取る情報】（各コンポーネントへの入力）
 
-### TierClassifier への入力
+### ContextClassifier への入力
 
 - **ユーザーの最新の発言** (`user_input`)
 - **直近の会話履歴** (`history_msgs`): 直近のやり取り（最大 3 ターン分）
 - **現在のトピック** (`current_topic`): SessionState から渡される話題文字列
-- **最近の会話ヘッドライン** (`recent_headlines`): `recent_digest_headlines.json` から抽出されたヘッドライン（Housekeeper 日次バッチで生成）
+- **最近の会話ヘッドライン** (`recent_headlines`): `recent_digest_headlines.json` から抽出されたヘッドライン（Sleeptime 日次バッチで生成）
 
 ### StateUpdater への入力
 
@@ -53,11 +60,11 @@ MemoryBlockBuilder.build()  → Brain へのプロンプト構築
   - `turn_count`: 経過ターン数
   - `last_tier`: 直前の処理 tier
 
-### SearchPlanner への入力（cortex 時のみ）
+### MemoryProbe への入力
 
 - **ユーザーの最新の発言** (`user_input`)
-- **直近の会話履歴** (`history_msgs`)
-- **現在のトピック** (`current_topic`)
+- **Brain インスタンス** (`brain`): ナレッジDBに対するベクトル検索用
+- **Memory manager** (`memory_manager`): 用語集の参照用
 
 ---
 
@@ -65,10 +72,10 @@ MemoryBlockBuilder.build()  → Brain へのプロンプト構築
 
 ```python
 {
-    "tier": "reflex" | "mid" | "cortex",
+    "tier": "reflex" | "mid" | "cortex",  # cortex = mid + MemoryProbe ヒット（互換レイヤー）
     "topic": str,          # state_delta または現在 topic
-    "need": str | None,   # cortex 時のみ。null の場合 RAG 検索をスキップ
-    "search_targets": list[str] | None,  # cortex 時のみ。need が null なら null
+    "need": str | None,   # cortex 時のみ。"memory_probe_hit" or "memory_probe_deep_search"
+    "search_targets": list[str] | None,  # cortex 時のみ
     "state_delta": {
         "topic": str | None,
         "mood": str | None,
@@ -76,22 +83,26 @@ MemoryBlockBuilder.build()  → Brain へのプロンプト構築
     "llm_scoring": {
         "response_complexity": float,      # 0〜1
         "emotional_weight": float,         # 0〜1
-        "memory_reference_likelihood": float,  # 0〜1
         "continuity_need": float           # 0〜1
+    },
+    "memory_probe": {
+        "status": "hit" | "no_hit" | "deep_search",
+        "candidates": list[dict],      # probe からの RAG 検索結果
+        "glossary_hits": list[dict]     # マッチした用語集エントリ
     }
 }
 ```
 
-### tier 判定ルール（TierClassifier）
+### tier 判定ルール（ContextClassifier）
 
-LLM が出力する 4 スコアを Python 側で以下のルールで tier を決定します:
+ContextClassifier が LLM に 3 スコアを出力させ、Python 側で以下のルールで tier を決定します:
 
 | 条件 | 結果 |
 |---|---|
-| `memory_reference_likelihood ≥ 0.7` | → `cortex` |
-| `response_complexity ≥ 0.8` または `continuity_need ≥ 0.8` | → `mid` 以上 |
-| `emotional_weight ≥ 0.7` | → `mid` 以上 |
-| 上記にかからない | → `reflex` |
+| `response_complexity <= 0.4` AND `continuity_need <= 0.3` | → `reflex` |
+| 上記以外 | → `mid` |
+
+> **互換レイヤー:** `tier == "mid"` かつ MemoryProbe がヒットした場合、後方互換のため `cortex` に昇格します。将来のフェーズで廃止予定。
 
 ---
 
@@ -127,13 +138,13 @@ LLM が出力する 4 スコアを Python 側で以下のルールで tier を�
     （要約ファイルがない場合は RAW にフォールバック）
 - 現在の話題に関する質問や、少し前のやり取りの前提を踏まえる会話で発動。
 
-#### 【 Tier 3 】 cortex（大脳皮質）
+#### 【 Tier 3 】 cortex（大脳皮質）— 互換レイヤー
 - **追加情報**:
   - mid の情報すべて
   - ➕ **LONG-TERM MEMORY (RAG)**: `butly_memory.db` からの検索結果
-    （SearchPlanner が生成した `search_targets` をキーワードに使用）
-  - ※ SearchPlanner が `need: null` を返した場合は RAG 検索をスキップ
-- 「あの時の」といった過去への言及や、深い考察が必要な問いで発動。
+    （MemoryProbe が返した候補を使用）
+  - ※ MemoryProbe が `status: "no_hit"` を返した場合、tier は `mid` のままで RAG は注入されない
+- tier が `mid` かつ MemoryProbe がヒットした場合に有効化。将来のフェーズで廃止予定の後方互換レイヤー。
 
 ---
 
@@ -149,5 +160,4 @@ state_delta = {
 }
 ```
 
-**注記:** `goals`, `unresolved`, `add_goal`, `add_unresolved`, `resolve` フィールドは廃止されました。  
-SearchPlanner には `recent_headlines` は渡されません — これは意図的な設計判断です（実装計画の設計判断セクション参照）。
+**注記:** `goals`, `unresolved`, `add_goal`, `add_unresolved`, `resolve` フィールドは廃止されました。
