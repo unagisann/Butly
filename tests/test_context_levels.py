@@ -251,7 +251,7 @@ class TestContextPrefixLevels:
     def test_normal_preset_same_as_default(self, memory_manager):
         """normal プリセットはデフォルトと同じ出力"""
         blocks = {
-            "tier": "cortex",
+            "tier": "mid",
             "short_term": [],
             "floating": "浮動要約テスト",
             "mid_term": "中期記憶テスト",
@@ -325,7 +325,7 @@ class TestContextPrefixLevels:
     def test_rag_low_truncated(self, memory_manager):
         """rag low で先頭3行に圧縮"""
         blocks = {
-            "tier": "cortex",
+            "tier": "mid",
             "mid_term": "",
             "mid_term_mode": "raw",
             "rag_context": "記憶1\n記憶2\n記憶3\n記憶4\n記憶5",

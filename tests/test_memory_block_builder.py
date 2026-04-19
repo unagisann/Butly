@@ -132,15 +132,15 @@ class TestMidTier:
             assert "トーン" in blocks.get("mid_term_recent_snapshot", "")
 
 
-class TestCortexTier:
-    """cortex tier のブロック構築テスト"""
+class TestRAGWithNeed:
+    """need 有時の RAG ブロック構築テスト"""
 
-    def test_cortex_has_rag_context(self, memory_manager, mock_brain):
-        """cortex: probe candidates から RAG コンテキストが構築される"""
+    def test_need_has_rag_context(self, memory_manager, mock_brain):
+        """need 有り: probe candidates から RAG コンテキストが構築される"""
         builder = MemoryBlockBuilder()
 
         gk_output = {
-            "tier": "cortex",
+            "tier": "mid",
             "need": "memory_probe_hit",
             "search_targets": ["テストプロジェクト"],
             "memory_probe": {
@@ -160,29 +160,29 @@ class TestCortexTier:
         }
 
         blocks = builder.build(
-            tier="cortex",
+            tier="mid",
             memory_manager=memory_manager,
             brain=mock_brain,
             user_input="前に話したプロジェクトの件を教えて",
             gatekeeper_output=gk_output,
         )
 
-        assert blocks["tier"] == "cortex"
+        assert blocks["tier"] == "mid"
         assert blocks["rag_context"] != ""
         assert "テストプロジェクト" in blocks["rag_context"]
 
-    def test_cortex_includes_need_and_targets(self, memory_manager, mock_brain):
-        """cortex: need と search_targets が伝播される"""
+    def test_need_includes_need_and_targets(self, memory_manager, mock_brain):
+        """が伝播される"""
         builder = MemoryBlockBuilder()
 
         gk_output = {
-            "tier": "cortex",
+            "tier": "mid",
             "need": "バグの詳細",
             "search_targets": ["バグ", "修正"],
         }
 
         blocks = builder.build(
-            tier="cortex",
+            tier="mid",
             memory_manager=memory_manager,
             brain=mock_brain,
             user_input="あのバグの件",
@@ -192,12 +192,12 @@ class TestCortexTier:
         assert blocks["need"] == "バグの詳細"
         assert blocks["search_targets"] == ["バグ", "修正"]
 
-    def test_cortex_without_brain_skips_rag(self, memory_manager):
-        """cortex: brain=None の場合は RAG がスキップされる"""
+    def test_no_need_skips_rag(self, memory_manager):
+        """need=None の場合は RAG がスキップされる"""
         builder = MemoryBlockBuilder()
 
         blocks = builder.build(
-            tier="cortex",
+            tier="mid",
             memory_manager=memory_manager,
             brain=None,
             user_input="深い相談",
@@ -205,12 +205,12 @@ class TestCortexTier:
 
         assert blocks["rag_context"] == ""
 
-    def test_cortex_without_input_skips_rag(self, memory_manager, mock_brain):
-        """cortex: user_input が空の場合は RAG がスキップされる"""
+    def test_no_input_skips_rag(self, memory_manager, mock_brain):
+        """user_input が空の場合は RAG がスキップされる"""
         builder = MemoryBlockBuilder()
 
         blocks = builder.build(
-            tier="cortex",
+            tier="mid",
             memory_manager=memory_manager,
             brain=mock_brain,
             user_input="",
@@ -222,7 +222,7 @@ class TestCortexTier:
 class TestBlockStructure:
     """全 tier 共通の構造テスト"""
 
-    @pytest.mark.parametrize("tier", ["reflex", "mid", "cortex"])
+    @pytest.mark.parametrize("tier", ["reflex", "mid"])
     def test_all_tiers_have_required_keys(self, tier, memory_manager, mock_brain):
         """全 tier で必須キーが存在する"""
         builder = MemoryBlockBuilder()
@@ -237,7 +237,7 @@ class TestBlockStructure:
         required_keys = {"tier", "short_term", "floating", "mid_term", "rag_context"}
         assert required_keys.issubset(blocks.keys())
 
-    @pytest.mark.parametrize("tier", ["reflex", "mid", "cortex"])
+    @pytest.mark.parametrize("tier", ["reflex", "mid"])
     def test_tier_value_matches_input(self, tier, memory_manager, mock_brain):
         """返却される tier 値が入力と一致する"""
         builder = MemoryBlockBuilder()

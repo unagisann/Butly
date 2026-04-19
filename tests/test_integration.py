@@ -51,8 +51,8 @@ class TestGatekeeperIntegration:
         assert result["tier"] in ("reflex", "mid")  # 挨拶は reflex が期待だが mid も許容
         assert "tier" in result
 
-    def test_classify_technical_as_mid_or_cortex(self):
-        """技術的な質問が mid または cortex に分類される"""
+    def test_classify_technical_as_mid(self):
+        """技術的な質問が reflex または mid に分類される"""
         from butly_core.core.gatekeeper import Gatekeeper
 
         gk = Gatekeeper(base_dir=PROJECT_ROOT)
@@ -64,11 +64,11 @@ class TestGatekeeperIntegration:
         )
 
         # 新しいシグナルベースの tier 判定では、履歴なしの場合
-        # reflex/mid/cortex いずれにもなりうる（LLMのシグナル次第）
-        assert result["tier"] in ("reflex", "mid", "cortex")
+        # reflex/mid いずれにもなりうる（LLMのシグナル次第）
+        assert result["tier"] in ("reflex", "mid")
 
-    def test_classify_past_reference_as_cortex(self):
-        """過去への言及が mid 以上に分類される（互換レイヤーで cortex になる場合あり）"""
+    def test_classify_past_reference_with_need(self):
+        """過去への言及が mid に分類され、need が設定される場合がある"""
         from butly_core.core.gatekeeper import Gatekeeper
 
         gk = Gatekeeper(base_dir=PROJECT_ROOT)
@@ -82,10 +82,9 @@ class TestGatekeeperIntegration:
             session_state={"topic": "プロジェクト"},
         )
 
-        assert result["tier"] in ("mid", "cortex")
-        # cortex の場合のみ need と search_targets が設定される
-        if result["tier"] == "cortex":
-            assert result.get("need") is not None
+        assert result["tier"] in ("reflex", "mid")
+        # need が設定されている場合は search_targets も設定される
+        if result.get("need"):
             assert result.get("search_targets") is not None
 
     def test_classify_returns_valid_state_delta(self):

@@ -15,10 +15,8 @@ import json
 import concurrent.futures
 
 from butly_core.core.gatekeeper.session_state import SessionState
-from butly_core.core.gatekeeper.tier_classifier import TierClassifier
 from butly_core.core.gatekeeper.context_classifier import ContextClassifier
 from butly_core.core.gatekeeper.state_updater import StateUpdater
-from butly_core.core.gatekeeper.search_planner import SearchPlanner
 from butly_core.core.gatekeeper.memory_probe import MemoryProbe
 from butly_core.core.gatekeeper.memory_builder import (
     MemoryBlockBuilder,
@@ -34,9 +32,9 @@ from pathlib import Path
 
 class Gatekeeper:
     """
-    外部API互換の facade。
-    Phase 1.5: ContextClassifier + StateUpdater の 2 並列 + MemoryProbe（LLM不要）即実行。
-    互換レイヤーにより返却値の tier は既存と同じ reflex/mid/cortex。
+    外部API の facade。
+    ContextClassifier + StateUpdater の 2 並列 + MemoryProbe（LLM不要）即実行。
+    tier は reflex/mid の 2 値。RAG 判定は need（MemoryProbe 結果）で独立制御。
     """
 
     def __init__(self, base_dir: Path = None):
@@ -44,10 +42,6 @@ class Gatekeeper:
         self.context_classifier = ContextClassifier(base_dir)
         self.memory_probe = MemoryProbe(base_dir)
         self.state_updater = StateUpdater(base_dir)
-
-        # 後方互換: 旧属性名でもアクセス可能
-        self.tier_classifier = self.context_classifier
-        self.search_planner = self.memory_probe
 
     def classify(
         self,
@@ -61,13 +55,13 @@ class Gatekeeper:
         memory_manager=None,
     ) -> dict:
         """
-        既存と同じ返却形式を維持 + Phase 1.5 の memory_probe を追加。
+        既存と同じ返却形式を維持 + memory_probe を追加。
 
         Returns
         -------
         dict
             tier, topic, need, search_targets, state_delta, llm_scoring,
-            _internal_tier, memory_probe
+            memory_probe
         """
         # A. headlines 読み込み
         recent_headlines = self._load_headlines(instance_dir)
@@ -113,12 +107,7 @@ class Gatekeeper:
         status = probe_result["status"]
         candidates = probe_result.get("candidates", [])
 
-        # --- 互換レイヤー (Phase 2 で削除) ---
-        compat_tier = tier
-        if tier == "mid" and status != "no_hit" and candidates:
-            compat_tier = "cortex"
-
-        # need 互換値
+        # need / search_targets を MemoryProbe 結果から導出
         need = None
         search_targets = None
         if status != "no_hit" and candidates:
@@ -126,16 +115,13 @@ class Gatekeeper:
             search_targets = [c.get("title", "") for c in candidates[:3]]
 
         return {
-            "tier": compat_tier,           # Phase 2 で tier に戻す
+            "tier": tier,
             "topic": state_delta.get("topic") or
                      (session_state.get("topic", current_topic) if isinstance(session_state, dict) else current_topic),
             "need": need,
             "search_targets": search_targets,
             "state_delta": state_delta,
             "llm_scoring": ctx_result.get("llm_scoring"),
-            # デバッグ用: 内部 tier（Phase 2 で compat_tier と統合）
-            "_internal_tier": tier,
-            # Phase 1.5 新規
             "memory_probe": probe_result,
         }
 

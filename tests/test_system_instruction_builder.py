@@ -390,13 +390,13 @@ class TestMidInstruction:
         assert "=== LONG-TERM MEMORY" not in result
 
 
-class TestCortexInstruction:
-    """cortex tier の system_instruction テスト"""
+class TestRAGInstruction:
+    """RAG 付き tier の system_instruction テスト"""
 
     def test_no_rag_in_system_instruction(self, memory_manager):
-        """cortex でも system_instruction に RAG が含まれない（context_prefix に移動済み）"""
+        """<<system_instruction に RAG が含まれない（context_prefix に移動済み）"""
         blocks = {
-            "tier": "cortex",
+            "tier": "mid",
             "short_term": [],
             "floating": "",
             "mid_term": "中期記憶のテキスト",
@@ -410,9 +410,9 @@ class TestCortexInstruction:
         assert "テストデータ" not in result
 
     def test_no_tier_info(self, memory_manager):
-        """cortex でも system_instruction に TIER INFO が含まれない（context_prefix に移動済み）"""
+        """system_instruction に TIER INFO が含まれない（context_prefix に移動済み）"""
         blocks = {
-            "tier": "cortex",
+            "tier": "mid",
             "short_term": [],
             "floating": "",
             "mid_term": "",
@@ -431,7 +431,7 @@ class TestSystemInstructionOrder:
     def test_instruction_order(self, memory_manager):
         """system_instruction の各セクションが正しい順序で並ぶ"""
         blocks = {
-            "tier": "cortex",
+            "tier": "mid",
             "short_term": [],
             "floating": "浮動要約テスト",
             "mid_term": "中期記憶テスト",
@@ -457,7 +457,7 @@ class TestSystemInstructionOrder:
 class TestContextPrefixCurrentTime:
     """context_prefix: CURRENT TIME テスト"""
 
-    @pytest.mark.parametrize("tier", ["reflex", "mid", "cortex"])
+    @pytest.mark.parametrize("tier", ["reflex", "mid"])
     def test_contains_current_time(self, tier, memory_manager):
         """全 tier で CURRENT TIME が含まれる"""
         blocks = {
@@ -532,10 +532,10 @@ class TestContextPrefixMidTerm:
 class TestContextPrefixRAG:
     """context_prefix: RAG テスト"""
 
-    def test_cortex_includes_rag(self, memory_manager):
-        """cortex: LONG-TERM MEMORY (RAG) が context_prefix に含まれる"""
+    def test_need_includes_rag(self, memory_manager):
+        """need 有り + rag_context がある場合: LONG-TERM MEMORY (RAG) が context_prefix に含まれる"""
         blocks = {
-            "tier": "cortex",
+            "tier": "mid",
             "short_term": [],
             "floating": "",
             "mid_term": "中期記憶のテキスト",
@@ -549,9 +549,9 @@ class TestContextPrefixRAG:
         assert "テストデータ" in result
 
     def test_rag_has_reference_annotation(self, memory_manager):
-        """cortex: RAG セクションに「直近の会話を優先」の注釈がある"""
+        """RAG セクションに「直近の会話を優先」の注釈がある"""
         blocks = {
-            "tier": "cortex",
+            "tier": "mid",
             "short_term": [],
             "floating": "",
             "mid_term": "",
@@ -564,15 +564,15 @@ class TestContextPrefixRAG:
         assert ("直近の会話を優先" in result
                 or "prioritize recent conversation" in result)
 
-    def test_mid_no_rag(self, memory_manager):
-        """mid では RAG が context_prefix に含まれない"""
+    def test_no_rag_without_rag_context(self, memory_manager):
+        """では RAG が context_prefix に含まれない"""
         blocks = {
             "tier": "mid",
             "short_term": [],
             "floating": "",
             "mid_term": "テスト",
             "mid_term_mode": "raw",
-            "rag_context": "RAGデータ",
+            "rag_context": "",
         }
 
         result = build_context_prefix(blocks, memory_manager)
@@ -583,7 +583,7 @@ class TestContextPrefixRAG:
 class TestContextPrefixFloating:
     """context_prefix: FLOATING SUMMARY テスト"""
 
-    @pytest.mark.parametrize("tier", ["reflex", "mid", "cortex"])
+    @pytest.mark.parametrize("tier", ["reflex", "mid"])
     def test_floating_included_when_present(self, tier, memory_manager):
         """floating がある場合、全 tier で context_prefix に注入される"""
         blocks = {
@@ -592,7 +592,7 @@ class TestContextPrefixFloating:
             "floating": "直前の会話で天気の話をしました。",
             "mid_term": "mid" if tier != "reflex" else "",
             "mid_term_mode": "raw",
-            "rag_context": "rag" if tier == "cortex" else "",
+            "rag_context": "",
         }
 
         result = build_context_prefix(blocks, memory_manager)
@@ -600,7 +600,7 @@ class TestContextPrefixFloating:
         assert "=== FLOATING SUMMARY" in result
         assert "天気の話" in result
 
-    @pytest.mark.parametrize("tier", ["reflex", "mid", "cortex"])
+    @pytest.mark.parametrize("tier", ["reflex", "mid"])
     def test_floating_omitted_when_empty(self, tier, memory_manager):
         """floating が空の場合、セクション自体が省略される"""
         blocks = {
@@ -609,7 +609,7 @@ class TestContextPrefixFloating:
             "floating": "",
             "mid_term": "" if tier == "reflex" else "mid",
             "mid_term_mode": "raw",
-            "rag_context": "rag" if tier == "cortex" else "",
+            "rag_context": "",
         }
 
         result = build_context_prefix(blocks, memory_manager)
@@ -623,7 +623,7 @@ class TestContextPrefixSectionOrder:
     def test_section_order(self, memory_manager):
         """context_prefix の各セクションが正しい順序で並ぶ"""
         blocks = {
-            "tier": "cortex",
+            "tier": "mid",
             "short_term": [],
             "floating": "浮動要約テスト",
             "mid_term": "中期記憶テスト",
@@ -644,7 +644,7 @@ class TestContextPrefixSectionOrder:
     def test_starts_with_label(self, memory_manager):
         """context_prefix はラベル行で始まる"""
         blocks = {
-            "tier": "cortex",
+            "tier": "mid",
             "short_term": [],
             "floating": "",
             "mid_term": "",
@@ -660,7 +660,7 @@ class TestContextPrefixSectionOrder:
     def test_contains_priority_note(self, memory_manager):
         """context_prefix に優先順位の注意文が含まれる"""
         blocks = {
-            "tier": "cortex",
+            "tier": "mid",
             "short_term": [],
             "floating": "",
             "mid_term": "",
@@ -675,7 +675,7 @@ class TestContextPrefixSectionOrder:
     def test_contains_tier_info(self, memory_manager):
         """context_prefix に TIER INFO が含まれる"""
         blocks = {
-            "tier": "cortex",
+            "tier": "mid",
             "short_term": [],
             "floating": "",
             "mid_term": "",

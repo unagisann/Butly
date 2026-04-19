@@ -339,8 +339,8 @@ class TestGatekeeperIntegration:
 
         return gk
 
-    def test_probe_hit_becomes_cortex(self, mock_gatekeeper, test_instance_dir):
-        """probe hit → 互換レイヤーで cortex に昇格"""
+    def test_probe_hit_sets_need(self, mock_gatekeeper, test_instance_dir):
+        """probe hit → tier は mid のまま、need が設定される"""
         mock_gatekeeper.memory_probe.probe.return_value = {
             "status": "hit",
             "candidates": [{"title": "テスト", "summary": "内容", "score": 0.8}],
@@ -356,8 +356,7 @@ class TestGatekeeperIntegration:
             brain=brain,
         )
 
-        assert result["tier"] == "cortex"
-        assert result["_internal_tier"] == "mid"
+        assert result["tier"] == "mid"
         assert result["need"] == "memory_probe_hit"
         assert result["memory_probe"]["status"] == "hit"
 
@@ -395,8 +394,8 @@ class TestGatekeeperIntegration:
         assert result["need"] is None
         assert result["memory_probe"]["status"] == "no_hit"
 
-    def test_deep_search_becomes_cortex(self, mock_gatekeeper, test_instance_dir):
-        """deep_search hit → cortex に昇格"""
+    def test_deep_search_sets_need(self, mock_gatekeeper, test_instance_dir):
+        """deep_search hit → tier は mid のまま、need が設定される"""
         mock_gatekeeper.memory_probe.probe.return_value = {
             "status": "deep_search",
             "candidates": [{"title": "過去の会話", "summary": "内容", "score": 0.65}],
@@ -412,6 +411,6 @@ class TestGatekeeperIntegration:
             brain=brain,
         )
 
-        assert result["tier"] == "cortex"
+        assert result["tier"] == "mid"
         assert result["need"] == "memory_probe_deep_search"
         assert result["search_targets"] == ["過去の会話"]

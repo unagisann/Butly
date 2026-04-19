@@ -107,10 +107,10 @@ class TestDetermineTierFromScores:
         })
         assert result == "mid"
 
-    # --- no cortex ---
+    # --- no cortex (ContextClassifier は reflex/mid の 2 値のみ) ---
 
     def test_no_cortex_tier(self, classifier):
-        """ContextClassifier は cortex を返さない (ml 判定は MemoryJudge の責務)"""
+        """ContextClassifier は cortex を返さない (RAG 判定は MemoryProbe の責務)"""
         # 全スコア最大でも mid
         result = classifier._determine_tier_from_scores({
             "response_complexity": 1.0,
@@ -118,7 +118,6 @@ class TestDetermineTierFromScores:
             "continuity_need": 1.0,
         })
         assert result in ("reflex", "mid")
-        assert result != "cortex"
 
 
 class TestParseResponse:

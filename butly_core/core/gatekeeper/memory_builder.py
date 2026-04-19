@@ -146,7 +146,7 @@ class MemoryBlockBuilder:
         "short_term"  : 最近の会話履歴（list[dict]）
         "floating"    : 浮動要約テキスト（str）
         "mid_term"    : 中期記憶テキスト（str、mid 以上）
-        "rag_context" : RAG 検索結果テキスト（str、cortex のみ）
+        "rag_context" : RAG 検索結果テキスト（str、need 有時のみ）
         "tier"        : 使用した tier（str、デバッグ用）
         "topic"       : 現在の話題（str）
     """
@@ -165,13 +165,13 @@ class MemoryBlockBuilder:
         Parameters
         ----------
         tier : str
-            "reflex" | "mid" | "cortex"
+            "reflex" | "mid"
         memory_manager : ButlyMemory
             記憶管理オブジェクト。
         brain : ButlyBrain | None
-            cortex 時の RAG 検索に使用。None の場合 RAG はスキップ。
+            RAG 検索に使用。None の場合 RAG はスキップ。
         user_input : str
-            cortex 用 RAG 検索のクエリ文字列。
+            RAG 検索のクエリ文字列。
         instance_name : str
             RAG 検索時のインスタンス名。
         override_config : dict | None
@@ -242,10 +242,8 @@ class MemoryBlockBuilder:
             blocks["mid_term_mode"] = "raw"
             print(f"[Gatekeeper] MemoryBlock: {tier}（+ mid_term RAW {len(mid_term)}文字）")
 
-        if tier == "mid":
-            return blocks
-
-        # --- cortex: probe candidates から RAG コンテキストを構築 ---
+        # --- RAG: need がある場合、probe candidates から RAG コンテキストを構築 ---
+        need = blocks.get("need")
         probe = gatekeeper_output.get("memory_probe", {}) if gatekeeper_output else {}
         candidates = probe.get("candidates", [])
         glossary_hits = probe.get("glossary_hits", [])
@@ -253,20 +251,18 @@ class MemoryBlockBuilder:
         if glossary_hits:
             blocks["glossary_hits"] = glossary_hits
 
-        if candidates:
+        if need and candidates:
             rag_lines = ["【過去の記憶（RAG）】"]
             for c in candidates:
                 rag_lines.append(f"・{c['title']}: {c['summary']}")
                 if c.get("episode"):
                     rag_lines.append(f"  (補足: {c['episode']})")
             blocks["rag_context"] = "\n".join(rag_lines)
-            print(f"[Gatekeeper] MemoryBlock: cortex（RAG probe hits={len(candidates)}）")
+            print(f"[Gatekeeper] MemoryBlock: {tier}（RAG probe hits={len(candidates)}）")
+        elif not need:
+            print(f"[Gatekeeper] MemoryBlock: {tier}（need=null のため RAG スキップ）")
         else:
-            need = blocks.get("need")
-            if not need:
-                print("[Gatekeeper] MemoryBlock: cortex（need=null のため RAG スキップ）")
-            else:
-                print("[Gatekeeper] MemoryBlock: cortex（probe candidates なし）")
+            print(f"[Gatekeeper] MemoryBlock: {tier}（probe candidates なし）")
 
         return blocks
 
@@ -500,7 +496,7 @@ def _build_glossary(blocks: dict, memory_manager, level: str, h) -> str | None:
 def _build_mid_term(blocks: dict, level: str, tier: str, h) -> str | None:
     if level == "off":
         return None
-    if tier not in ("mid", "cortex"):
+    if tier not in ("mid",):
         return None
 
     mid_term_mode = blocks.get("mid_term_mode", "raw")
@@ -545,8 +541,10 @@ def _build_mid_term(blocks: dict, level: str, tier: str, h) -> str | None:
 def _build_rag(blocks: dict, level: str, tier: str, h) -> str | None:
     if level == "off":
         return None
+    if tier == "reflex":
+        return None
     rag_context = blocks.get("rag_context", "")
-    if tier != "cortex" or not rag_context:
+    if not rag_context:
         return None
     if level == "low":
         lines = [l for l in rag_context.strip().split("\n") if l.strip()]
@@ -571,7 +569,7 @@ def _build_tier_info(blocks: dict, level: str, h) -> str | None:
     tier = blocks.get("tier", "mid")
     tier_text = h('tier_mode').format(tier=tier)
     topic = blocks.get("topic", "")
-    if tier in ("mid", "cortex") and topic:
+    if tier in ("mid",) and topic:
         tier_text += "\n" + h('tier_topic').format(topic=topic)
     return f"{h('tier_info')}\n{tier_text}"
 

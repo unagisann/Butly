@@ -36,7 +36,7 @@ class TestSessionStateInit:
                 "topic": "テスト話題",
                 "mood": "playful",
                 "turn_count": 10,
-                "last_tier": "cortex",
+                "last_tier": "mid",
             }),
             encoding="utf-8",
         )
@@ -168,10 +168,10 @@ class TestSessionStateTurn:
         ss = SessionState(test_instance_dir)
         ss.reset()
 
-        ss.increment_turn("cortex")
+        ss.increment_turn("mid")
 
         assert ss.state["turn_count"] == 1
-        assert ss.state["last_tier"] == "cortex"
+        assert ss.state["last_tier"] == "mid"
 
     def test_multiple_increments(self, test_instance_dir: Path):
         """連続的なインクリメント"""
@@ -180,10 +180,10 @@ class TestSessionStateTurn:
 
         ss.increment_turn("reflex")
         ss.increment_turn("mid")
-        ss.increment_turn("cortex")
+        ss.increment_turn("mid")
 
         assert ss.state["turn_count"] == 3
-        assert ss.state["last_tier"] == "cortex"
+        assert ss.state["last_tier"] == "mid"
 
     def test_topic_reset_after_10_turns_no_reference(self, test_instance_dir: Path):
         """10ターン経過後に直近3ターンでtopicへの言及がなければtopicが空にリセットされる"""

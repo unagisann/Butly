@@ -141,14 +141,14 @@ class ChatService:
             state_delta = gk_result.get("state_delta", {})
             session_state.apply_delta(state_delta)
         else:
-            # Gatekeeper 無効時: RAG ON なら cortex（常時RAG検索）、OFF なら mid
+            # Gatekeeper 無効時: RAG ON なら need を設定、OFF なら mid
             use_rag = instance_config.get("brain", {}).get("use_rag", True)
-            tier = "cortex" if use_rag else "mid"
+            tier = "mid"
             gk_result = {
                 "tier": tier, "topic": "", "need": "rag_search" if use_rag else None,
                 "search_targets": None, "state_delta": {},
             }
-            print(f"[ChatService] Gatekeeper disabled — defaulting to {tier} tier")
+            print(f"[ChatService] Gatekeeper disabled — defaulting to {tier} tier (rag={'on' if use_rag else 'off'})")
 
         _t_gk_end = time.time()
 
@@ -162,7 +162,7 @@ class ChatService:
         memory_blocks = mem_block_builder.build(
             tier=tier,
             memory_manager=memory,
-            brain=brain if (tier == "cortex" and use_rag) else None,
+            brain=brain if (gk_result.get("need") and use_rag) else None,
             user_input=request.text,
             instance_name=instance_name,
             override_config=instance_config,
@@ -187,7 +187,7 @@ class ChatService:
             )
 
         # RAG は Gatekeeper → MemoryBlockBuilder で一元管理
-        # memory_blocks["rag_context"] に結果が格納済み（cortex + need有効時のみ）
+        # memory_blocks["rag_context"] に結果が格納済み（need有効時のみ）
         rag_results = []
         if memory_blocks and memory_blocks.get("rag_context"):
             print("[ChatService] RAG: Gatekeeper 経由の RAG コンテキストを使用")
