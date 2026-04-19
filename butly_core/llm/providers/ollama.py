@@ -3,15 +3,16 @@ ollama.py
 ---------
 Ollama LLM プロバイダー。
 ローカル Ollama サーバー（OpenAI 互換 API）経由でモデルを利用する。
+
+v3.1: _openai_compat ヘルパーを利用してリファクタ。
 """
 
 import os
 from typing import Any, Dict, List, Optional
 
-from dotenv import load_dotenv
-
 from butly_core.chat.types import Attachment, ChatResponse
 from butly_core.llm.base import BaseProvider
+from butly_core.llm import _openai_compat as compat
 
 # Vision 対応が確認されているモデルプレフィックス
 _VISION_MODELS = {"llava", "bakllava", "moondream", "llama3.2-vision", "gemma3"}
@@ -29,12 +30,7 @@ def _get_client():
     except ImportError:
         raise RuntimeError("openai パッケージが必要です。`pip install openai` を実行してください。")
 
-    from pathlib import Path
-    for env_name in ("APIkey.env", ".env"):
-        env_path = Path(__file__).resolve().parents[3] / env_name
-        if env_path.exists():
-            load_dotenv(env_path)
-            break
+    compat.load_env_file()
 
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     return openai.OpenAI(api_key="ollama", base_url=base_url)
@@ -67,6 +63,7 @@ class OllamaProvider(BaseProvider):
 
         char_limit = config.get("summary_char_limit", SYSTEM_CONFIG["brain"]["summary_char_limit"])
         loader = PromptLoader()
+        # Ollama: SYSTEM_CONFIG のみ参照 (OpenAI と異なり config.agent_name フォールバックなし)
         prompt = loader.get(
             "brain_summarize_conversation",
             agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
@@ -116,109 +113,47 @@ class OllamaProvider(BaseProvider):
     ) -> ChatResponse:
         from butly_core.config import AI_CONFIG
 
-        memory_manager = context.get("memory_manager")
-        history = context.get("history", [])
         override_config = context.get("override_config")
-        memory_blocks = context.get("memory_blocks")
+        history = context.get("history", [])
         rag_results = context.get("rag_results", [])
-        use_rag = context.get("use_rag", True)
-        context_order = context.get("context_order")
-        context_levels = context.get("context_levels")
 
-        # --- system instruction ---
-        system_instruction = self._build_system_instruction(
-            memory_manager=memory_manager,
-            memory_blocks=memory_blocks,
-            context_order=context_order,
-            context_levels=context_levels,
+        # --- system instruction / context prefix ---
+        system_instruction = compat.resolve_system_instruction(context)
+        context_prefix = compat.resolve_context_prefix(context)
+
+        # --- messages 構築 ---
+        position = compat.resolve_position(context)
+        user_content = compat.build_user_content(text, attachments)
+        messages = compat.build_messages(
+            system_instruction=system_instruction,
+            context_prefix=context_prefix,
+            history=history,
+            user_content=user_content,
+            position=position,
         )
-
-        # --- context prefix (可変コンテキスト) ---
-        from butly_core.core.gatekeeper import build_context_prefix
-        context_prefix = build_context_prefix(
-            blocks=memory_blocks,
-            memory_manager=memory_manager,
-            use_google_search=False,
-            context_order=context_order,
-            context_levels=context_levels,
-        )
-
-        full_prompt = text
-
-        # --- messages ---
-        # system_instruction_position による配置制御
-        if context_levels:
-            position = context_levels.get("system_instruction_position", "top")
-        else:
-            position = (context_order or {}).get(
-                "system_instruction_position", "top"
-            )
-
-        if position == "bottom":
-            # Bottom配置: prefix → 履歴 → sys_inst → ユーザー入力
-            if context_prefix:
-                messages = [{"role": "system", "content": context_prefix}]
-            else:
-                messages = []
-            for h in history:
-                role = h.get("role", "user")
-                parts = h.get("parts", [])
-                content = parts[0] if parts else ""
-                messages.append({"role": role, "content": str(content)})
-            messages.append({"role": "system", "content": system_instruction})
-            user_content = self._build_user_content(full_prompt, attachments)
-            messages.append({"role": "user", "content": user_content})
-        else:
-            # Top配置（デフォルト）: sys_inst → prefix → 履歴 → ユーザー入力
-            messages = [{"role": "system", "content": system_instruction}]
-            if context_prefix:
-                messages.append({"role": "user", "content": context_prefix})
-            for h in history:
-                role = h.get("role", "user")
-                parts = h.get("parts", [])
-                content = parts[0] if parts else ""
-                messages.append({"role": role, "content": str(content)})
-            user_content = self._build_user_content(full_prompt, attachments)
-            messages.append({"role": "user", "content": user_content})
 
         # --- API 呼び出し ---
-        chat_conf = AI_CONFIG["chat"]
-        if override_config and "chat" in override_config:
-            chat_conf = {**chat_conf, **override_config["chat"]}
-
+        chat_conf = compat.merge_chat_config(AI_CONFIG["chat"], override_config)
         _gen = chat_conf.get("generation_config", {})
+        model_name = _strip_ollama_prefix(chat_conf.get("model_name", "llama3.2"))
 
-        # debug 用: messages の truncated 版を作成
-        def _debug_content(c) -> str:
-            """content が str / list(multimodal) のどちらでも安全に truncate する。"""
-            if isinstance(c, str):
-                return (c[:500] + "...") if len(c) > 500 else c
-            if isinstance(c, list):
-                texts = [p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"]
-                joined = " ".join(texts)
-                return (joined[:500] + "...") if len(joined) > 500 else joined
-            return str(c)[:500]
-
-        _debug_messages = [
-            {"role": m["role"], "content": _debug_content(m.get("content", ""))}
-            for m in messages
-        ]
+        # debug 用 messages preview
+        _debug_messages = compat.build_debug_messages(messages)
 
         try:
             resp = self.client.chat.completions.create(
-                model=_strip_ollama_prefix(chat_conf.get("model_name", "llama3.2")),
+                model=model_name,
                 messages=messages,
                 temperature=_gen.get("temperature", 0.7),
                 max_tokens=_gen.get("max_output_tokens") or None,
             )
             response_text = resp.choices[0].message.content if resp.choices else ""
-            result = ChatResponse(
-                text=response_text or "",
-                refs=[dict(k) for k in rag_results] if rag_results else [],
-            )
+
+            result = compat.build_chat_response(response_text, rag_results)
+            # v3.1: messages_full → messages_preview に改名 (実態に合わせた命名)
             result.debug_info = {
                 "messages": _debug_messages,
-                "messages_full": [{"role": m["role"], "content": _debug_content(m.get("content", ""))} for m in messages],
+                "messages_preview": _debug_messages,
                 "raw_response": response_text,
             }
             return result
@@ -226,33 +161,3 @@ class OllamaProvider(BaseProvider):
             import traceback
             traceback.print_exc()
             return ChatResponse(text=f"Error: {e}")
-
-    # ==================================================================
-    # 内部ユーティリティ
-    # ==================================================================
-
-    @staticmethod
-    def _build_system_instruction(memory_manager, memory_blocks, context_order=None, context_levels=None):
-        from butly_core.core.gatekeeper import build_system_instruction_from_blocks
-        return build_system_instruction_from_blocks(
-            blocks=memory_blocks,
-            memory_manager=memory_manager,
-            use_google_search=False,
-            context_order=context_order,
-            context_levels=context_levels,
-        )
-
-    @staticmethod
-    def _build_user_content(text: str, attachments: List[Attachment]):
-        """テキスト + 画像を OpenAI 互換形式に変換する。"""
-        if not attachments:
-            return text
-
-        content = [{"type": "text", "text": text}]
-        for att in attachments:
-            data_url = f"data:{att.mime_type};base64,{att.data_base64}"
-            content.append({
-                "type": "image_url",
-                "image_url": {"url": data_url},
-            })
-        return content

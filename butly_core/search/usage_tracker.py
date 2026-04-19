@@ -4,7 +4,12 @@ from datetime import datetime
 
 
 class UsageTracker:
-    """月次の検索 API 使用量を追跡する"""
+    """月次の検索 API 使用量を追跡する。
+
+    v3.1: provider 別カウント対応 (B6)。
+    旧形式 {YYYY-MM: int} と新形式 {YYYY-MM: {tavily: N, ollama: M}} の両方を読める。
+    初回更新時に旧形式を新形式へ lazy migration する。
+    """
 
     _file_path = Path("butly_core/search_usage.json")
 
@@ -23,17 +28,60 @@ class UsageTracker:
         cls._file_path.write_text(json.dumps(data, indent=2))
 
     @classmethod
-    def increment(cls):
+    def _normalize_entry(cls, entry):
+        """旧形式 (int) を新形式 (dict) に変換する。
+
+        旧形式の int は tavily のカウントとして扱う。
+        """
+        if isinstance(entry, int):
+            return {"tavily": entry}
+        if isinstance(entry, dict):
+            return entry
+        return {}
+
+    @classmethod
+    def increment(cls, provider: str = "tavily"):
+        """指定 provider のカウントをインクリメントする。
+
+        Parameters
+        ----------
+        provider : str
+            "tavily" or "ollama" (デフォルト: "tavily")
+        """
         data = cls._load()
         key = datetime.now().strftime("%Y-%m")
-        data[key] = data.get(key, 0) + 1
+        entry = cls._normalize_entry(data.get(key, {}))
+        entry[provider] = entry.get(provider, 0) + 1
+        data[key] = entry
         cls._save(data)
 
     @classmethod
-    def get_current_month_count(cls) -> int:
+    def get_current_month_count(cls, provider: str = None) -> int:
+        """今月のカウントを返す。
+
+        Parameters
+        ----------
+        provider : str, optional
+            指定時はそのプロバイダーのカウントのみ。
+            None の場合は全プロバイダーの合計 (後方互換)。
+        """
         data = cls._load()
         key = datetime.now().strftime("%Y-%m")
-        return data.get(key, 0)
+        entry = data.get(key, 0)
+
+        # 旧形式 (int) の場合
+        if isinstance(entry, int):
+            if provider is None or provider == "tavily":
+                return entry
+            return 0
+
+        # 新形式 (dict) の場合
+        if isinstance(entry, dict):
+            if provider is None:
+                return sum(entry.values())
+            return entry.get(provider, 0)
+
+        return 0
 
     @classmethod
     def get_all(cls) -> dict:

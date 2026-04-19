@@ -6,13 +6,15 @@
         "■ プロバイダー自動判定（model_name のプレフィックスで決定）:",
         "  Gemini  → gemini-* / models/gemini-*   (GOOGLE_API_KEY 必要)",
         "  OpenAI  → gpt-* / o1 / o3 / o4         (OPENAI_API_KEY 必要)",
+        "  xAI     → grok-* / xai/*               (XAI_API_KEY 必要)",
         "  Ollama  → ollama/*                       (ローカル実行)",
         "",
         "■ 各ロールで異なるプロバイダーを混在させることも可能です。",
         "  例: chat=OpenAI, embedding=Gemini, gatekeeper=Ollama",
         "",
         "■ APIキーは設定画面(LLMプロバイダー タブ)から保存できます。",
-        "■ Ollama接続先はLLM_PROVIDERS.ollama.base_urlで変更可能です。"
+        "■ Ollama接続先はLLM_PROVIDERS.ollama.base_urlで変更可能です。",
+        "■ OpenAI reasoning モデル (o1/o3/o4) は reasoning_effort を設定可能です。"
     ],
 
     "LLM_PROVIDERS": {
@@ -115,6 +117,30 @@
         "gatekeeper": {
             "model_name": "ollama/llama3.1:8b",
             "generation_config": { "temperature": 0.0, "max_output_tokens": 512 }
+        }
+    },
+
+    "_AI_CONFIG_xai_example": {
+        "_comment": "xAI (Grok) を使う場合の設定例（このキーを AI_CONFIG にリネームして使用）",
+        "chat": {
+            "model_name": "grok-3-fast",
+            "generation_config": { "temperature": 1.0, "max_output_tokens": 8192 }
+        },
+        "summary": {
+            "model_name": "grok-3-mini-fast",
+            "generation_config": { "temperature": 0.7 }
+        },
+        "gatekeeper": {
+            "model_name": "grok-3-mini-fast",
+            "generation_config": { "temperature": 0.0, "max_output_tokens": 512 }
+        }
+    },
+
+    "_AI_CONFIG_openai_reasoning_example": {
+        "_comment": "OpenAI reasoning モデル (o3) の設定例。reasoning_effort: low/medium/high",
+        "chat": {
+            "model_name": "o3",
+            "generation_config": { "max_output_tokens": 16384, "reasoning_effort": "medium" }
         }
     },
 

@@ -1,11 +1,11 @@
 """
-openai.py
----------
-OpenAI (GPT) LLM プロバイダー。
-OpenAI API 互換（Azure OpenAI 含む）に対応。
+xai.py
+------
+xAI (Grok) LLM プロバイダー。
+OpenAI SDK + base_url="https://api.x.ai/v1" で Chat Completions を利用する。
 
-v3.1: _openai_compat ヘルパーを利用してリファクタ。
-      reasoning_effort (o1/o3/o4 系) 対応を追加。
+Phase 1: Chat Completions のみ（Vision 対応、embedding は別プロバイダーへフォールバック）
+Phase 2 で Agent Tools API（X Search / Web Search / Code Execution）を追加予定。
 """
 
 import os
@@ -15,12 +15,20 @@ from butly_core.chat.types import Attachment, ChatResponse
 from butly_core.llm.base import BaseProvider
 from butly_core.llm import _openai_compat as compat
 
-# Vision 対応が確認されているモデルプレフィックス
-_VISION_MODELS = {"gpt-4o", "gpt-4-turbo", "gpt-4-vision", "o1", "o3", "o4"}
+# Vision 非対応モデル: Grok Code Fast はコード特化でテキストのみ
+_NON_VISION_PREFIXES = ("grok-code-fast",)
+
+# xAI デフォルト base_url
+_XAI_DEFAULT_BASE_URL = "https://api.x.ai/v1"
+
+
+def _strip_xai_prefix(model_name: str) -> str:
+    """'xai/' プレフィックスを除去する。"""
+    return model_name.removeprefix("xai/")
 
 
 def _get_client():
-    """OpenAI クライアントを遅延生成する。"""
+    """xAI 用 OpenAI 互換クライアントを生成する。"""
     try:
         import openai
     except ImportError:
@@ -28,16 +36,18 @@ def _get_client():
 
     compat.load_env_file()
 
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("XAI_API_KEY")
     if not api_key:
-        raise RuntimeError("OpenAI API キーが見つかりません。APIkey.env に OPENAI_API_KEY を設定してください。")
+        raise RuntimeError(
+            "xAI API キーが見つかりません。APIkey.env または UI から XAI_API_KEY を設定してください。"
+        )
 
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    return openai.OpenAI(api_key=api_key, base_url=base_url) if base_url else openai.OpenAI(api_key=api_key)
+    base_url = os.environ.get("XAI_BASE_URL", _XAI_DEFAULT_BASE_URL)
+    return openai.OpenAI(api_key=api_key, base_url=base_url)
 
 
-class OpenAIProvider(BaseProvider):
-    """OpenAI API (GPT-4o 等) を使った LLM プロバイダー。"""
+class XaiProvider(BaseProvider):
+    """xAI (Grok) プロバイダー。OpenAI 互換 Chat Completions API を使用。"""
 
     def __init__(self):
         self._client = None
@@ -50,7 +60,8 @@ class OpenAIProvider(BaseProvider):
 
     @staticmethod
     def supports_vision(model_name: str) -> bool:
-        return any(model_name.startswith(prefix) for prefix in _VISION_MODELS)
+        base = _strip_xai_prefix(model_name)
+        return not any(base.startswith(prefix) for prefix in _NON_VISION_PREFIXES)
 
     # ==================================================================
     # BaseProvider 必須メソッド
@@ -62,7 +73,6 @@ class OpenAIProvider(BaseProvider):
 
         char_limit = config.get("summary_char_limit", SYSTEM_CONFIG["brain"]["summary_char_limit"])
         loader = PromptLoader()
-        # OpenAI 固有: config.agent_name を優先 → SYSTEM_CONFIG フォールバック
         _agent_name = config.get("agent_name") or SYSTEM_CONFIG["agent"]["agent_name"]
         prompt = loader.get(
             "brain_summarize_conversation",
@@ -72,35 +82,34 @@ class OpenAIProvider(BaseProvider):
         )
         try:
             resp = self.client.chat.completions.create(
-                model=config.get("model_name", "gpt-4o-mini"),
+                model=_strip_xai_prefix(config.get("model_name", "grok-4-1-fast-non-reasoning")),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=config.get("temperature", 0.3),
             )
             return resp.choices[0].message.content.strip() if resp.choices else "要約なし"
         except Exception as e:
-            print(f"[OpenAIProvider] Summarize Error: {e}")
+            print(f"[XaiProvider] Summarize Error: {e}")
             return "（要約作成に失敗）"
 
     def embed(self, text: str) -> Optional[List[float]]:
-        try:
-            model = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-            resp = self.client.embeddings.create(model=model, input=text)
-            return resp.data[0].embedding
-        except Exception as e:
-            print(f"[OpenAIProvider] Embed Error: {e}")
-            return None
+        """xAI は embedding API を提供していないため None を返す。
+
+        embedding は Gemini / OpenAI 等の別プロバイダーを使うこと。
+        """
+        print("[XaiProvider] xAI does not provide embedding API. Use another provider for embedding.")
+        return None
 
     def classify(self, prompt: str, config: dict) -> str:
         try:
             resp = self.client.chat.completions.create(
-                model=config.get("model_name", "gpt-4o-mini"),
+                model=_strip_xai_prefix(config.get("model_name", "grok-4-1-fast-non-reasoning")),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=config.get("generation_config", {}).get("temperature", 0.0),
                 max_tokens=config.get("generation_config", {}).get("max_output_tokens", 512),
             )
             return resp.choices[0].message.content if resp.choices else ""
         except Exception as e:
-            print(f"[OpenAIProvider] Classify Error: {e}")
+            print(f"[XaiProvider] Classify Error: {e}")
             return ""
 
     def generate(
@@ -132,18 +141,22 @@ class OpenAIProvider(BaseProvider):
 
         # --- API 呼び出し ---
         chat_conf = compat.merge_chat_config(AI_CONFIG["chat"], override_config)
-        model_name = chat_conf.get("model_name", "gpt-4o")
+        _gen = chat_conf.get("generation_config", {})
+        model_name = _strip_xai_prefix(chat_conf.get("model_name", "grok-4-1-fast-non-reasoning"))
 
         # debug 用 messages preview
         _debug_messages = compat.build_debug_messages(messages)
 
         try:
-            kwargs = compat.build_chat_completion_kwargs(chat_conf, messages, model_name=model_name)
-            resp = self.client.chat.completions.create(model=model_name, **kwargs)
+            resp = self.client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=_gen.get("temperature", 0.7),
+                max_tokens=_gen.get("max_output_tokens") or None,
+            )
             response_text = resp.choices[0].message.content if resp.choices else ""
 
             result = compat.build_chat_response(response_text, rag_results)
-            # v3.1: messages_full → messages_preview に改名 (実態に合わせた命名)
             result.debug_info = {
                 "messages": _debug_messages,
                 "messages_preview": _debug_messages,

@@ -199,7 +199,7 @@ class ChatService:
         web_sources = []
         if request.use_web_search and not _is_gemini_model(model_name):
             from butly_core.search import create_search_provider
-            search_provider = create_search_provider()
+            search_provider = create_search_provider(chat_model=model_name)
             if search_provider.is_available():
                 print("[ChatService] Web Search: 汎用検索モジュールで検索実行")
                 search_results = await run_in_threadpool(

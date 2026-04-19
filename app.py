@@ -160,8 +160,10 @@ def get_provider_label(model_name: str) -> str:
         return "❓ 不明"
     if model_name.startswith("gemini") or model_name.startswith("models/gemini"):
         return "🟦 Gemini"
-    elif model_name.startswith(("gpt-", "o1-", "o3-", "o4-", "text-embedding")):
+    elif model_name.startswith(("gpt-", "o1", "o3", "o4", "text-embedding")):
         return "🟩 OpenAI"
+    elif model_name.startswith(("grok-", "xai/")):
+        return "🟥 xAI"
     elif model_name.startswith("ollama/"):
         return "🟧 Ollama"
     else:
@@ -592,7 +594,7 @@ def render_settings_screen():
         st.subheader("🔑 APIキー設定")
 
         # ステータス取得
-        key_status = {"gemini": False, "openai": False}
+        key_status = {"gemini": False, "openai": False, "xai": False, "ollama_web_search": False}
         try:
             status_resp = requests.get(f"{api_url}/settings/api_key_status", timeout=5)
             if status_resp.ok:
@@ -602,9 +604,11 @@ def render_settings_screen():
 
         gemini_status = "✅ 設定済み" if key_status.get("gemini") else "❌ 未設定"
         openai_status = "✅ 設定済み" if key_status.get("openai") else "❌ 未設定"
-        st.caption(f"Gemini: {gemini_status} / OpenAI: {openai_status}")
+        xai_status = "✅ 設定済み" if key_status.get("xai") else "❌ 未設定"
+        ollama_ws_status = "✅ 設定済み" if key_status.get("ollama_web_search") else "❌ 未設定"
+        st.caption(f"Gemini: {gemini_status} / OpenAI: {openai_status} / xAI: {xai_status} / Ollama WebSearch: {ollama_ws_status}")
 
-        col_k1, col_k2 = st.columns(2)
+        col_k1, col_k2, col_k3, col_k4 = st.columns(4)
         with col_k1:
             gemini_key = st.text_input("Google Gemini API Key", type="password", placeholder="AIza...", key="provider_gemini_key")
             if st.button("💾 保存", key="save_gemini_key"):
@@ -628,6 +632,36 @@ def render_settings_screen():
                         resp = requests.post(f"{api_url}/settings/api_key", json={"api_key": openai_key, "key_type": "openai"}, timeout=5)
                         if resp.ok:
                             st.success("✅ OpenAI APIキーを保存しました。")
+                            st.rerun()
+                        else:
+                            st.error(f"保存エラー: {resp.text}")
+                    except Exception as e:
+                        st.error(f"サーバー接続エラー: {e}")
+                else:
+                    st.warning("キーが入力されていません。")
+        with col_k3:
+            xai_key = st.text_input("xAI (Grok) API Key", type="password", placeholder="xai-...", key="provider_xai_key")
+            if st.button("💾 保存", key="save_xai_key"):
+                if xai_key:
+                    try:
+                        resp = requests.post(f"{api_url}/settings/api_key", json={"api_key": xai_key, "key_type": "xai"}, timeout=5)
+                        if resp.ok:
+                            st.success("✅ xAI APIキーを保存しました。")
+                            st.rerun()
+                        else:
+                            st.error(f"保存エラー: {resp.text}")
+                    except Exception as e:
+                        st.error(f"サーバー接続エラー: {e}")
+                else:
+                    st.warning("キーが入力されていません。")
+        with col_k4:
+            ollama_ws_key = st.text_input("Ollama WebSearch API Key", type="password", placeholder="ollama-...", key="provider_ollama_ws_key")
+            if st.button("💾 保存", key="save_ollama_ws_key"):
+                if ollama_ws_key:
+                    try:
+                        resp = requests.post(f"{api_url}/settings/api_key", json={"api_key": ollama_ws_key, "key_type": "ollama_web_search"}, timeout=5)
+                        if resp.ok:
+                            st.success("✅ Ollama WebSearch APIキーを保存しました。")
                             st.rerun()
                         else:
                             st.error(f"保存エラー: {resp.text}")
@@ -687,16 +721,20 @@ def render_settings_screen():
                 "gpt-4o-mini",
                 "o3",
                 "o4-mini",
+                "grok-3-fast",
+                "grok-3-mini-fast",
             ],
             "summary": [
                 "gemini-3.1-flash-lite-preview",
                 "gemini-2.5-flash",
                 "gpt-4o-mini",
+                "grok-3-mini-fast",
             ],
             "gatekeeper": [
                 "gemini-3.1-flash-lite-preview",
                 "gemini-2.5-flash-lite",
                 "gpt-4o-mini",
+                "grok-3-mini-fast",
             ],
             "embedding": [
                 "models/gemini-embedding-001",
@@ -1860,9 +1898,11 @@ def render_chat_screen():
 
             import os
             tavily_available = bool(os.environ.get("TAVILY_API_KEY", ""))
+            ollama_ws_available = bool(os.environ.get("OLLAMA_WEB_SEARCH_API_KEY", ""))
+            web_search_available = tavily_available or ollama_ws_available
             ws_on = st.session_state.get("use_web_search", False)
 
-            if tavily_available:
+            if web_search_available:
                 ws_label = "🔍 ON" if ws_on else "🔍"
                 ws_help = "Web検索: ON（クリックでOFF）" if ws_on else "Web検索: OFF（クリックでON）"
                 if st.button(ws_label, help=ws_help):
@@ -1871,7 +1911,7 @@ def render_chat_screen():
             else:
                 st.button(
                     "🔍",
-                    help="Web検索を使用するには TAVILY_API_KEY を設定してください",
+                    help="Web検索を使用するには TAVILY_API_KEY または OLLAMA_WEB_SEARCH_API_KEY を設定してください",
                     disabled=True,
                 )
 

@@ -47,7 +47,8 @@ class TestUsageTracker:
         data = UsageTracker.get_all()
         key = datetime.now().strftime("%Y-%m")
         assert isinstance(data, dict)
-        assert data[key] == 1
+        # v3.1: 新形式は provider 別 dict
+        assert data[key] == {"tavily": 1}
 
     def test_corrupted_file_returns_zero(self, use_tmp_file):
         """破損ファイルの場合は 0 を返す"""
@@ -66,3 +67,45 @@ class TestUsageTracker:
         assert len(parts) == 2
         assert len(parts[0]) == 4  # YYYY
         assert len(parts[1]) == 2  # MM
+
+
+# ===================================================================
+# v3.1: UsageTracker provider 別カウント (B6 対応)
+# ===================================================================
+
+class TestUsageTrackerProviderAware:
+    """UsageTracker の provider 別カウント機能テスト。"""
+
+    def test_legacy_int_format_read(self, use_tmp_file):
+        """旧形式 (int) のファイルから tavily カウントが読める"""
+        key = datetime.now().strftime("%Y-%m")
+        use_tmp_file.write_text(json.dumps({key: 42}))
+        assert UsageTracker.get_current_month_count() == 42
+        assert UsageTracker.get_current_month_count("tavily") == 42
+        assert UsageTracker.get_current_month_count("ollama") == 0
+
+    def test_legacy_int_format_upgrade(self, use_tmp_file):
+        """旧形式に対して increment すると dict に昇格する"""
+        key = datetime.now().strftime("%Y-%m")
+        use_tmp_file.write_text(json.dumps({key: 10}))
+        UsageTracker.increment("ollama")
+        data = UsageTracker.get_all()
+        # 旧 int は increment 時に上書きされるため、
+        # 新 entry は {"ollama": 1} のみ。旧 tavily=10 は失われない前提で
+        # increment は key の entry を _normalize してから更新する
+        assert data[key]["ollama"] == 1
+        assert data[key]["tavily"] == 10
+
+    def test_provider_separate_counts(self):
+        """tavily と ollama のカウントが独立にインクリメントされる"""
+        UsageTracker.increment("tavily")
+        UsageTracker.increment("tavily")
+        UsageTracker.increment("ollama")
+        assert UsageTracker.get_current_month_count("tavily") == 2
+        assert UsageTracker.get_current_month_count("ollama") == 1
+        assert UsageTracker.get_current_month_count() == 3  # 合計
+
+    def test_increment_default_provider_is_tavily(self):
+        """引数なし increment は tavily としてカウントされる"""
+        UsageTracker.increment()
+        assert UsageTracker.get_current_month_count("tavily") == 1

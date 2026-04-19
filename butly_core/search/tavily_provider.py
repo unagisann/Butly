@@ -36,7 +36,7 @@ class TavilySearchProvider(BaseSearchProvider):
                 ))
 
             from butly_core.search.usage_tracker import UsageTracker
-            UsageTracker.increment()
+            UsageTracker.increment("tavily")
 
             return results
 

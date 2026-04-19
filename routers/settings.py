@@ -84,6 +84,21 @@ def set_api_key(request: ApiKeyRequest):
     if not key:
         raise HTTPException(status_code=400, detail="APIキーが空です")
 
+    # key_type → 環境変数名の明示的マッピング
+    _KEY_TYPE_MAP = {
+        "gemini": "GOOGLE_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "xai": "XAI_API_KEY",
+        "ollama_web_search": "OLLAMA_WEB_SEARCH_API_KEY",
+    }
+
+    env_name = _KEY_TYPE_MAP.get(request.key_type)
+    if env_name is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不明な key_type: {request.key_type} (有効値: {', '.join(_KEY_TYPE_MAP)})",
+        )
+
     env_path = deps.DATA_DIR / ".env"
 
     env_vars = {}
@@ -94,12 +109,8 @@ def set_api_key(request: ApiKeyRequest):
                 k, _, v = line.partition('=')
                 env_vars[k.strip()] = v.strip()
 
-    if request.key_type == "openai":
-        env_vars["OPENAI_API_KEY"] = key
-        os.environ["OPENAI_API_KEY"] = key
-    else:
-        env_vars["GOOGLE_API_KEY"] = key
-        os.environ["GOOGLE_API_KEY"] = key
+    env_vars[env_name] = key
+    os.environ[env_name] = key
 
     lines = [f"{k}={v}" for k, v in env_vars.items()]
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -113,6 +124,8 @@ def get_api_key_status():
     return {
         "gemini": bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")),
         "openai": bool(os.getenv("OPENAI_API_KEY")),
+        "xai": bool(os.getenv("XAI_API_KEY")),
+        "ollama_web_search": bool(os.getenv("OLLAMA_WEB_SEARCH_API_KEY")),
     }
 
 @router.post("/settings/ollama_test")
