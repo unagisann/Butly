@@ -426,15 +426,23 @@ Tavily Search API を使った検索プロバイダー実装。
 ### `butly_core/search/usage_tracker.py`
 月次の検索 API 使用量カウンター。
 
-- `UsageTracker` — `butly_core/search_usage.json` に YYYY-MM キーで累計を記録
-  - `increment()` — 当月カウントを +1
-  - `get_current_month_count()` — 当月の使用回数を返す
+- `UsageTracker` — `butly_core/search_usage.json` に YYYY-MM キーでプロバイダー別累計を記録
+  - `increment(provider="tavily")` — 指定プロバイダーの当月カウントを +1
+  - `get_current_month_count(provider=None)` — 当月の使用回数を返す（provider=None で合計）
   - `get_all()` — 全月の使用量を dict で返す
+  - 旧形式 `{YYYY-MM: int}` → 新形式 `{YYYY-MM: {tavily: N, ollama: M}}` への lazy migration 対応
+
+### `butly_core/search/ollama_provider.py`
+Ollama Cloud の Web Search API を使用した検索プロバイダー。
+
+- `OllamaWebSearchProvider(BaseSearchProvider)` — 環境変数 `OLLAMA_WEB_SEARCH_API_KEY` で認証
+  - `search(query, max_results)` — `https://ollama.com/api/web_search` で検索
+  - `is_available()` — API キーが設定済みかチェック
 
 ### `butly_core/search/__init__.py`
 パッケージ公開。
 
-- `create_search_provider()` — 設定に基づいて検索プロバイダーをファクトリ生成（現在は Tavily 固定、将来の差し替えポイント）
+- `create_search_provider(chat_model="")` — chat モデルに応じて検索プロバイダーをファクトリ生成。Ollama chat + `OLLAMA_WEB_SEARCH_API_KEY` → OllamaWebSearchProvider、それ以外 → TavilySearchProvider
 
 ---
 
@@ -457,7 +465,8 @@ LLM プロバイダーの抽象化レイヤー。
 モデル名からプロバイダーを生成するファクトリ。
 
 - `ProviderFactory`
-  - `create(model_name)` — モデル名のプレフィックスで Gemini / OpenAI / Ollama を自動選択
+  - `create(model_name)` — モデル名のプレフィックスで Gemini / OpenAI / Ollama / xAI を自動選択
+  - ルーティング: `gemini-*` → Gemini、`gpt-*` / `o1` / `o3` / `o4` → OpenAI、`ollama/*` → Ollama、`grok-*` / `xai/*` → xAI
 
 ---
 
@@ -472,23 +481,53 @@ Gemini API プロバイダー。コンテキストキャッシュ・画像アッ
 
 ---
 
+### `butly_core/llm/_openai_compat.py`
+OpenAI 互換プロバイダー (OpenAI / Ollama / xAI) で共通利用するヘルパー関数群。継承ではなく import して使う設計。
+
+- `load_env_file()` — APIkey.env / .env を探してロード
+- `is_reasoning_model(model_name)` — OpenAI o1/o3/o4 系の判定（temperature 禁止、max_completion_tokens 使用）
+- `resolve_position(context)` — system_instruction の配置位置を解決（context_levels → context_order → "top"）
+- `resolve_system_instruction(context)` / `resolve_context_prefix(context)` — Gatekeeper の build 関数を呼び出す
+- `build_user_content(text, attachments)` — テキスト + 画像を OpenAI 形式に変換
+- `convert_history(history)` — Butly 履歴を OpenAI messages 形式に変換（`role: "model"` → `"assistant"`）
+- `build_messages(...)` — system / context / history / user を position に応じて配列化
+- `merge_chat_config(base_conf, override_config)` — AI_CONFIG と instance override をマージ
+- `build_chat_completion_kwargs(chat_conf, messages, model_name)` — reasoning / 通常の 2 系統で API kwargs を構築
+- `build_chat_response(response_text, rag_results)` — ChatResponse を組み立て
+
+---
+
 ### `butly_core/llm/providers/openai.py`
-OpenAI (GPT) / Azure OpenAI 互換プロバイダー。
+OpenAI (GPT) / Azure OpenAI 互換プロバイダー。`_openai_compat` ヘルパーを利用。
 
 - `OpenAIProvider`
-  - `generate(text, attachments, context)` — Chat Completions API で応答を生成
+  - `generate(text, attachments, context)` — Chat Completions API で応答を生成（reasoning_effort 対応）
   - `supports_vision(model_name)` — `_VISION_MODELS` セットで判定
   - `embed(text)` — `text-embedding-3-small` で embedding を生成
+  - `classify(prompt, config)` — Gatekeeper / SleepTime 用の分類
+  - `summarize(conversation_text, config)` — 会話要約
 
 ---
 
 ### `butly_core/llm/providers/ollama.py`
-ローカル Ollama サーバー（OpenAI 互換 API）プロバイダー。
+ローカル Ollama サーバー（OpenAI 互換 API）プロバイダー。`_openai_compat` ヘルパーを利用。
 
 - `OllamaProvider`
   - `generate(text, attachments, context)` — ローカル LLM で応答を生成
   - `supports_vision(model_name)` — `_VISION_MODELS` セットで判定（llava 等）
   - `embed(text)` — Ollama の embedding エンドポイントを使用
+
+---
+
+### `butly_core/llm/providers/xai.py`
+xAI (Grok) プロバイダー。OpenAI SDK + `base_url="https://api.x.ai/v1"` で Chat Completions を利用。`_openai_compat` ヘルパーを利用。
+
+- `XaiProvider`
+  - `generate(text, attachments, context)` — xAI Chat Completions API で応答を生成
+  - `supports_vision(model_name)` — grok-4 系は Vision 対応、grok-code-fast は非対応
+  - `embed(text)` — xAI は embedding API 未提供のため `None` を返す（別プロバイダーで対応）
+  - `classify(prompt, config)` — Gatekeeper / SleepTime 用の分類
+  - `summarize(conversation_text, config)` — 会話要約
 
 ---
 

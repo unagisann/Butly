@@ -172,7 +172,12 @@ class ChatService:
         _t_mem_end = time.time()
 
         # --- 6. Provider 選択と応答生成 ---
-        model_name = request.model_name or AI_CONFIG["chat"]["model_name"]
+        # インスタンス設定 > リクエスト指定 > グローバル設定 の優先順で model_name を決定
+        model_name = (
+            instance_config.get("chat", {}).get("model_name")
+            or request.model_name
+            or AI_CONFIG["chat"]["model_name"]
+        )
         provider = ProviderFactory.create(model_name)
         has_attachments = bool(request.attachments)
 

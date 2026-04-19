@@ -141,10 +141,15 @@ def build_user_content(text: str, attachments: List[Attachment]):
 
 
 def convert_history(history: list) -> list:
-    """Butly の history 形式を OpenAI messages 形式に変換する。"""
+    """Butly の history 形式を OpenAI messages 形式に変換する。
+
+    Gemini 形式の ``role: "model"`` を OpenAI 互換の ``"assistant"`` に変換する。
+    """
+    _ROLE_MAP = {"model": "assistant"}
     result = []
     for h in history:
         role = h.get("role", "user")
+        role = _ROLE_MAP.get(role, role)
         parts = h.get("parts", [])
         content = parts[0] if parts else ""
         result.append({"role": role, "content": str(content)})

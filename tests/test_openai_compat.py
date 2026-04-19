@@ -196,7 +196,7 @@ class TestConvertHistory:
         result = convert_history(history)
         assert result == [
             {"role": "user", "content": "hi"},
-            {"role": "model", "content": "hello"},
+            {"role": "assistant", "content": "hello"},
         ]
 
     def test_empty_parts(self):

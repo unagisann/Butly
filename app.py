@@ -721,20 +721,22 @@ def render_settings_screen():
                 "gpt-4o-mini",
                 "o3",
                 "o4-mini",
-                "grok-3-fast",
-                "grok-3-mini-fast",
+                "grok-4.20-0309-reasoning",
+                "grok-4.20-0309-non-reasoning",
+                "grok-4-1-fast-reasoning",
+                "grok-4-1-fast-non-reasoning",
             ],
             "summary": [
                 "gemini-3.1-flash-lite-preview",
                 "gemini-2.5-flash",
                 "gpt-4o-mini",
-                "grok-3-mini-fast",
+                "grok-4-1-fast-non-reasoning",
             ],
             "gatekeeper": [
                 "gemini-3.1-flash-lite-preview",
                 "gemini-2.5-flash-lite",
                 "gpt-4o-mini",
-                "grok-3-mini-fast",
+                "grok-4-1-fast-non-reasoning",
             ],
             "embedding": [
                 "models/gemini-embedding-001",
@@ -1146,8 +1148,14 @@ def render_instance_settings_screen():
         'o3',
         'o4-mini',
     ]
+    _xai_models = [
+        'grok-4.20-0309-reasoning',
+        'grok-4.20-0309-non-reasoning',
+        'grok-4-1-fast-reasoning',
+        'grok-4-1-fast-non-reasoning',
+    ]
     _ollama_models = _fetch_ollama_models(api_url)
-    _all_models = _gemini_models + _openai_models + _ollama_models
+    _all_models = _gemini_models + _openai_models + _xai_models + _ollama_models
     _all_embedding_models = [
         'models/gemini-embedding-001',
         'text-embedding-3-small',

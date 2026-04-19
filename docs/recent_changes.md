@@ -1,5 +1,49 @@
 # Recent Changes
 
+## Provider Refactoring v3.1: xAI 追加・OpenAI互換コード共通化・バグ修正 (2026-04-19)
+
+OpenAI 互換プロバイダーの共通コードを抽出し、xAI (Grok) プロバイダーを追加。Ollama Cloud Web Search を統合。テスト中に発見した 3 件のクリティカルバグを修正。
+
+### _openai_compat.py — OpenAI互換共通ヘルパー抽出
+- **新規ファイル**: `butly_core/llm/_openai_compat.py` — OpenAI / Ollama / xAI で重複していた以下のコードを共通化:
+  - `load_env_file()`: APIkey.env / .env の読込
+  - `is_reasoning_model()`: OpenAI o1/o3/o4 系判定（temperature 禁止、max_completion_tokens 使用）
+  - `resolve_position()` / `resolve_system_instruction()` / `resolve_context_prefix()`: system_instruction の配置位置解決
+  - `build_user_content()`: テキスト + 画像を OpenAI 形式に変換
+  - `convert_history()`: Butly 履歴を OpenAI messages 形式に変換（`role: "model"` → `"assistant"` マッピング含む）
+  - `build_messages()`: system / context / history / user を position に応じて配列化
+  - `merge_chat_config()` / `build_chat_completion_kwargs()` / `build_chat_response()`: API 呼び出しパラメータ構築
+- **OpenAI / Ollama プロバイダー**: `generate()` を `_openai_compat` ヘルパーに委譲。`_build_system_instruction()` / `_build_user_content()` 等のプライベートメソッドを削除。
+
+### xAI (Grok) プロバイダー
+- **新規ファイル**: `butly_core/llm/providers/xai.py` — OpenAI SDK + `base_url="https://api.x.ai/v1"` で Chat Completions を利用。
+- **Vision 対応**: grok-4 系は Vision 対応、grok-code-fast は非対応。
+- **Embedding**: xAI は embedding API 未提供のため `None` を返す（別プロバイダーで対応）。
+- **factory.py**: `grok-*` / `xai/*` → `XaiProvider` へのルーティングを追加。
+
+### Ollama Cloud Web Search
+- **新規ファイル**: `butly_core/search/ollama_provider.py` — `https://ollama.com/api/web_search` を利用。`OLLAMA_WEB_SEARCH_API_KEY` で認証。
+- **search/__init__.py**: `create_search_provider(chat_model="")` シグネチャ変更。Ollama chat + key 設定済み → OllamaWebSearchProvider、それ以外 → TavilySearchProvider。
+
+### UsageTracker プロバイダー別カウント
+- **usage_tracker.py**: 旧形式 `{YYYY-MM: int}` → 新形式 `{YYYY-MM: {tavily: N, ollama: M}}` への lazy migration。`increment(provider)` でプロバイダー名を明示指定。
+
+### バグ修正（xAIテスト中に発見）
+1. **ChatService model_name 優先度修正** (`chat/service.py`): `request.model_name or AI_CONFIG["chat"]["model_name"]` だと常にグローバル Gemini モデルが使用されていた。インスタンス config → リクエスト → グローバル の 3 段階優先に修正。
+2. **convert_history role マッピング** (`_openai_compat.py`): Gemini は `role: "model"` を使用するが、OpenAI/xAI は `role: "assistant"` を要求。`_ROLE_MAP = {"model": "assistant"}` を追加。
+3. **SleepTime インスタンス固有設定対応** (`sleeptime.py`): `_resolve_conf()` ヘルパーを追加。`ask_gemini_to_summarize` / `_generate_daily_digest` / `_generate_recent_headlines` / `_update_recent_snapshot_if_due` / `_propose_key_memory_updates_if_due` / `generate_embedding` の 6 メソッドがインスタンス config を参照するよう修正。
+
+### UI 変更 (app.py)
+- xAI モデル（grok-4-1-fast-non-reasoning / grok-4-1-mini-fast-non-reasoning）をモデルリストに追加。
+- API キー管理に xAI / Ollama Web Search を追加（4列 UI）。
+
+### テスト
+- `tests/test_openai_compat.py` 新規（40件）: ヘルパー関数の単体テスト。
+- `tests/test_xai_provider.py` 新規（12件）: xAI プロバイダーの単体テスト。
+- `tests/test_ollama_web_search.py` 新規（6件）: Ollama Web Search テスト。
+- `tests/test_search_factory.py` 新規（6件）: 検索ファクトリテスト。
+- 既存テスト含む全 459 件パス（391 → 459、68件追加、回帰 0）。
+
 ## Gatekeeper Phase 1.5: MemoryJudge → MemoryProbe 事実ベース判定 (2026-04-06)
 
 MemoryJudge の LLM 呼び出しを廃止し、実際の検索結果に基づく事実ベース判定に置換。レイテンシ削減 + Glossary の選択的注入を実現。

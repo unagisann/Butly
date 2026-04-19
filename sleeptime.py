@@ -128,6 +128,33 @@ class ButlySleeptime:
                 return False
         return targets.get(target, defaults.get(target, True))
 
+    def _resolve_conf(self, inst_cfg: dict, section: str) -> dict:
+        """インスタンス設定 → グローバル AI_CONFIG のフォールバックで設定を解決する。
+
+        inst_cfg に *section* キーがあればそちらを優先し、なければグローバルを返す。
+        sleeptime セクション内の max_output_tokens 上書きも統合する。
+        """
+        base = dict(AI_CONFIG.get(section, {}))
+        override = inst_cfg.get(section)
+        if override:
+            # generation_config はマージ
+            merged = {**base, **override}
+            if "generation_config" in base and "generation_config" in override:
+                merged["generation_config"] = {**base["generation_config"], **override["generation_config"]}
+            elif "generation_config" in base:
+                merged["generation_config"] = dict(base["generation_config"])
+            base = merged
+
+        # sleeptime セクションの max_output_tokens 上書き
+        _hk = inst_cfg.get("sleeptime", {})
+        tokens_key = f"{section}_max_output_tokens" if section != "summary" else "summary_max_output_tokens"
+        if tokens_key in _hk:
+            gc = dict(base.get("generation_config", {}))
+            gc["max_output_tokens"] = _hk[tokens_key]
+            base["generation_config"] = gc
+
+        return base
+
     def _robust_api_call(self, func, *args, retries=5, base_delay=5, **kwargs):
         """API呼び出しの堅牢化（指数バックオフ付きリトライ）"""
         for i in range(retries):
@@ -147,10 +174,15 @@ class ButlySleeptime:
         print(f"[API Failed] Max retries exceeded.")
         return None
 
-    def generate_embedding(self, text):
+    def generate_embedding(self, text, instance_name=None):
         try:
             from butly_core.llm.factory import ProviderFactory
-            model_name = AI_CONFIG["embedding"]["model_name"]
+            if instance_name:
+                inst_cfg = self._get_instance_config(instance_name)
+                emb_conf = self._resolve_conf(inst_cfg, "embedding")
+                model_name = emb_conf.get("model_name", AI_CONFIG["embedding"]["model_name"])
+            else:
+                model_name = AI_CONFIG["embedding"]["model_name"]
             provider = ProviderFactory.create(model_name)
 
             result = self._robust_api_call(lambda: provider.embed(text))
@@ -179,16 +211,9 @@ class ButlySleeptime:
         DBへのTypeには各インスタンス名を使用する。
         """
         
-        # インスタンス固有のトークン数上書き
+        # インスタンス設定 → グローバル knowledge のフォールバック
         inst_cfg = self._get_instance_config(db_type)
-        _hk = inst_cfg.get("sleeptime", {})
-        if "knowledge_max_output_tokens" in _hk:
-            k_conf = dict(self.k_conf)
-            gc = dict(k_conf.get("generation_config", {}))
-            gc["max_output_tokens"] = _hk["knowledge_max_output_tokens"]
-            k_conf["generation_config"] = gc
-        else:
-            k_conf = self.k_conf
+        k_conf = self._resolve_conf(inst_cfg, "knowledge")
         
         # ナレッジカード化は各インスタンス固有の人格・記憶で行う
         agent_instruction = self.get_instance_instruction(db_type)
@@ -234,7 +259,7 @@ class ButlySleeptime:
 
         # Embedding生成
         content_to_embed = f"Title: {card['title']}\nTags: {card['tags']}\nSummary: {summary_text}"
-        embedding_list = self.generate_embedding(content_to_embed)
+        embedding_list = self.generate_embedding(content_to_embed, instance_name=db_type)
         
         # BLOB変換 (float32)
         embedding_blob = None
@@ -476,30 +501,23 @@ class ButlySleeptime:
         from butly_core.prompts import PromptLoader
         
         try:
-            summary_conf = dict(AI_CONFIG.get("summary", {}))
+            # インスタンス設定 → グローバル summary のフォールバック
+            instance_name = instance_path.name
+            inst_cfg = self._get_instance_config(instance_name)
+            summary_conf = self._resolve_conf(inst_cfg, "summary")
             model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite-preview")
             
             digest_file = instance_path / "mid_term_digest.txt"
             archive_digest_file = instance_path / "memory_archive" / "3_log" / "archive_digest.txt"
             archive_digest_file.parent.mkdir(parents=True, exist_ok=True)
             
-            # インスタンス固有の system_instruction と key_memory を取得
-            instance_name = instance_path.name
-            inst_cfg = self._get_instance_config(instance_name)
-            
-            # インスタンス固有のトークン数上書き
-            _hk = inst_cfg.get("sleeptime", {})
-            if "summary_max_output_tokens" in _hk:
-                gc = dict(summary_conf.get("generation_config", {}))
-                gc["max_output_tokens"] = _hk["summary_max_output_tokens"]
-                summary_conf["generation_config"] = gc
             system_instruction = self.get_instance_instruction(instance_name)
             key_memory = self.get_instance_key_memory(instance_name)
             max_digest = inst_cfg.get("sleeptime", {}).get(
                 "max_digest_chars",
                 SYSTEM_CONFIG.get("memory", {}).get("max_digest_chars", 8000)
             )
-            digest_max_input = _hk.get("digest_max_input_chars", 0)
+            digest_max_input = inst_cfg.get("sleeptime", {}).get("digest_max_input_chars", 0)
 
             # チャンク分割: 日付ヘッダ ([YYYY-MM-DD ...]) を区切りにして上限内に収める
             text_chunks = self._split_text_by_date_headers(new_text, digest_max_input)
@@ -594,15 +612,10 @@ class ButlySleeptime:
 
         from butly_core.prompts import PromptLoader
         try:
-            summary_conf = AI_CONFIG.get("summary", {})
-            model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite-preview")
-
             instance_name = instance_path.name
             inst_cfg = self._get_instance_config(instance_name)
-            summary_max_tokens = inst_cfg.get("sleeptime", {}).get(
-                "summary_max_output_tokens",
-                summary_conf.get("generation_config", {}).get("max_output_tokens", 4096),
-            )
+            summary_conf = self._resolve_conf(inst_cfg, "summary")
+            model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite-preview")
 
             loader = PromptLoader()
             prompt = loader.get(
@@ -613,7 +626,7 @@ class ButlySleeptime:
             provider = self._get_provider(model_name)
             raw_response = provider.classify(
                 prompt,
-                {"model_name": model_name, "generation_config": {"temperature": 0.0, "max_output_tokens": summary_max_tokens}},
+                {"model_name": model_name, "generation_config": {"temperature": 0.0, "max_output_tokens": summary_conf.get("generation_config", {}).get("max_output_tokens", 4096)}},
             )
 
             # JSON パース
@@ -698,20 +711,13 @@ class ButlySleeptime:
         from butly_core.prompts import PromptLoader
         
         try:
-            k_conf = dict(AI_CONFIG.get("knowledge", {}))
+            k_conf = self._resolve_conf(inst_cfg, "knowledge")
             model_name = k_conf.get("model_name", "gemini-3.1-pro-preview")
             
             # インスタンス固有の system_instruction と key_memory を取得
             system_instruction = self.get_instance_instruction(instance_name)
             key_memory = self.get_instance_key_memory(instance_name)
             max_rel_chars = inst_cfg.get("sleeptime", {}).get("max_relationship_chars", 600)
-            
-            # インスタンス固有のトークン数上書き
-            _hk = inst_cfg.get("sleeptime", {})
-            if "knowledge_max_output_tokens" in _hk:
-                gc = dict(k_conf.get("generation_config", {}))
-                gc["max_output_tokens"] = _hk["knowledge_max_output_tokens"]
-                k_conf["generation_config"] = gc
             
             loader = PromptLoader()
             rel_prompt = loader.get(
@@ -782,14 +788,8 @@ class ButlySleeptime:
         from butly_core.prompts import PromptLoader
 
         try:
-            k_conf = dict(AI_CONFIG.get("knowledge", {}))
+            k_conf = self._resolve_conf(inst_cfg, "knowledge")
             model_name = k_conf.get("model_name", "gemini-3.1-pro-preview")
-
-            _hk = inst_cfg.get("sleeptime", {})
-            if "knowledge_max_output_tokens" in _hk:
-                gc = dict(k_conf.get("generation_config", {}))
-                gc["max_output_tokens"] = _hk["knowledge_max_output_tokens"]
-                k_conf["generation_config"] = gc
 
             loader = PromptLoader()
             prompt = loader.get(

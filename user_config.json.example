@@ -123,15 +123,15 @@
     "_AI_CONFIG_xai_example": {
         "_comment": "xAI (Grok) を使う場合の設定例（このキーを AI_CONFIG にリネームして使用）",
         "chat": {
-            "model_name": "grok-3-fast",
+            "model_name": "grok-4-1-fast-reasoning",
             "generation_config": { "temperature": 1.0, "max_output_tokens": 8192 }
         },
         "summary": {
-            "model_name": "grok-3-mini-fast",
+            "model_name": "grok-4-1-fast-non-reasoning",
             "generation_config": { "temperature": 0.7 }
         },
         "gatekeeper": {
-            "model_name": "grok-3-mini-fast",
+            "model_name": "grok-4-1-fast-non-reasoning",
             "generation_config": { "temperature": 0.0, "max_output_tokens": 512 }
         }
     },
