@@ -4,8 +4,6 @@ memory_probe.py
 事実ベースの記憶検索プローブ。
 LLM 呼び出しなし。実際の検索結果に基づいて判定する。
 
-Phase 1.5: MemoryJudge (LLM版) を置換。
-
 Layer 1: Quick Vector Search (50-100ms)
   user_input の embedding → cosine similarity で上位 N 件取得
 

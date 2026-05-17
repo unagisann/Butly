@@ -70,9 +70,6 @@ AI_CONFIG = {
 
     # 6. ContextClassifier Model (未設定時は gatekeeper にフォールバック)
     "context_classifier": {},
-
-    # 7. MemoryJudge Model (Phase 1.5 で廃止 — MemoryProbe は LLM 不使用)
-    "memory_judge": {},
 }
 
 # System Configuration (Paths, Thresholds, Limits)

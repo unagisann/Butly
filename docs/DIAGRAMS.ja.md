@@ -19,7 +19,8 @@ flowchart TD
     C --> E{tier}
     E -->|reflex| F["⚡ reflex<br/>最小コンテキスト"]
     E -->|mid| G["◎ mid<br/>注入記憶あり"]
-    E -->|cortex| H["⌕ 不足前提検索<br/>need-driven retrieval"]
+    C --> N{need?}
+    N -->|有| H["⌕ MemoryProbe candidates<br/>tier 非依存の RAG"]
     H --> I[("⛁ 統合記憶DB<br/>episode / reflection<br/>generalization / self_model")]
     F --> J["◆ ChatService<br/>Provider.generate()"]
     G --> J

@@ -3,6 +3,10 @@
 > 作成日: 2026-04-04
 > 目的: `"cortex"` 廃止 + tier/RAG 分離に向けた影響箇所の洗い出し
 > 対象: `butly_core/` および `tests/` 配下（`docs/` は除外）
+>
+> **ステータス（2026-05-17）: 完了。** Phase 1.5 + cleanup により本ドキュメントの全項目は対応済み。
+> 現状の仕様は [gatekeeper_io_summary.ja.md](gatekeeper_io_summary.ja.md) を参照。
+> 本ファイルは作業履歴として保存。
 
 ---
 

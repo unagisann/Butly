@@ -5,11 +5,6 @@
 
 prompts:
   # --- Functional Prompts (control/) ---
-  tier_classifier:
-    location: control
-    description: "Tier classification signal extraction (legacy, use context_classifier)"
-    variables: [agent_name, history_text, user_input, current_topic, recent_headlines]
-
   context_classifier:
     location: control
     description: "Context depth classification (reflex/mid)"
@@ -19,13 +14,6 @@ prompts:
     location: control
     description: "Session state delta generation"
     variables: [agent_name, session_state, history_text, user_input]
-
-  search_planner:
-    location: control
-    description: "RAG search keyword planning (legacy)"
-    variables: [agent_name, history_text, user_input, current_topic]
-
-  # memory_judge: Phase 1.5 で廃止（MemoryProbe は LLM 不使用）
 
   brain_extract_keywords:
     location: control

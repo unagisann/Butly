@@ -151,7 +151,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 5. MemoryBlockBuilder.build → 記憶ブロック辞書構築
 5.5. Web検索実行（非Gemini + use_web_search=True 時のみ。Tavily API 経由。結果は memory_blocks["web_search_context"] に格納）
 6. ProviderFactory.create → Provider 選択・vision チェック
-7. RAG 検索結果の取得（cortex + use_rag=True 時のみ。Gatekeeper 経由 MemoryBlockBuilder が実行済みの RAG を流用）
+7. RAG 検索結果の取得（need 有り + use_rag=True 時のみ。Gatekeeper 経由 MemoryBlockBuilder が MemoryProbe の candidates から構築済みの RAG を流用）
 8. provider.generate(full_prompt, attachments, context) → LLM 応答生成
 9. memory.save_single_turn → 会話を short_term_json に保存
 10. memory.maintain_memory → 閾値超過時に short_term → floating_summary へ折りたたみ
@@ -261,10 +261,8 @@ Gatekeeper.classify(user_input, history, session_state)
     ├─ ContextClassifier.classify()  → tier (reflex / mid) を決定（3スコア: rc/ew/cn）
     ├─ StateUpdater.update()         → session_state の差分を生成
     └─ MemoryProbe.probe()           → LLM不要の事実ベース記憶検索（ベクトル検索 + 用語集マッチ）
-    ※ mid + probe ヒット → 互換レイヤーで cortex に昇格
+    ※ tier と need は独立。need は MemoryProbe のヒットから設定され、tier に関係なく RAG 注入を決定する
 ```
-
-> **備考:** `TierClassifier`（旧 4 スコア方式）と `SearchPlanner` はコード上残存していますが、アクティブパスでは使用されていません。
 
 ---
 
@@ -277,10 +275,10 @@ Gatekeeper.classify(user_input, history, session_state)
 **返却値の構造:**
 ```python
 {
-    "tier": "reflex" | "mid" | "cortex",  # cortex = mid + probe ヒット（互換レイヤー）
+    "tier": "reflex" | "mid",     # ContextClassifier の出力（RAG とは独立）
     "topic": str,
-    "need": str | None,           # cortex のみ
-    "search_targets": list | None, # cortex のみ
+    "need": str | None,           # MemoryProbe ヒット時のみ
+    "search_targets": list | None, # need 有時の候補タイトル
     "state_delta": dict,
     "llm_tier": str,
     "llm_reasoning": str,
@@ -330,14 +328,6 @@ LLM 呼び出しなしの事実ベース記憶検索。3 レイヤー構成。
 
 ---
 
-### `gatekeeper/tier_classifier.py`（レガシー・後方互換）
-旧 4 スコア方式の tier 判定。アクティブパスでは使用されていない。
-
-- `TierClassifier(base_dir)`
-  - `classify(...)` — 後方互換エイリアスとして残存
-
----
-
 ### `gatekeeper/state_updater.py`
 ユーザー発言から `session_state` の差分（state_delta）を LLM で生成する。
 
@@ -351,14 +341,6 @@ LLM 呼び出しなしの事実ベース記憶検索。3 レイヤー構成。
     "mood": str | None,          # ユーザーの気分
 }
 ```
-
----
-
-### `gatekeeper/search_planner.py`（レガシー・後方互換）
-旧 cortex tier 判定時に RAG 検索キーワードを生成していた。MemoryProbe に置き換え済み。
-
-- `SearchPlanner(base_dir)`
-  - `plan(...)` — 後方互換として残存
 
 ---
 
@@ -393,9 +375,10 @@ tier に応じて、LLM プロバイダーに渡す「記憶ブロック辞書�
 **tier 別の記憶ブロック構成:**
 | tier | short_term | floating | mid_term | rag_context |
 |------|-----------|---------|---------|------------|
-| `reflex` | ✅ | ✅ | — | — |
-| `mid` | ✅ | ✅ | ✅ | — |
-| `cortex` | ✅ | ✅ | ✅ | ✅ (RAG) |
+| `reflex` | ✅ | ✅ | — | `need` 有時 ✅ |
+| `mid` | ✅ | ✅ | ✅ | `need` 有時 ✅ |
+
+RAG (`rag_context`) は `need` に連動する独立判定で、tier ではなく `MemoryProbe` のヒットで注入される。
 
 - `build_system_instruction_from_blocks(blocks, memory_manager, use_google_search)` — **不変セクション**（system_instruction + Key_Memory）のみを結合して system_instruction 文字列を生成
 - `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / glossary / mid_term / RAG / floating / tier 情報 / Google 検索注意書き / Web 検索結果）を結合し、Provider が会話履歴の先頭に user メッセージとして注入する文字列を生成
@@ -572,10 +555,8 @@ user_prompts.json (ユーザーオーバーライド)
 **プロンプト名と配置:**
 | プロンプト名 | 配置 | 用途 |
 |---|---|---|
-| `context_classifier` | control/ | Gatekeeper の tier 判定（Phase 1.5、3スコア方式） |
-| `tier_classifier` | control/ | Gatekeeper の tier 判定（レガシー、4スコア方式） |
+| `context_classifier` | control/ | Gatekeeper の tier 判定（3スコア方式: rc/ew/cn） |
 | `state_updater` | control/ | session_state の差分生成 |
-| `search_planner` | control/ | RAG 検索キーワード生成（レガシー） |
 | `brain_extract_keywords` | control/ | キーワード抽出 |
 | `sleeptime_summarize` | locales/ | 会話の要約 |
 | `brain_summarize_conversation` | locales/ | 会話の折りたたみ要約 |
@@ -604,7 +585,7 @@ user_prompts.json (ユーザーオーバーライド)
 ⑤ [mid tier 以上] mid_term 記憶 ← 2 モードあり:
    - raw モード: mid_term.txt をそのまま
    - summary モード: mid_term_digest.txt + mid_term_relationship.txt
-⑥ [cortex + need有りのみ] RAG 検索結果  ← 関連ナレッジカード
+⑥ [need 有り時のみ・tier 非依存] RAG 検索結果  ← MemoryProbe の candidates から構築
 ⑦ floating_summary.txt        ← 直近の会話の浮動要約
 ⑧ tier 情報 + topic
 ⑨ [該当時] Google 検索注意書き
@@ -620,11 +601,12 @@ user_prompts.json (ユーザーオーバーライド)
 
 **tier 別のコンテキスト包含関係:**
 ```
-reflex  ⊂  mid  ⊂  cortex
+reflex  ⊂  mid
 
 reflex: ①②③④⑦⑧⑩⑪
 mid:    ①②③④⑤⑦⑧⑩⑪
-cortex: ①②③④⑤⑥⑦⑧⑩⑪  (RAG あり。need=null 時はスキップ)
+
+RAG（⑥）は tier と独立。need が設定されている時のみ、reflex / mid どちらでも追加注入される。
 ```
 
 **mid_term のモード分岐** (`SYSTEM_CONFIG.memory.use_summarized_mid_term`):

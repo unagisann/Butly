@@ -181,7 +181,4 @@ __all__ = [
     "ContextClassifier",
     "MemoryProbe",
     "StateUpdater",
-    # 後方互換
-    "TierClassifier",
-    "SearchPlanner",
 ]

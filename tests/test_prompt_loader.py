@@ -16,7 +16,7 @@ class TestPromptLoaderBasic:
     def test_load_control_template(self):
         """control プロンプト（機能的）を読み込める"""
         loader = PromptLoader(locale="ja")
-        template = loader.get_template("tier_classifier")
+        template = loader.get_template("context_classifier")
         assert len(template) > 0
         assert "{user_input}" in template
 
@@ -31,9 +31,8 @@ class TestPromptLoaderBasic:
         """全テンプレートが読み込める"""
         loader = PromptLoader(locale="ja")
         names = [
-            "tier_classifier",
+            "context_classifier",
             "state_updater",
-            "search_planner",
             "sleeptime_summarize",
             "brain_extract_keywords",
             "brain_summarize_conversation",
@@ -69,7 +68,7 @@ class TestPromptLoaderFallback:
     def test_en_locale_loads_control(self):
         """en locale で control プロンプトが読み込める"""
         loader = PromptLoader(locale="en")
-        template = loader.get_template("tier_classifier")
+        template = loader.get_template("context_classifier")
         assert len(template) > 0
 
     def test_en_locale_loads_locales(self):
@@ -94,7 +93,7 @@ class TestPromptLoaderFallback:
         """control プロンプトは locale に依存しない（同一内容）"""
         loader_ja = PromptLoader(locale="ja")
         loader_en = PromptLoader(locale="en")
-        assert loader_ja.get_template("tier_classifier") == loader_en.get_template("tier_classifier")
+        assert loader_ja.get_template("context_classifier") == loader_en.get_template("context_classifier")
 
 
 class TestSectionHeaders:
@@ -133,7 +132,6 @@ class TestBackwardCompat:
             SLEEPTIME_SUMMARIZE_PROMPT,
             BRAIN_EXTRACT_KEYWORDS_PROMPT,
             BRAIN_SUMMARIZE_CONVERSATION_PROMPT,
-            GATEKEEPER_CLASSIFY_PROMPT,
             MIDTERM_DIGEST_PROMPT,
             MIDTERM_RELATIONSHIP_PROMPT,
             RECENT_SNAPSHOT_PROMPT,
@@ -142,7 +140,6 @@ class TestBackwardCompat:
         assert len(SLEEPTIME_SUMMARIZE_PROMPT) > 0
         assert len(BRAIN_EXTRACT_KEYWORDS_PROMPT) > 0
         assert len(BRAIN_SUMMARIZE_CONVERSATION_PROMPT) > 0
-        assert len(GATEKEEPER_CLASSIFY_PROMPT) > 0
         assert len(MIDTERM_DIGEST_PROMPT) > 0
         assert len(MIDTERM_RELATIONSHIP_PROMPT) > 0
         assert len(RECENT_SNAPSHOT_PROMPT) > 0

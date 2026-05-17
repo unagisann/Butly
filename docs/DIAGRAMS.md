@@ -19,7 +19,8 @@ flowchart TD
     C --> E{tier}
     E -->|reflex| F["⚡ reflex<br/>Minimal context"]
     E -->|mid| G["◎ mid<br/>Memory injected"]
-    E -->|cortex| H["⌕ Missing prerequisite search<br/>need-driven retrieval"]
+    C --> N{need?}
+    N -->|set| H["⌕ MemoryProbe candidates<br/>tier-independent RAG"]
     H --> I[("⛁ Integrated Memory DB<br/>episode / reflection<br/>generalization / self_model")]
     F --> J["◆ ChatService<br/>Provider.generate()"]
     G --> J

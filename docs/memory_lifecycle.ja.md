@@ -90,7 +90,7 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # 保持ファイル数
 | **書き込み** | Sleeptime Stage 1 (`stage_1_cleanup`) が 1_integrated JSON をテキスト整形して追記 |
 | **上限** | `max_mid_term_chars`（デフォルト 30,000 文字） |
 | **オーバーフロー** | 先頭から溢れた分を `memory_archive/3_log/archive_long_term.txt` に追記後、最新部分のみ残す |
-| **Gatekeeper注入** | `use_summarized_mid_term = False`（RAWモード）の場合に mid / cortex tier へ MID-TERM MEMORY ブロックとして注入 |
+| **Gatekeeper注入** | `use_summarized_mid_term = False`（RAWモード）の場合に mid tier へ MID-TERM MEMORY ブロックとして注入 |
 | **形式** | `[YYYY-MM-DD HH:MM:SS] {role_label}: {text}` の行形式テキスト |
 
 **設定パラメータ:**
@@ -111,7 +111,7 @@ SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True で要約注�
 | **入力チャンク分割** | `digest_max_input_chars` が設定されている場合、日付ヘッダ `[YYYY-MM-DD ...]` を区切りにチャンク分割し、各チャンクごとにLLMへ送信→結果を結合 |
 | **上限** | `max_digest_chars`（デフォルト 8,000 文字） |
 | **オーバーフロー** | `memory_archive/3_log/archive_digest.txt` に追記後、最新部分のみ残す |
-| **Gatekeeper注入** | `use_summarized_mid_term = True`（要約モード）の場合に mid / cortex tier へ MID-TERM DIGEST ブロックとして注入 |
+| **Gatekeeper注入** | `use_summarized_mid_term = True`（要約モード）の場合に mid tier へ MID-TERM DIGEST ブロックとして注入 |
 | **スキップ条件** | `new_text` が 200 文字未満、または `generate_mid_term_summaries = False` |
 | **使用モデル** | `AI_CONFIG["summary"]["model_name"]`（Flash Lite 系） |
 
@@ -147,7 +147,7 @@ digest_max_input_chars = 0   # 1回あたりの最大入力文字数。0=無制�
 | **書き込み** | Sleeptime Stage 1 内 `_update_relationship_if_due()` — 7 日間隔で全上書き |
 | **入力** | `mid_term_digest.txt`（蓄積された事実ダイジェスト）— 日々の断片は使わない |
 | **更新頻度** | `relationship_update_interval_days`（デフォルト 7 日）以上経過した場合のみ更新 |
-| **Gatekeeper注入** | `use_summarized_mid_term = True` の場合に mid / cortex tier へ RELATIONSHIP SNAPSHOT ブロックとして注入 |
+| **Gatekeeper注入** | `use_summarized_mid_term = True` の場合に mid tier へ RELATIONSHIP SNAPSHOT ブロックとして注入 |
 | **スキップ条件** | `mid_term_digest.txt` が 200 文字未満、またはインターバル未達 |
 | **使用モデル** | `AI_CONFIG["knowledge"]["model_name"]`（高推論 Pro 系） |
 | **設計意図** | 関係性は緩やかに変化するため毎日書き換えると不安定になる。週次程度が適切 |
@@ -171,7 +171,7 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | **スキーマ** | `knowledge_cards` テーブル（下記参照） |
 | **Embedding** | `title + tags + summary` を `AI_CONFIG["embedding"]["model_name"]` で埋め込み → BLOB保存 |
 | **検索** | `ButlyBrain.search_memories()` がクエリ埋め込みとコサイン類似度でリランキング |
-| **Gatekeeper注入** | cortex tier のみ、`MemoryProbe` が返した候補をもとに RAG 検索した結果を LONG-TERM MEMORY ブロックとして注入 |
+| **Gatekeeper注入** | `need` が設定された時のみ（tier 非依存）、`MemoryProbe` の candidates から RAG ブロックを構築し LONG-TERM MEMORY として注入 |
 | **後処理** | 処理済み JSON は `memory_archive/2_knowledgeized/{date}/` へ移動 |
 | **バックアップ** | `butly_core/db_backups/` にローテーション保存（世代数: `backup.generations`） |
 
@@ -235,7 +235,7 @@ Sleeptime とは独立して、チャット中にも以下の処理が行われ�
        MID-TERM DIGEST      ← mid_term_digest.txt (要約モード)
        MID-TERM MEMORY      ← mid_term.txt (RAWモード)
        CURRENT TIME         ← システム時刻
-       LONG-TERM (RAG)      ← butly_memory.db (cortex のみ)
+       LONG-TERM (RAG)      ← butly_memory.db (need 有時のみ・tier 非依存)
        FLOATING SUMMARY     ← floating_summaries/*.txt
        TIER INFO            ← tier 文字列
        SHORT TERM           ← short_term_json/*.json (直近 6 ターン)

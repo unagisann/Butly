@@ -91,7 +91,7 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # number of files to retain
 | **Written by** | Sleeptime Stage 1 (`stage_1_cleanup`) — formats 1_integrated JSONs as text and appends |
 | **Limit** | `max_mid_term_chars` (default: 30,000 characters) |
 | **Overflow** | Oldest characters archived to `memory_archive/3_log/archive_long_term.txt`; only recent portion retained |
-| **Injected by Gatekeeper** | When `use_summarized_mid_term = False` (RAW mode): injected as MID-TERM MEMORY block at mid / cortex tiers |
+| **Injected by Gatekeeper** | When `use_summarized_mid_term = False` (RAW mode): injected as MID-TERM MEMORY block at the mid tier |
 | **Format** | Line-format text: `[YYYY-MM-DD HH:MM:SS] {role_label}: {text}` |
 
 **Config parameters:**
@@ -112,7 +112,7 @@ SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True = summary inje
 | **Input chunking** | When `digest_max_input_chars` is set, splits at date headers `[YYYY-MM-DD ...]` into chunks, sends each to LLM, then combines results |
 | **Limit** | `max_digest_chars` (default: 8,000 characters) |
 | **Overflow** | Appended to `memory_archive/3_log/archive_digest.txt`; only recent portion retained |
-| **Injected by Gatekeeper** | When `use_summarized_mid_term = True` (summary mode): injected as MID-TERM DIGEST block at mid / cortex tiers |
+| **Injected by Gatekeeper** | When `use_summarized_mid_term = True` (summary mode): injected as MID-TERM DIGEST block at the mid tier |
 | **Skip conditions** | `new_text` shorter than 200 characters, or `generate_mid_term_summaries = False` |
 | **Model used** | `AI_CONFIG["summary"]["model_name"]` (Flash Lite class) |
 
@@ -148,7 +148,7 @@ digest_max_input_chars = 0   # Max input chars per LLM call. 0 = unlimited
 | **Written by** | Sleeptime Stage 1 `_update_relationship_if_due()` — full overwrite every 7 days |
 | **Input** | `mid_term_digest.txt` (accumulated fact digest) — does NOT use daily fragments directly |
 | **Update frequency** | Only updated when `relationship_update_interval_days` (default: 7 days) have elapsed since last update |
-| **Injected by Gatekeeper** | When `use_summarized_mid_term = True`: injected as RELATIONSHIP SNAPSHOT block at mid / cortex tiers |
+| **Injected by Gatekeeper** | When `use_summarized_mid_term = True`: injected as RELATIONSHIP SNAPSHOT block at the mid tier |
 | **Skip conditions** | `mid_term_digest.txt` shorter than 200 characters, or interval not yet reached |
 | **Model used** | `AI_CONFIG["knowledge"]["model_name"]` (high-reasoning Pro class) |
 | **Design intent** | Relationships change gradually; daily overwriting causes instability. Weekly cadence is appropriate |
@@ -172,7 +172,7 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | **Schema** | `knowledge_cards` table (see below) |
 | **Embedding** | `title + tags + summary` embedded via `AI_CONFIG["embedding"]["model_name"]` → stored as BLOB |
 | **Search** | `ButlyBrain.search_memories()` re-ranks by cosine similarity between query and embedding_blob |
-| **Injected by Gatekeeper** | cortex tier only: RAG search using candidates from MemoryProbe, injected as LONG-TERM MEMORY block |
+| **Injected by Gatekeeper** | Whenever `need` is set (tier-independent): RAG block built from MemoryProbe candidates, injected as LONG-TERM MEMORY block |
 | **Post-processing** | Processed JSONs moved to `memory_archive/2_knowledgeized/{date}/` |
 | **Backup** | Rotation backup saved to `butly_core/db_backups/` (generations: `backup.generations`) |
 
@@ -236,7 +236,7 @@ Independent of the Sleeptime, the following processing occurs during every chat 
        MID-TERM DIGEST      ← mid_term_digest.txt  (summary mode)
        MID-TERM MEMORY      ← mid_term.txt         (RAW mode)
        CURRENT TIME         ← system clock
-       LONG-TERM (RAG)      ← butly_memory.db      (cortex only)
+       LONG-TERM (RAG)      ← butly_memory.db      (when need is set, tier-independent)
        FLOATING SUMMARY     ← floating_summaries/*.txt
        TIER INFO            ← tier string
        SHORT TERM           ← short_term_json/*.json (last 6 turns)

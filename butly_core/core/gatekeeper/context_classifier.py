@@ -2,7 +2,6 @@
 context_classifier.py
 ---------------------
 LLM に 3 つのスコア（rc/ew/cn）を出力させ、Python 側で reflex/mid の 2 値 tier を決定する。
-Phase 1: tier_classifier.py からリネーム＋改修。ml（memory_reference_likelihood）を除外。
 """
 
 import json

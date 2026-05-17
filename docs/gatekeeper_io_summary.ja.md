@@ -6,7 +6,7 @@
 
 ---
 
-## アーキテクチャ概要（Phase 1.5）
+## アーキテクチャ概要
 
 Gatekeeper は以下の 4 コンポーネントに分割されています。
 `Gatekeeper` クラスが facade として各コンポーネントをオーケストレーションします。
@@ -18,7 +18,7 @@ Gatekeeper は以下の 4 コンポーネントに分割されています。
 | `MemoryProbe` | `memory_probe.py` | LLM呼び出しなしの事実ベース記憶検索（ベクトル検索 + 用語集マッチ） |
 | `MemoryBlockBuilder` | `memory_builder.py` | tier に応じた記憶ブロック辞書を構築し Brain へ渡す |
 
-> **備考:** `TierClassifier`（4スコア・3値tier）と `SearchPlanner` は後方互換のため残存していますが、アクティブパスでは使用されていません。
+tier は `reflex` / `mid` の 2 値のみ。RAG 注入は tier ではなく `need`（MemoryProbe 由来）で独立に決定されます。
 
 ### 処理フロー
 
@@ -34,7 +34,7 @@ Gatekeeper は以下の 4 コンポーネントに分割されています。
     └─ Layer 2: Deep Search（条件付き — 過去参照パターン検出時のみ）
   ↓
 Gatekeeper.classify() が結果をマージ
-  （mid + probe ヒット → 互換レイヤーで cortex に昇格）
+  （tier は ContextClassifier 由来、need は MemoryProbe 由来。両者は独立）
   ↓
 MemoryBlockBuilder.build()  → Brain へのプロンプト構築
 ```
@@ -72,10 +72,10 @@ MemoryBlockBuilder.build()  → Brain へのプロンプト構築
 
 ```python
 {
-    "tier": "reflex" | "mid" | "cortex",  # cortex = mid + MemoryProbe ヒット（互換レイヤー）
-    "topic": str,          # state_delta または現在 topic
-    "need": str | None,   # cortex 時のみ。"memory_probe_hit" or "memory_probe_deep_search"
-    "search_targets": list[str] | None,  # cortex 時のみ
+    "tier": "reflex" | "mid",          # ContextClassifier の出力（RAG とは独立）
+    "topic": str,                       # state_delta または現在 topic
+    "need": str | None,                 # MemoryProbe がヒットした時のみ。"memory_probe_hit" or "memory_probe_deep_search"
+    "search_targets": list[str] | None, # need 有時の上位候補タイトル
     "state_delta": {
         "topic": str | None,
         "mood": str | None,
@@ -102,7 +102,7 @@ ContextClassifier が LLM に 3 スコアを出力させ、Python 側で以下�
 | `response_complexity <= 0.4` AND `continuity_need <= 0.3` | → `reflex` |
 | 上記以外 | → `mid` |
 
-> **互換レイヤー:** `tier == "mid"` かつ MemoryProbe がヒットした場合、後方互換のため `cortex` に昇格します。将来のフェーズで廃止予定。
+`need`（RAG 要否）は tier とは独立で、`MemoryProbe` の実検索ヒットに基づき設定されます。reflex tier でも need=有りになりえます。
 
 ---
 
@@ -118,17 +118,17 @@ ContextClassifier が LLM に 3 スコアを出力させ、Python 側で以下�
 | 2 | **KEY MEMORY** | ユーザーに関する根幹・不変の記憶 |
 | 3 | **CURRENT TIME** | 現在時刻（システムノート） |
 | 4 | **GLOSSARY** | 共通言語辞書（意味記憶。glossary.yaml のアクティブエントリ） |
-| 5 | **MID-TERM（条件付）** | mid 以上のみ（下記参照） |
-| 6 | **RAG（条件付）** | cortex + need有りのみ（下記参照） |
+| 5 | **MID-TERM（条件付）** | mid のみ（下記参照） |
+| 6 | **RAG（条件付）** | `need` 有時のみ（tier 非依存。下記参照） |
 | 7 | **FLOATING SUMMARY** | 最新の対話の浮動要約 |
-| 8 | **TIER INFO** | 現在の思考モード（reflex/mid/cortex） |
+| 8 | **TIER INFO** | 現在の思考モード（reflex/mid） |
 | 9 | **WEB SEARCH RESULTS**（条件付） | 非Gemini + use_web_search=True 時のみ。Tavily API 経由のWeb検索結果 |
 | 10 | **Short Term** | 直近 6 ターンの会話履歴 |
 
 ### 🔵 Tier別に追加される情報
 
 #### 【 Tier 1 】 reflex（脊髄反射）
-- **追加情報**: なし
+- **追加情報**: mid-term 軸の追加情報は無し。ただし `need` 有り時は tier に関係なく RAG ブロックも注入される（例: 「前に話したあの曲なんだっけ？」が reflex で MemoryProbe にヒット）。
 - 挨拶、相槌、「うんわかった」系の短い返事で発動。知識検索を待たず即座に返す。
 
 #### 【 Tier 2 】 mid（中脳・感情系）
@@ -138,13 +138,9 @@ ContextClassifier が LLM に 3 スコアを出力させ、Python 側で以下�
     （要約ファイルがない場合は RAW にフォールバック）
 - 現在の話題に関する質問や、少し前のやり取りの前提を踏まえる会話で発動。
 
-#### 【 Tier 3 】 cortex（大脳皮質）— 互換レイヤー
-- **追加情報**:
-  - mid の情報すべて
-  - ➕ **LONG-TERM MEMORY (RAG)**: `butly_memory.db` からの検索結果
-    （MemoryProbe が返した候補を使用）
-  - ※ MemoryProbe が `status: "no_hit"` を返した場合、tier は `mid` のままで RAG は注入されない
-- tier が `mid` かつ MemoryProbe がヒットした場合に有効化。将来のフェーズで廃止予定の後方互換レイヤー。
+#### 🟣 RAG ブロック（tier 非依存）
+- **LONG-TERM MEMORY (RAG)**: `need` が設定されている場合、tier に関係なく注入される。MemoryProbe の candidates から直接構築（追加の LLM 呼び出しなし）。
+- MemoryProbe が `status: "no_hit"` で candidates 無しの場合、`need` は `None` のままで RAG ブロックはスキップされる。
 
 ---
 

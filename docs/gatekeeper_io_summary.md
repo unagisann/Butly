@@ -6,7 +6,7 @@ Based on the current implementation of the `butly_core/core/gatekeeper/` package
 
 ---
 
-## Architecture Overview (Phase 1.5)
+## Architecture Overview
 
 Gatekeeper is split into 4 components.
 The `Gatekeeper` class acts as a facade that orchestrates each component.
@@ -18,7 +18,7 @@ The `Gatekeeper` class acts as a facade that orchestrates each component.
 | `MemoryProbe` | `memory_probe.py` | Fact-based memory retrieval without LLM calls (vector search + glossary match) |
 | `MemoryBlockBuilder` | `memory_builder.py` | Builds memory block dict per tier and passes it to Brain |
 
-> **Note:** `TierClassifier` (4-score, 3-tier) and `SearchPlanner` still exist for backward compatibility but are not used in the active path.
+Tier is `reflex` or `mid` only. RAG injection is decided independently by `need` (derived from MemoryProbe), not by tier.
 
 ### Processing Flow
 
@@ -34,7 +34,7 @@ User utterance
     └─ Layer 2: Deep Search (conditional — past-reference patterns only)
   ↓
 Gatekeeper.classify() merges results
-  (mid + probe hit → cortex via compatibility layer)
+  (tier from ContextClassifier, need from MemoryProbe — independent)
   ↓
 MemoryBlockBuilder.build()  → constructs prompt for Brain
 ```
@@ -72,10 +72,10 @@ MemoryBlockBuilder.build()  → constructs prompt for Brain
 
 ```python
 {
-    "tier": "reflex" | "mid" | "cortex",  # cortex = mid + MemoryProbe hit (compat layer)
-    "topic": str,          # from state_delta or current topic
-    "need": str | None,   # cortex only. "memory_probe_hit" or "memory_probe_deep_search"
-    "search_targets": list[str] | None,  # cortex only
+    "tier": "reflex" | "mid",          # ContextClassifier output (RAG-independent)
+    "topic": str,                       # from state_delta or current topic
+    "need": str | None,                 # set when MemoryProbe hits. "memory_probe_hit" or "memory_probe_deep_search"
+    "search_targets": list[str] | None, # top candidate titles when need is set
     "state_delta": {
         "topic": str | None,
         "mood": str | None,
@@ -102,7 +102,7 @@ The ContextClassifier has the LLM output 3 scores. The tier is determined on the
 | `response_complexity <= 0.4` AND `continuity_need <= 0.3` | → `reflex` |
 | Otherwise | → `mid` |
 
-> **Compatibility layer:** When `tier == "mid"` and MemoryProbe returns hits, the tier is promoted to `cortex` for backward compatibility. This will be removed in a future phase.
+`need` (RAG decision) is independent of tier — it is set by `MemoryProbe` based on actual retrieval hits and can fire even at `reflex`.
 
 ---
 
@@ -118,17 +118,17 @@ The ContextClassifier has the LLM output 3 scores. The tier is determined on the
 | 2 | **KEY MEMORY** | Core and immutable memories about the user |
 | 3 | **CURRENT TIME** | Current timestamp (system note) |
 | 4 | **GLOSSARY** | Shared vocabulary (semantic memory from active glossary.yaml entries) |
-| 5 | **MID-TERM (conditional)** | mid and above only (see below) |
-| 6 | **RAG (conditional)** | cortex + need present only (see below) |
+| 5 | **MID-TERM (conditional)** | mid only (see below) |
+| 6 | **RAG (conditional)** | When `need` is set (any tier — see below) |
 | 7 | **FLOATING SUMMARY** | Floating summary of the latest dialogue flow |
-| 8 | **TIER INFO** | Current thinking mode (reflex / mid / cortex) |
+| 8 | **TIER INFO** | Current thinking mode (reflex / mid) |
 | 9 | **WEB SEARCH RESULTS** (conditional) | Non-Gemini + use_web_search=True only. Web search results via Tavily API |
 | 10 | **Short Term** | Last 6 turns of conversation history |
 
 ### 🔵 Information Added Per Tier
 
 #### 【 Tier 1 】 reflex (Spinal reflex)
-- **Additional information**: None
+- **Additional information**: None on the mid-term axis. RAG block is still injected if `need` is set (e.g. "do you remember that song?" matched by MemoryProbe at the reflex tier).
 - Triggered by greetings, back-channeling, "ok got it" — responds immediately without waiting for knowledge retrieval.
 
 #### 【 Tier 2 】 mid (Midbrain / Emotional system)
@@ -138,13 +138,9 @@ The ContextClassifier has the LLM output 3 scores. The tier is determined on the
     (falls back to RAW if summary files don't exist)
 - Triggered for specific questions about the current topic or conversations requiring context from a short while ago.
 
-#### 【 Tier 3 】 cortex (Cerebral cortex) — Compatibility layer
-- **Additional information**:
-  - All mid information
-  - ➕ **LONG-TERM MEMORY (RAG)**: Search results from `butly_memory.db`
-    (using candidates from MemoryProbe)
-  - ※ When MemoryProbe returns `status: "no_hit"`, tier remains `mid` and RAG is not injected
-- Activated when tier is `mid` AND MemoryProbe returns hits. This is a backward-compatibility layer that will be removed in a future phase.
+#### 🟣 RAG block (tier-independent)
+- **LONG-TERM MEMORY (RAG)**: Injected whenever `need` is set, regardless of tier. The block is built directly from MemoryProbe candidates (no extra LLM call).
+- When MemoryProbe returns `status: "no_hit"` and no candidates, `need` stays `None` and the RAG block is skipped.
 
 ---
 

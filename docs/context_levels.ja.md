@@ -211,8 +211,8 @@ Gatekeeper OFF 時の動作は以下の通りです。
 | Gatekeeper | RAG | tier | 説明 |
 |---|---|---|---|
 | ON | — | 動的判定 | 従来通り。LOWモード時も Gatekeeper ON 可 |
-| OFF | ON | `cortex` | 常時 RAG 検索を実施 |
-| OFF | OFF | `mid` | 固定 |
+| OFF | ON | `mid` (固定) | `need="rag_search"` を立てて常時 RAG 検索を実施 |
+| OFF | OFF | `mid` (固定) | RAG 無し |
 
 ---
 

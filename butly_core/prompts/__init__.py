@@ -30,7 +30,6 @@ _LEGACY_KEY_MAP = {
     "sleeptime_summarize": "SLEEPTIME_SUMMARIZE_PROMPT",
     "brain_extract_keywords": "BRAIN_EXTRACT_KEYWORDS_PROMPT",
     "brain_summarize_conversation": "BRAIN_SUMMARIZE_CONVERSATION_PROMPT",
-    "tier_classifier": "GATEKEEPER_CLASSIFY_PROMPT",
     "midterm_digest": "MIDTERM_DIGEST_PROMPT",
     "midterm_relationship": "MIDTERM_RELATIONSHIP_PROMPT",
     "recent_snapshot": "RECENT_SNAPSHOT_PROMPT",
@@ -185,7 +184,6 @@ _loader = PromptLoader()
 SLEEPTIME_SUMMARIZE_PROMPT = _loader.get_template("sleeptime_summarize")
 BRAIN_EXTRACT_KEYWORDS_PROMPT = _loader.get_template("brain_extract_keywords")
 BRAIN_SUMMARIZE_CONVERSATION_PROMPT = _loader.get_template("brain_summarize_conversation")
-GATEKEEPER_CLASSIFY_PROMPT = _loader.get_template("tier_classifier")
 MIDTERM_DIGEST_PROMPT = _loader.get_template("midterm_digest")
 MIDTERM_RELATIONSHIP_PROMPT = _loader.get_template("midterm_relationship")
 RECENT_SNAPSHOT_PROMPT = _loader.get_template("recent_snapshot")
