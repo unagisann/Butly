@@ -533,3 +533,90 @@ class TestGatekeeperIntegration:
         assert result["tier"] == "mid"
         assert result["need"] == "past_fact"
         assert result["search_targets"] == ["過去の会話"]
+
+    def test_past_fact_intent_with_only_glossary_returns_null(
+        self, mock_gatekeeper, test_instance_dir
+    ):
+        """intent=past_fact だが vector 空振り + glossary のみ → need=None
+        (glossary は past_fact の事実裏付けにはならない)
+        """
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "no_hit",
+            "candidates": [],
+            "glossary_hits": [
+                {"term": "Gatekeeper", "definition": "...", "aliases": [],
+                 "match_type": "term", "match_source": "user", "priority": 100, "_yaml_index": 0},
+            ],
+        }
+
+        brain = MagicMock()
+        result = mock_gatekeeper.classify(
+            user_input="Gatekeeperどう？",
+            history_msgs=[],
+            session_state={},
+            instance_dir=test_instance_dir,
+            brain=brain,
+        )
+
+        assert result["tier"] == "mid"
+        assert result["need"] is None
+        assert result["need_intent"] == "past_fact"
+        assert result["search_targets"] is None
+        assert len(result["memory_probe"]["glossary_hits"]) == 1
+
+    def test_glossary_intent_with_glossary_hits_sets_need(
+        self, mock_gatekeeper, test_instance_dir
+    ):
+        """intent=glossary + glossary_hits → need=glossary、search_targets は用語"""
+        mock_gatekeeper.context_classifier.classify.return_value = {
+            "tier": "mid",
+            "llm_scoring": {"response_complexity": 0.4, "emotional_weight": 0.0, "continuity_need": 0.2},
+            "need_intent": "glossary",
+        }
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "hit",
+            "candidates": [],
+            "glossary_hits": [
+                {"term": "Sleeptime", "definition": "...", "aliases": [],
+                 "match_type": "term", "match_source": "user", "priority": 100, "_yaml_index": 0},
+            ],
+        }
+
+        brain = MagicMock()
+        result = mock_gatekeeper.classify(
+            user_input="Sleeptimeって何？",
+            history_msgs=[],
+            session_state={},
+            instance_dir=test_instance_dir,
+            brain=brain,
+        )
+
+        assert result["need"] == "glossary"
+        assert result["search_targets"] == ["Sleeptime"]
+
+    def test_glossary_intent_no_glossary_hit_returns_null(
+        self, mock_gatekeeper, test_instance_dir
+    ):
+        """intent=glossary だが glossary_hits 無し → need=None"""
+        mock_gatekeeper.context_classifier.classify.return_value = {
+            "tier": "mid",
+            "llm_scoring": {"response_complexity": 0.4, "emotional_weight": 0.0, "continuity_need": 0.2},
+            "need_intent": "glossary",
+        }
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "no_hit",
+            "candidates": [],
+            "glossary_hits": [],
+        }
+
+        brain = MagicMock()
+        result = mock_gatekeeper.classify(
+            user_input="未知の用語って何？",
+            history_msgs=[],
+            session_state={},
+            instance_dir=test_instance_dir,
+            brain=brain,
+        )
+
+        assert result["need"] is None
+        assert result["search_targets"] is None

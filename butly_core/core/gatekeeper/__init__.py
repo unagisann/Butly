@@ -114,18 +114,19 @@ class Gatekeeper:
         candidates = probe_result.get("candidates", [])
         glossary_hits = probe_result.get("glossary_hits", [])
 
-        # 最終 need 決定: LLM 意図 + 事実裏付け
-        #   - need_intent=None        → need=None (LLM が「不要」と言った)
-        #   - probe で何も見つからない → need=None (事実裏付け失敗)
-        #   - 上記以外                 → need=need_intent
+        # 最終 need 決定: LLM 意図 + 該当 evidence の組み合わせで判定
+        #   - need_intent=None                              → need=None
+        #   - intent="glossary" + glossary_hits             → need="glossary"
+        #   - intent="past_fact"/"relationship" + candidates → need=<intent>
+        #   - intent はあるが該当 evidence なし              → need=None (LLM 誤判定とみなす)
         need = None
         search_targets = None
-        if need_intent is not None and (candidates or glossary_hits):
+        if need_intent == "glossary" and glossary_hits:
+            need = "glossary"
+            search_targets = [g.get("term", "") for g in glossary_hits[:3]]
+        elif need_intent in ("past_fact", "relationship") and candidates:
             need = need_intent
-            if candidates:
-                search_targets = [c.get("title", "") for c in candidates[:3]]
-            elif glossary_hits:
-                search_targets = [g.get("term", "") for g in glossary_hits[:3]]
+            search_targets = [c.get("title", "") for c in candidates[:3]]
 
         return {
             "tier": tier,
