@@ -7,6 +7,8 @@ main.py と brain.py / provider の橋渡しを行う。
 """
 
 import asyncio
+import datetime
+import json
 import re
 import time
 from pathlib import Path
@@ -27,6 +29,40 @@ def _is_gemini_model(model_name: str) -> bool:
         return True  # デフォルトは Gemini
     lower = model_name.lower()
     return lower.startswith("gemini") or lower.startswith("models/gemini")
+
+
+def _save_debug_log(
+    instance_dir: Path,
+    payload: dict,
+    max_history: int = 20,
+) -> None:
+    """
+    instance_dir/debug_logs/ 以下にデバッグ情報を保存する。
+
+    - latest.json: 毎ターン上書き (常に最新)
+    - history/{YYYYMMDD_HHMMSS_uuid}.json: ローテーション (max_history 件保持)
+
+    保存失敗は応答に影響させない (warning ログのみ)。
+    """
+    try:
+        debug_dir = instance_dir / "debug_logs"
+        debug_dir.mkdir(exist_ok=True)
+        history_dir = debug_dir / "history"
+        history_dir.mkdir(exist_ok=True)
+
+        text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+
+        (debug_dir / "latest.json").write_text(text, encoding="utf-8")
+
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        (history_dir / f"{ts}.json").write_text(text, encoding="utf-8")
+
+        # 古い履歴を削除
+        files = sorted(history_dir.glob("*.json"), key=lambda p: p.stat().st_mtime)
+        for old in files[:-max_history]:
+            old.unlink(missing_ok=True)
+    except Exception as e:
+        print(f"[ChatService] debug_log 保存エラー (応答には影響なし): {e}")
 
 
 class ChatService:
@@ -390,6 +426,16 @@ class ChatService:
                 {"role": "user", "content": provider_debug.get("context_prefix_full", "")},
                 {"role": "user", "content": provider_debug.get("user_input", "")},
             ]
+
+        # --- 6.5. Debug log の自動保存 (instance_dir/debug_logs/) ---
+        debug_log_payload = {
+            "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
+            "instance": instance_name,
+            "user_input": request.text,
+            "assistant_response": result.text,
+            "debug_info": result.debug_info,
+        }
+        _save_debug_log(instance_dir, debug_log_payload)
 
         # --- 7. 会話保存 ---
         memory.save_single_turn(request.text, result.text)
