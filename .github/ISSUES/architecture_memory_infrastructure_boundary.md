@@ -1,3 +1,11 @@
+---
+title: "Butly Memory を外部境界のある記憶基盤として整理する"
+labels:
+  - architecture
+  - memory
+  - enhancement
+---
+
 # Butly Memory を外部境界のある記憶基盤として整理する
 
 ## 背景
