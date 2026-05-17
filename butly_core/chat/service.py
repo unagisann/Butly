@@ -403,6 +403,7 @@ class ChatService:
                 "need_intent": gk_result.get("need_intent"),
                 "search_targets": gk_result.get("search_targets"),
                 "memory_probe_status": gk_result.get("memory_probe", {}).get("status"),
+                "memory_probe_layers": gk_result.get("memory_probe", {}).get("layers"),
                 "session_state": session_state.to_dict(),
             },
             "rag": {

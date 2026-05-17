@@ -96,7 +96,8 @@ SYSTEM_CONFIG = {
     "brain": {
         "search_limit": 3,
         "keyword_hit_threshold": 5,
-        "fallback_fetch_limit": 50,
+        "fallback_fetch_limit": 100,  # 0.005 decay 下で 3ヶ月以上前のカードも候補に残るよう拡大
+        "time_decay_rate": 0.003,  # 日数あたりの減衰率。 small = old cards retain visibility
         "summary_char_limit": 200,
         "readable_instances": ["self"], # ["self"], ["self", "00_master"] 等で横断検索
         "dynamic_threshold": 0.6, # Google Search Dynamic Retrieval Threshold (0.0 - 1.0)
@@ -113,7 +114,7 @@ SYSTEM_CONFIG = {
     },
     "memory_probe": {
         "vector_search_limit": 3,
-        "vector_search_threshold": 0.6,
+        "vector_search_threshold": 0.4,  # 緩和: 0.6→0.4 (時間減衰込みの実効値で判定するため)
         "deep_search_enabled": True,
     },
     "gatekeeper": {

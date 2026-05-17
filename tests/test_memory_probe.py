@@ -211,9 +211,13 @@ class TestProbe:
     @pytest.fixture
     def mock_brain_with_vector(self):
         brain = MagicMock()
-        brain.quick_vector_search.return_value = [
-            {"id": "1", "title": "テスト記憶", "summary": "テスト内容", "episode": "", "score": 0.75, "source": "vector"},
-        ]
+        hit = {"id": "1", "title": "テスト記憶", "summary": "テスト内容", "episode": "", "score": 0.75, "source": "vector"}
+        brain.quick_vector_search.return_value = [hit]
+        brain.quick_vector_search_diag.return_value = {
+            "results": [hit],
+            "diagnostics": {"threshold": 0.4, "fetched_count": 1, "passed_threshold": 1,
+                            "top_raw_scores": [0.75], "top_final_scores": [0.75]},
+        }
         brain.extract_keywords.return_value = {"keywords": ["テスト"]}
         brain.search_knowledge.return_value = []
         return brain
@@ -222,6 +226,11 @@ class TestProbe:
     def mock_brain_no_hit(self):
         brain = MagicMock()
         brain.quick_vector_search.return_value = []
+        brain.quick_vector_search_diag.return_value = {
+            "results": [],
+            "diagnostics": {"threshold": 0.4, "fetched_count": 50, "passed_threshold": 0,
+                            "top_raw_scores": [0.3, 0.25], "top_final_scores": [0.2, 0.15]},
+        }
         brain.extract_keywords.return_value = {"keywords": ["テスト"]}
         brain.search_knowledge.return_value = []
         return brain
@@ -230,6 +239,11 @@ class TestProbe:
     def mock_brain_deep_hit(self):
         brain = MagicMock()
         brain.quick_vector_search.return_value = []
+        brain.quick_vector_search_diag.return_value = {
+            "results": [],
+            "diagnostics": {"threshold": 0.4, "fetched_count": 50, "passed_threshold": 0,
+                            "top_raw_scores": [], "top_final_scores": []},
+        }
         brain.extract_keywords.return_value = {"keywords": ["プロジェクト"]}
         brain.search_knowledge.return_value = [
             {"id": "2", "title": "プロジェクト計画", "summary": "計画内容", "episode": "", "score": 0.7},
@@ -328,9 +342,12 @@ class TestNeedIntentGating:
     @pytest.fixture
     def brain_with_vector(self):
         brain = MagicMock()
-        brain.quick_vector_search.return_value = [
-            {"id": "1", "title": "X", "summary": "Y", "episode": "", "score": 0.8, "source": "vector"},
-        ]
+        hit = {"id": "1", "title": "X", "summary": "Y", "episode": "", "score": 0.8, "source": "vector"}
+        brain.quick_vector_search.return_value = [hit]
+        brain.quick_vector_search_diag.return_value = {
+            "results": [hit],
+            "diagnostics": {"threshold": 0.4, "fetched_count": 1, "passed_threshold": 1},
+        }
         return brain
 
     @pytest.fixture
@@ -357,7 +374,7 @@ class TestNeedIntentGating:
         assert result["candidates"] == []
         assert len(result["glossary_hits"]) == 1
         # vector は呼ばれない
-        brain_with_vector.quick_vector_search.assert_not_called()
+        brain_with_vector.quick_vector_search_diag.assert_not_called()
 
     def test_need_intent_none_no_glossary_returns_no_hit(self, probe, brain_with_vector):
         """need_intent=None かつ glossary マッチなし → status=no_hit"""
@@ -371,7 +388,7 @@ class TestNeedIntentGating:
         )
         assert result["status"] == "no_hit"
         assert result["glossary_hits"] == []
-        brain_with_vector.quick_vector_search.assert_not_called()
+        brain_with_vector.quick_vector_search_diag.assert_not_called()
 
     def test_need_intent_glossary_skips_vector(self, probe, brain_with_vector, mm_with_glossary):
         """need_intent=glossary → vector search は呼ばれず glossary のみ"""
@@ -384,7 +401,7 @@ class TestNeedIntentGating:
         assert result["candidates"] == []
         assert len(result["glossary_hits"]) == 1
         assert result["status"] == "hit"
-        brain_with_vector.quick_vector_search.assert_not_called()
+        brain_with_vector.quick_vector_search_diag.assert_not_called()
 
     def test_need_intent_glossary_no_hit(self, probe, brain_with_vector):
         """need_intent=glossary でマッチなし → no_hit"""
@@ -397,7 +414,7 @@ class TestNeedIntentGating:
             need_intent="glossary",
         )
         assert result["status"] == "no_hit"
-        brain_with_vector.quick_vector_search.assert_not_called()
+        brain_with_vector.quick_vector_search_diag.assert_not_called()
 
     def test_need_intent_past_fact_runs_vector(self, probe, brain_with_vector, mm_with_glossary):
         """need_intent=past_fact → vector も走る"""
@@ -409,7 +426,7 @@ class TestNeedIntentGating:
         )
         assert result["status"] == "hit"
         assert len(result["candidates"]) == 1
-        brain_with_vector.quick_vector_search.assert_called_once()
+        brain_with_vector.quick_vector_search_diag.assert_called_once()
 
     def test_need_intent_relationship_runs_vector(self, probe, brain_with_vector, mm_with_glossary):
         result = probe.probe(
@@ -419,7 +436,7 @@ class TestNeedIntentGating:
             need_intent="relationship",
         )
         assert result["status"] == "hit"
-        brain_with_vector.quick_vector_search.assert_called_once()
+        brain_with_vector.quick_vector_search_diag.assert_called_once()
 
 
 # ===================================================================

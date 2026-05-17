@@ -2155,6 +2155,38 @@ def render_chat_screen():
                             if gk.get("search_targets"):
                                 st.text(f"  Search Targets: {gk['search_targets']}")
 
+                            # MemoryProbe layer 詳細 (vector の閾値判定など)
+                            probe_layers = gk.get("memory_probe_layers")
+                            if probe_layers:
+                                with st.expander("📊 MemoryProbe Layers (詳細診断)", expanded=False):
+                                    _gl = probe_layers.get("glossary", {})
+                                    st.text(f"glossary: executed={_gl.get('executed')} matches={_gl.get('matches', 0)}")
+                                    _v = probe_layers.get("vector")
+                                    if _v:
+                                        if _v.get("executed"):
+                                            st.text(
+                                                f"vector: fetched={_v.get('fetched_count', 0)} "
+                                                f"passed={_v.get('passed_threshold', 0)} "
+                                                f"thresh={_v.get('threshold', '?')} "
+                                                f"decay={_v.get('decay_rate', '?')}"
+                                            )
+                                            if _v.get("top_raw_scores"):
+                                                st.text(f"  top raw     : {_v['top_raw_scores']}")
+                                            if _v.get("top_final_scores"):
+                                                st.text(f"  top w/decay : {_v['top_final_scores']}")
+                                        else:
+                                            st.text(f"vector: skipped ({_v.get('reason', '?')})")
+                                    _d = probe_layers.get("deep")
+                                    if _d:
+                                        if _d.get("executed"):
+                                            st.text(
+                                                f"deep: trigger={_d.get('trigger', '?')} "
+                                                f"keywords={_d.get('keywords', [])} "
+                                                f"hits={_d.get('result_count', 0)}"
+                                            )
+                                        else:
+                                            st.text(f"deep: skipped ({_d.get('reason', '?')})")
+
                         rag = debug.get("rag", {})
                         if rag.get("results"):
                             st.caption("🔍 RAG Results")

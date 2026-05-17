@@ -131,10 +131,31 @@ class ButlyBrain:
         limit: int = 3, threshold: float = 0.6,
         override_config: dict = None,
     ) -> list:
+        """既存 API: 結果リストのみを返す (後方互換)。"""
+        return self.quick_vector_search_diag(
+            user_input, instance_name, limit, threshold, override_config,
+        )["results"]
+
+    def quick_vector_search_diag(
+        self, user_input: str, instance_name: str,
+        limit: int = 3, threshold: float = 0.6,
+        override_config: dict = None,
+    ) -> dict:
         """
-        キーワード抽出なしの純粋なベクトル検索。
-        user_input の embedding と knowledge_cards の cosine similarity で上位を返す。
-        threshold 未満はフィルタ。
+        診断情報付きベクトル検索。
+        Returns:
+            {
+                "results": [...],
+                "diagnostics": {
+                    "threshold": float,
+                    "decay_rate": float,
+                    "fetched_count": int,
+                    "passed_threshold": int,
+                    "top_raw_scores": [...],
+                    "top_final_scores": [...],
+                    "target_instances": [...]
+                }
+            }
         """
         brain_conf = SYSTEM_CONFIG["brain"].copy()
         if override_config and "brain" in override_config:
@@ -151,27 +172,67 @@ class ButlyBrain:
         target_instances = list(dict.fromkeys(target_instances))
 
         all_results = []
+        all_raw_scores: list = []
+        all_final_scores: list = []
+        total_fetched = 0
         for inst in target_instances:
-            results = self._quick_vector_search_single(
-                user_input, inst, limit, threshold, brain_conf
+            single = self._quick_vector_search_single_diag(
+                user_input, inst, limit, threshold, brain_conf,
             )
-            all_results.extend(results)
+            all_results.extend(single["results"])
+            all_raw_scores.extend(single["raw_scores"])
+            all_final_scores.extend(single["final_scores"])
+            total_fetched += single["fetched_count"]
 
         all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
-        return all_results[:limit]
+        top = all_results[:limit]
+
+        all_raw_scores.sort(reverse=True)
+        all_final_scores.sort(reverse=True)
+
+        diagnostics = {
+            "threshold": float(threshold),
+            "decay_rate": float(brain_conf.get("time_decay_rate", 0.005)),
+            "fetch_limit": int(brain_conf.get("fallback_fetch_limit", 50)),
+            "fetched_count": total_fetched,
+            "passed_threshold": len(all_results),
+            "top_raw_scores": [round(s, 3) for s in all_raw_scores[:5]],
+            "top_final_scores": [round(s, 3) for s in all_final_scores[:5]],
+            "target_instances": target_instances,
+        }
+        return {"results": top, "diagnostics": diagnostics}
 
     def _quick_vector_search_single(
         self, user_input: str, instance_name: str,
         limit: int, threshold: float, brain_conf: dict,
     ) -> list:
-        """単一インスタンスDBに対する純粋ベクトル検索。"""
+        """後方互換: 結果リストのみを返すラッパー。"""
+        return self._quick_vector_search_single_diag(
+            user_input, instance_name, limit, threshold, brain_conf,
+        )["results"]
+
+    def _quick_vector_search_single_diag(
+        self, user_input: str, instance_name: str,
+        limit: int, threshold: float, brain_conf: dict,
+    ) -> dict:
+        """単一インスタンスDBに対する純粋ベクトル検索 + 診断情報。
+
+        Returns:
+            {
+                "results": [...],
+                "raw_scores": [全カードの raw cosine スコア],
+                "final_scores": [decay/archive 適用後のスコア],
+                "fetched_count": int
+            }
+        """
+        empty = {"results": [], "raw_scores": [], "final_scores": [], "fetched_count": 0}
         instance_db_path = self._get_db_path(instance_name)
         if not instance_db_path.exists():
-            return []
+            return empty
 
         query_embedding = self.get_embedding(user_input)
         if not query_embedding:
-            return []
+            return empty
 
         try:
             conn = sqlite3.connect(instance_db_path)
@@ -192,11 +253,13 @@ class ButlyBrain:
             conn.close()
 
             if not rows:
-                return []
+                return empty
 
             decay_rate = brain_conf.get("time_decay_rate", 0.005)
             now = datetime.now()
             scored_results = []
+            raw_scores: list = []
+            final_scores: list = []
 
             for row in rows:
                 row_dict = dict(row)
@@ -205,10 +268,12 @@ class ButlyBrain:
                 is_archived = row_dict.get("is_archived") or 0
 
                 score = 0.0
+                raw_score = 0.0
                 if blob_data:
                     try:
                         db_emb = np.frombuffer(blob_data, dtype=np.float32)
-                        score = float(self._calculate_cosine_similarity(query_embedding, db_emb))
+                        raw_score = float(self._calculate_cosine_similarity(query_embedding, db_emb))
+                        score = raw_score
 
                         if created_at_str:
                             try:
@@ -225,13 +290,21 @@ class ButlyBrain:
                     except Exception:
                         pass
 
+                raw_scores.append(raw_score)
+                final_scores.append(score)
+
                 if score >= threshold:
                     row_dict["score"] = float(score)
                     row_dict["source"] = "vector"
                     scored_results.append(row_dict)
 
             scored_results.sort(key=lambda x: x["score"], reverse=True)
-            return scored_results[:limit]
+            return {
+                "results": scored_results[:limit],
+                "raw_scores": raw_scores,
+                "final_scores": final_scores,
+                "fetched_count": len(rows),
+            }
 
         except Exception as e:
             print(f"[Brain] Quick Vector Search Error: {e}")
