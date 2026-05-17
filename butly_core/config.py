@@ -116,6 +116,13 @@ SYSTEM_CONFIG = {
         "vector_search_threshold": 0.6,
         "deep_search_enabled": True,
     },
+    "gatekeeper": {
+        # tier 判定閾値: rc<=tier_rc_threshold AND cn<=tier_cn_threshold → reflex、それ以外 → mid
+        # 人/会話スタイルによる感じ方の違いを吸収するため設定化。
+        # instance_config["gatekeeper"] で上書き可。
+        "tier_rc_threshold": 0.4,
+        "tier_cn_threshold": 0.3,
+    },
     "glossary": {
         # 1 ターン = user+assistant 1 ペア。0 で user_input のみ
         "scan_depth": 2,

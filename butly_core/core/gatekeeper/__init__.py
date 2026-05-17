@@ -12,7 +12,6 @@ Re-exports:
 """
 
 import json
-import concurrent.futures
 
 from butly_core.core.gatekeeper.session_state import SessionState
 from butly_core.core.gatekeeper.context_classifier import ContextClassifier
@@ -33,7 +32,8 @@ from pathlib import Path
 class Gatekeeper:
     """
     外部API の facade。
-    ContextClassifier + StateUpdater の 2 並列 + MemoryProbe（LLM不要）即実行。
+    ContextClassifier + MemoryProbe を pre-response で実行。
+    StateUpdater は post-response (update_state) で別途実行され、generate と並列化できる。
     tier は reflex/mid の 2 値。RAG 判定は need（MemoryProbe 結果）で独立制御。
     """
 
@@ -55,13 +55,15 @@ class Gatekeeper:
         memory_manager=None,
     ) -> dict:
         """
-        既存と同じ返却形式を維持 + memory_probe を追加。
+        Pre-response 判定 (ContextClassifier + MemoryProbe)。
+        StateUpdater は呼ばない — 別途 `update_state()` を post-response で実行すること。
 
         Returns
         -------
         dict
             tier, topic, need, need_intent, search_targets, state_delta,
             llm_scoring, memory_probe
+            (state_delta は常に空 dict。後方互換のためフィールド自体は残置)
         """
         # A. headlines 読み込み
         recent_headlines = self._load_headlines(instance_dir)
@@ -69,31 +71,20 @@ class Gatekeeper:
         # A2. agent_name をインスタンス config から解決
         agent_name = self._resolve_agent_name(instance_dir)
 
-        # B. 2 並列実行: ContextClassifier + StateUpdater
+        # B. ContextClassifier (LLM 呼び出し)
         instance_name = instance_dir.name if instance_dir else "00_master"
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            future_ctx = executor.submit(
-                self.context_classifier.classify,
-                user_input, history_msgs, current_topic,
-                recent_headlines=recent_headlines,
-                override_config=override_config,
-                agent_name=agent_name,
-            )
-            future_state = executor.submit(
-                self.state_updater.update,
-                user_input, history_msgs, session_state,
-                override_config=override_config,
-                agent_name=agent_name,
-            )
-
-            ctx_result = future_ctx.result()
-            state_delta = future_state.result()
+        ctx_result = self.context_classifier.classify(
+            user_input, history_msgs, current_topic,
+            recent_headlines=recent_headlines,
+            override_config=override_config,
+            agent_name=agent_name,
+        )
 
         # CC が出した意図種別を取り出して probe ゲートに使う
         need_intent = ctx_result.get("need_intent")
 
-        # C. MemoryProbe（LLM不要、並列の外で即実行）
+        # C. MemoryProbe（LLM不要、即実行）
         if brain and need_intent is not None:
             probe_result = self.memory_probe.probe(
                 user_input=user_input,
@@ -110,15 +101,10 @@ class Gatekeeper:
             probe_result = {"status": "skipped", "candidates": [], "glossary_hits": []}
 
         tier = ctx_result["tier"]          # "reflex" or "mid"
-        status = probe_result["status"]
         candidates = probe_result.get("candidates", [])
         glossary_hits = probe_result.get("glossary_hits", [])
 
         # 最終 need 決定: LLM 意図 + 該当 evidence の組み合わせで判定
-        #   - need_intent=None                              → need=None
-        #   - intent="glossary" + glossary_hits             → need="glossary"
-        #   - intent="past_fact"/"relationship" + candidates → need=<intent>
-        #   - intent はあるが該当 evidence なし              → need=None (LLM 誤判定とみなす)
         need = None
         search_targets = None
         if need_intent == "glossary" and glossary_hits:
@@ -128,17 +114,48 @@ class Gatekeeper:
             need = need_intent
             search_targets = [c.get("title", "") for c in candidates[:3]]
 
+        # topic は state_delta が空 (post-response 実行待ち) なので
+        # session_state の既存 topic を採用 (1 ターン前の値)
+        current_topic_resolved = (
+            session_state.get("topic", current_topic)
+            if isinstance(session_state, dict) else current_topic
+        )
+
         return {
             "tier": tier,
-            "topic": state_delta.get("topic") or
-                     (session_state.get("topic", current_topic) if isinstance(session_state, dict) else current_topic),
+            "topic": current_topic_resolved,
             "need": need,
             "need_intent": need_intent,
             "search_targets": search_targets,
-            "state_delta": state_delta,
+            "state_delta": {},  # post-response で別途更新
             "llm_scoring": ctx_result.get("llm_scoring"),
             "memory_probe": probe_result,
         }
+
+    def update_state(
+        self,
+        user_input: str,
+        history_msgs: list,
+        session_state: dict,
+        assistant_response: str = "",
+        override_config: dict = None,
+        instance_dir: Path = None,
+    ) -> dict:
+        """
+        Post-response の StateUpdater 実行。
+        assistant_response は将来 prompt に含めるための窓口 (現状は未使用)。
+
+        Returns
+        -------
+        dict
+            state_delta: {"topic": str | None, "mood": str | None}
+        """
+        agent_name = self._resolve_agent_name(instance_dir)
+        return self.state_updater.update(
+            user_input, history_msgs, session_state,
+            override_config=override_config,
+            agent_name=agent_name,
+        )
 
     def _load_headlines(self, instance_dir: Path = None) -> str:
         """recent_digest_headlines.json を読み込んでテキスト化する。"""

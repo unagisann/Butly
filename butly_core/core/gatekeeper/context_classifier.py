@@ -100,7 +100,7 @@ class ContextClassifier:
             from butly_core.llm.factory import ProviderFactory
             provider = ProviderFactory.create(model_name)
             raw_text = provider.classify(prompt, gk_config)
-            result = self._parse_response(raw_text, user_input)
+            result = self._parse_response(raw_text, user_input, override_config=override_config)
         except Exception as e:
             print(f"[ContextClassifier] API呼び出しエラー: {e}")
             result = self._default_output(user_input)
@@ -116,19 +116,30 @@ class ContextClassifier:
         )
         return result
 
-    def _determine_tier_from_scores(self, scores: dict) -> str:
-        """llm_scoring のスコアから tier を決定する (reflex/mid の 2 値)。"""
+    def _determine_tier_from_scores(self, scores: dict, override_config: dict = None) -> str:
+        """llm_scoring のスコアから tier を決定する (reflex/mid の 2 値)。
+        閾値は SYSTEM_CONFIG["gatekeeper"] / instance_config["gatekeeper"] で上書き可。
+        """
         rc = scores.get("response_complexity", 0)
         cn = scores.get("continuity_need", 0)
+        rc_threshold, cn_threshold = self._resolve_tier_thresholds(override_config)
 
-        # reflex: 軽い発話
-        if rc <= 0.4 and cn <= 0.3:
+        if rc <= rc_threshold and cn <= cn_threshold:
             return "reflex"
-
-        # mid: それ以外
         return "mid"
 
-    def _parse_response(self, raw_text: str, user_input: str = "") -> dict:
+    @staticmethod
+    def _resolve_tier_thresholds(override_config: dict = None) -> tuple[float, float]:
+        """tier 判定閾値を解決。override > SYSTEM_CONFIG > デフォルト"""
+        gk_conf = dict(SYSTEM_CONFIG.get("gatekeeper", {}))
+        if override_config and "gatekeeper" in override_config:
+            gk_conf.update(override_config["gatekeeper"])
+        rc_threshold = float(gk_conf.get("tier_rc_threshold", 0.4))
+        cn_threshold = float(gk_conf.get("tier_cn_threshold", 0.3))
+        return rc_threshold, cn_threshold
+
+    def _parse_response(self, raw_text: str, user_input: str = "",
+                        override_config: dict = None) -> dict:
         """LLM応答からJSONを抽出しパースする。"""
         default = self._default_output(user_input)
         if not raw_text:
@@ -151,7 +162,7 @@ class ContextClassifier:
                 if key in llm_scoring:
                     llm_scoring[key] = max(0.0, min(1.0, float(llm_scoring[key])))
 
-            tier = self._determine_tier_from_scores(llm_scoring)
+            tier = self._determine_tier_from_scores(llm_scoring, override_config=override_config)
             need_intent = self._parse_need_intent(data, user_input)
 
             return {

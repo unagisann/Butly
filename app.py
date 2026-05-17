@@ -2106,12 +2106,13 @@ def render_chat_screen():
 **Tokens (est.):** Prompt ~{tokens.get('prompt', 0)} / Response ~{tokens.get('response', 0)}
 """)
 
-                        st.caption("⏱️ Timing")
-                        cols = st.columns(4)
+                        st.caption("⏱️ Timing (Gen ∥ State は並列実行)")
+                        cols = st.columns(5)
                         cols[0].metric("Gatekeeper", f"{timing.get('gatekeeper_ms', 0)}ms")
                         cols[1].metric("Memory Build", f"{timing.get('memory_build_ms', 0)}ms")
                         cols[2].metric("RAG Search", f"{timing.get('rag_search_ms', 0)}ms")
                         cols[3].metric("Generation", f"{timing.get('generation_ms', 0)}ms")
+                        cols[4].metric("State Update", f"{timing.get('state_update_ms', 0)}ms")
 
                         st.caption("🧠 Gatekeeper")
                         if not gk.get("enabled", True):

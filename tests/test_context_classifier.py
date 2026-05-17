@@ -214,6 +214,71 @@ class TestNeedIntentParsing:
         assert result["need_intent"] is None
 
 
+class TestConfigurableTierThresholds:
+    """tier 判定閾値の override テスト"""
+
+    @pytest.fixture
+    def classifier(self):
+        return ContextClassifier()
+
+    def test_default_thresholds(self, classifier):
+        """override 無し → SYSTEM_CONFIG のデフォルト (rc<=0.4, cn<=0.3)"""
+        # 境界近傍
+        assert classifier._determine_tier_from_scores(
+            {"response_complexity": 0.4, "continuity_need": 0.3}
+        ) == "reflex"
+        assert classifier._determine_tier_from_scores(
+            {"response_complexity": 0.41, "continuity_need": 0.0}
+        ) == "mid"
+
+    def test_relaxed_thresholds_override(self, classifier):
+        """instance_config で閾値を緩和 → reflex の範囲が広がる"""
+        override = {"gatekeeper": {"tier_rc_threshold": 0.6, "tier_cn_threshold": 0.6}}
+        # デフォルトなら mid 確定のスコアでも、緩和した閾値で reflex に
+        result = classifier._determine_tier_from_scores(
+            {"response_complexity": 0.5, "continuity_need": 0.5},
+            override_config=override,
+        )
+        assert result == "reflex"
+
+    def test_strict_thresholds_override(self, classifier):
+        """閾値を厳格化 → reflex の範囲が狭まる"""
+        override = {"gatekeeper": {"tier_rc_threshold": 0.1, "tier_cn_threshold": 0.1}}
+        # デフォルトなら reflex でも、厳格化で mid に
+        result = classifier._determine_tier_from_scores(
+            {"response_complexity": 0.2, "continuity_need": 0.0},
+            override_config=override,
+        )
+        assert result == "mid"
+
+    def test_partial_override(self, classifier):
+        """片方だけ override すれば、もう片方はデフォルト"""
+        override = {"gatekeeper": {"tier_cn_threshold": 0.6}}
+        # rc は デフォルト (0.4) のまま、cn は 0.6 まで OK
+        assert classifier._determine_tier_from_scores(
+            {"response_complexity": 0.4, "continuity_need": 0.6},
+            override_config=override,
+        ) == "reflex"
+        # rc が 0.4 超なら mid
+        assert classifier._determine_tier_from_scores(
+            {"response_complexity": 0.5, "continuity_need": 0.6},
+            override_config=override,
+        ) == "mid"
+
+    def test_parse_response_uses_override(self, classifier):
+        """_parse_response 経由でも override が伝播する"""
+        raw = '{"llm_scoring": {"response_complexity": 0.5, "emotional_weight": 0.0, "continuity_need": 0.5}, "need_intent": null}'
+        # 緩和 override
+        result = classifier._parse_response(
+            raw, user_input="test",
+            override_config={"gatekeeper": {"tier_rc_threshold": 0.6, "tier_cn_threshold": 0.6}},
+        )
+        assert result["tier"] == "reflex"
+        # override 無し → mid
+        result_default = classifier._parse_response(raw, user_input="test")
+        assert result_default["tier"] == "mid"
+
+
 class TestConfigResolution:
     """config 解決ロジックのテスト"""
 

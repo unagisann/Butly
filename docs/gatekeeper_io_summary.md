@@ -25,19 +25,24 @@ Tier is `reflex` or `mid` only. RAG injection is decided independently by `need`
 ```
 User utterance
   ↓
-[A] ContextClassifier.classify()   ← LLM call (parallel)
-[B] StateUpdater.update()          ← LLM call (parallel)
-  ↓
-[C] MemoryProbe.probe()            ← No LLM call (~100ms)
+[A] ContextClassifier.classify()   ← LLM call
+[B] MemoryProbe.probe()            ← No LLM call (~100ms), gated by need_intent
     ├─ Layer 1: Quick Vector Search (cosine similarity)
     ├─ Layer 1.5: Glossary Match (term/aliases)
     └─ Layer 2: Deep Search (conditional — past-reference patterns only)
   ↓
 Gatekeeper.classify() merges results
-  (tier from ContextClassifier, need from MemoryProbe — independent)
   ↓
 MemoryBlockBuilder.build()  → constructs prompt for Brain
+  ↓
+[C] provider.generate()    ←──┐
+[D] StateUpdater.update()  ←──┴── 2-way parallel in ChatService (post-response)
+  ↓
+session_state.apply_delta() → carried to NEXT turn's context
 ```
+
+StateUpdater runs **in parallel with response generation**, keeping it off the critical path.
+The current turn's `topic` uses session_state's previous value (1-turn lag, acceptable).
 
 ---
 
@@ -100,8 +105,21 @@ The ContextClassifier has the LLM output 3 scores. The tier is determined on the
 
 | Condition | Result |
 |---|---|
-| `response_complexity <= 0.4` AND `continuity_need <= 0.3` | → `reflex` |
+| `response_complexity <= tier_rc_threshold` AND `continuity_need <= tier_cn_threshold` | → `reflex` |
 | Otherwise | → `mid` |
+
+**Defaults**: `rc=0.4`, `cn=0.3`. Configurable via `SYSTEM_CONFIG["gatekeeper"]` or per-instance `config.json`:
+
+```python
+{
+  "gatekeeper": {
+    "tier_rc_threshold": 0.5,
+    "tier_cn_threshold": 0.6
+  }
+}
+```
+
+Tuning lets each user/persona dial in their preferred reflex/mid balance.
 
 `need` (RAG decision) is independent of tier and is determined by the **two-stage "LLM intent + fact-check"** pipeline described below.
 

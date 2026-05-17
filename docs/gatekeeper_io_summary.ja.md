@@ -25,19 +25,24 @@ tier は `reflex` / `mid` の 2 値のみ。RAG 注入は tier ではなく `nee
 ```
 ユーザー発言
   ↓
-[A] ContextClassifier.classify()   ← LLM呼び出し（並列実行）
-[B] StateUpdater.update()          ← LLM呼び出し（並列実行）
-  ↓
-[C] MemoryProbe.probe()            ← LLM不要（~100ms）
+[A] ContextClassifier.classify()   ← LLM呼び出し
+[B] MemoryProbe.probe()            ← LLM不要（~100ms）、need_intent でゲート
     ├─ Layer 1: Quick Vector Search（コサイン類似度）
     ├─ Layer 1.5: Glossary Match（term/aliases）
     └─ Layer 2: Deep Search（条件付き — 過去参照パターン検出時のみ）
   ↓
 Gatekeeper.classify() が結果をマージ
-  （tier は ContextClassifier 由来、need は MemoryProbe 由来。両者は独立）
   ↓
 MemoryBlockBuilder.build()  → Brain へのプロンプト構築
+  ↓
+[C] provider.generate()  ←──┐
+[D] StateUpdater.update() ←─┴── ChatService で 2 並列実行 (post-response)
+  ↓
+session_state.apply_delta() → 次ターンの context に反映
 ```
+
+StateUpdater は **応答生成と並列**で動かすことでクリティカルパスから外している。
+今ターンの `topic` は session_state の前ターン値を使用する (1 ターン遅延、許容範囲)。
 
 ---
 
@@ -100,8 +105,22 @@ ContextClassifier が LLM に 3 スコアを出力させ、Python 側で以下�
 
 | 条件 | 結果 |
 |---|---|
-| `response_complexity <= 0.4` AND `continuity_need <= 0.3` | → `reflex` |
+| `response_complexity <= tier_rc_threshold` AND `continuity_need <= tier_cn_threshold` | → `reflex` |
 | 上記以外 | → `mid` |
+
+**閾値はデフォルト rc=0.4 / cn=0.3**。`SYSTEM_CONFIG["gatekeeper"]` または `instance_config["gatekeeper"]` で上書き可:
+
+```python
+# config.json (instance level) など
+{
+  "gatekeeper": {
+    "tier_rc_threshold": 0.5,  # 緩和すると reflex 範囲が広がる
+    "tier_cn_threshold": 0.6
+  }
+}
+```
+
+人/会話スタイルによる感じ方の違い (mid 連発 / reflex 連発) を吸収するために設定化されている。
 
 `need`（RAG 要否）は tier とは独立で、**LLM の意図出力 (need_intent) + MemoryProbe の事実裏付け** の 2 段で決定されます。詳細は次節。
 

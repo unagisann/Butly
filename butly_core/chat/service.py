@@ -6,6 +6,7 @@ main.py と brain.py / provider の橋渡しを行う。
 ステートレス設計（リクエストごとに生成）。
 """
 
+import asyncio
 import re
 import time
 from pathlib import Path
@@ -138,9 +139,7 @@ class ChatService:
                 }
                 tier = "mid"
 
-            # SessionState 更新
-            state_delta = gk_result.get("state_delta", {})
-            session_state.apply_delta(state_delta)
+            # 注: StateUpdater は post-response (Step 6 で generate と並列実行) で動かす
         else:
             # Gatekeeper 無効時: RAG ON なら need を設定、OFF なら mid
             use_rag = instance_config.get("brain", {}).get("use_rag", True)
@@ -257,12 +256,50 @@ class ChatService:
 
         _t_gen_start = time.time()
 
-        result = await run_in_threadpool(
-            provider.generate,
-            text=full_prompt,
-            attachments=request.attachments if has_attachments else [],
-            context=context,
+        # Generate と StateUpdater を並列実行 (post-response の StateUpdater を
+        # クリティカルパスから外す)
+        gen_elapsed_ms = {"value": 0}
+        state_elapsed_ms = {"value": 0}
+
+        async def _run_generate():
+            t0 = time.time()
+            res = await run_in_threadpool(
+                provider.generate,
+                text=full_prompt,
+                attachments=request.attachments if has_attachments else [],
+                context=context,
+            )
+            gen_elapsed_ms["value"] = int((time.time() - t0) * 1000)
+            return res
+
+        async def _run_state_update():
+            if not gk_enabled:
+                return {}
+            t0 = time.time()
+            try:
+                res = await run_in_threadpool(
+                    gatekeeper.update_state,
+                    user_input=request.text,
+                    history_msgs=history_fmt,
+                    session_state=session_state.to_dict(),
+                    override_config=instance_config,
+                    instance_dir=instance_dir,
+                )
+            except Exception as e:
+                print(f"[ChatService] StateUpdater post-response エラー: {e}")
+                res = {}
+            state_elapsed_ms["value"] = int((time.time() - t0) * 1000)
+            return res
+
+        result, state_delta = await asyncio.gather(
+            _run_generate(),
+            _run_state_update(),
         )
+
+        # 取得した state_delta を反映 (次ターン以降の context に活かす)
+        if state_delta:
+            session_state.apply_delta(state_delta)
+            gk_result["state_delta"] = state_delta
 
         _t_gen_end = time.time()
         _t_total = time.time() - _t_start
@@ -314,7 +351,8 @@ class ChatService:
                 "gatekeeper_ms": int((_t_gk_end - _t_gk_start) * 1000),
                 "memory_build_ms": int((_t_mem_end - _t_mem_start) * 1000),
                 "rag_search_ms": 0,
-                "generation_ms": int((_t_gen_end - _t_gen_start) * 1000),
+                "generation_ms": gen_elapsed_ms["value"],
+                "state_update_ms": state_elapsed_ms["value"],
                 "total_ms": int(_t_total * 1000),
             },
             "token_estimate": {

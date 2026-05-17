@@ -620,3 +620,46 @@ class TestGatekeeperIntegration:
 
         assert result["need"] is None
         assert result["search_targets"] is None
+
+    def test_classify_does_not_call_state_updater(self, mock_gatekeeper, test_instance_dir):
+        """classify() は StateUpdater を呼ばない (post-response で別途実行)"""
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "skipped", "candidates": [], "glossary_hits": [],
+        }
+        mock_gatekeeper.context_classifier.classify.return_value = {
+            "tier": "mid",
+            "llm_scoring": {"response_complexity": 0.5, "emotional_weight": 0.3, "continuity_need": 0.4},
+            "need_intent": None,
+        }
+
+        result = mock_gatekeeper.classify(
+            user_input="test",
+            history_msgs=[],
+            session_state={"topic": "前ターンの話題"},
+            instance_dir=test_instance_dir,
+            brain=MagicMock(),
+        )
+
+        # StateUpdater は呼ばれない
+        mock_gatekeeper.state_updater.update.assert_not_called()
+        # state_delta は空
+        assert result["state_delta"] == {}
+        # topic は session_state からのフォールバック (1 ターン前)
+        assert result["topic"] == "前ターンの話題"
+
+    def test_update_state_calls_state_updater(self, mock_gatekeeper, test_instance_dir):
+        """update_state() は StateUpdater を呼んで state_delta を返す"""
+        mock_gatekeeper.state_updater.update.return_value = {
+            "topic": "新しい話題", "mood": "focused",
+        }
+
+        result = mock_gatekeeper.update_state(
+            user_input="何かの発話",
+            history_msgs=[],
+            session_state={"topic": "古い話題"},
+            instance_dir=test_instance_dir,
+        )
+
+        mock_gatekeeper.state_updater.update.assert_called_once()
+        assert result["topic"] == "新しい話題"
+        assert result["mood"] == "focused"
