@@ -6,11 +6,12 @@ brain.py から移管された Gemini 固有ロジック（チャット / 検索
 attachments → Gemini parts への変換もここで完結。
 """
 
+import asyncio
 import base64
 import os
 import re
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from google import genai
 from google.genai import types
@@ -250,6 +251,138 @@ class GeminiProvider(BaseProvider):
                 refs=[dict(k) for k in rag_results] if rag_results else [],
                 sources=[],
             )
+
+    # ==================================================================
+    # ストリーミング
+    # ==================================================================
+
+    async def async_generate_stream(
+        self,
+        text: str,
+        attachments: List[Attachment],
+        context: Dict[str, Any],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Gemini ネイティブの send_message_stream を使ったストリーミング応答。
+
+        制約: use_google_search=True の場合は grounding metadata が stream で
+        正しく組めないので非ストリーミングにフォールバックする。
+        """
+        use_google_search = context.get("use_google_search", False)
+        if use_google_search:
+            # Google Search 経路は非 stream 一括返却
+            result = await self.async_generate(text, attachments, context)
+            if result.text:
+                yield {"type": "chunk", "text": result.text}
+            yield {
+                "type": "done",
+                "full_text": result.text or "",
+                "sources": result.sources or [],
+                "debug": result.debug_info or {},
+            }
+            return
+
+        memory_manager = context["memory_manager"]
+        history = context.get("history", [])
+        override_config = context.get("override_config")
+        memory_blocks = context.get("memory_blocks")
+        context_order = context.get("context_order")
+        context_levels = context.get("context_levels")
+
+        image_parts = []
+        if attachments:
+            image_parts = self._convert_attachments_to_parts(attachments)
+
+        # debug data を事前構築 (done event で返す)
+        from butly_core.core.gatekeeper import (
+            build_system_instruction_from_blocks,
+            build_context_prefix,
+        )
+        _debug_sys_inst = build_system_instruction_from_blocks(
+            blocks=memory_blocks,
+            memory_manager=memory_manager,
+            use_google_search=False,
+            context_order=context_order,
+            context_levels=context_levels,
+        )
+        _debug_ctx_prefix = build_context_prefix(
+            blocks=memory_blocks,
+            memory_manager=memory_manager,
+            use_google_search=False,
+            context_order=context_order,
+            context_levels=context_levels,
+        )
+
+        loop = asyncio.get_event_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def _producer():
+            full_text = ""
+            try:
+                chat_session = self._start_chat(
+                    history=history,
+                    memory_manager=memory_manager,
+                    override_config=override_config,
+                    use_google_search=False,
+                    memory_blocks=memory_blocks,
+                    context_order=context_order,
+                    context_levels=context_levels,
+                )
+                prompt_parts = [text] + image_parts
+                print("[GeminiProvider] Streaming start")
+                for chunk in chat_session.send_message_stream(prompt_parts):
+                    chunk_text = ""
+                    try:
+                        if chunk.text:
+                            chunk_text = chunk.text
+                    except (ValueError, AttributeError):
+                        if chunk.candidates:
+                            try:
+                                for part in chunk.candidates[0].content.parts:
+                                    if hasattr(part, "text") and part.text:
+                                        chunk_text += part.text
+                            except (AttributeError, IndexError):
+                                pass
+                    if chunk_text:
+                        full_text += chunk_text
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait, {"type": "chunk", "text": chunk_text}
+                        )
+                print("[GeminiProvider] Streaming done")
+                loop.call_soon_threadsafe(queue.put_nowait, {
+                    "type": "done",
+                    "full_text": full_text,
+                    "sources": [],
+                    "debug": {
+                        "system_instruction": (_debug_sys_inst[:500] + "...") if len(_debug_sys_inst) > 500 else _debug_sys_inst,
+                        "system_instruction_full": _debug_sys_inst,
+                        "context_prefix": (_debug_ctx_prefix[:500] + "...") if len(_debug_ctx_prefix) > 500 else _debug_ctx_prefix,
+                        "context_prefix_full": _debug_ctx_prefix,
+                        "history_count": len(history),
+                        "user_input": text,
+                        "raw_response": full_text,
+                    },
+                })
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                loop.call_soon_threadsafe(queue.put_nowait, {
+                    "type": "error", "message": str(e),
+                })
+
+        producer_future = loop.run_in_executor(None, _producer)
+
+        try:
+            while True:
+                event = await queue.get()
+                yield event
+                if event["type"] in ("done", "error"):
+                    break
+        finally:
+            try:
+                await producer_future
+            except Exception:
+                pass
 
     # ==================================================================
     # Gemini 固有ユーティリティ

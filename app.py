@@ -521,6 +521,13 @@ def render_settings_screen():
         st.divider()
         st.subheader("🔧 System Toggles")
         st.session_state.debug_mode = st.toggle("🐛 Debug Mode", value=st.session_state.debug_mode)
+        if "streaming_enabled" not in st.session_state:
+            st.session_state.streaming_enabled = True
+        st.session_state.streaming_enabled = st.toggle(
+            "⚡ Streaming (応答を逐次表示)",
+            value=st.session_state.streaming_enabled,
+            help="OFF にすると従来の一括返却モードになります。",
+        )
 
         if st.button("🗑️ Clear Cache"):
             st.cache_resource.clear()
@@ -2256,35 +2263,115 @@ def render_chat_screen():
                     "attachments": att_list,
                 }
 
-                resp = requests.post(
-                    f"{api_url}/chat",
-                    json=payload,
-                    timeout=180,  # Gatekeeper（Ollama）の忪touch方式を考慮して長めに設定
-                )
+                if st.session_state.get("streaming_enabled", True):
+                    # --- ストリーミング経路 (/chat/stream SSE) ---
+                    stream_state = {
+                        "metadata": {},
+                        "done": {},
+                        "error": None,
+                        "full_text": "",
+                    }
 
-                if not resp.ok:
-                    st.error(f"APIエラー [{resp.status_code}]: {resp.text}")
-                    st.stop()
+                    def _sse_generator():
+                        import json as _json
+                        try:
+                            with requests.post(
+                                f"{api_url}/chat/stream",
+                                json=payload,
+                                stream=True,
+                                timeout=180,
+                            ) as resp:
+                                if not resp.ok:
+                                    stream_state["error"] = f"APIエラー [{resp.status_code}]: {resp.text}"
+                                    return
+                                current_event = None
+                                event_data_lines = []
+                                for raw_line in resp.iter_lines(decode_unicode=True):
+                                    if raw_line is None:
+                                        continue
+                                    if raw_line == "":
+                                        if current_event is None or not event_data_lines:
+                                            current_event = None
+                                            event_data_lines = []
+                                            continue
+                                        try:
+                                            data = _json.loads("\n".join(event_data_lines))
+                                        except Exception:
+                                            current_event = None
+                                            event_data_lines = []
+                                            continue
+                                        if current_event == "chunk":
+                                            text = data.get("text", "")
+                                            stream_state["full_text"] += text
+                                            yield text
+                                        elif current_event == "metadata":
+                                            stream_state["metadata"] = data
+                                        elif current_event == "done":
+                                            stream_state["done"] = data
+                                        elif current_event == "error":
+                                            stream_state["error"] = data.get("message", "stream error")
+                                        current_event = None
+                                        event_data_lines = []
+                                    elif raw_line.startswith("event:"):
+                                        current_event = raw_line[len("event:"):].strip()
+                                    elif raw_line.startswith("data:"):
+                                        event_data_lines.append(raw_line[len("data:"):].strip())
+                        except Exception as e:
+                            stream_state["error"] = f"ストリーミングエラー: {e}"
 
-                data = resp.json()
-                response_text = data.get("response", "")
-                keywords     = data.get("keywords", [])
-                refs         = data.get("references", [])
-                sources      = data.get("sources", [])
-                tier         = data.get("tier", "")
+                    # write_stream は generator をその場で消費し、yielded text を表示
+                    with st.chat_message("assistant"):
+                        st.write_stream(_sse_generator())
 
-                st.session_state.messages.append({
-                    "role": "model",
-                    "parts": [response_text],
-                    "timestamp": datetime.now().isoformat(),
-                    "debug_info": data.get("debug_info"),
-                    "sources": sources,
-                })
-                st.session_state.last_interaction_time = datetime.now()
+                    if stream_state["error"]:
+                        st.error(stream_state["error"])
+                        st.stop()
 
-                # 記憶の保存・整理は main.py 内の /chat で完結しているためここでは不要
+                    done_data = stream_state["done"] or {}
+                    response_text = done_data.get("full_text", stream_state["full_text"])
+                    sources = done_data.get("sources", []) or []
+                    debug_info = done_data.get("debug_info")
 
-                st.rerun()
+                    st.session_state.messages.append({
+                        "role": "model",
+                        "parts": [response_text],
+                        "timestamp": datetime.now().isoformat(),
+                        "debug_info": debug_info,
+                        "sources": sources,
+                    })
+                    st.session_state.last_interaction_time = datetime.now()
+                    st.rerun()
+                else:
+                    # --- 非ストリーミング経路 (/chat) ---
+                    resp = requests.post(
+                        f"{api_url}/chat",
+                        json=payload,
+                        timeout=180,  # Gatekeeper（Ollama）の応答方式を考慮して長めに設定
+                    )
+
+                    if not resp.ok:
+                        st.error(f"APIエラー [{resp.status_code}]: {resp.text}")
+                        st.stop()
+
+                    data = resp.json()
+                    response_text = data.get("response", "")
+                    keywords     = data.get("keywords", [])
+                    refs         = data.get("references", [])
+                    sources      = data.get("sources", [])
+                    tier         = data.get("tier", "")
+
+                    st.session_state.messages.append({
+                        "role": "model",
+                        "parts": [response_text],
+                        "timestamp": datetime.now().isoformat(),
+                        "debug_info": data.get("debug_info"),
+                        "sources": sources,
+                    })
+                    st.session_state.last_interaction_time = datetime.now()
+
+                    # 記憶の保存・整理は main.py 内の /chat で完結しているためここでは不要
+
+                    st.rerun()
 
             except requests.exceptions.ConnectionError:
                 st.error(f"⚠️ FastAPIサーバーに接続できません。`uvicorn main:app --port 8000` が起動しているか確認してください。\n\n接続先: {api_url}")

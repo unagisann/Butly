@@ -3,9 +3,11 @@ routers/chat.py
 ───────────────
 チャット REST + WebSocket エンドポイント。
 """
+import json
 from typing import List, Dict, Any, Optional
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from starlette.websockets import WebSocketState
 
@@ -127,6 +129,79 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     except Exception as e:
         print(f"Error during chat: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================================
+# SSE Streaming Endpoint
+# =====================================================================
+
+def _sse_event(event_name: str, data: Any) -> str:
+    """SSE フォーマット文字列を組み立てる。"""
+    payload = json.dumps(data, ensure_ascii=False, default=str)
+    return f"event: {event_name}\ndata: {payload}\n\n"
+
+
+@router.post("/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """
+    SSE で逐次チャンクを返すストリーミングエンドポイント。
+
+    レスポンスは text/event-stream で以下のイベントを順に送る:
+      - metadata: Gatekeeper の判定結果 (tier, need, scores 等)
+      - chunk:    部分テキスト
+      - done:     最終 metadata + debug_info
+      - error:    例外発生時の通知
+    """
+    attachments = []
+    for att_data in request.attachments:
+        try:
+            attachments.append(Attachment(**att_data))
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"添付データの形式が不正です: {e}")
+
+    internal_request = _InternalChatRequest(
+        text=request.message,
+        attachments=attachments,
+        instance_name=request.instance_name,
+        use_rag=request.use_rag,
+        use_google_search=request.use_google_search,
+        use_web_search=request.use_web_search,
+    )
+
+    async def event_stream():
+        try:
+            async for event in ChatService.execute_stream(
+                request=internal_request,
+                get_instance_components=deps.get_instance_components,
+                instance_manager=deps.instance_manager,
+                instances_dir=deps.INSTANCES_DIR,
+                gatekeeper=deps.gatekeeper,
+                mem_block_builder=deps.mem_block_builder,
+            ):
+                ev_type = event.get("type")
+                if ev_type == "chunk":
+                    yield _sse_event("chunk", {"text": event["text"]})
+                elif ev_type == "metadata":
+                    yield _sse_event("metadata", event.get("data", {}))
+                elif ev_type == "done":
+                    yield _sse_event("done", event.get("data", {}))
+                elif ev_type == "error":
+                    yield _sse_event("error", {
+                        "message": event.get("message", "unknown"),
+                        "recoverable": event.get("recoverable", False),
+                    })
+        except Exception as e:
+            print(f"[chat/stream] unexpected error: {e}")
+            yield _sse_event("error", {"message": str(e), "recoverable": False})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # nginx 等のバッファ無効化
+        },
+    )
 
 
 # =====================================================================

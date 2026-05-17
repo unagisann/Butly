@@ -6,7 +6,7 @@ LLM プロバイダーの抽象基底クラス。
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from butly_core.chat.types import Attachment, ChatResponse
 
@@ -104,3 +104,31 @@ class BaseProvider(ABC):
         """非同期版 embed。デフォルトは同期版をスレッドプールで実行。"""
         from starlette.concurrency import run_in_threadpool
         return await run_in_threadpool(self.embed, text)
+
+    async def async_generate_stream(
+        self,
+        text: str,
+        attachments: List[Attachment],
+        context: Dict[str, Any],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        ストリーミング応答生成。チャンクを逐次 yield する。
+
+        各 yield は dict で、type に応じてペイロード形式が変わる:
+          - {"type": "chunk", "text": str}              : 部分テキスト
+          - {"type": "done",  "full_text": str,
+             "sources": list, "debug": dict}            : 終端 + 最終メタデータ
+          - {"type": "error", "message": str}           : 終端エラー
+
+        デフォルト実装は非ストリーミングの async_generate() の結果を
+        1 チャンクで yield する fallback。Provider が override 推奨。
+        """
+        result = await self.async_generate(text, attachments, context)
+        if result.text:
+            yield {"type": "chunk", "text": result.text}
+        yield {
+            "type": "done",
+            "full_text": result.text or "",
+            "sources": result.sources or [],
+            "debug": result.debug_info or {},
+        }
