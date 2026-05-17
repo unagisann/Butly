@@ -1,7 +1,48 @@
 import json
 import os
+import re
 from pathlib import Path
 from datetime import datetime
+
+
+def _parse_session_filename_timestamp(name: str):
+    """`session_YYYYMMDD_HHMMSS(.txt)` 形式のファイル名からタイムスタンプを抽出。
+
+    Returns datetime or None.
+    """
+    m = re.match(r"session_(\d{8})_(\d{6})", name)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
+    except ValueError:
+        return None
+
+
+def _strip_legacy_time_line(text: str) -> str:
+    """旧形式 floating summary の冒頭 `Time: ...` 行を除去 (後方互換)。"""
+    lines = text.split("\n", 1)
+    if lines and lines[0].startswith("Time: "):
+        return lines[1] if len(lines) > 1 else ""
+    return text
+
+
+def _format_relative_time(dt: datetime, now: datetime) -> str:
+    """相対時間表現を返す。Sleeptime は日次なので主に分/時間オーダー。"""
+    delta = now - dt
+    seconds = delta.total_seconds()
+    if seconds < 60:
+        return "たった今"
+    if seconds < 3600:
+        return f"約{int(seconds // 60)}分前"
+    if seconds < 86400:
+        hours = seconds / 3600
+        if hours < 2:
+            # 1〜2 時間の境界は 0.5 刻みでより具体的に
+            return f"約{hours:.1f}時間前"
+        return f"約{int(hours)}時間前"
+    days = int(seconds // 86400)
+    return f"約{days}日前"
 
 # ★設定ファイルのインポート
 try:
@@ -450,13 +491,23 @@ class ButlyMemory:
 
     def get_floating_summary(self):
         """
-        現在保持している浮動要約(floating summary)のテキストをすべて結合して返す
-        1. 従来の floating_summary.txt (互換性のため)
-        2. 新しい floating_summaries フォルダ内の各ファイル
+        現在保持している浮動要約(floating summary)のテキストをすべて結合して返す。
+
+        Format (現行):
+            --- 約N時間前 ---
+            <要約本文>
+
+        ファイル名や絶対タイムスタンプは LLM のノイズになりやすいため、
+        相対時間ヘッダー (例: 「約30分前」「約2時間前」) で代替する。
+        Sleeptime が日次で整理する前提なので、半日以内のスパンしか出ない想定。
+
+        旧形式 (`Time: 2026-...` を 1 行目に含むファイル) との後方互換あり。
         """
+        from datetime import datetime
+        now = datetime.now()
         combined = ""
-        
-        # 1. 従来ファイルの読み込み
+
+        # 1. 従来 floating_summary.txt (互換性のため。中身はそのまま)
         try:
             if self.floating_summary_file.exists():
                 legacy_text = self.floating_summary_file.read_text(encoding="utf-8").strip()
@@ -464,18 +515,25 @@ class ButlyMemory:
                     combined += legacy_text + "\n\n"
         except Exception as e:
             print(f"[Memory] Failed to read legacy floating summary: {e}")
-            
-        # 2. 新フォルダ内のファイル読み込み
+
+        # 2. 新フォルダ内のファイル
         try:
             if self.floating_summary_dir.exists():
-                # 古いものから順に読み込む (時系列を保つため)
                 for summary_file in sorted(self.floating_summary_dir.glob("*.txt"), key=os.path.getmtime):
-                    text = summary_file.read_text(encoding="utf-8").strip()
-                    if text:
-                        combined += f"--- Source: {summary_file.name} ---\n{text}\n\n"
+                    raw = summary_file.read_text(encoding="utf-8").strip()
+                    if not raw:
+                        continue
+
+                    cleaned = _strip_legacy_time_line(raw)
+                    file_dt = (
+                        _parse_session_filename_timestamp(summary_file.name)
+                        or datetime.fromtimestamp(summary_file.stat().st_mtime)
+                    )
+                    rel = _format_relative_time(file_dt, now)
+                    combined += f"--- {rel} ---\n{cleaned}\n\n"
         except Exception as e:
             print(f"[Memory] Failed to read floating summaries dir: {e}")
-            
+
         return combined.strip()
 
     def maintain_memory(self, brain):
@@ -528,7 +586,7 @@ class ButlyMemory:
                 summary_path = self.floating_summary_dir / summary_filename
                 
                 with open(summary_path, "w", encoding="utf-8") as f:
-                    f.write(f"Time: {timestamp}\n{summary}\n")
+                    f.write(f"{summary}\n")
                     
                 # ファイルをアーカイブフォルダへ移動
                 new_path = self.archive_integrated / json_file.name
