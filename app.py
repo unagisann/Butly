@@ -1991,8 +1991,12 @@ def render_chat_screen():
     memory, brain, chronos = initialize_system(BASE_DIR, instance_name)
     api_url = st.session_state.api_base_url
 
+    # streaming_enabled の初期化 (まだなら True)
+    if "streaming_enabled" not in st.session_state:
+        st.session_state.streaming_enabled = True
+
     # --- チャットヘッダー ---
-    col1, col2, col3, col4, col5, col6 = st.columns([1, 5, 1, 1, 1, 1])
+    col1, col2, col3, col4, col5, col_stream, col6 = st.columns([1, 4, 1, 1, 1, 1, 1])
     with col1:
         if st.button("＜", help="戻る"): navigate_to("home")
     with col2:
@@ -2009,6 +2013,17 @@ def render_chat_screen():
             st.session_state.messages = []
             if "last_interaction_time" in st.session_state:
                 del st.session_state.last_interaction_time
+            st.rerun()
+    with col_stream:
+        # ⚡ Streaming 表示切替ボタン (ON/OFF)
+        _streaming_on = st.session_state.streaming_enabled
+        _stream_label = "⚡ ON" if _streaming_on else "⚡"
+        _stream_help = (
+            "Streaming: ON（クリックでOFF）" if _streaming_on
+            else "Streaming: OFF（クリックでON、応答を逐次表示）"
+        )
+        if st.button(_stream_label, help=_stream_help, key="header_streaming_toggle"):
+            st.session_state.streaming_enabled = not _streaming_on
             st.rerun()
     with col6:
         # Google Search toggle / Web Search toggle
