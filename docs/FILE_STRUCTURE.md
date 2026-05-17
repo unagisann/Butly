@@ -317,13 +317,15 @@ LLM に 3 スコア（0–1）を出力させ、Python 側でルールに基づ�
 LLM 呼び出しなしの事実ベース記憶検索。3 レイヤー構成。
 
 - `MemoryProbe()`
-  - `probe(user_input, brain, memory_manager)` — ベクトル検索 + 用語集マッチ + 条件付き深層検索
+  - `probe(user_input, brain, memory_manager, history_msgs=None, ...)` — ベクトル検索 + 用語集マッチ + 条件付き深層検索
+  - `_match_glossary(user_input, memory_manager, history_msgs=None, override_config=None)` — Lorebook 統合: term/aliases を user_input + 直近履歴でマッチし、raw hits を返却（フィルタ・ソート無し）。各 hit に `priority` / `_yaml_index` / `match_source` ("user"|"history") を付与
+  - `_extract_history_text(history_msgs, scan_depth, scan_target)` — 履歴から scan_target に応じてメッセージを抽出（1 ターン = user+assistant 1 ペア）
 
 **検索レイヤー:**
 | レイヤー | 内容 | 条件 |
 |---|---|---|
 | Layer 1 | Quick Vector Search（コサイン類似度） | 常時実行 |
-| Layer 1.5 | Glossary Match（term/aliases） | 常時実行 |
+| Layer 1.5 | Glossary Match (Lorebook 統合: term/aliases、user_input + 履歴 scan_depth ターン) | 常時実行 |
 | Layer 2 | Deep Search | 過去参照パターン検出時のみ |
 
 ---
@@ -397,6 +399,17 @@ tier に応じて、LLM プロバイダーに渡す「記憶ブロック辞書�
 
 - `build_system_instruction_from_blocks(blocks, memory_manager, use_google_search)` — **不変セクション**（system_instruction + Key_Memory）のみを結合して system_instruction 文字列を生成
 - `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / glossary / mid_term / RAG / floating / tier 情報 / Google 検索注意書き / Web 検索結果）を結合し、Provider が会話履歴の先頭に user メッセージとして注入する文字列を生成
+- `is_long_definition(definition)` — glossary エントリの definition が複数行（= 長文 / 「関連設定」扱い）かを判定。`strip()` 後の `\n` 有無で判定
+- `_build_glossary(blocks, memory_manager, level, h)` — Lorebook 統合: probe ヒットを短文/長文に振り分け、`(priority, _yaml_index)` で安定ソート、`max_entries` 件数制限、`max_chars` greedy skip を適用。「用語説明」セクションを先に、「関連設定」セクションを後に出力
+
+**Glossary 注入の制御 (SYSTEM_CONFIG["glossary"] + instance_config["glossary"] で上書き可):**
+
+| キー | デフォルト | 説明 |
+|---|---|---|
+| `scan_depth` | 2 | 直近何ターン分の履歴をスキャンするか (1 ターン = user+assistant 1 ペア)。0 で user_input のみ |
+| `scan_target` | "both" | "user" / "assistant" / "both" |
+| `max_entries` | 20 | 注入する最大エントリ数 |
+| `max_chars` | 4000 | 注入合計文字数の上限。greedy skip で個別エントリをスキップ |
 
 ---
 

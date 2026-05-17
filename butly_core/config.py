@@ -119,6 +119,16 @@ SYSTEM_CONFIG = {
         "vector_search_threshold": 0.6,
         "deep_search_enabled": True,
     },
+    "glossary": {
+        # 1 ターン = user+assistant 1 ペア。0 で user_input のみ
+        "scan_depth": 2,
+        # "user" | "assistant" | "both"
+        "scan_target": "both",
+        # 1リクエストで注入する最大エントリ数
+        "max_entries": 20,
+        # 注入合計文字数の上限（greedy skip）
+        "max_chars": 4000,
+    },
 }
 
 # --- User Config Override ---

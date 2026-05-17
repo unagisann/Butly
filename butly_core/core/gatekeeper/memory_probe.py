@@ -79,6 +79,7 @@ class MemoryProbe:
         instance_name: str = "00_master",
         recent_headlines: str = "",
         override_config: dict = None,
+        history_msgs: list = None,
     ) -> dict:
         """
         Returns:
@@ -87,6 +88,11 @@ class MemoryProbe:
                 "candidates": [...],
                 "glossary_hits": [...],
             }
+
+        Parameters
+        ----------
+        history_msgs : list | None
+            直近の会話履歴 (role + parts/content)。glossary 履歴スキャンに使用。
         """
         t0 = time.time()
 
@@ -102,8 +108,12 @@ class MemoryProbe:
             override_config=override_config,
         )
 
-        # Layer 1.5: Glossary Match
-        glossary_hits = self._match_glossary(user_input, memory_manager)
+        # Layer 1.5: Glossary Match (user_input + 履歴スキャン、フィルタ・ソート無し)
+        glossary_hits = self._match_glossary(
+            user_input, memory_manager,
+            history_msgs=history_msgs,
+            override_config=override_config,
+        )
 
         t1 = time.time()
 
@@ -170,45 +180,177 @@ class MemoryProbe:
             print(f"[MemoryProbe] Quick vector search error: {e}")
             return []
 
-    def _match_glossary(self, user_input, memory_manager) -> list:
-        """Layer 1.5: user_input に含まれる glossary エントリをマッチングする。"""
+    def _match_glossary(
+        self,
+        user_input,
+        memory_manager,
+        history_msgs: list = None,
+        override_config: dict = None,
+    ) -> list:
+        """
+        Layer 1.5: user_input + 直近履歴に含まれる glossary エントリをマッチングする。
+
+        フィルタ・ソート・整形は行わない。raw hits を返却し、
+        priority / max_entries / max_chars 等は呼び出し側 (_build_glossary) で処理する。
+
+        各 hit は以下の dict:
+            {
+                "term": str,
+                "definition": str,
+                "aliases": list,
+                "match_type": "term" | "alias",
+                "match_source": "user" | "history",
+                "priority": int,            # 未指定は 100
+                "_yaml_index": int,         # YAML 内の元の位置 (安定ソート用)
+            }
+        重複 term は 1 件に集約。match_source は user_input ヒット優先。
+        """
         try:
             glossary_data = memory_manager.get_glossary_raw()
         except Exception:
             return []
 
         entries = glossary_data.get("entries", [])
-        hits = []
-        input_lower = user_input.lower()
+        if not entries:
+            return []
 
-        for entry in entries:
+        # --- 設定解決 ---
+        glossary_conf = dict(SYSTEM_CONFIG.get("glossary", {}))
+        if override_config:
+            glossary_conf.update(override_config.get("glossary", {}))
+        scan_depth = int(glossary_conf.get("scan_depth", 2))
+        scan_target = glossary_conf.get("scan_target", "both")
+
+        # --- スキャン対象テキスト構築 ---
+        # user_input は常に「user」ソース扱い
+        sources: list[tuple[str, str]] = [("user", user_input or "")]
+
+        if history_msgs and scan_depth > 0:
+            history_text_pairs = self._extract_history_text(
+                history_msgs, scan_depth, scan_target
+            )
+            sources.extend(history_text_pairs)
+
+        # --- マッチング ---
+        # term 単位で集約。user ソース優先（後勝ちで上書きしない）
+        hits_by_term: dict = {}
+        for entry_idx, entry in enumerate(entries):
             if entry.get("status") != "active":
                 continue
 
             term = entry.get("term", "")
-            aliases = entry.get("aliases", [])
+            aliases = entry.get("aliases", []) or []
             definition = entry.get("definition", "")
+            priority = int(entry.get("priority", 100))
 
-            if term.lower() in input_lower:
-                hits.append({
-                    "term": term,
-                    "definition": definition,
-                    "aliases": aliases,
-                    "match_type": "term",
-                })
-                continue
+            term_lower = term.lower()
+            alias_lower = [a.lower() for a in aliases]
 
-            for alias in aliases:
-                if alias.lower() in input_lower:
-                    hits.append({
-                        "term": term,
-                        "definition": definition,
-                        "aliases": aliases,
-                        "match_type": "alias",
-                    })
+            matched_source = None
+            matched_type = None
+
+            for source_label, text in sources:
+                if not text:
+                    continue
+                text_lower = text.lower()
+
+                if term_lower and term_lower in text_lower:
+                    matched_source = source_label
+                    matched_type = "term"
                     break
 
-        return hits
+                hit_alias = False
+                for al in alias_lower:
+                    if al and al in text_lower:
+                        hit_alias = True
+                        break
+                if hit_alias:
+                    matched_source = source_label
+                    matched_type = "alias"
+                    break
+
+            if not matched_source:
+                continue
+
+            # 既存 hit があれば、user ソースを優先して上書き
+            existing = hits_by_term.get(term)
+            if existing is not None:
+                if existing["match_source"] == "user":
+                    continue  # すでに user 由来 → 何もしない
+                # 既存が history で新規が user の場合のみ上書き
+                if matched_source != "user":
+                    continue
+
+            hits_by_term[term] = {
+                "term": term,
+                "definition": definition,
+                "aliases": aliases,
+                "match_type": matched_type,
+                "match_source": matched_source,
+                "priority": priority,
+                "_yaml_index": entry_idx,
+            }
+
+        return list(hits_by_term.values())
+
+    def _extract_history_text(
+        self,
+        history_msgs: list,
+        scan_depth: int,
+        scan_target: str,
+    ) -> list:
+        """
+        履歴から直近 scan_depth ペア分のメッセージを取り出して
+        [(source_label, text), ...] のリストを返す。
+
+        1 ターン = user+assistant 1 ペア (= 最大 2 メッセージ)。
+        scan_depth=2 → 直近 4 メッセージから scan_target に合うものだけ抽出。
+        """
+        if not history_msgs or scan_depth <= 0:
+            return []
+
+        max_msgs = scan_depth * 2
+        recent = history_msgs[-max_msgs:]
+
+        result = []
+        for m in recent:
+            role = m.get("role", "")
+            # role は "user" / "assistant" / "model" 等
+            if role in ("assistant", "model"):
+                normalized_role = "assistant"
+            elif role == "user":
+                normalized_role = "user"
+            else:
+                continue
+
+            if scan_target == "user" and normalized_role != "user":
+                continue
+            if scan_target == "assistant" and normalized_role != "assistant":
+                continue
+
+            # parts (Gemini 風) と content (OpenAI 風) の両方に対応
+            text = ""
+            if "parts" in m:
+                parts = m.get("parts", [])
+                if parts:
+                    first = parts[0]
+                    if isinstance(first, dict):
+                        text = first.get("text", "")
+                    else:
+                        text = str(first)
+            elif "content" in m:
+                content = m.get("content", "")
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, list) and content:
+                    first = content[0]
+                    if isinstance(first, dict):
+                        text = first.get("text", "")
+
+            if text:
+                result.append(("history", text))
+
+        return result
 
     def _check_headline_match(self, user_input, recent_headlines) -> bool:
         """recent_headlines のキーワードと user_input の単語がマッチするか。"""

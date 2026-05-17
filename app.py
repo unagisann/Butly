@@ -1599,10 +1599,10 @@ def render_instance_settings_screen():
         st.divider()
 
         # ==========================================
-        # 📖 Glossary (共通言語辞書) 管理
+        # 📖 Glossary (共通言語辞書 / Lorebook) 管理
         # ==========================================
-        st.subheader("📖 Glossary（共通言語辞書）")
-        st.caption("GatekeeperとBrainに注入される意味記憶です。未知語のパニックを防ぎます。")
+        st.subheader("📖 Glossary（共通言語辞書 / Lorebook）")
+        st.caption("キーワード一致で context に注入されます。短い定義は『用語説明』、複数行の定義は『関連設定』として注入されます。")
 
         glossary_data = {"version": 1, "entries": []}
         try:
@@ -1638,11 +1638,19 @@ def render_instance_settings_screen():
 
         for idx in filtered_indices:
             entry = gl_entries[idx]
+            definition = entry.get("definition", "") or ""
+            is_long = "\n" in definition.strip()
+            badge = "📖 関連設定" if is_long else "🔤 用語説明"
+
             with st.container(border=True):
                 gc1, gc2, gc3 = st.columns([5, 2, 1])
                 with gc1:
-                    st.markdown(f"**{entry.get('term', '')}**")
-                    st.caption(entry.get("definition", ""))
+                    st.markdown(f"**{entry.get('term', '')}** ・ {badge} ・ priority: {entry.get('priority', 100)}")
+                    if is_long:
+                        with st.expander("定義を表示", expanded=False):
+                            st.text(definition.strip())
+                    else:
+                        st.caption(definition.strip())
                     aliases = entry.get("aliases", [])
                     if aliases:
                         st.caption(f"別名: {', '.join(aliases)}")
@@ -1661,11 +1669,59 @@ def render_instance_settings_screen():
                         gl_entries.pop(idx)
                         st.rerun()
 
-        with st.expander("➕ 新しい用語を追加"):
+                with st.expander("✏️ 編集", expanded=False):
+                    new_term_val = st.text_input("用語名", value=entry.get("term", ""), key=f"gl_edit_term_{idx}")
+                    new_def_val = st.text_area(
+                        "定義（複数行で『関連設定』扱い）",
+                        value=definition,
+                        height=120,
+                        key=f"gl_edit_def_{idx}",
+                    )
+                    new_aliases_val = st.text_input(
+                        "別名（カンマ区切り）",
+                        value=", ".join(entry.get("aliases", []) or []),
+                        key=f"gl_edit_aliases_{idx}",
+                    )
+                    new_priority_val = st.number_input(
+                        "priority（小さいほど先に注入）",
+                        min_value=0,
+                        max_value=9999,
+                        value=int(entry.get("priority", 100)),
+                        step=10,
+                        key=f"gl_edit_prio_{idx}",
+                    )
+                    cat_options = ["system", "hardware", "project", "tool", "world", "character", "other"]
+                    cur_cat = entry.get("category", "other")
+                    cat_index = cat_options.index(cur_cat) if cur_cat in cat_options else len(cat_options) - 1
+                    new_cat_val = st.selectbox("カテゴリ", cat_options, index=cat_index, key=f"gl_edit_cat_{idx}")
+                    if st.button("変更を反映", key=f"gl_edit_apply_{idx}"):
+                        gl_entries[idx]["term"] = new_term_val
+                        gl_entries[idx]["definition"] = new_def_val
+                        gl_entries[idx]["aliases"] = [
+                            a.strip() for a in (new_aliases_val or "").split(",") if a.strip()
+                        ]
+                        gl_entries[idx]["priority"] = int(new_priority_val)
+                        gl_entries[idx]["category"] = new_cat_val
+                        st.rerun()
+
+        with st.expander("➕ 新しいエントリを追加"):
             new_term = st.text_input("用語名", key="gl_new_term")
-            new_def = st.text_input("定義", key="gl_new_def")
+            new_def = st.text_area(
+                "定義（複数行で『関連設定』扱い）",
+                height=120,
+                key="gl_new_def",
+                placeholder="一行で書くと『用語説明』、複数行で書くと『関連設定』として注入されます",
+            )
             new_aliases = st.text_input("別名（カンマ区切り）", key="gl_new_aliases")
-            new_cat = st.selectbox("カテゴリ", ["system", "hardware", "project", "tool", "world", "character", "other"], key="gl_new_cat")
+            new_cat = st.selectbox(
+                "カテゴリ",
+                ["system", "hardware", "project", "tool", "world", "character", "other"],
+                key="gl_new_cat",
+            )
+            new_prio = st.number_input(
+                "priority（小さいほど先に注入）",
+                min_value=0, max_value=9999, value=100, step=10, key="gl_new_prio",
+            )
             if st.button("追加", key="gl_add_entry"):
                 if new_term and new_def:
                     alias_list = [a.strip() for a in new_aliases.split(",") if a.strip()] if new_aliases else []
@@ -1675,13 +1731,76 @@ def render_instance_settings_screen():
                         "aliases": alias_list,
                         "category": new_cat,
                         "status": "active",
+                        "priority": int(new_prio),
                     })
                     st.rerun()
                 else:
                     st.warning("用語名と定義は必須です。")
 
+        # --- スキャン設定 (instance config の glossary セクション) ---
+        with st.expander("⚙️ スキャン設定（このインスタンス）"):
+            st.caption("チャット時の glossary 注入の挙動を制御します。")
+            current_gl_cfg = (config or {}).get("glossary", {})
+            sys_default = {
+                "scan_depth": 2,
+                "scan_target": "both",
+                "max_entries": 20,
+                "max_chars": 4000,
+            }
+
+            cfg_col1, cfg_col2 = st.columns(2)
+            with cfg_col1:
+                sd = st.number_input(
+                    "scan_depth（直近何ターン分の履歴をスキャン）",
+                    min_value=0, max_value=20,
+                    value=int(current_gl_cfg.get("scan_depth", sys_default["scan_depth"])),
+                    step=1, key="gl_cfg_scan_depth",
+                )
+                me = st.number_input(
+                    "max_entries（注入する最大エントリ数）",
+                    min_value=0, max_value=200,
+                    value=int(current_gl_cfg.get("max_entries", sys_default["max_entries"])),
+                    step=1, key="gl_cfg_max_entries",
+                )
+            with cfg_col2:
+                tgt_options = ["both", "user", "assistant"]
+                cur_tgt = current_gl_cfg.get("scan_target", sys_default["scan_target"])
+                tgt_idx = tgt_options.index(cur_tgt) if cur_tgt in tgt_options else 0
+                st_val = st.selectbox(
+                    "scan_target（履歴のどちらをスキャン）",
+                    tgt_options, index=tgt_idx, key="gl_cfg_scan_target",
+                )
+                mc = st.number_input(
+                    "max_chars（注入合計文字数の上限）",
+                    min_value=0, max_value=100000,
+                    value=int(current_gl_cfg.get("max_chars", sys_default["max_chars"])),
+                    step=100, key="gl_cfg_max_chars",
+                )
+
+            if st.button("スキャン設定を保存", key="gl_cfg_save"):
+                new_cfg = dict(config or {})
+                new_cfg["glossary"] = {
+                    "scan_depth": int(sd),
+                    "scan_target": st_val,
+                    "max_entries": int(me),
+                    "max_chars": int(mc),
+                }
+                try:
+                    cfg_resp = requests.post(
+                        f"{api_url}/instances/{instance_name}/config",
+                        json=new_cfg,
+                        timeout=5,
+                    )
+                    if cfg_resp.ok:
+                        st.success("スキャン設定を保存しました。")
+                    else:
+                        st.error(f"保存エラー: {cfg_resp.text}")
+                except Exception as e:
+                    st.error(f"保存エラー: {e}")
+
         if st.button("💾 Glossary を保存", key="gl_save", use_container_width=True):
-            save_data = {"version": glossary_data.get("version", 1), "entries": gl_entries}
+            # スキーマバージョンを 2 に上げる (priority / 複数行 definition 対応)
+            save_data = {"version": 2, "entries": gl_entries}
             try:
                 sv_resp = requests.post(
                     f"{api_url}/instances/{instance_name}/glossary",

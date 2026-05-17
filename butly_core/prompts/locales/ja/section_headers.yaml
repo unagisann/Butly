@@ -7,10 +7,12 @@ current_time: "=== CURRENT TIME (現在時刻) ==="
 long_term_memory: "=== LONG-TERM MEMORY (RAG) ==="
 floating_summary: "=== FLOATING SUMMARY (未整理記憶) ==="
 tier_info: "=== TIER INFO ==="
-glossary: "=== GLOSSARY (共通言語) ==="
+glossary: "=== GLOSSARY ==="
+glossary_short_label: "用語説明:"
+glossary_long_label: "関連設定:"
 
 note_glossary: >-
-  ※ 以下はあなたとマスターの間の共通言語です。
+  ※ 以下はあなたとマスターの間の共通言語と関連設定です。
   定義をそのまま読み上げる必要はありません。自然な会話を優先してください。
 
 note_mid_term_digest: >-

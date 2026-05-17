@@ -99,8 +99,10 @@ class Gatekeeper:
                 instance_name=instance_name,
                 recent_headlines=recent_headlines,
                 override_config=override_config,
+                history_msgs=history_msgs,
             )
         else:
+            # brain なしでも glossary は scan できるが、現状の経路では呼ばれない
             probe_result = {"status": "no_hit", "candidates": [], "glossary_hits": []}
 
         tier = ctx_result["tier"]          # "reflex" or "mid"

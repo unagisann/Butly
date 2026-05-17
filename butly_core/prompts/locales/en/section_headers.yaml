@@ -7,10 +7,12 @@ current_time: "=== CURRENT TIME ==="
 long_term_memory: "=== LONG-TERM MEMORY (RAG) ==="
 floating_summary: "=== FLOATING SUMMARY ==="
 tier_info: "=== TIER INFO ==="
-glossary: "=== GLOSSARY (Shared Vocabulary) ==="
+glossary: "=== GLOSSARY ==="
+glossary_short_label: "Terms:"
+glossary_long_label: "Related Settings:"
 
 note_glossary: >-
-  The following are shared terms between you and your master.
+  The following are shared terms and related settings between you and your master.
   There is no need to recite definitions verbatim. Prioritize natural conversation.
 
 note_mid_term_digest: >-

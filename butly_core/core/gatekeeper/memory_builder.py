@@ -9,6 +9,15 @@ build_context_prefix: 可変コンテキスト変換関数。
 from butly_core.config import SYSTEM_CONFIG
 
 
+def is_long_definition(definition: str) -> bool:
+    """definition が複数行（= 長文 / 関連設定扱い）かどうかを判定する。
+
+    YAML の `|` 記法は末尾改行が付くため、判定前に strip() する。
+    """
+    normalized = (definition or "").strip()
+    return "\n" in normalized
+
+
 # セクション順序のデフォルト定義
 DEFAULT_CONTEXT_ORDER = {
     "system_instruction": ["system_instruction", "key_memory"],
@@ -465,22 +474,32 @@ def _build_current_time(level: str, h) -> str | None:
 
 
 def _build_glossary(blocks: dict, memory_manager, level: str, h) -> str | None:
+    """Glossary セクションを組み立てる (Lorebook 統合版)。
+
+    - 短文 (1行 definition) → "用語説明" セクション
+    - 長文 (複数行 definition) → "関連設定" セクション
+    - ソート: (priority ASC, _yaml_index ASC) で安定
+    - 上限: max_entries（件数）+ max_chars（合計 definition 長、greedy skip）
+    - level: high/mid = 注入、low/off = 注入なし (既存挙動維持)
+    """
     if level in ("off", "low"):
         return None
 
-    # Phase 1.5: probe の glossary_hits があればそれだけ注入
-    glossary_hits = blocks.get("glossary_hits", [])
-    if glossary_hits:
-        lines = []
-        for hit in glossary_hits:
-            lines.append(f"- {hit['term']}: {hit['definition']}")
-        return (
-            f"{h('glossary')}\n"
-            f"{h('note_glossary')}\n"
-            + "\n".join(lines)
-        )
+    glossary_conf = dict(SYSTEM_CONFIG.get("glossary", {}))
+    glossary_conf.update(blocks.get("glossary_config", {}) or {})
+    max_entries = int(glossary_conf.get("max_entries", 20))
+    max_chars = int(glossary_conf.get("max_chars", 4000))
 
-    # フォールバック: 従来の全件注入
+    glossary_hits = blocks.get("glossary_hits", [])
+
+    # --- probe ヒットがあれば優先（履歴スキャン込みの選別済み） ---
+    if glossary_hits:
+        short_hits, long_hits = _split_short_long(glossary_hits)
+        ordered = _sort_hits(short_hits) + _sort_hits(long_hits)
+        selected = _apply_caps(ordered, max_entries, max_chars)
+        return _render_glossary(selected, h)
+
+    # --- フォールバック: 従来の全件注入（probe を通っていないケース） ---
     if not memory_manager:
         return None
     glossary_text = memory_manager.get_glossary()
@@ -491,6 +510,87 @@ def _build_glossary(blocks: dict, memory_manager, level: str, h) -> str | None:
             f"{glossary_text}"
         )
     return None
+
+
+def _split_short_long(hits: list) -> tuple:
+    """hits を短文 / 長文 に振り分ける。"""
+    short_hits = []
+    long_hits = []
+    for hit in hits:
+        if is_long_definition(hit.get("definition", "")):
+            long_hits.append(hit)
+        else:
+            short_hits.append(hit)
+    return short_hits, long_hits
+
+
+def _sort_hits(hits: list) -> list:
+    """(priority ASC, _yaml_index ASC) で安定ソート。
+
+    priority / _yaml_index が無いエントリ（フォールバック等）はそれぞれ 100 / 0 として扱う。
+    """
+    return sorted(
+        hits,
+        key=lambda h: (int(h.get("priority", 100)), int(h.get("_yaml_index", 0))),
+    )
+
+
+def _apply_caps(ordered_hits: list, max_entries: int, max_chars: int) -> list:
+    """max_entries（件数）+ max_chars（合計 definition 長）の greedy skip を適用。
+
+    順序は維持。総量を超過するエントリは個別にスキップして次へ進む。
+    """
+    selected = []
+    total = 0
+    for entry in ordered_hits:
+        if len(selected) >= max_entries:
+            break
+        cost = len((entry.get("definition") or "").strip())
+        if total + cost > max_chars:
+            continue
+        selected.append(entry)
+        total += cost
+    return selected
+
+
+def _render_glossary(selected: list, h) -> str | None:
+    """選別済み hits をフォーマット済み文字列に変換する。"""
+    if not selected:
+        return None
+
+    short_hits, long_hits = _split_short_long(selected)
+
+    sections = [h("glossary"), h("note_glossary")]
+
+    if short_hits:
+        short_label = h("glossary_short_label")
+        # 未定義時 (key そのものが返るケース) はデフォルト文言を使う
+        if not short_label or short_label == "glossary_short_label":
+            short_label = "用語説明:"
+        lines = [short_label]
+        for hit in short_hits:
+            term = hit.get("term", "")
+            definition = (hit.get("definition") or "").strip()
+            lines.append(f"- {term}: {definition}")
+        sections.append("\n".join(lines))
+
+    if long_hits:
+        long_label = h("glossary_long_label")
+        if not long_label or long_label == "glossary_long_label":
+            long_label = "関連設定:"
+        lines = [long_label]
+        for hit in long_hits:
+            term = hit.get("term", "")
+            definition = (hit.get("definition") or "").strip()
+            lines.append(f"### {term}")
+            lines.append(definition)
+            lines.append("")  # エントリ間の空行
+        # 末尾の空行を除去
+        while lines and lines[-1] == "":
+            lines.pop()
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
 
 
 def _build_mid_term(blocks: dict, level: str, tier: str, h) -> str | None:
