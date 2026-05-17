@@ -8,8 +8,9 @@
 It remembers past conversations, builds knowledge over time, and adapts its responses
 based on accumulated context — not just the current message.
 
-Supports **multiple LLM providers** (Google Gemini / OpenAI / Ollama),
-**multiple AI instances** (personas), and **RAG-based knowledge retrieval** from conversation history.
+Supports **multiple LLM providers** (Google Gemini / OpenAI / xAI / Ollama),
+**multiple AI instances** (personas), **RAG-based knowledge retrieval** from conversation history,
+and **SSE streaming** for real-time response rendering.
 
 ---
 
@@ -22,11 +23,12 @@ Butly maintains several layers of memory that work together:
 | Layer | Description |
 |-------|-------------|
 | **Short-term** | Recent conversation turns (JSON) |
-| **Floating Summary** | Rolling summary of the current conversation |
+| **Floating Summary** | Rolling per-conversation summaries with relative-time headers |
 | **Mid-term Digest** | Episode-tagged fact digest, updated daily |
 | **Relationship Snapshot** | How the AI perceives its relationship with the user, updated weekly |
 | **Knowledge Cards** | Distilled knowledge stored in SQLite with vector embeddings for RAG search |
-| **Key Memory** | Core persistent facts about the user and persona (YAML) |
+| **Glossary / Lorebook** | Per-instance YAML term/aliases dictionary, scanned every turn for semantic memory injection |
+| **Key Memory** | Core persistent facts about the user and persona (text) |
 
 ### Gatekeeper (Metacognitive Engine)
 
@@ -35,7 +37,14 @@ Before generating a response, the Gatekeeper classifies each user message and de
 - **reflex** — Simple exchanges that need minimal context
 - **mid** — Conversations that benefit from memory injection
 
-It also maintains a **SessionState** (topic, mood, turn count) that persists across the conversation and runs a **MemoryProbe** for fact-based memory retrieval without extra LLM calls.
+Tier thresholds (`tier_rc_threshold` / `tier_cn_threshold`) are configurable per instance.
+RAG injection is **independent of tier** and gated by a two-stage *LLM intent + fact-check* pipeline:
+ContextClassifier emits `need_intent` (`past_fact` / `glossary` / `relationship` / `null`),
+and **MemoryProbe** verifies it via vector search, glossary match, and optional deep search — all without extra LLM calls.
+
+The Glossary scan runs on every turn regardless of `need_intent` (regex-only, ~ms), so terms always stay primed.
+
+It also maintains a **SessionState** (topic, mood, turn count) that persists across the conversation.
 
 ### Sleeptime (Scheduled Memory Maintenance)
 
@@ -58,16 +67,24 @@ Mix and match providers per role — e.g., chat on OpenAI, embeddings on Gemini,
 |----------|-------------|---------|
 | **Gemini** | `gemini-*` / `models/gemini-*` | `GOOGLE_API_KEY` |
 | **OpenAI** | `gpt-*` / `o1` / `o3` / `o4` | `OPENAI_API_KEY` |
+| **xAI (Grok)** | `grok-*` / `xai/*` | `XAI_API_KEY` |
 | **Ollama** | `ollama/*` | Not required (local) |
+
+OpenAI / xAI / Ollama share a common helper (`butly_core/llm/_openai_compat.py`) for message building, reasoning-model handling (`o1`/`o3`/`o4`), and history role mapping (`model` → `assistant`).
 
 ### RAG Search (ButlyBrain)
 
-Hybrid retrieval combining keyword filtering (SQLite LIKE) with vector cosine similarity reranking, time decay scoring, and cross-instance DB search.
+Hybrid retrieval combining keyword filtering (SQLite LIKE) with vector cosine similarity reranking, time decay scoring, and cross-instance DB search. Vector threshold and decay rate are tuned so older cards remain reachable; per-layer diagnostics are surfaced in the chat debug log.
+
+### Streaming Responses (SSE)
+
+`POST /chat/stream` returns a `text/event-stream` with `metadata` → `chunk` → `done` events.
+The Streamlit UI exposes a Streaming toggle in the chat header so you can switch between buffered and streaming modes per turn. Gatekeeper metadata (tier / need / scores) is emitted before the first chunk; `StateUpdater` runs in parallel and ships off the critical path.
 
 ### Web Search
 
 - **Gemini models**: Google Search Grounding (built-in)
-- **Other providers**: Tavily API fallback
+- **Other providers**: Tavily API or Ollama Cloud Web Search (`OLLAMA_WEB_SEARCH_API_KEY`)
 
 ---
 
@@ -111,6 +128,13 @@ GOOGLE_API_KEY=AIza...
 
 # OpenAI
 OPENAI_API_KEY=sk-...
+
+# xAI (Grok)
+XAI_API_KEY=xai-...
+
+# Web search (non-Gemini)
+TAVILY_API_KEY=tvly-...
+OLLAMA_WEB_SEARCH_API_KEY=...
 
 # Ollama — no key needed (local)
 ```
@@ -183,13 +207,17 @@ Double-click `02_start_webui.bat` — starts both servers and opens the browser 
 
 ```mermaid
 flowchart TD
-    A((User Input)) --> B["⧫ Gatekeeper<br/>Classify + StateUpdate + MemoryProbe"]
+    A((User Input)) --> B["⧫ Gatekeeper<br/>ContextClassifier + MemoryProbe"]
     B --> C{tier}
     C -->|reflex| D["⚡ Minimal context"]
     C -->|mid| E["◎ Memory injected"]
-    D --> F["◆ ChatService<br/>Provider.generate()"]
+    B --> N{need?<br/>(tier-independent)}
+    N -->|set| R["⌕ RAG block<br/>from MemoryProbe candidates"]
+    D --> F["◆ ChatService<br/>Provider.generate() / .async_generate_stream()"]
     E --> F
-    F --> G((Response))
+    R --> F
+    F -.->|parallel| SU["⟳ StateUpdater<br/>(post-response)"]
+    F --> G((Response / SSE chunks))
     G --> H["▣ short_term_json save"]
     H -.->|scheduled| I["⚙ Sleeptime<br/>Daily + Weekly batch"]
     I -.->|knowledge generation| J[("⛁ Knowledge DB<br/>(SQLite + Embeddings)")]
@@ -224,11 +252,11 @@ All configurable via `user_config.json`.
 
 ## Tech Stack
 
-- **LLM**: Google Gemini / OpenAI / Ollama — multi-provider
-- **Backend**: FastAPI + Uvicorn
+- **LLM**: Google Gemini / OpenAI / xAI (Grok) / Ollama — multi-provider
+- **Backend**: FastAPI + Uvicorn (REST `/chat`, SSE `/chat/stream`, WebSocket `/ws`)
 - **Frontend**: Streamlit
 - **DB**: SQLite (vector search via cosine similarity + NumPy)
-- **Web Search**: Tavily API / Google Search Grounding
+- **Web Search**: Tavily API / Ollama Cloud Web Search / Google Search Grounding
 
 ---
 
@@ -237,6 +265,9 @@ All configurable via `user_config.json`.
 - [Architecture Diagrams](docs/DIAGRAMS.md)
 - [Gatekeeper I/O Specification](docs/gatekeeper_io_summary.md)
 - [Memory Lifecycle](docs/memory_lifecycle.md)
+- [File Structure](docs/FILE_STRUCTURE.md)
+- [Context Levels](docs/context_levels.md)
+- [Project Status](docs/project_status.md) / [Recent Changes](docs/recent_changes.md)
 
 ---
 

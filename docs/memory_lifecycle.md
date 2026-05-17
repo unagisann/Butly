@@ -61,7 +61,8 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # number of files to retain
 |---|---|
 | **Location** | `instances/{name}/floating_summaries/*.txt` (legacy: `floating_summary.txt`) |
 | **Written by** | `memory.maintain_memory()` calls `brain.summarize_conversation()` on overflow |
-| **Format** | txt file per conversation: `Time: {timestamp}\n{summary text}` |
+| **Format** | One txt file per conversation. Body is summary text; legacy first line `Time: {timestamp}` is stripped on read. |
+| **Read format** | `ButlyMemory.get_floating_summary()` concatenates files with **relative-time headers** (e.g. `--- about 30 minutes ago ---`) — file names and absolute timestamps are intentionally omitted to keep the LLM from treating each timestamp as a separate conversation. |
 | **Injected by Gatekeeper** | FLOATING SUMMARY block — injected at all tiers (serves as recent conversation context) |
 | **Lifecycle** | All files deleted at Sleeptime run (no data loss since raw JSON exists in 1_integrated) |
 | **Model used** | `AI_CONFIG["summary"]["model_name"]` (cost-effective, long-context) |
@@ -262,6 +263,10 @@ instances/{name}/
 ├── system_instruction.txt     # AI personality definition (manual edit)
 ├── session_state.json         # Gatekeeper session state
 ├── recent_digest_headlines.json  # recent conversation headlines (Gatekeeper input)
+├── glossary.yaml              # Glossary / Lorebook (term / aliases / category / status / priority)
+├── debug_logs/                # ChatService debug auto-save
+│   ├── latest.json            # latest turn (overwrite)
+│   └── history/               # last 20 turns (rotated)
 ├── butly_memory.db            # ⑦ long-term vector DB
 └── memory_archive/
     ├── 1_integrated/          # ③ raw JSONs awaiting Sleeptime processing

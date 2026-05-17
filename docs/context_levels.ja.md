@@ -1,6 +1,6 @@
 # context_levels 仕様書
 
-🌐 **日本語**
+🌐 **日本語** | [English](context_levels.md)
 
 `context_levels` は、LLMに渡すコンテキストの各要素に `high / mid / low / off` の4段階レベルを設定できる機能です。
 プリセット（normal / compact / low / custom）で一括切り替えが可能で、小規模ローカルLLM向けの軽量化や、API利用時のコスト最適化に活用できます。

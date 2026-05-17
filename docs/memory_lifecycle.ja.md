@@ -60,7 +60,8 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # 保持ファイル数
 |---|---|
 | **場所** | `instances/{name}/floating_summaries/*.txt`（旧: `floating_summary.txt`） |
 | **書き込み** | `memory.maintain_memory()` が short_term 溢れ時に `brain.summarize_conversation()` を呼び出し生成 |
-| **形式** | `Time: {timestamp}\n{要約テキスト}` の txt ファイル（1会話 = 1ファイル） |
+| **形式** | 1 会話 = 1 ファイル（本文は要約のみ）。旧形式（先頭行 `Time: {timestamp}`）は読み込み時に除去 |
+| **読み出し形式** | `ButlyMemory.get_floating_summary()` が **相対時刻ヘッダー**（例: `--- 約30分前 ---`）付きで結合する。ファイル名や絶対タイムスタンプは LLM が「別会話」と誤認しないよう意図的に出さない |
 | **Gatekeeper注入** | FLOATING SUMMARY ブロックとして全 tier に注入（最新の会話文脈として機能） |
 | **ライフサイクル** | Sleeptime 実行時に全ファイルを削除（1_integrated の生JSONが存在するため二重書き込みにならない） |
 | **使用モデル** | `AI_CONFIG["summary"]["model_name"]`（低コスト・長文コンテキスト向け） |
@@ -261,6 +262,10 @@ instances/{name}/
 ├── system_instruction.txt     # AI 人格定義（手動編集）
 ├── session_state.json         # Gatekeeper セッション状態
 ├── recent_digest_headlines.json  # 最近の会話ヘッドライン（Gatekeeper 入力）
+├── glossary.yaml              # Glossary / Lorebook（term / aliases / category / status / priority）
+├── debug_logs/                # ChatService の debug 自動保存
+│   ├── latest.json            # 最新ターン（上書き）
+│   └── history/               # 直近 20 ターン（ローテーション）
 ├── butly_memory.db            # ⑦ 長期記憶ベクトルDB
 └── memory_archive/
     ├── 1_integrated/          # ③ Sleeptime 処理待ち生 JSON

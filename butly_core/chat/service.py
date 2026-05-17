@@ -31,6 +31,39 @@ def _is_gemini_model(model_name: str) -> bool:
     return lower.startswith("gemini") or lower.startswith("models/gemini")
 
 
+def _build_prompt_full(
+    system_instruction: str,
+    context_prefix: str,
+    history_msgs: list,
+    user_input: str,
+) -> list:
+    """debug_info.prompt_full を組み立てる。
+
+    Provider 側が history を別管理 (e.g., Gemini Chat API) するため、
+    そのままだと debug log に直近会話が映らない。明示的に history を
+    展開して挿入する。
+
+    順序: system → context_prefix → history (古→新) → current user_input
+    """
+    items: list = []
+    if system_instruction:
+        items.append({"role": "system", "content": system_instruction})
+    if context_prefix:
+        items.append({"role": "user", "content": context_prefix})
+    for m in (history_msgs or []):
+        role = m.get("role", "user")
+        if role in ("model", "assistant"):
+            role = "assistant"
+        content = m.get("parts", [""])
+        text = content[0] if content else ""
+        if isinstance(text, dict):
+            text = text.get("text", "")
+        items.append({"role": role, "content": text})
+    if user_input:
+        items.append({"role": "user", "content": user_input})
+    return items
+
+
 def _save_debug_log(
     instance_dir: Path,
     payload: dict,
@@ -422,13 +455,18 @@ class ChatService:
             result.debug_info["gemini_system_instruction"] = provider_debug["system_instruction"]
             result.debug_info["gemini_context_prefix"] = provider_debug.get("context_prefix", "")
             result.debug_info["gemini_history_count"] = provider_debug.get("history_count", 0)
-            result.debug_info["prompt_full"] = [
-                {"role": "system", "content": provider_debug.get("system_instruction_full", "")},
-                {"role": "user", "content": provider_debug.get("context_prefix_full", "")},
-                {"role": "user", "content": provider_debug.get("user_input", "")},
-            ]
+            result.debug_info["prompt_full"] = _build_prompt_full(
+                system_instruction=provider_debug.get("system_instruction_full", ""),
+                context_prefix=provider_debug.get("context_prefix_full", ""),
+                history_msgs=history_fmt,
+                user_input=provider_debug.get("user_input", ""),
+            )
 
-        # --- 6.5. Debug log の自動保存 (instance_dir/debug_logs/) ---
+        # --- 7. 会話保存 (debug log 保存より先に行い、floating_summary の最新状態を反映) ---
+        memory.save_single_turn(request.text, result.text)
+        memory.maintain_memory(brain)
+
+        # --- 8. Debug log の自動保存 ---
         debug_log_payload = {
             "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
             "instance": instance_name,
@@ -437,10 +475,6 @@ class ChatService:
             "debug_info": result.debug_info,
         }
         _save_debug_log(instance_dir, debug_log_payload)
-
-        # --- 7. 会話保存 ---
-        memory.save_single_turn(request.text, result.text)
-        memory.maintain_memory(brain)
 
         return result
 
@@ -740,11 +774,16 @@ class ChatService:
             debug_info["gemini_system_instruction"] = provider_debug["system_instruction"]
             debug_info["gemini_context_prefix"] = provider_debug.get("context_prefix", "")
             debug_info["gemini_history_count"] = provider_debug.get("history_count", 0)
-            debug_info["prompt_full"] = [
-                {"role": "system", "content": provider_debug.get("system_instruction_full", "")},
-                {"role": "user", "content": provider_debug.get("context_prefix_full", "")},
-                {"role": "user", "content": provider_debug.get("user_input", "")},
-            ]
+            debug_info["prompt_full"] = _build_prompt_full(
+                system_instruction=provider_debug.get("system_instruction_full", ""),
+                context_prefix=provider_debug.get("context_prefix_full", ""),
+                history_msgs=history_fmt,
+                user_input=provider_debug.get("user_input", ""),
+            )
+
+        # 会話保存 (debug log より先に行い、floating_summary の最新状態を反映)
+        memory.save_single_turn(request.text, full_text)
+        memory.maintain_memory(brain)
 
         # debug log 保存
         debug_log_payload = {
@@ -756,10 +795,6 @@ class ChatService:
             "streaming": True,
         }
         _save_debug_log(instance_dir, debug_log_payload)
-
-        # 会話保存
-        memory.save_single_turn(request.text, full_text)
-        memory.maintain_memory(brain)
 
         # done イベント
         yield {

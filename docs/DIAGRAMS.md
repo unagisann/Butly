@@ -12,25 +12,27 @@ The processing flow from user input to response generation and memory storage.
 
 ```mermaid
 flowchart TD
-    A((User Input)) --> B["⧫ Gatekeeper<br/>Provider.classify()"]
-    B --> C["Structured Output<br/>tier / need / search_targets / state_delta"]
-    C -.->|state_delta| D["◈ Session State<br/>topic / mood"]
-    D -.->|reference| B
+    A((User Input)) --> B["⧫ Gatekeeper<br/>ContextClassifier + MemoryProbe"]
+    B --> C["Structured Output<br/>tier / need / need_intent / probe candidates"]
     C --> E{tier}
     E -->|reflex| F["⚡ reflex<br/>Minimal context"]
     E -->|mid| G["◎ mid<br/>Memory injected"]
-    C --> N{need?}
-    N -->|set| H["⌕ MemoryProbe candidates<br/>tier-independent RAG"]
-    H --> I[("⛁ Integrated Memory DB<br/>episode / reflection<br/>generalization / self_model")]
-    F --> J["◆ ChatService<br/>Provider.generate()"]
+    C --> N{need?<br/>tier-independent}
+    N -->|set| H["⌕ RAG block<br/>from MemoryProbe candidates"]
+    H --> I[("⛁ Knowledge DB<br/>(SQLite + Embeddings)")]
+    F --> J["◆ ChatService<br/>Provider.generate() / async_generate_stream()"]
     G --> J
-    I -->|search results| J
-    J -->|non-Gemini + search ON| WS["🔍 SearchModule<br/>Tavily API"]
+    H --> J
+    J -->|non-Gemini + search ON| WS["🔍 SearchModule<br/>Tavily / Ollama Cloud"]
     WS -->|inject results into context| J
-    J --> K((Response))
+    J -.->|parallel via asyncio.gather| SU["⟳ StateUpdater<br/>(post-response)"]
+    SU -.->|state_delta| D["◈ Session State<br/>topic / mood / turn_count"]
+    D -.->|next-turn reference| B
+    J --> K((Response / SSE chunks))
     K --> L["▣ short_term_json save"]
     L -.->|scheduled| M["⚙ Sleeptime<br/>Daily + Weekly batch"]
-    M -.->|integrated memory generation| I
+    M -.->|knowledge generation| I
+    M -.->|recent_digest_headlines| B
 ```
 
 ---
@@ -125,20 +127,58 @@ The structure of the LLM provider abstraction layer.
 
 ```mermaid
 flowchart TD
-    CS["ChatService<br/>(Orchestration)"]
-    GK["Gatekeeper<br/>(Tier classification)"]
+    CS["ChatService<br/>(Orchestration<br/>+ streaming)"]
+    GK["Gatekeeper<br/>(Tier + need_intent)"]
     HK["Sleeptime<br/>(Memory maintenance)"]
     PF["ProviderFactory<br/>(model_name → provider auto-routing)"]
     GE["GeminiProvider<br/>gemini-*"]
     OA["OpenAIProvider<br/>gpt-* / o1 / o3 / o4"]
+    XA["XaiProvider<br/>grok-* / xai/*"]
     OL["OllamaProvider<br/>ollama/*"]
+    CMP["_openai_compat.py<br/>(shared helpers)"]
 
     CS --> PF
     GK --> PF
     HK --> PF
     PF --> GE
     PF --> OA
+    PF --> XA
     PF --> OL
+    OA -.->|uses| CMP
+    XA -.->|uses| CMP
+    OL -.->|uses| CMP
+```
+
+---
+
+## 5b. SSE Streaming Flow (`POST /chat/stream`)
+
+How `ChatService.execute_stream()` and the Provider's `async_generate_stream()` cooperate.
+
+```mermaid
+sequenceDiagram
+    participant UI as Streamlit UI
+    participant API as FastAPI /chat/stream
+    participant CS as ChatService.execute_stream
+    participant GK as Gatekeeper
+    participant SU as StateUpdater (parallel)
+    participant P as Provider.async_generate_stream
+
+    UI->>API: POST /chat/stream (use_streaming=true)
+    API->>CS: invoke execute_stream()
+    CS->>GK: classify(user_input, history, ...)
+    GK-->>CS: tier / need / probe
+    CS-->>UI: event: metadata (tier, need, scores)
+    CS->>SU: asyncio.create_task(update_state)
+    CS->>P: async for chunk in stream
+    loop until done
+        P-->>CS: {"type": "chunk", "text": ...}
+        CS-->>UI: event: chunk
+    end
+    P-->>CS: {"type": "done", debug, sources}
+    CS->>SU: await state_task
+    CS->>CS: save_single_turn + maintain_memory + debug log
+    CS-->>UI: event: done (debug_info, session_state, sources)
 ```
 
 ---
@@ -162,6 +202,9 @@ flowchart TD
     DB["butly_memory.db"]
     ST["short_term_json/"]
     FS["floating_summaries/"]
+    DL["debug_logs/"]
+    DLH["debug_logs/history/"]
+    RH["recent_digest_headlines.json"]
     AR["memory_archive/"]
     A1["1_integrated/"]
     A2["2_knowledgeized/"]
@@ -179,6 +222,9 @@ flowchart TD
     I1 --> DB
     I1 --> ST
     I1 --> FS
+    I1 --> DL
+    DL --> DLH
+    I1 --> RH
     I1 --> AR
     AR --> A1
     AR --> A2

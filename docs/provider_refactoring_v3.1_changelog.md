@@ -1,5 +1,8 @@
-# Provider Refactoring v3.1 — 変更まとめ
+# Provider Refactoring v3.1 — 変更まとめ（アーカイブ）
 
+> 🗄️ **Archive (historical, Japanese only)** — このドキュメントは v3.1 当時の変更まとめを保存したものです。
+> 最新の更新履歴は [recent_changes.ja.md](recent_changes.ja.md) / [recent_changes.md](recent_changes.md) を参照。
+>
 > 実施日: 2026-04-19
 > ベースラインテスト数: 391 → 最終テスト数: **459** (68テスト追加、回帰 0)
 

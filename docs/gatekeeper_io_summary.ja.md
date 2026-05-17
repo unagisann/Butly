@@ -25,24 +25,25 @@ tier は `reflex` / `mid` の 2 値のみ。RAG 注入は tier ではなく `nee
 ```
 ユーザー発言
   ↓
-[A] ContextClassifier.classify()   ← LLM呼び出し
-[B] MemoryProbe.probe()            ← LLM不要（~100ms）、need_intent でゲート
-    ├─ Layer 1: Quick Vector Search（コサイン類似度）
-    ├─ Layer 1.5: Glossary Match（term/aliases）
-    └─ Layer 2: Deep Search（条件付き — 過去参照パターン検出時のみ）
+[A] ContextClassifier.classify()   ← LLM呼び出し (~1s)
+[B] MemoryProbe.probe()            ← LLM不要 (~100ms)
+    ├─ Layer 1.5: Glossary Match — 常時実行 (regex のみ・~ms)
+    ├─ Layer 1:   Quick Vector Search — need_intent ∈ {past_fact, relationship} のみ
+    └─ Layer 2:   Deep Search — Layer 1 ヒット無し + 過去参照パターン検出時のみ
   ↓
-Gatekeeper.classify() が結果をマージ
+Gatekeeper.classify() が結果をマージし、最終 need を決定
   ↓
 MemoryBlockBuilder.build()  → Brain へのプロンプト構築
   ↓
-[C] provider.generate()  ←──┐
-[D] StateUpdater.update() ←─┴── ChatService で 2 並列実行 (post-response)
+[C] provider.generate() / .async_generate_stream()    ←──┐
+[D] gatekeeper.update_state() — StateUpdater を呼ぶ   ←─┴── ChatService で並列実行 (post-response)
   ↓
 session_state.apply_delta() → 次ターンの context に反映
 ```
 
-StateUpdater は **応答生成と並列**で動かすことでクリティカルパスから外している。
-今ターンの `topic` は session_state の前ターン値を使用する (1 ターン遅延、許容範囲)。
+StateUpdater は **応答生成と並列**で動かす（buffered なら `asyncio.gather()`、streaming なら `asyncio.create_task()`）ことでクリティカルパスから外している。今ターンの `topic` は session_state の前ターン値を使用する（1 ターン遅延、許容範囲）。
+
+Glossary scan は regex のみ・~ms オーダーなのでゲートを外している。`need_intent` の値に関わらず常時実行することで、固有名詞・別名認識を安定させる（`null` 時も走る）。
 
 ---
 
@@ -68,8 +69,11 @@ StateUpdater は **応答生成と並列**で動かすことでクリティカ�
 ### MemoryProbe への入力
 
 - **ユーザーの最新の発言** (`user_input`)
-- **Brain インスタンス** (`brain`): ナレッジDBに対するベクトル検索用
-- **Memory manager** (`memory_manager`): 用語集の参照用
+- **Brain インスタンス** (`brain`): ナレッジ DB に対するベクトル検索用。`None` の場合は vector / deep スキップ
+- **Memory manager** (`memory_manager`): 用語集の参照用。`None` の場合は glossary スキップ
+- **history_msgs**: Glossary の履歴スキャン（`scan_depth` ターン）用
+- **need_intent**: vector / deep を実行するかのゲート（`null` の時は glossary のみ）
+- **recent_headlines**: `_check_headline_match` 用（Layer 2 トリガー判定で参照）
 
 ---
 
@@ -94,10 +98,25 @@ StateUpdater は **応答生成と並列**で動かすことでクリティカ�
     "memory_probe": {
         "status": "hit" | "no_hit" | "deep_search" | "skipped",
         "candidates": list[dict],      # probe からの RAG 検索結果
-        "glossary_hits": list[dict]     # マッチした用語集エントリ
+        "glossary_hits": list[dict],   # マッチした用語集エントリ
+        "layers": dict,                # Layer 別診断 (glossary / vector / deep)
     }
 }
 ```
+
+### Layer 別診断 (`memory_probe.layers`)
+
+probe は各 Layer の診断を返却し、`debug_info.gatekeeper.memory_probe_layers` に伝播される:
+
+```python
+{
+  "glossary": {"executed": True, "matches": 2},
+  "vector":   {"executed": True, "result_count": 3, "max_score": 0.71, "above_threshold_count": 1, ...},
+  "deep":     {"executed": False, "reason": "no past_ref_pattern"},
+}
+```
+
+そのターンで RAG が発火した／しなかった理由のデバッグに使える。
 
 ### tier 判定ルール（ContextClassifier）
 
@@ -130,10 +149,10 @@ ContextClassifier は tier に加えて `need_intent` フィールドを出力�
 
 | need_intent | 意味 | MemoryProbe の挙動 |
 |---|---|---|
-| `past_fact` | ユーザーが具体的な過去の出来事/決定/会話を参照している | Layer 1 (vector) + 1.5 (glossary) を実行 |
+| `past_fact` | ユーザーが具体的な過去の出来事/決定/会話を参照している | Layer 1 (vector) + 1.5 (glossary) + 条件付き Layer 2 |
 | `glossary` | 用語や固有名詞の意味を知りたい | Layer 1.5 のみ実行 (vector skip) |
-| `relationship` | 関係性・ムード推移・習慣に関する質問 | Layer 1 + 1.5 を実行 |
-| `null` | 長期記憶不要 (挨拶・雑談・将来設計など) | **probe 全スキップ** (status="skipped") |
+| `relationship` | 関係性・ムード推移・習慣に関する質問 | Layer 1 + 1.5 + 条件付き Layer 2 |
+| `null` | 長期記憶不要 (挨拶・雑談・将来設計など) | **Layer 1.5 (glossary) のみ実行**。vector/deep はスキップ（glossary ヒット有無で status を返す） |
 
 最終 `need` の決定:
 - `need_intent == null`            → `need = null` (LLM が「不要」と判断)

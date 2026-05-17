@@ -25,24 +25,25 @@ Tier is `reflex` or `mid` only. RAG injection is decided independently by `need`
 ```
 User utterance
   ↓
-[A] ContextClassifier.classify()   ← LLM call
-[B] MemoryProbe.probe()            ← No LLM call (~100ms), gated by need_intent
-    ├─ Layer 1: Quick Vector Search (cosine similarity)
-    ├─ Layer 1.5: Glossary Match (term/aliases)
-    └─ Layer 2: Deep Search (conditional — past-reference patterns only)
+[A] ContextClassifier.classify()   ← LLM call (~1s)
+[B] MemoryProbe.probe()            ← No LLM call (~100ms)
+    ├─ Layer 1.5: Glossary Match — ALWAYS runs (regex-only, ~ms)
+    ├─ Layer 1:   Quick Vector Search — gated by need_intent ∈ {past_fact, relationship}
+    └─ Layer 2:   Deep Search — only when Layer 1 missed AND past-reference pattern detected
   ↓
-Gatekeeper.classify() merges results
+Gatekeeper.classify() merges results + decides final need
   ↓
 MemoryBlockBuilder.build()  → constructs prompt for Brain
   ↓
-[C] provider.generate()    ←──┐
-[D] StateUpdater.update()  ←──┴── 2-way parallel in ChatService (post-response)
+[C] provider.generate() / .async_generate_stream()   ←──┐
+[D] gatekeeper.update_state() — calls StateUpdater    ←─┴── parallel in ChatService (post-response)
   ↓
 session_state.apply_delta() → carried to NEXT turn's context
 ```
 
-StateUpdater runs **in parallel with response generation**, keeping it off the critical path.
-The current turn's `topic` uses session_state's previous value (1-turn lag, acceptable).
+StateUpdater runs **in parallel with response generation** via `asyncio.gather()` (buffered) or `asyncio.create_task()` (streaming), keeping it off the critical path. The current turn's `topic` uses session_state's previous value (1-turn lag, acceptable).
+
+Glossary scan is ungated because it is regex-only and ~ms; running it every turn keeps proper-noun / alias recognition stable across all `need_intent` values (including `null`).
 
 ---
 
@@ -68,8 +69,11 @@ The current turn's `topic` uses session_state's previous value (1-turn lag, acce
 ### Input to MemoryProbe
 
 - **User's latest utterance** (`user_input`)
-- **Brain instance** (`brain`): For vector search against knowledge DB
-- **Memory manager** (`memory_manager`): For glossary lookup
+- **Brain instance** (`brain`): For vector search against knowledge DB. When `None`, vector / deep are skipped.
+- **Memory manager** (`memory_manager`): For glossary lookup. When `None`, glossary is also skipped.
+- **history_msgs**: For glossary history scanning (`scan_depth` turns).
+- **need_intent**: Gating signal — `null` skips vector/deep but still runs glossary.
+- **recent_headlines**: Headlines for `_check_headline_match` (used in Layer 2 trigger evaluation).
 
 ---
 
@@ -94,10 +98,25 @@ The current turn's `topic` uses session_state's previous value (1-turn lag, acce
     "memory_probe": {
         "status": "hit" | "no_hit" | "deep_search" | "skipped",
         "candidates": list[dict],      # RAG search results from probe
-        "glossary_hits": list[dict]     # Matched glossary entries
+        "glossary_hits": list[dict],   # Matched glossary entries
+        "layers": dict,                # per-layer diagnostics (glossary / vector / deep)
     }
 }
 ```
+
+### Per-layer diagnostics (`memory_probe.layers`)
+
+The probe emits diagnostics that surface in `debug_info.gatekeeper.memory_probe_layers`:
+
+```python
+{
+  "glossary": {"executed": True, "matches": 2},
+  "vector":   {"executed": True, "result_count": 3, "max_score": 0.71, "above_threshold_count": 1, ...},
+  "deep":     {"executed": False, "reason": "no past_ref_pattern"},
+}
+```
+
+Use this to debug why a turn did or didn't fire RAG.
 
 ### Tier Classification Rules (ContextClassifier)
 
@@ -129,10 +148,10 @@ ContextClassifier emits a `need_intent` field alongside the tier scoring:
 
 | need_intent | Meaning | MemoryProbe behavior |
 |---|---|---|
-| `past_fact` | User refers to a specific past event / decision / conversation | Layer 1 (vector) + 1.5 (glossary) |
+| `past_fact` | User refers to a specific past event / decision / conversation | Layer 1 (vector) + 1.5 (glossary) + conditional Layer 2 |
 | `glossary` | User asks about a term or proper noun definition | Layer 1.5 only (vector skipped) |
-| `relationship` | User asks about ongoing relationship / mood / habits | Layer 1 + 1.5 |
-| `null` | No long-term memory needed (greetings, small talk, forward design) | **Probe entirely skipped** (status="skipped") |
+| `relationship` | User asks about ongoing relationship / mood / habits | Layer 1 + 1.5 + conditional Layer 2 |
+| `null` | No long-term memory needed (greetings, small talk, forward design) | **Only Layer 1.5 (glossary) runs**; vector / deep skipped (status reflects glossary outcome) |
 
 Final `need` decision:
 - `need_intent == null`                            → `need = null` (LLM said "not needed")

@@ -12,25 +12,27 @@
 
 ```mermaid
 flowchart TD
-    A((ユーザー発言)) --> B["⧫ Gatekeeper<br/>Provider.classify()"]
-    B --> C["構造化出力<br/>tier / need / search_targets / state_delta"]
-    C -.->|state_delta| D["◈ Session State<br/>topic / mood"]
-    D -.->|参照| B
+    A((ユーザー発言)) --> B["⧫ Gatekeeper<br/>ContextClassifier + MemoryProbe"]
+    B --> C["構造化出力<br/>tier / need / need_intent / probe candidates"]
     C --> E{tier}
     E -->|reflex| F["⚡ reflex<br/>最小コンテキスト"]
     E -->|mid| G["◎ mid<br/>注入記憶あり"]
-    C --> N{need?}
-    N -->|有| H["⌕ MemoryProbe candidates<br/>tier 非依存の RAG"]
-    H --> I[("⛁ 統合記憶DB<br/>episode / reflection<br/>generalization / self_model")]
-    F --> J["◆ ChatService<br/>Provider.generate()"]
+    C --> N{need?<br/>tier 非依存}
+    N -->|有| H["⌕ RAG ブロック<br/>MemoryProbe candidates から"]
+    H --> I[("⛁ ナレッジDB<br/>(SQLite + Embeddings)")]
+    F --> J["◆ ChatService<br/>Provider.generate() / async_generate_stream()"]
     G --> J
-    I -->|検索結果| J
-    J -->|非Gemini + 検索ON| WS["🔍 SearchModule<br/>Tavily API"]
-    WS -->|検索結果をcontextに注入| J
-    J --> K((返答))
+    H --> J
+    J -->|非Gemini + 検索ON| WS["🔍 SearchModule<br/>Tavily / Ollama Cloud"]
+    WS -->|検索結果を context に注入| J
+    J -.->|asyncio.gather で並列| SU["⟳ StateUpdater<br/>(post-response)"]
+    SU -.->|state_delta| D["◈ Session State<br/>topic / mood / turn_count"]
+    D -.->|次ターンで参照| B
+    J --> K((返答 / SSE chunks))
     K --> L["▣ short_term_json 保存"]
     L -.->|定期処理| M["⚙ Sleeptime<br/>日次 + 週次バッチ"]
-    M -.->|統合記憶生成| I
+    M -.->|ナレッジ生成| I
+    M -.->|recent_digest_headlines| B
 ```
 
 ---
@@ -125,20 +127,58 @@ LLM プロバイダー抽象化レイヤーの構成です。
 
 ```mermaid
 flowchart TD
-    CS["ChatService<br/>(オーケストレーション)"]
-    GK["Gatekeeper<br/>(tier 判定)"]
+    CS["ChatService<br/>(オーケストレーション<br/>+ ストリーミング)"]
+    GK["Gatekeeper<br/>(tier + need_intent)"]
     HK["Sleeptime<br/>(記憶整理)"]
     PF["ProviderFactory<br/>(model_name → プロバイダー自動ルーティング)"]
     GE["GeminiProvider<br/>gemini-*"]
     OA["OpenAIProvider<br/>gpt-* / o1 / o3 / o4"]
+    XA["XaiProvider<br/>grok-* / xai/*"]
     OL["OllamaProvider<br/>ollama/*"]
+    CMP["_openai_compat.py<br/>(共通ヘルパー)"]
 
     CS --> PF
     GK --> PF
     HK --> PF
     PF --> GE
     PF --> OA
+    PF --> XA
     PF --> OL
+    OA -.->|使用| CMP
+    XA -.->|使用| CMP
+    OL -.->|使用| CMP
+```
+
+---
+
+## 5b. SSE ストリーミングフロー (`POST /chat/stream`)
+
+`ChatService.execute_stream()` と Provider の `async_generate_stream()` の協調動作。
+
+```mermaid
+sequenceDiagram
+    participant UI as Streamlit UI
+    participant API as FastAPI /chat/stream
+    participant CS as ChatService.execute_stream
+    participant GK as Gatekeeper
+    participant SU as StateUpdater (並列)
+    participant P as Provider.async_generate_stream
+
+    UI->>API: POST /chat/stream (use_streaming=true)
+    API->>CS: execute_stream() 呼び出し
+    CS->>GK: classify(user_input, history, ...)
+    GK-->>CS: tier / need / probe
+    CS-->>UI: event: metadata (tier, need, scores)
+    CS->>SU: asyncio.create_task(update_state)
+    CS->>P: async for chunk in stream
+    loop done まで繰り返し
+        P-->>CS: {"type": "chunk", "text": ...}
+        CS-->>UI: event: chunk
+    end
+    P-->>CS: {"type": "done", debug, sources}
+    CS->>SU: await state_task
+    CS->>CS: save_single_turn + maintain_memory + debug log
+    CS-->>UI: event: done (debug_info, session_state, sources)
 ```
 
 ---
@@ -162,6 +202,9 @@ flowchart TD
     DB["butly_memory.db"]
     ST["short_term_json/"]
     FS["floating_summaries/"]
+    DL["debug_logs/"]
+    DLH["debug_logs/history/"]
+    RH["recent_digest_headlines.json"]
     AR["memory_archive/"]
     A1["1_integrated/"]
     A2["2_knowledgeized/"]
@@ -179,6 +222,9 @@ flowchart TD
     I1 --> DB
     I1 --> ST
     I1 --> FS
+    I1 --> DL
+    DL --> DLH
+    I1 --> RH
     I1 --> AR
     AR --> A1
     AR --> A2
