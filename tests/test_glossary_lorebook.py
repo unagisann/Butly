@@ -422,13 +422,25 @@ class TestBuildGlossaryRendering:
         assert "T1" in out
         assert "T2" not in out
 
-    def test_empty_hits_falls_back_to_memory_manager(self):
-        blocks = {"glossary_hits": []}
+    def test_empty_hits_falls_back_to_memory_manager_when_probe_not_ran(self):
+        """probe が走らなかった場合 (例: Gatekeeper 無効) は全件 fallback"""
+        blocks = {"glossary_hits": []}  # _probe_ran フラグなし
         mm = MagicMock()
         mm.get_glossary.return_value = "- foo: bar"
         h = _fake_h({"glossary": "=== G ===", "note_glossary": "note"})
         out = _build_glossary(blocks, memory_manager=mm, level="high", h=h)
         assert "- foo: bar" in out
+
+    def test_empty_hits_with_probe_ran_returns_none(self):
+        """probe が走った上で hits 0 → 全件 fallback せず None を返す"""
+        blocks = {"glossary_hits": [], "_probe_ran": True}
+        mm = MagicMock()
+        mm.get_glossary.return_value = "- foo: bar"
+        h = _fake_h({"glossary": "=== G ===", "note_glossary": "note"})
+        out = _build_glossary(blocks, memory_manager=mm, level="high", h=h)
+        assert out is None
+        # memory_manager.get_glossary は呼ばれない
+        mm.get_glossary.assert_not_called()
 
     def test_empty_hits_no_memory_returns_none(self):
         blocks = {"glossary_hits": []}

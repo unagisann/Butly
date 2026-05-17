@@ -344,16 +344,32 @@ class TestNeedIntentGating:
         }
         return mm
 
-    def test_need_intent_none_skips_probe(self, probe, brain_with_vector, mm_with_glossary):
-        """need_intent=None → probe 全スキップ。vector も glossary も呼ばれない"""
+    def test_need_intent_none_runs_glossary_only(self, probe, brain_with_vector, mm_with_glossary):
+        """need_intent=None でも glossary scan は走る (vector はスキップ)"""
         result = probe.probe(
             user_input="Gatekeeperの話",
             brain=brain_with_vector,
             memory_manager=mm_with_glossary,
             need_intent=None,
         )
-        assert result["status"] == "skipped"
+        # glossary は走るので "Gatekeeper" がヒット
+        assert result["status"] == "hit"
         assert result["candidates"] == []
+        assert len(result["glossary_hits"]) == 1
+        # vector は呼ばれない
+        brain_with_vector.quick_vector_search.assert_not_called()
+
+    def test_need_intent_none_no_glossary_returns_no_hit(self, probe, brain_with_vector):
+        """need_intent=None かつ glossary マッチなし → status=no_hit"""
+        mm = MagicMock()
+        mm.get_glossary_raw.return_value = {"version": 1, "entries": []}
+        result = probe.probe(
+            user_input="未知の話題",
+            brain=brain_with_vector,
+            memory_manager=mm,
+            need_intent=None,
+        )
+        assert result["status"] == "no_hit"
         assert result["glossary_hits"] == []
         brain_with_vector.quick_vector_search.assert_not_called()
 
@@ -477,8 +493,13 @@ class TestGatekeeperIntegration:
         assert result["need"] is None
         assert result["memory_probe"]["status"] == "no_hit"
 
-    def test_no_brain_returns_skipped(self, mock_gatekeeper, test_instance_dir):
-        """brain=None → probe スキップ、need=null"""
+    def test_no_brain_glossary_no_hit_returns_null_need(self, mock_gatekeeper, test_instance_dir):
+        """brain=None → probe は glossary のみ実行。glossary も無ければ need=null"""
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "no_hit",
+            "candidates": [],
+            "glossary_hits": [],
+        }
         result = mock_gatekeeper.classify(
             user_input="テスト",
             history_msgs=[],
@@ -488,19 +509,30 @@ class TestGatekeeperIntegration:
         )
 
         assert result["need"] is None
-        assert result["memory_probe"]["status"] == "skipped"
+        assert result["memory_probe"]["status"] == "no_hit"
 
-    def test_need_intent_null_skips_probe(self, mock_gatekeeper, test_instance_dir):
-        """CC が need_intent=null を返した場合、probe は呼ばれない"""
+    def test_need_intent_null_runs_probe_glossary_only(
+        self, mock_gatekeeper, test_instance_dir
+    ):
+        """need_intent=None でも probe は呼ばれる (glossary scan は常時実行)。
+        ただし need は立たない (LLM 意図が None のため)"""
         mock_gatekeeper.context_classifier.classify.return_value = {
             "tier": "reflex",
             "llm_scoring": {"response_complexity": 0.1, "emotional_weight": 0.0, "continuity_need": 0.0},
             "need_intent": None,
         }
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "hit",
+            "candidates": [],
+            "glossary_hits": [
+                {"term": "Gatekeeper", "definition": "...", "aliases": [],
+                 "match_type": "term", "match_source": "user", "priority": 100, "_yaml_index": 0},
+            ],
+        }
 
         brain = MagicMock()
         result = mock_gatekeeper.classify(
-            user_input="おはよう",
+            user_input="Gatekeeperってどう",
             history_msgs=[],
             session_state={},
             instance_dir=test_instance_dir,
@@ -508,10 +540,13 @@ class TestGatekeeperIntegration:
         )
 
         assert result["tier"] == "reflex"
+        # need_intent=None なので need は立たない
         assert result["need"] is None
         assert result["need_intent"] is None
-        assert result["memory_probe"]["status"] == "skipped"
-        mock_gatekeeper.memory_probe.probe.assert_not_called()
+        # probe 自体は呼ばれている (glossary scan のため)
+        mock_gatekeeper.memory_probe.probe.assert_called_once()
+        # glossary_hits は返却された
+        assert len(result["memory_probe"]["glossary_hits"]) == 1
 
     def test_deep_search_sets_need(self, mock_gatekeeper, test_instance_dir):
         """deep_search hit → tier は mid のまま、need=past_fact"""

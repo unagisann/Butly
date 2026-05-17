@@ -260,6 +260,9 @@ class MemoryBlockBuilder:
         if glossary_hits:
             blocks["glossary_hits"] = glossary_hits
 
+        # probe が走ったかどうか。走った場合は glossary_hits が空でも全件 fallback しない
+        blocks["_probe_ran"] = bool(probe)
+
         if need and candidates:
             rag_lines = ["【過去の記憶（RAG）】"]
             for c in candidates:
@@ -499,7 +502,11 @@ def _build_glossary(blocks: dict, memory_manager, level: str, h) -> str | None:
         selected = _apply_caps(ordered, max_entries, max_chars)
         return _render_glossary(selected, h)
 
-    # --- フォールバック: 従来の全件注入（probe を通っていないケース） ---
+    # --- probe が走った上でヒット 0 → 注入なし (意図された挙動) ---
+    if blocks.get("_probe_ran"):
+        return None
+
+    # --- フォールバック: 全件注入 (probe 未実行ケースのみ。例: Gatekeeper 無効時) ---
     if not memory_manager:
         return None
     glossary_text = memory_manager.get_glossary()

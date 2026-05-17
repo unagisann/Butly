@@ -84,21 +84,20 @@ class Gatekeeper:
         # CC が出した意図種別を取り出して probe ゲートに使う
         need_intent = ctx_result.get("need_intent")
 
-        # C. MemoryProbe（LLM不要、即実行）
-        if brain and need_intent is not None:
-            probe_result = self.memory_probe.probe(
-                user_input=user_input,
-                brain=brain,
-                memory_manager=memory_manager,
-                instance_name=instance_name,
-                recent_headlines=recent_headlines,
-                override_config=override_config,
-                history_msgs=history_msgs,
-                need_intent=need_intent,
-            )
-        else:
-            # need_intent=None または brain 未提供 → probe スキップ
-            probe_result = {"status": "skipped", "candidates": [], "glossary_hits": []}
+        # C. MemoryProbe
+        # Glossary scan (Layer 1.5) は regex のみで軽量なので常時実行する。
+        # Vector / Deep (Layer 1, 2) は need_intent で内部ゲートされる。
+        # probe 内部で memory_manager/brain の有無に応じて適切にレイヤーをスキップする。
+        probe_result = self.memory_probe.probe(
+            user_input=user_input,
+            brain=brain,
+            memory_manager=memory_manager,
+            instance_name=instance_name,
+            recent_headlines=recent_headlines,
+            override_config=override_config,
+            history_msgs=history_msgs,
+            need_intent=need_intent,
+        )
 
         tier = ctx_result["tier"]          # "reflex" or "mid"
         candidates = probe_result.get("candidates", [])

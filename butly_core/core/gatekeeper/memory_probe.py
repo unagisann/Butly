@@ -91,48 +91,57 @@ class MemoryProbe:
         Parameters
         ----------
         history_msgs : list | None
-            直近の会話履歴 (role + parts/content)。glossary 履歴スキャンに使用。
+            直近の会話履歴。glossary 履歴スキャンに使用。
         need_intent : str | None
             ContextClassifier が出した意図種別。
-              - None              : probe 全スキップ (status="skipped")
+              - None              : Layer 1.5 (glossary) のみ実行。vector/deep スキップ
               - "glossary"        : Layer 1.5 のみ実行 (vector skip)
-              - "past_fact"       : 既存挙動 (Layer 1 → 1.5 → 2)
-              - "relationship"    : 既存挙動 (Layer 1 → 1.5 → 2)
+              - "past_fact"       : Layer 1 (vector) + 1.5 + 条件付き Layer 2
+              - "relationship"    : 同上
+
+        Note
+        ----
+        Glossary scan は regex のみで LLM 不要・~ms オーダーなので、
+        need_intent に関わらず常時実行する。
         """
         t0 = time.time()
 
-        # need_intent=None → probe 全スキップ
-        if need_intent is None:
-            print(f"[MemoryProbe] skipped (need_intent=None)")
+        # Layer 1.5: Glossary Match (常時実行 — LLM 不要で軽量)
+        glossary_hits = self._match_glossary(
+            user_input, memory_manager,
+            history_msgs=history_msgs,
+            override_config=override_config,
+        ) if memory_manager is not None else []
+
+        # need_intent が無い or "glossary" → Layer 1.5 のみで終了
+        if need_intent is None or need_intent == "glossary":
+            t1 = time.time()
+            status = "hit" if glossary_hits else "no_hit"
+            tag = "intent=None" if need_intent is None else "glossary-only"
+            print(f"[MemoryProbe] {tag}: glossary={len(glossary_hits)} "
+                  f"({int((t1-t0)*1000)}ms)")
             return {
-                "status": "skipped",
+                "status": status,
                 "candidates": [],
-                "glossary_hits": [],
+                "glossary_hits": glossary_hits,
+            }
+
+        # past_fact / relationship: brain が無ければ glossary だけで返す
+        if brain is None:
+            t1 = time.time()
+            status = "hit" if glossary_hits else "no_hit"
+            print(f"[MemoryProbe] no brain (intent={need_intent}): "
+                  f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)")
+            return {
+                "status": status,
+                "candidates": [],
+                "glossary_hits": glossary_hits,
             }
 
         probe_conf = SYSTEM_CONFIG.get("memory_probe", {})
         vector_limit = probe_conf.get("vector_search_limit", 3)
         vector_threshold = probe_conf.get("vector_search_threshold", 0.6)
         deep_enabled = probe_conf.get("deep_search_enabled", True)
-
-        # Layer 1.5: Glossary Match (常時実行 — glossary intent でも他 intent でも安価)
-        glossary_hits = self._match_glossary(
-            user_input, memory_manager,
-            history_msgs=history_msgs,
-            override_config=override_config,
-        )
-
-        # glossary intent は Layer 1.5 のみ
-        if need_intent == "glossary":
-            t1 = time.time()
-            print(f"[MemoryProbe] glossary-only: glossary={len(glossary_hits)} "
-                  f"({int((t1-t0)*1000)}ms)")
-            status = "hit" if glossary_hits else "no_hit"
-            return {
-                "status": status,
-                "candidates": [],
-                "glossary_hits": glossary_hits,
-            }
 
         # Layer 1: Quick Vector Search (past_fact / relationship)
         candidates = self._quick_vector_search(
