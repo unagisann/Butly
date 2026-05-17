@@ -45,6 +45,33 @@ Rate each of the following 3 attributes on a scale of 0.0 to 1.0.
    - 1.0: Completely dependent on prior context
          (e.g., "OK let's go with that then")
 
+---
+【Memory Need Classification】
+Determine whether responding requires retrieving long-term memory,
+and if so, what kind. Choose exactly one of:
+
+- "past_fact": User refers to a specific past event, decision, or
+  conversation that needs to be recalled from long-term memory.
+  (e.g., "What was that song we talked about?", "Remember the bug
+  we hit last week?", "How did we end up resolving X?")
+- "glossary": User mentions a domain-specific term or proper noun
+  whose definition needs to be looked up.
+  (e.g., "What does TierClassifier do?", "Tell me about Argon NEO 5",
+  "Is FastAPI still our backend?")
+- "relationship": User asks about ongoing relationship state, mood
+  trends, or recurring habits that require relationship snapshot data.
+  (e.g., "How have I been lately?", "Do you remember my usual
+  schedule?")
+- null: No long-term memory retrieval needed. The message is
+  self-contained, a greeting, light small talk, forward-looking
+  design discussion, or otherwise answerable without past data.
+  (e.g., "Good morning", "What if we redesigned X this way?",
+  "How does this library work?")
+
+If unsure between past_fact and null, prefer null — the system has
+a fact-check layer that will still surface relevant memories when
+the LLM intent is uncertain.
+
 【Output Format】
 Output ONLY the following JSON format. No explanation.
 ```json
@@ -53,6 +80,7 @@ Output ONLY the following JSON format. No explanation.
     "response_complexity": 0.0,
     "emotional_weight": 0.0,
     "continuity_need": 0.0
-  }}
+  }},
+  "need_intent": "past_fact" | "glossary" | "relationship" | null
 }}
 ```

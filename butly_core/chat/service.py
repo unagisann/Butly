@@ -133,6 +133,7 @@ class ChatService:
                 print(f"[ChatService] Gatekeeper エラー、フォールバック: {e}")
                 gk_result = {
                     "tier": "mid", "topic": "", "need": None,
+                    "need_intent": None,
                     "search_targets": None, "state_delta": {},
                 }
                 tier = "mid"
@@ -146,6 +147,7 @@ class ChatService:
             tier = "mid"
             gk_result = {
                 "tier": tier, "topic": "", "need": "rag_search" if use_rag else None,
+                "need_intent": "past_fact" if use_rag else None,
                 "search_targets": None, "state_delta": {},
             }
             print(f"[ChatService] Gatekeeper disabled — defaulting to {tier} tier (rag={'on' if use_rag else 'off'})")
@@ -324,7 +326,9 @@ class ChatService:
                 "enabled": gk_enabled,
                 "scores": gk_result.get("llm_scoring"),
                 "need": gk_result.get("need"),
+                "need_intent": gk_result.get("need_intent"),
                 "search_targets": gk_result.get("search_targets"),
+                "memory_probe_status": gk_result.get("memory_probe", {}).get("status"),
                 "session_state": session_state.to_dict(),
             },
             "rag": {

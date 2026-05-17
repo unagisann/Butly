@@ -2120,11 +2120,13 @@ def render_chat_screen():
                             scores = gk.get("scores", {})
                             if scores:
                                 for key in ["response_complexity", "emotional_weight",
-                                            "memory_reference_likelihood", "continuity_need"]:
+                                            "continuity_need"]:
                                     val = scores.get(key, 0.0)
                                     filled = int(val * 10)
                                     bar = "█" * filled + "░" * (10 - filled)
                                     st.text(f"  {key:>30s}: {val:.2f} {bar}")
+                            st.text(f"  {'need_intent':>30s}: {gk.get('need_intent') or '(null — probe skipped)'}")
+                            st.text(f"  {'memory_probe_status':>30s}: {gk.get('memory_probe_status') or '(n/a)'}")
                             if gk.get("need"):
                                 st.text(f"  Need: {gk['need']}")
                             if gk.get("search_targets"):

@@ -78,11 +78,12 @@ class MemoryProbe:
         recent_headlines: str = "",
         override_config: dict = None,
         history_msgs: list = None,
+        need_intent: str | None = None,
     ) -> dict:
         """
         Returns:
             {
-                "status": "hit" | "no_hit" | "deep_search",
+                "status": "hit" | "no_hit" | "deep_search" | "skipped",
                 "candidates": [...],
                 "glossary_hits": [...],
             }
@@ -91,25 +92,52 @@ class MemoryProbe:
         ----------
         history_msgs : list | None
             直近の会話履歴 (role + parts/content)。glossary 履歴スキャンに使用。
+        need_intent : str | None
+            ContextClassifier が出した意図種別。
+              - None              : probe 全スキップ (status="skipped")
+              - "glossary"        : Layer 1.5 のみ実行 (vector skip)
+              - "past_fact"       : 既存挙動 (Layer 1 → 1.5 → 2)
+              - "relationship"    : 既存挙動 (Layer 1 → 1.5 → 2)
         """
         t0 = time.time()
+
+        # need_intent=None → probe 全スキップ
+        if need_intent is None:
+            print(f"[MemoryProbe] skipped (need_intent=None)")
+            return {
+                "status": "skipped",
+                "candidates": [],
+                "glossary_hits": [],
+            }
 
         probe_conf = SYSTEM_CONFIG.get("memory_probe", {})
         vector_limit = probe_conf.get("vector_search_limit", 3)
         vector_threshold = probe_conf.get("vector_search_threshold", 0.6)
         deep_enabled = probe_conf.get("deep_search_enabled", True)
 
-        # Layer 1: Quick Vector Search
-        candidates = self._quick_vector_search(
-            user_input, brain, instance_name,
-            limit=vector_limit, threshold=vector_threshold,
-            override_config=override_config,
-        )
-
-        # Layer 1.5: Glossary Match (user_input + 履歴スキャン、フィルタ・ソート無し)
+        # Layer 1.5: Glossary Match (常時実行 — glossary intent でも他 intent でも安価)
         glossary_hits = self._match_glossary(
             user_input, memory_manager,
             history_msgs=history_msgs,
+            override_config=override_config,
+        )
+
+        # glossary intent は Layer 1.5 のみ
+        if need_intent == "glossary":
+            t1 = time.time()
+            print(f"[MemoryProbe] glossary-only: glossary={len(glossary_hits)} "
+                  f"({int((t1-t0)*1000)}ms)")
+            status = "hit" if glossary_hits else "no_hit"
+            return {
+                "status": status,
+                "candidates": [],
+                "glossary_hits": glossary_hits,
+            }
+
+        # Layer 1: Quick Vector Search (past_fact / relationship)
+        candidates = self._quick_vector_search(
+            user_input, brain, instance_name,
+            limit=vector_limit, threshold=vector_threshold,
             override_config=override_config,
         )
 
@@ -117,7 +145,8 @@ class MemoryProbe:
 
         # Layer 1 でヒットあり → 即返却
         if candidates:
-            print(f"[MemoryProbe] Layer 1 hit: {len(candidates)} candidates, "
+            print(f"[MemoryProbe] Layer 1 hit (intent={need_intent}): "
+                  f"{len(candidates)} candidates, "
                   f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)")
             return {
                 "status": "hit",
@@ -127,7 +156,7 @@ class MemoryProbe:
 
         # Layer 2 トリガー判定
         if not deep_enabled:
-            print(f"[MemoryProbe] no_hit (deep_search disabled), "
+            print(f"[MemoryProbe] no_hit (intent={need_intent}, deep_search disabled), "
                   f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)")
             return {
                 "status": "no_hit",
@@ -143,17 +172,18 @@ class MemoryProbe:
             )
             t2 = time.time()
             if deep_candidates:
-                print(f"[MemoryProbe] deep_search hit: {len(deep_candidates)} candidates, "
+                print(f"[MemoryProbe] deep_search hit (intent={need_intent}): "
+                      f"{len(deep_candidates)} candidates, "
                       f"glossary={len(glossary_hits)} ({int((t2-t0)*1000)}ms)")
                 return {
                     "status": "deep_search",
                     "candidates": deep_candidates,
                     "glossary_hits": glossary_hits,
                 }
-            print(f"[MemoryProbe] deep_search no_hit, "
+            print(f"[MemoryProbe] deep_search no_hit (intent={need_intent}), "
                   f"glossary={len(glossary_hits)} ({int((t2-t0)*1000)}ms)")
         else:
-            print(f"[MemoryProbe] no_hit (no deep_search trigger), "
+            print(f"[MemoryProbe] no_hit (intent={need_intent}, no deep_search trigger), "
                   f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)")
 
         return {

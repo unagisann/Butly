@@ -74,8 +74,9 @@ MemoryBlockBuilder.build()  → constructs prompt for Brain
 {
     "tier": "reflex" | "mid",          # ContextClassifier output (RAG-independent)
     "topic": str,                       # from state_delta or current topic
-    "need": str | None,                 # set when MemoryProbe hits. "memory_probe_hit" or "memory_probe_deep_search"
-    "search_targets": list[str] | None, # top candidate titles when need is set
+    "need": str | None,                 # final need (only set when both LLM intent and fact-check pass)
+    "need_intent": str | None,          # LLM-emitted intent: past_fact / glossary / relationship / None
+    "search_targets": list[str] | None, # top candidate titles / glossary terms when need is set
     "state_delta": {
         "topic": str | None,
         "mood": str | None,
@@ -86,7 +87,7 @@ MemoryBlockBuilder.build()  → constructs prompt for Brain
         "continuity_need": float           # 0-1
     },
     "memory_probe": {
-        "status": "hit" | "no_hit" | "deep_search",
+        "status": "hit" | "no_hit" | "deep_search" | "skipped",
         "candidates": list[dict],      # RAG search results from probe
         "glossary_hits": list[dict]     # Matched glossary entries
     }
@@ -102,7 +103,34 @@ The ContextClassifier has the LLM output 3 scores. The tier is determined on the
 | `response_complexity <= 0.4` AND `continuity_need <= 0.3` | → `reflex` |
 | Otherwise | → `mid` |
 
-`need` (RAG decision) is independent of tier — it is set by `MemoryProbe` based on actual retrieval hits and can fire even at `reflex`.
+`need` (RAG decision) is independent of tier and is determined by the **two-stage "LLM intent + fact-check"** pipeline described below.
+
+### RAG Decision: "LLM intent + fact-check" two-stage pipeline
+
+ContextClassifier emits a `need_intent` field alongside the tier scoring:
+
+| need_intent | Meaning | MemoryProbe behavior |
+|---|---|---|
+| `past_fact` | User refers to a specific past event / decision / conversation | Layer 1 (vector) + 1.5 (glossary) |
+| `glossary` | User asks about a term or proper noun definition | Layer 1.5 only (vector skipped) |
+| `relationship` | User asks about ongoing relationship / mood / habits | Layer 1 + 1.5 |
+| `null` | No long-term memory needed (greetings, small talk, forward design) | **Probe entirely skipped** (status="skipped") |
+
+Final `need` decision:
+- `need_intent == null`                            → `need = null` (LLM said "not needed")
+- Probe returns no candidates and no glossary hits → `need = null` (fact-check failed — treated as LLM misclassification)
+- Otherwise                                        → `need = need_intent`
+
+This two-stage design ensures the RAG block is injected only when both LLM intent capture and the fact-check pass. `need` can fire even at `reflex` tier (e.g., "What was that song we talked about?").
+
+### Fallback for need_intent parse failures
+
+When the LLM output is outside the 4 valid values or the JSON structure breaks:
+
+1. `asks_for_specific_past_detail(user_input)` matches (patterns like "前に", "以前", "remember", "last time") → `past_fact`
+2. No match → `null` (probe skipped)
+
+This preserves the "reduce unnecessary probes" goal while keeping a safety net for explicit past-reference signals. Parse failures emit a loud warning log to surface prompt drift or model degradation.
 
 ---
 

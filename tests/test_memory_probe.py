@@ -247,6 +247,7 @@ class TestProbe:
             user_input="テストの件",
             brain=mock_brain_with_vector,
             memory_manager=mock_memory_empty_glossary,
+            need_intent="past_fact",
         )
         assert result["status"] == "hit"
         assert len(result["candidates"]) == 1
@@ -257,6 +258,7 @@ class TestProbe:
             user_input="今日の天気は？",
             brain=mock_brain_no_hit,
             memory_manager=mock_memory_empty_glossary,
+            need_intent="past_fact",
         )
         assert result["status"] == "no_hit"
         assert result["candidates"] == []
@@ -266,6 +268,7 @@ class TestProbe:
             user_input="前に話したプロジェクトの件",
             brain=mock_brain_deep_hit,
             memory_manager=mock_memory_empty_glossary,
+            need_intent="past_fact",
         )
         assert result["status"] == "deep_search"
         assert len(result["candidates"]) == 1
@@ -277,6 +280,7 @@ class TestProbe:
             user_input="前に話した何かの件",
             brain=mock_brain_no_hit,
             memory_manager=mock_memory_empty_glossary,
+            need_intent="past_fact",
         )
         assert result["status"] == "no_hit"
         assert result["candidates"] == []
@@ -293,6 +297,7 @@ class TestProbe:
             user_input="Gatekeeperについて",
             brain=mock_brain_no_hit,
             memory_manager=mm,
+            need_intent="past_fact",
         )
         assert len(result["glossary_hits"]) == 1
         assert result["glossary_hits"][0]["term"] == "Gatekeeper"
@@ -307,9 +312,98 @@ class TestProbe:
                 user_input="前に話した件",
                 brain=mock_brain_no_hit,
                 memory_manager=mock_memory_empty_glossary,
+                need_intent="past_fact",
             )
             assert result["status"] == "no_hit"
             mock_brain_no_hit.extract_keywords.assert_not_called()
+
+
+class TestNeedIntentGating:
+    """need_intent によるゲートのテスト"""
+
+    @pytest.fixture
+    def probe(self):
+        return MemoryProbe()
+
+    @pytest.fixture
+    def brain_with_vector(self):
+        brain = MagicMock()
+        brain.quick_vector_search.return_value = [
+            {"id": "1", "title": "X", "summary": "Y", "episode": "", "score": 0.8, "source": "vector"},
+        ]
+        return brain
+
+    @pytest.fixture
+    def mm_with_glossary(self):
+        mm = MagicMock()
+        mm.get_glossary_raw.return_value = {
+            "version": 1,
+            "entries": [
+                {"term": "Gatekeeper", "definition": "...", "aliases": [], "status": "active"},
+            ],
+        }
+        return mm
+
+    def test_need_intent_none_skips_probe(self, probe, brain_with_vector, mm_with_glossary):
+        """need_intent=None → probe 全スキップ。vector も glossary も呼ばれない"""
+        result = probe.probe(
+            user_input="Gatekeeperの話",
+            brain=brain_with_vector,
+            memory_manager=mm_with_glossary,
+            need_intent=None,
+        )
+        assert result["status"] == "skipped"
+        assert result["candidates"] == []
+        assert result["glossary_hits"] == []
+        brain_with_vector.quick_vector_search.assert_not_called()
+
+    def test_need_intent_glossary_skips_vector(self, probe, brain_with_vector, mm_with_glossary):
+        """need_intent=glossary → vector search は呼ばれず glossary のみ"""
+        result = probe.probe(
+            user_input="Gatekeeperって何？",
+            brain=brain_with_vector,
+            memory_manager=mm_with_glossary,
+            need_intent="glossary",
+        )
+        assert result["candidates"] == []
+        assert len(result["glossary_hits"]) == 1
+        assert result["status"] == "hit"
+        brain_with_vector.quick_vector_search.assert_not_called()
+
+    def test_need_intent_glossary_no_hit(self, probe, brain_with_vector):
+        """need_intent=glossary でマッチなし → no_hit"""
+        mm = MagicMock()
+        mm.get_glossary_raw.return_value = {"version": 1, "entries": []}
+        result = probe.probe(
+            user_input="未知の用語",
+            brain=brain_with_vector,
+            memory_manager=mm,
+            need_intent="glossary",
+        )
+        assert result["status"] == "no_hit"
+        brain_with_vector.quick_vector_search.assert_not_called()
+
+    def test_need_intent_past_fact_runs_vector(self, probe, brain_with_vector, mm_with_glossary):
+        """need_intent=past_fact → vector も走る"""
+        result = probe.probe(
+            user_input="前回の話",
+            brain=brain_with_vector,
+            memory_manager=mm_with_glossary,
+            need_intent="past_fact",
+        )
+        assert result["status"] == "hit"
+        assert len(result["candidates"]) == 1
+        brain_with_vector.quick_vector_search.assert_called_once()
+
+    def test_need_intent_relationship_runs_vector(self, probe, brain_with_vector, mm_with_glossary):
+        result = probe.probe(
+            user_input="最近のわたしどう？",
+            brain=brain_with_vector,
+            memory_manager=mm_with_glossary,
+            need_intent="relationship",
+        )
+        assert result["status"] == "hit"
+        brain_with_vector.quick_vector_search.assert_called_once()
 
 
 # ===================================================================
@@ -332,6 +426,7 @@ class TestGatekeeperIntegration:
         gk.context_classifier.classify.return_value = {
             "tier": "mid",
             "llm_scoring": {"response_complexity": 0.5, "emotional_weight": 0.3, "continuity_need": 0.4},
+            "need_intent": "past_fact",
         }
         gk.state_updater.update.return_value = {
             "topic": "テスト話題",
@@ -357,11 +452,12 @@ class TestGatekeeperIntegration:
         )
 
         assert result["tier"] == "mid"
-        assert result["need"] == "memory_probe_hit"
+        assert result["need"] == "past_fact"
+        assert result["need_intent"] == "past_fact"
         assert result["memory_probe"]["status"] == "hit"
 
     def test_probe_no_hit_stays_mid(self, mock_gatekeeper, test_instance_dir):
-        """probe no_hit → mid のまま"""
+        """probe no_hit → mid のまま、need=null (事実裏付け失敗)"""
         mock_gatekeeper.memory_probe.probe.return_value = {
             "status": "no_hit",
             "candidates": [],
@@ -381,8 +477,8 @@ class TestGatekeeperIntegration:
         assert result["need"] is None
         assert result["memory_probe"]["status"] == "no_hit"
 
-    def test_no_brain_returns_no_hit(self, mock_gatekeeper, test_instance_dir):
-        """brain=None → probe は no_hit"""
+    def test_no_brain_returns_skipped(self, mock_gatekeeper, test_instance_dir):
+        """brain=None → probe スキップ、need=null"""
         result = mock_gatekeeper.classify(
             user_input="テスト",
             history_msgs=[],
@@ -392,10 +488,33 @@ class TestGatekeeperIntegration:
         )
 
         assert result["need"] is None
-        assert result["memory_probe"]["status"] == "no_hit"
+        assert result["memory_probe"]["status"] == "skipped"
+
+    def test_need_intent_null_skips_probe(self, mock_gatekeeper, test_instance_dir):
+        """CC が need_intent=null を返した場合、probe は呼ばれない"""
+        mock_gatekeeper.context_classifier.classify.return_value = {
+            "tier": "reflex",
+            "llm_scoring": {"response_complexity": 0.1, "emotional_weight": 0.0, "continuity_need": 0.0},
+            "need_intent": None,
+        }
+
+        brain = MagicMock()
+        result = mock_gatekeeper.classify(
+            user_input="おはよう",
+            history_msgs=[],
+            session_state={},
+            instance_dir=test_instance_dir,
+            brain=brain,
+        )
+
+        assert result["tier"] == "reflex"
+        assert result["need"] is None
+        assert result["need_intent"] is None
+        assert result["memory_probe"]["status"] == "skipped"
+        mock_gatekeeper.memory_probe.probe.assert_not_called()
 
     def test_deep_search_sets_need(self, mock_gatekeeper, test_instance_dir):
-        """deep_search hit → tier は mid のまま、need が設定される"""
+        """deep_search hit → tier は mid のまま、need=past_fact"""
         mock_gatekeeper.memory_probe.probe.return_value = {
             "status": "deep_search",
             "candidates": [{"title": "過去の会話", "summary": "内容", "score": 0.65}],
@@ -412,5 +531,5 @@ class TestGatekeeperIntegration:
         )
 
         assert result["tier"] == "mid"
-        assert result["need"] == "memory_probe_deep_search"
+        assert result["need"] == "past_fact"
         assert result["search_targets"] == ["過去の会話"]

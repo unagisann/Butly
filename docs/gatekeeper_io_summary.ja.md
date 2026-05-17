@@ -74,8 +74,9 @@ MemoryBlockBuilder.build()  → Brain へのプロンプト構築
 {
     "tier": "reflex" | "mid",          # ContextClassifier の出力（RAG とは独立）
     "topic": str,                       # state_delta または現在 topic
-    "need": str | None,                 # MemoryProbe がヒットした時のみ。"memory_probe_hit" or "memory_probe_deep_search"
-    "search_targets": list[str] | None, # need 有時の上位候補タイトル
+    "need": str | None,                 # 最終 need (LLM 意図 + 事実裏付けの両方が成立した時のみ設定)
+    "need_intent": str | None,          # LLM が出した意図種別: past_fact / glossary / relationship / None
+    "search_targets": list[str] | None, # need 有時の上位候補タイトル / glossary 用語
     "state_delta": {
         "topic": str | None,
         "mood": str | None,
@@ -86,7 +87,7 @@ MemoryBlockBuilder.build()  → Brain へのプロンプト構築
         "continuity_need": float           # 0〜1
     },
     "memory_probe": {
-        "status": "hit" | "no_hit" | "deep_search",
+        "status": "hit" | "no_hit" | "deep_search" | "skipped",
         "candidates": list[dict],      # probe からの RAG 検索結果
         "glossary_hits": list[dict]     # マッチした用語集エントリ
     }
@@ -102,7 +103,34 @@ ContextClassifier が LLM に 3 スコアを出力させ、Python 側で以下�
 | `response_complexity <= 0.4` AND `continuity_need <= 0.3` | → `reflex` |
 | 上記以外 | → `mid` |
 
-`need`（RAG 要否）は tier とは独立で、`MemoryProbe` の実検索ヒットに基づき設定されます。reflex tier でも need=有りになりえます。
+`need`（RAG 要否）は tier とは独立で、**LLM の意図出力 (need_intent) + MemoryProbe の事実裏付け** の 2 段で決定されます。詳細は次節。
+
+### RAG 判定: 「LLM 意図 + 事実裏付け」の 2 段構え
+
+ContextClassifier は tier に加えて `need_intent` フィールドを出力する:
+
+| need_intent | 意味 | MemoryProbe の挙動 |
+|---|---|---|
+| `past_fact` | ユーザーが具体的な過去の出来事/決定/会話を参照している | Layer 1 (vector) + 1.5 (glossary) を実行 |
+| `glossary` | 用語や固有名詞の意味を知りたい | Layer 1.5 のみ実行 (vector skip) |
+| `relationship` | 関係性・ムード推移・習慣に関する質問 | Layer 1 + 1.5 を実行 |
+| `null` | 長期記憶不要 (挨拶・雑談・将来設計など) | **probe 全スキップ** (status="skipped") |
+
+最終 `need` の決定:
+- `need_intent == null`            → `need = null` (LLM が「不要」と判断)
+- probe が候補も glossary も返さない → `need = null` (事実裏付け失敗 — LLM が誤判定したとみなす)
+- それ以外                         → `need = need_intent`
+
+この 2 段構えにより、LLM の意図捕捉と事実裏付けの両方をパスした時のみ RAG ブロックが注入される。reflex tier でも need は有り得る（例: 「前に話したあの曲なんだっけ？」）。
+
+### need_intent の parse 失敗時 fallback
+
+LLM 出力が 4 値以外だった場合や JSON 構造が崩れた場合のフォールバック:
+
+1. `asks_for_specific_past_detail(user_input)` がマッチ (「前に」「以前」「だっけ」等のパターン) → `past_fact`
+2. マッチしない → `null` (probe スキップ)
+
+これにより「不要 probe 削減」という目的を維持しつつ、明示的な過去参照シグナルがある場合は安全網が働く。parse 失敗時は loud な warning ログを出力し、prompt drift / モデル劣化を検知できるようにしている。
 
 ---
 

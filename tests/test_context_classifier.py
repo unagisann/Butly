@@ -160,6 +160,60 @@ class TestParseResponse:
         assert "memory_reference_likelihood" not in result["llm_scoring"]
 
 
+class TestNeedIntentParsing:
+    """need_intent の parse とフォールバックのテスト"""
+
+    @pytest.fixture
+    def classifier(self):
+        return ContextClassifier()
+
+    @pytest.mark.parametrize("intent", ["past_fact", "glossary", "relationship"])
+    def test_parse_valid_intent(self, classifier, intent):
+        raw = f'{{"llm_scoring": {{"response_complexity": 0.5, "emotional_weight": 0.2, "continuity_need": 0.3}}, "need_intent": "{intent}"}}'
+        result = classifier._parse_response(raw, user_input="any")
+        assert result["need_intent"] == intent
+
+    @pytest.mark.parametrize("raw_null", ['null', '"null"'])
+    def test_parse_null_intent(self, classifier, raw_null):
+        raw = f'{{"llm_scoring": {{"response_complexity": 0.1, "emotional_weight": 0.0, "continuity_need": 0.0}}, "need_intent": {raw_null}}}'
+        result = classifier._parse_response(raw, user_input="おはよう")
+        assert result["need_intent"] is None
+
+    def test_missing_field_falls_back_to_rule_null(self, classifier):
+        """need_intent フィールド欠落 + 過去参照パターンなし → null"""
+        raw = '{"llm_scoring": {"response_complexity": 0.2, "emotional_weight": 0.0, "continuity_need": 0.0}}'
+        result = classifier._parse_response(raw, user_input="今日の天気はどう")
+        assert result["need_intent"] is None
+
+    def test_missing_field_falls_back_to_rule_past_fact(self, classifier):
+        """need_intent フィールド欠落 + 過去参照パターンあり → past_fact"""
+        raw = '{"llm_scoring": {"response_complexity": 0.5, "emotional_weight": 0.2, "continuity_need": 0.4}}'
+        result = classifier._parse_response(raw, user_input="前に話したあれってどうなった？")
+        assert result["need_intent"] == "past_fact"
+
+    def test_invalid_intent_falls_back_to_rule(self, classifier):
+        """不正な need_intent 値 → ルール fallback"""
+        raw = '{"llm_scoring": {"response_complexity": 0.5, "emotional_weight": 0.2, "continuity_need": 0.4}, "need_intent": "unknown_intent"}'
+        result = classifier._parse_response(raw, user_input="前回の話の続きだけど")
+        assert result["need_intent"] == "past_fact"
+
+    def test_invalid_intent_no_pattern_returns_null(self, classifier):
+        """不正な need_intent 値 + パターンなし → null"""
+        raw = '{"llm_scoring": {"response_complexity": 0.3, "emotional_weight": 0.0, "continuity_need": 0.1}, "need_intent": 12345}'
+        result = classifier._parse_response(raw, user_input="ありがとう")
+        assert result["need_intent"] is None
+
+    def test_default_output_uses_rule_fallback(self, classifier):
+        """LLM 呼び出し失敗時の default_output もルール fallback を通る"""
+        result = classifier._default_output(user_input="前に話したあれってどうなった？")
+        assert result["need_intent"] == "past_fact"
+        assert result["tier"] == "mid"
+
+    def test_default_output_no_pattern_returns_null(self, classifier):
+        result = classifier._default_output(user_input="今日も頑張ろう")
+        assert result["need_intent"] is None
+
+
 class TestConfigResolution:
     """config 解決ロジックのテスト"""
 

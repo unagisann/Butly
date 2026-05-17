@@ -60,8 +60,8 @@ class Gatekeeper:
         Returns
         -------
         dict
-            tier, topic, need, search_targets, state_delta, llm_scoring,
-            memory_probe
+            tier, topic, need, need_intent, search_targets, state_delta,
+            llm_scoring, memory_probe
         """
         # A. headlines 読み込み
         recent_headlines = self._load_headlines(instance_dir)
@@ -90,8 +90,11 @@ class Gatekeeper:
             ctx_result = future_ctx.result()
             state_delta = future_state.result()
 
+        # CC が出した意図種別を取り出して probe ゲートに使う
+        need_intent = ctx_result.get("need_intent")
+
         # C. MemoryProbe（LLM不要、並列の外で即実行）
-        if brain:
+        if brain and need_intent is not None:
             probe_result = self.memory_probe.probe(
                 user_input=user_input,
                 brain=brain,
@@ -100,27 +103,36 @@ class Gatekeeper:
                 recent_headlines=recent_headlines,
                 override_config=override_config,
                 history_msgs=history_msgs,
+                need_intent=need_intent,
             )
         else:
-            # brain なしでも glossary は scan できるが、現状の経路では呼ばれない
-            probe_result = {"status": "no_hit", "candidates": [], "glossary_hits": []}
+            # need_intent=None または brain 未提供 → probe スキップ
+            probe_result = {"status": "skipped", "candidates": [], "glossary_hits": []}
 
         tier = ctx_result["tier"]          # "reflex" or "mid"
         status = probe_result["status"]
         candidates = probe_result.get("candidates", [])
+        glossary_hits = probe_result.get("glossary_hits", [])
 
-        # need / search_targets を MemoryProbe 結果から導出
+        # 最終 need 決定: LLM 意図 + 事実裏付け
+        #   - need_intent=None        → need=None (LLM が「不要」と言った)
+        #   - probe で何も見つからない → need=None (事実裏付け失敗)
+        #   - 上記以外                 → need=need_intent
         need = None
         search_targets = None
-        if status != "no_hit" and candidates:
-            need = f"memory_probe_{status}"
-            search_targets = [c.get("title", "") for c in candidates[:3]]
+        if need_intent is not None and (candidates or glossary_hits):
+            need = need_intent
+            if candidates:
+                search_targets = [c.get("title", "") for c in candidates[:3]]
+            elif glossary_hits:
+                search_targets = [g.get("term", "") for g in glossary_hits[:3]]
 
         return {
             "tier": tier,
             "topic": state_delta.get("topic") or
                      (session_state.get("topic", current_topic) if isinstance(session_state, dict) else current_topic),
             "need": need,
+            "need_intent": need_intent,
             "search_targets": search_targets,
             "state_delta": state_delta,
             "llm_scoring": ctx_result.get("llm_scoring"),

@@ -277,8 +277,9 @@ Gatekeeper.classify(user_input, history, session_state)
 {
     "tier": "reflex" | "mid",     # ContextClassifier の出力（RAG とは独立）
     "topic": str,
-    "need": str | None,           # MemoryProbe ヒット時のみ
-    "search_targets": list | None, # need 有時の候補タイトル
+    "need": str | None,           # LLM 意図 + 事実裏付け の両方が成立した時のみ
+    "need_intent": str | None,    # LLM が出した意図: past_fact / glossary / relationship / None
+    "search_targets": list | None, # need 有時の候補タイトル / glossary 用語
     "state_delta": dict,
     "llm_tier": str,
     "llm_reasoning": str,
@@ -298,10 +299,10 @@ Gatekeeper.classify(user_input, history, session_state)
 ---
 
 ### `gatekeeper/context_classifier.py`
-LLM に 3 スコア（0–1）を出力させ、Python 側でルールに基づき tier を決定する。
+LLM に 3 スコア（0–1）+ `need_intent` を出力させ、Python 側でルールに基づき tier を決定する。
 
 - `ContextClassifier(base_dir)`
-  - `classify(user_input, history_msgs, current_topic, recent_headlines, override_config)` — tier 判定を実行。`recent_headlines` でダイジェストから抽出した見出しを注入
+  - `classify(user_input, history_msgs, current_topic, recent_headlines, override_config)` — tier 判定 + need_intent 出力を実行。`recent_headlines` でダイジェストから抽出した見出しを注入
 
 **tier 決定ロジック:**
 | tier | 条件 |
@@ -309,22 +310,34 @@ LLM に 3 スコア（0–1）を出力させ、Python 側でルールに基づ�
 | `reflex` | `response_complexity <= 0.4` AND `continuity_need <= 0.3` |
 | `mid` | それ以外 |
 
+**need_intent (LLM 出力):**
+| 値 | 用途 |
+|---|---|
+| `past_fact` | 具体的な過去の出来事/決定/会話の参照 |
+| `glossary` | 用語や固有名詞の意味問い合わせ |
+| `relationship` | 関係性・ムード推移・習慣の質問 |
+| `null` | 長期記憶不要（挨拶・将来設計・自己完結発話） |
+
+parse 失敗時は `asks_for_specific_past_detail()` を fallback として使用（マッチで past_fact、なしで null）。
+
 ---
 
 ### `gatekeeper/memory_probe.py`
-LLM 呼び出しなしの事実ベース記憶検索。3 レイヤー構成。
+LLM 呼び出しなしの事実ベース記憶検索。need_intent でゲートされる 3 レイヤー構成。
 
 - `MemoryProbe()`
-  - `probe(user_input, brain, memory_manager, history_msgs=None, ...)` — ベクトル検索 + 用語集マッチ + 条件付き深層検索
+  - `probe(user_input, brain, memory_manager, history_msgs=None, need_intent=None, ...)` — need_intent でゲートし、選択的に Layer を実行
   - `_match_glossary(user_input, memory_manager, history_msgs=None, override_config=None)` — Lorebook 統合: term/aliases を user_input + 直近履歴でマッチし、raw hits を返却（フィルタ・ソート無し）。各 hit に `priority` / `_yaml_index` / `match_source` ("user"|"history") を付与
   - `_extract_history_text(history_msgs, scan_depth, scan_target)` — 履歴から scan_target に応じてメッセージを抽出（1 ターン = user+assistant 1 ペア）
 
 **検索レイヤー:**
-| レイヤー | 内容 | 条件 |
+| レイヤー | 内容 | need_intent 別の実行条件 |
 |---|---|---|
-| Layer 1 | Quick Vector Search（コサイン類似度） | 常時実行 |
-| Layer 1.5 | Glossary Match (Lorebook 統合: term/aliases、user_input + 履歴 scan_depth ターン) | 常時実行 |
-| Layer 2 | Deep Search | 過去参照パターン検出時のみ |
+| Layer 1 | Quick Vector Search（コサイン類似度） | `past_fact` / `relationship` のみ |
+| Layer 1.5 | Glossary Match (Lorebook 統合: term/aliases、user_input + 履歴 scan_depth ターン) | `past_fact` / `glossary` / `relationship` (probe 実行時は常時) |
+| Layer 2 | Deep Search | Layer 1 ヒット無し + 過去参照パターン検出時のみ |
+
+need_intent=None の場合は probe 全体をスキップし `status="skipped"` を返す。
 
 ---
 

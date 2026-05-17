@@ -11,6 +11,10 @@ from pathlib import Path
 
 from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
 from butly_core.prompts import PromptLoader
+from butly_core.core.gatekeeper.memory_probe import asks_for_specific_past_detail
+
+
+VALID_NEED_INTENTS = ("past_fact", "glossary", "relationship")
 
 
 class ContextClassifier:
@@ -71,11 +75,12 @@ class ContextClassifier:
                     "response_complexity": float,
                     "emotional_weight": float,
                     "continuity_need": float
-                }
+                },
+                "need_intent": "past_fact" | "glossary" | "relationship" | None
             }
         """
         if not self.gatekeeper_config:
-            return self._default_output()
+            return self._default_output(user_input)
 
         model_name, gk_config = self._resolve_config(override_config)
 
@@ -95,10 +100,10 @@ class ContextClassifier:
             from butly_core.llm.factory import ProviderFactory
             provider = ProviderFactory.create(model_name)
             raw_text = provider.classify(prompt, gk_config)
-            result = self._parse_response(raw_text)
+            result = self._parse_response(raw_text, user_input)
         except Exception as e:
             print(f"[ContextClassifier] API呼び出しエラー: {e}")
-            result = self._default_output()
+            result = self._default_output(user_input)
 
         t1 = time.time()
         scores = result.get("llm_scoring", {})
@@ -107,7 +112,7 @@ class ContextClassifier:
             f"  scores: rc={scores.get('response_complexity', 0):.2f}, "
             f"ew={scores.get('emotional_weight', 0):.2f}, "
             f"cn={scores.get('continuity_need', 0):.2f}\n"
-            f"  → tier={result['tier']} ({int((t1-t0)*1000)}ms)"
+            f"  → tier={result['tier']} need_intent={result.get('need_intent')} ({int((t1-t0)*1000)}ms)"
         )
         return result
 
@@ -123,9 +128,9 @@ class ContextClassifier:
         # mid: それ以外
         return "mid"
 
-    def _parse_response(self, raw_text: str) -> dict:
+    def _parse_response(self, raw_text: str, user_input: str = "") -> dict:
         """LLM応答からJSONを抽出しパースする。"""
-        default = self._default_output()
+        default = self._default_output(user_input)
         if not raw_text:
             return default
 
@@ -147,20 +152,51 @@ class ContextClassifier:
                     llm_scoring[key] = max(0.0, min(1.0, float(llm_scoring[key])))
 
             tier = self._determine_tier_from_scores(llm_scoring)
+            need_intent = self._parse_need_intent(data, user_input)
 
             return {
                 "tier": tier,
                 "llm_scoring": llm_scoring,
+                "need_intent": need_intent,
             }
 
         except Exception as e:
             print(f"[ContextClassifier] JSONパースエラー: {e}\nRaw: '{raw_text}'")
             return default
 
-    def _default_output(self) -> dict:
+    def _parse_need_intent(self, data: dict, user_input: str) -> str | None:
+        """need_intent をパース。不正値時は asks_for_specific_past_detail() で fallback。"""
+        raw = data.get("need_intent", "__missing__")
+
+        # 正常: 4 値のいずれか (null / None / "null" 文字列も許容)
+        if raw is None or raw == "null":
+            return None
+        if isinstance(raw, str) and raw in VALID_NEED_INTENTS:
+            return raw
+
+        # フィールドが完全欠落 → スキーマ未対応モデルとみなしルール fallback
+        if raw == "__missing__":
+            return self._rule_based_need_intent(user_input)
+
+        # 不正値 → loud にログを出してルール fallback (prompt drift / モデル劣化検知)
+        print(
+            f"[ContextClassifier] WARNING: invalid need_intent={raw!r}, "
+            f"falling back to rule-based decision"
+        )
+        return self._rule_based_need_intent(user_input)
+
+    @staticmethod
+    def _rule_based_need_intent(user_input: str) -> str | None:
+        """parse 失敗時の fallback: 明示的な過去参照パターンがあれば past_fact、なければ null。"""
+        if asks_for_specific_past_detail(user_input or ""):
+            return "past_fact"
+        return None
+
+    def _default_output(self, user_input: str = "") -> dict:
         return {
             "tier": "mid",
             "llm_scoring": {},
+            "need_intent": self._rule_based_need_intent(user_input),
         }
 
     def _format_history(self, history_msgs: list, max_turns: int = 3, agent_name: str = None) -> str:
