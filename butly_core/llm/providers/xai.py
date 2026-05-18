@@ -9,7 +9,7 @@ Phase 2 で Agent Tools API（X Search / Web Search / Code Execution）を追加
 """
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from butly_core.chat.types import Attachment, ChatResponse
 from butly_core.llm.base import BaseProvider
@@ -167,3 +167,51 @@ class XaiProvider(BaseProvider):
             import traceback
             traceback.print_exc()
             return ChatResponse(text=f"Error: {e}")
+
+    # ==================================================================
+    # ストリーミング
+    # ==================================================================
+
+    async def async_generate_stream(
+        self,
+        text: str,
+        attachments: List[Attachment],
+        context: Dict[str, Any],
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """xAI (OpenAI 互換) を使ったストリーミング。"""
+        from butly_core.config import AI_CONFIG
+
+        override_config = context.get("override_config")
+        history = context.get("history", [])
+
+        system_instruction = compat.resolve_system_instruction(context)
+        context_prefix = compat.resolve_context_prefix(context)
+        position = compat.resolve_position(context)
+        user_content = compat.build_user_content(text, attachments)
+        messages = compat.build_messages(
+            system_instruction=system_instruction,
+            context_prefix=context_prefix,
+            history=history,
+            user_content=user_content,
+            position=position,
+        )
+
+        chat_conf = compat.merge_chat_config(AI_CONFIG["chat"], override_config)
+        model_name = _strip_xai_prefix(chat_conf.get("model_name", "grok-4-1-fast-non-reasoning"))
+        _debug_messages = compat.build_debug_messages(messages)
+
+        debug_data = {
+            "messages": _debug_messages,
+            "messages_preview": _debug_messages,
+            "messages_full": messages,
+        }
+
+        async for event in compat.async_chat_completion_stream(
+            client=self.client,
+            model=model_name,
+            messages=messages,
+            chat_conf=chat_conf,
+            debug_data=debug_data,
+            log_tag="XaiProvider",
+        ):
+            yield event

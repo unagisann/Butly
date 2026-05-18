@@ -5,11 +5,13 @@ OpenAI 互換プロバイダー（OpenAI / Ollama / xAI / 将来の Groq 等）�
 共通利用するヘルパー関数群。継承ではなく import して使う設計。
 
 Phase 1 (v3.1): 共通化 + reasoning_effort 対応
+Phase 5 (#43): async_chat_completion_stream 追加（SSE 用 stream 共通実装）
 """
 
+import asyncio
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -277,3 +279,92 @@ def build_chat_response(
     if web_sources:
         result.sources = web_sources
     return result
+
+
+# =====================================================================
+# ストリーミング (OpenAI 互換 SDK 共通)
+# =====================================================================
+
+async def async_chat_completion_stream(
+    client,
+    model: str,
+    messages: list,
+    chat_conf: dict,
+    debug_data: Optional[dict] = None,
+    web_sources: Optional[list] = None,
+    log_tag: str = "OpenAICompat",
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """
+    OpenAI 互換 SDK (`client.chat.completions.create(stream=True)`) を使い、
+    Gemini と同じ event 形式 (`chunk` / `done` / `error`) で yield する。
+
+    Producer スレッドで同期イテレータを走らせ、asyncio.Queue 経由で
+    main loop に橋渡しする。
+
+    Parameters
+    ----------
+    client : openai.OpenAI 互換クライアント
+    model : str
+    messages : list[dict]
+        OpenAI 形式の messages
+    chat_conf : dict
+        kwargs 構築用 config (build_chat_completion_kwargs に渡す)
+    debug_data : dict, optional
+        done event の debug フィールドに含めるデータ
+    web_sources : list, optional
+        done event の sources フィールドに含める web 検索結果
+    log_tag : str
+        ログ出力用のプロバイダ名タグ
+    """
+    kwargs = build_chat_completion_kwargs(chat_conf, messages, model_name=model)
+    kwargs["model"] = model
+    kwargs["stream"] = True
+
+    loop = asyncio.get_event_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+
+    def _producer():
+        full_text = ""
+        try:
+            print(f"[{log_tag}] Streaming start")
+            stream = client.chat.completions.create(**kwargs)
+            for chunk in stream:
+                if not getattr(chunk, "choices", None):
+                    continue
+                choice = chunk.choices[0]
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                text_chunk = getattr(delta, "content", None) or ""
+                if text_chunk:
+                    full_text += text_chunk
+                    loop.call_soon_threadsafe(
+                        queue.put_nowait, {"type": "chunk", "text": text_chunk}
+                    )
+            print(f"[{log_tag}] Streaming done")
+            loop.call_soon_threadsafe(queue.put_nowait, {
+                "type": "done",
+                "full_text": full_text,
+                "sources": list(web_sources or []),
+                "debug": debug_data or {},
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            loop.call_soon_threadsafe(queue.put_nowait, {
+                "type": "error", "message": str(e),
+            })
+
+    producer_future = loop.run_in_executor(None, _producer)
+
+    try:
+        while True:
+            event = await queue.get()
+            yield event
+            if event["type"] in ("done", "error"):
+                break
+    finally:
+        try:
+            await producer_future
+        except Exception:
+            pass
