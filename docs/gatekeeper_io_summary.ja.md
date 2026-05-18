@@ -223,3 +223,38 @@ state_delta = {
 ```
 
 **注記:** `goals`, `unresolved`, `add_goal`, `add_unresolved`, `resolve` フィールドは廃止されました。
+
+---
+
+## 5. ストリーミング応答（SSE）
+
+`POST /chat/stream` エンドポイントで Server-Sent Events 形式の逐次応答を返します。
+クライアントの体感レイテンシ改善 (TTFB) を目的に、生成されたトークンを順次配信します。
+
+### イベントフォーマット
+
+| event | 順序 | data |
+|---|---|---|
+| `metadata` | stream 開始直後 | `{tier, need, need_intent, scores, memory_probe_status, search_targets}` |
+| `chunk` | 生成中に複数回 | `{text: str}` — 部分テキスト |
+| `done` | 生成完了 | `{full_text, sources, session_state, debug_info}` |
+| `error` | 例外時 | `{message, recoverable}` |
+
+### Provider 対応状況
+
+| Provider | ネイティブ stream | 経路 |
+|---|---|---|
+| Gemini | ✅ | `chat_session.send_message_stream()` |
+| OpenAI | ✅ | `chat.completions.create(stream=True)` |
+| xAI | ✅ | OpenAI SDK + `base_url=api.x.ai/v1` |
+| Ollama | ✅ | OpenAI SDK + `base_url=localhost:11434/v1` |
+
+Provider が stream に対応していない場合、`BaseProvider.async_generate_stream()` のデフォルト fallback で `generate()` の結果を 1 チャンクで yield する形に縮退する。
+
+### 設定
+
+`SYSTEM_CONFIG["chat"]["streaming_enabled"]` (デフォルト `True`) で server-side のデフォルト挙動を制御。UI 側は `streaming_enabled` のセッショントグル（チャットヘッダー ⚡ ボタン）でユーザーごとに切り替え可能。
+
+### 並列化
+
+ストリーム開始と同時に `gatekeeper.update_state()` を `asyncio.create_task` で並列起動し、generate / stream とラップ実行することで StateUpdater のレイテンシを隠蔽している。詳細は処理フロー図参照。

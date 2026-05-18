@@ -124,6 +124,12 @@ SYSTEM_CONFIG = {
         "tier_rc_threshold": 0.4,
         "tier_cn_threshold": 0.3,
     },
+    "chat": {
+        # ストリーミング応答の有効化フラグ。
+        # /chat/stream エンドポイントの動作・UI のデフォルトトグル状態に影響。
+        # instance_config["chat"]["streaming_enabled"] で上書き可。
+        "streaming_enabled": True,
+    },
     "glossary": {
         # 1 ターン = user+assistant 1 ペア。0 で user_input のみ
         "scan_depth": 2,

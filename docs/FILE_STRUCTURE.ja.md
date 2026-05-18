@@ -122,8 +122,8 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 ### `butly_core/config.py`
 アプリ全体の設定定数を管理。
 
-- `AI_CONFIG` — モデル別の設定（chat / summary / knowledge / embedding / gatekeeper）
-- `SYSTEM_CONFIG` — パス定義・メモリ上限・Brain パラメータ・検索モジュール設定等
+- `AI_CONFIG` — モデル別の設定（chat / summary / knowledge / embedding / gatekeeper / context_classifier）
+- `SYSTEM_CONFIG` — パス定義・メモリ上限・Brain パラメータ・`memory_probe`・`gatekeeper` tier 閾値・`chat.streaming_enabled`・`glossary` 等
 - `USER_CONFIG_PATH` — ユーザーカスタム設定ファイルのパス
 - `_recursive_update(base, override)` — 設定辞書を再帰マージするユーティリティ
 

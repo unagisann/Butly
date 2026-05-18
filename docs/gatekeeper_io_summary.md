@@ -222,3 +222,37 @@ state_delta = {
 ```
 
 **Note:** `goals`, `unresolved`, `add_goal`, `add_unresolved`, `resolve` fields have been removed.
+
+---
+
+## 5. Streaming Response (SSE)
+
+The `POST /chat/stream` endpoint returns Server-Sent Events for incremental delivery. Aimed at reducing perceived latency (TTFB).
+
+### Event format
+
+| event | order | data |
+|---|---|---|
+| `metadata` | right after stream opens | `{tier, need, need_intent, scores, memory_probe_status, search_targets}` |
+| `chunk` | repeated during generation | `{text: str}` — partial text |
+| `done` | generation complete | `{full_text, sources, session_state, debug_info}` |
+| `error` | on exception | `{message, recoverable}` |
+
+### Provider support
+
+| Provider | Native stream | Path |
+|---|---|---|
+| Gemini | ✅ | `chat_session.send_message_stream()` |
+| OpenAI | ✅ | `chat.completions.create(stream=True)` |
+| xAI | ✅ | OpenAI SDK + `base_url=api.x.ai/v1` |
+| Ollama | ✅ | OpenAI SDK + `base_url=localhost:11434/v1` |
+
+If a provider doesn't override `async_generate_stream()`, the base class falls back to yielding the entire `generate()` result as a single chunk.
+
+### Configuration
+
+`SYSTEM_CONFIG["chat"]["streaming_enabled"]` (default `True`) controls the server-side default. The UI side has a per-session toggle (the ⚡ button in the chat header).
+
+### Parallelism
+
+`gatekeeper.update_state()` is launched via `asyncio.create_task` at stream start, running in parallel with the generation. See the processing-flow diagram for details.

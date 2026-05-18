@@ -50,7 +50,7 @@ Core package. `config.py` holds defaults; `user_config.json` and `instances/{nam
 
 ### `butly_core/config.py`
 - `AI_CONFIG` — per-role model settings (`chat` / `summary` / `knowledge` / `embedding` / `gatekeeper` / `context_classifier`).
-- `SYSTEM_CONFIG` — paths, memory limits, brain RAG params, search settings, `memory_probe`, `gatekeeper` tier thresholds, `glossary`.
+- `SYSTEM_CONFIG` — paths, memory limits, brain RAG params, search settings, `memory_probe`, `gatekeeper` tier thresholds, `chat.streaming_enabled`, `glossary`.
 - `_recursive_update(base, override)` — recursive dict merge.
 - Loads `user_config.json` if present.
 
