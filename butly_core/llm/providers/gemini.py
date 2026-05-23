@@ -57,8 +57,18 @@ class GeminiProvider(BaseProvider):
       - 大きい画像: Files API 経由
     """
 
-    def __init__(self):
+    def __init__(self, default_model_name: Optional[str] = None):
+        """Gemini Provider を初期化する。
+
+        Parameters
+        ----------
+        default_model_name
+            ProviderFactory.create(ModelRef) から渡される model_name。
+            指定時は ``generate`` / ``_start_chat`` でこちらを優先する。
+            None なら AI_CONFIG["chat"]["model_name"] にフォールバック。
+        """
         self._client = None
+        self.default_model_name = default_model_name
 
     @property
     def client(self) -> genai.Client:
@@ -511,7 +521,9 @@ class GeminiProvider(BaseProvider):
             system_instruction=None,
         )
 
-        model_name = chat_conf["model_name"]
+        # ProviderFactory.create(ModelRef) 経由で渡された default_model_name を優先。
+        # 未指定なら AI_CONFIG / override_config 由来の chat_conf にフォールバック。
+        model_name = self.default_model_name or chat_conf["model_name"]
 
         from butly_core.core.gatekeeper import (
             build_system_instruction_from_blocks,

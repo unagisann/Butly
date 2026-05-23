@@ -67,6 +67,9 @@ class ChatRequest(BaseModel):
     use_google_search: bool = False
     use_web_search: bool = False
     attachments: List[Dict[str, Any]] = []
+    # Phase 3: per-request モデル切替。未指定なら AI_CONFIG / instance_config に従う。
+    model_name: Optional[str] = None
+    connection: Optional[str] = None
 
 class ChatResponse(BaseModel):
     response: str
@@ -101,6 +104,8 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         use_rag=request.use_rag,
         use_google_search=request.use_google_search,
         use_web_search=request.use_web_search,
+        model_name=request.model_name,
+        connection=request.connection,
     )
 
     try:
@@ -166,6 +171,8 @@ async def chat_stream(request: ChatRequest):
         use_rag=request.use_rag,
         use_google_search=request.use_google_search,
         use_web_search=request.use_web_search,
+        model_name=request.model_name,
+        connection=request.connection,
     )
 
     async def event_stream():

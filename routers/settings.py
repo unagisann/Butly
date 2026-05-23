@@ -218,3 +218,296 @@ def update_prompts(prompts_data: Dict[str, str] = Body(...)):
         return {"message": "Prompts updated", "prompts": get_prompts()}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save prompts: {e}")
+
+
+# =====================================================================
+# Connection 管理 (Phase 3)
+# =====================================================================
+
+class ConnectionPayload(BaseModel):
+    """user_config.json の LLM_CONNECTIONS 1 エントリ。"""
+    id: str
+    protocol: str = "openai_compat"
+    base_url: Optional[str] = None
+    base_url_env: Optional[str] = None
+    api_key_env: Optional[str] = None
+    api_key_fallback_envs: list = []
+    label: Optional[str] = None
+    extra_headers: Dict[str, str] = {}
+    embeddings_supported: bool = True
+    embedding_model_env: Optional[str] = None
+    default_embedding_model: Optional[str] = None
+    model_name_strip_prefix: Optional[str] = None
+
+
+def _load_user_config() -> dict:
+    if not USER_CONFIG_PATH.exists():
+        return {}
+    try:
+        with open(USER_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_user_config(data: dict) -> None:
+    with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+def _connection_to_dict(conn) -> dict:
+    """Connection dataclass を JSON 化可能な dict に変換。"""
+    return {
+        "id": conn.id,
+        "protocol": conn.protocol,
+        "base_url": conn.base_url,
+        "base_url_env": conn.base_url_env,
+        "api_key_env": conn.api_key_env,
+        "api_key_fallback_envs": list(conn.api_key_fallback_envs),
+        "label": conn.label,
+        "extra_headers": dict(conn.extra_headers),
+        "embeddings_supported": conn.embeddings_supported,
+        "embedding_model_env": conn.embedding_model_env,
+        "default_embedding_model": conn.default_embedding_model,
+        "model_name_strip_prefix": conn.model_name_strip_prefix,
+    }
+
+
+@router.get("/settings/connections")
+def list_connections_endpoint():
+    """全 Connection (built-in + user 定義) を返す。"""
+    from butly_core.llm.connections import list_connections, is_builtin_connection
+    items = []
+    for conn in list_connections():
+        d = _connection_to_dict(conn)
+        d["is_builtin"] = is_builtin_connection(conn.id)
+        d["api_key_set"] = bool(conn.resolve_api_key()) if conn.api_key_env else None
+        items.append(d)
+    return {"connections": items}
+
+
+@router.post("/settings/connections")
+def add_connection(payload: ConnectionPayload):
+    """user 定義 Connection を追加する。built-in id は拒否。"""
+    from butly_core.llm.connections import (
+        Connection, is_builtin_connection, register_connection,
+    )
+    if is_builtin_connection(payload.id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"built-in connection は上書きできません: {payload.id}",
+        )
+    if payload.protocol not in ("openai_compat", "gemini_native"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"未対応の protocol: {payload.protocol}",
+        )
+
+    # registry に反映 (即時)
+    try:
+        conn = Connection(
+            id=payload.id,
+            protocol=payload.protocol,
+            base_url=payload.base_url,
+            base_url_env=payload.base_url_env,
+            api_key_env=payload.api_key_env,
+            api_key_fallback_envs=tuple(payload.api_key_fallback_envs or ()),
+            label=payload.label,
+            extra_headers=dict(payload.extra_headers or {}),
+            embeddings_supported=payload.embeddings_supported,
+            embedding_model_env=payload.embedding_model_env,
+            default_embedding_model=payload.default_embedding_model,
+            model_name_strip_prefix=payload.model_name_strip_prefix,
+        )
+        register_connection(conn, overwrite_user=True)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Connection 登録失敗: {e}")
+
+    # user_config.json にも永続化
+    cfg = _load_user_config()
+    existing = cfg.get("LLM_CONNECTIONS", []) or []
+    if not isinstance(existing, list):
+        existing = []
+    entry = payload.model_dump(exclude_none=False)
+    # 既存 id は置換、なければ追加
+    replaced = False
+    for i, e in enumerate(existing):
+        if isinstance(e, dict) and e.get("id") == payload.id:
+            existing[i] = entry
+            replaced = True
+            break
+    if not replaced:
+        existing.append(entry)
+    cfg["LLM_CONNECTIONS"] = existing
+    _save_user_config(cfg)
+
+    return {"message": f"Connection {payload.id!r} を登録しました", "connection": _connection_to_dict(conn)}
+
+
+@router.delete("/settings/connections/{connection_id}")
+def delete_connection(connection_id: str):
+    """user 定義 Connection を削除する。built-in は不可。"""
+    from butly_core.llm.connections import get_registry, is_builtin_connection
+    if is_builtin_connection(connection_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"built-in connection は削除できません: {connection_id}",
+        )
+    reg = get_registry()
+    if reg.get(connection_id) is None:
+        raise HTTPException(status_code=404, detail=f"Connection 未登録: {connection_id}")
+    reg.unregister(connection_id)
+
+    # user_config.json から除去
+    cfg = _load_user_config()
+    existing = cfg.get("LLM_CONNECTIONS", []) or []
+    if isinstance(existing, list):
+        cfg["LLM_CONNECTIONS"] = [
+            e for e in existing
+            if not (isinstance(e, dict) and e.get("id") == connection_id)
+        ]
+        _save_user_config(cfg)
+    return {"message": f"Connection {connection_id!r} を削除しました"}
+
+
+@router.post("/settings/test_connection")
+def test_connection(connection_id: str = Body(..., embed=True)):
+    """指定 Connection の /models を叩いて疎通確認する。"""
+    from butly_core.llm.connections import try_get_connection
+    conn = try_get_connection(connection_id)
+    if conn is None:
+        raise HTTPException(status_code=404, detail=f"Connection 未登録: {connection_id}")
+
+    if conn.protocol == "gemini_native":
+        # Gemini は SDK 経由で list_models
+        try:
+            from google import genai
+            api_key = conn.resolve_api_key()
+            if not api_key:
+                return {"status": "error", "message": "API キー未設定", "models": []}
+            client = genai.Client(api_key=api_key)
+            models = []
+            for m in client.models.list():
+                models.append(m.name)
+                if len(models) >= 50:
+                    break
+            return {"status": "ok", "models": models}
+        except Exception as e:
+            return {"status": "error", "message": str(e), "models": []}
+
+    # openai_compat: /models を直叩き
+    import urllib.request
+    base_url = conn.resolve_base_url()
+    if not base_url:
+        return {"status": "error", "message": "base_url 未設定", "models": []}
+    url = base_url.rstrip("/") + "/models"
+    headers = {"Accept": "application/json"}
+    api_key = conn.resolve_api_key()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if conn.extra_headers:
+        for k, v in conn.extra_headers.items():
+            headers[k] = v
+
+    try:
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        models = []
+        for m in (data.get("data") or []):
+            mid = m.get("id") if isinstance(m, dict) else None
+            if mid:
+                models.append(mid)
+        return {"status": "ok", "models": models[:200]}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "models": []}
+
+
+@router.get("/settings/model_candidates")
+def model_candidates(role: str, include_deprecated: bool = False):
+    """role に対するモデル候補を返す。
+
+    内訳:
+      - MODEL_PRESETS から role を満たすもの
+      - 現在 AI_CONFIG に保存されている model_name (preset に無くても入れる)
+      - 利用可能 Connection で /models が成功したものの動的取得結果
+        (Ollama / Groq 等)
+    """
+    from butly_core.llm.model_registry import (
+        get_presets_for_role, find_preset, RoleId,
+    )
+    from butly_core.llm.connections import list_connections, is_builtin_connection
+
+    role_lower = role.lower().strip()
+    valid_roles = ("chat", "summary", "gatekeeper", "knowledge", "embedding", "context_classifier")
+    if role_lower not in valid_roles:
+        raise HTTPException(status_code=400, detail=f"未対応の role: {role}")
+
+    candidates: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _push(connection_id: str, model_name: str, *, available: bool = True):
+        key = (connection_id, model_name)
+        if key in seen:
+            return
+        seen.add(key)
+        preset = find_preset(connection_id, model_name)
+        candidates.append({
+            "connection_id": connection_id,
+            "model_name": model_name,
+            "label": preset.label if preset else model_name,
+            "available": available,
+            "deprecated": preset.deprecated if preset else False,
+            "preview": preset.preview if preset else False,
+            "replacement": preset.replacement if preset else None,
+            "capabilities": list(preset.capabilities) if preset else [],
+            "source": "preset" if preset else "dynamic",
+            "is_builtin_connection": is_builtin_connection(connection_id),
+        })
+
+    # 1. preset
+    for p in get_presets_for_role(role_lower, include_deprecated=include_deprecated):
+        _push(p.connection_id, p.model_name, available=True)
+
+    # 2. 現在 AI_CONFIG に保存されているもの
+    saved = AI_CONFIG.get(role_lower, {}) if isinstance(AI_CONFIG.get(role_lower), dict) else {}
+    saved_model = saved.get("model_name") if saved else None
+    saved_connection = saved.get("connection") if saved else None
+    if saved_model and saved_connection:
+        _push(saved_connection, saved_model, available=True)
+
+    # 3. 動的取得 (/models 成功した connection だけ)
+    for conn in list_connections():
+        if conn.protocol != "openai_compat":
+            continue
+        # auth が必要なのに env 未設定なら skip
+        if conn.api_key_env and not conn.resolve_api_key():
+            continue
+        # embedding role には embeddings_supported=True の connection だけ
+        if role_lower == "embedding" and not conn.embeddings_supported:
+            continue
+        try:
+            base = conn.resolve_base_url()
+            if not base:
+                continue
+            import urllib.request
+            url = base.rstrip("/") + "/models"
+            headers = {"Accept": "application/json"}
+            api_key = conn.resolve_api_key()
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            if conn.extra_headers:
+                for k, v in conn.extra_headers.items():
+                    headers[k] = v
+            req = urllib.request.Request(url, headers=headers, method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read())
+            for m in (data.get("data") or [])[:200]:
+                mid = m.get("id") if isinstance(m, dict) else None
+                if mid:
+                    _push(conn.id, mid, available=True)
+        except Exception:
+            # 1 connection 失敗で全体は止めない
+            continue
+
+    return {"role": role_lower, "candidates": candidates}

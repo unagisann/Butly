@@ -133,29 +133,72 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- 共通ヘルパー関数 ---
+
+# Phase 3: ハードコード preset を撤廃し、backend の /settings/model_candidates が
+# 唯一の真実 (model_registry + 動的 /models + 保存中モデルの和集合) を返す。
+# backend 到達不能時は model_registry を直接 import して fallback。
+_CONNECTION_ICONS = {
+    "google": "🟦",
+    "openai": "🟩",
+    "xai": "🟥",
+    "ollama": "🟧",
+}
+
+
 @st.cache_data(ttl=30)
-def _fetch_ollama_models(api_url: str) -> list:
-    """Ollama サーバーからインストール済みモデル一覧を取得する。"""
+def _get_role_candidates(api_url: str, role: str) -> list:
+    """role に対するモデル候補を backend から取得する。
+
+    Returns
+    -------
+    list[dict]
+        各要素 = {"connection_id", "model_name", "label", "deprecated", "preview",
+                "replacement", "is_builtin_connection", ...}
+    """
     try:
         import requests as _req
-        import json as _json
-        _user_cfg_path = Path(__file__).parent / "user_config.json"
-        _ollama_url = "http://localhost:11434"
-        if _user_cfg_path.exists():
-            _uc = _json.loads(_user_cfg_path.read_text(encoding="utf-8"))
-            _ollama_url = _uc.get("LLM_PROVIDERS", {}).get("ollama", {}).get("base_url", _ollama_url)
-        resp = _req.post(f"{api_url}/settings/ollama_test", json={"url": _ollama_url}, timeout=5)
+        resp = _req.get(
+            f"{api_url}/settings/model_candidates",
+            params={"role": role},
+            timeout=8,
+        )
         if resp.ok:
-            data = resp.json()
-            if data.get("status") == "ok":
-                return [f"ollama/{m}" for m in data.get("models", [])]
+            return resp.json().get("candidates", [])
     except Exception:
         pass
-    return []
+    # フォールバック: model_registry から直接 (backend 到達不能時)
+    try:
+        from butly_core.llm.model_registry import get_presets_for_role
+        return [
+            {
+                "connection_id": p.connection_id,
+                "model_name": p.model_name,
+                "label": p.label,
+                "deprecated": p.deprecated,
+                "preview": p.preview,
+                "replacement": p.replacement,
+                "is_builtin_connection": True,
+                "source": "preset",
+            }
+            for p in get_presets_for_role(role)
+        ]
+    except Exception:
+        return []
+
+
+def _candidate_label(c: dict) -> str:
+    """候補 dict を表示用ラベル文字列に整形する。"""
+    icon = _CONNECTION_ICONS.get(c.get("connection_id"), "🔌")
+    base = f"{icon} {c.get('connection_id', '?')} / {c.get('model_name', '?')}"
+    if c.get("deprecated"):
+        base += "  ⚠ deprecated"
+    elif c.get("preview"):
+        base += "  (preview)"
+    return base
 
 
 def get_provider_label(model_name: str) -> str:
-    """モデル名からプロバイダーラベルを返す。"""
+    """モデル名からプロバイダーラベルを返す (legacy fallback 表示用)。"""
     if not model_name:
         return "❓ 不明"
     if model_name.startswith("gemini") or model_name.startswith("models/gemini"):
@@ -174,15 +217,58 @@ def _model_selector(label: str, current_value: str, candidates: list, key_prefix
     """
     モデル選択の共通ウィジェット。
     selectbox + 直接入力欄を表示し、最終的なモデル名を返す。
+
+    Parameters
+    ----------
+    candidates
+        list[dict] (新形式: /settings/model_candidates 由来) or list[str] (旧互換)。
+        dict の場合は ``{connection_id, model_name, label, deprecated, preview, ...}`` を期待。
     """
-    opts = list(candidates)
+    # 旧形式 (list[str]) 互換: dict 化して統一処理する
+    normalized: list[dict] = []
+    for c in candidates:
+        if isinstance(c, dict):
+            normalized.append(c)
+        elif isinstance(c, str) and c.strip():
+            normalized.append({"model_name": c, "connection_id": None, "label": c})
 
+    model_names = [c.get("model_name") for c in normalized if c.get("model_name")]
     # 現在値がリストになければ追加（過去に設定したカスタム値の保持）
-    if current_value and current_value not in opts:
-        opts.append(current_value)
+    if current_value and current_value not in model_names:
+        normalized.append({"model_name": current_value, "connection_id": None, "label": current_value})
+        model_names.append(current_value)
 
-    idx = opts.index(current_value) if current_value in opts else 0
-    selected = st.selectbox(label, opts, index=idx, key=f"{key_prefix}_select")
+    # selectbox には index を渡す (label は format_func で整形)
+    if not normalized:
+        # 候補ゼロ: 直接入力欄のみ
+        custom = st.text_input(
+            label,
+            value=current_value or "",
+            placeholder="例: gemini-2.5-pro / ollama/llama3.2",
+            key=f"{key_prefix}_custom_only",
+        )
+        return custom.strip()
+
+    try:
+        idx = model_names.index(current_value) if current_value in model_names else 0
+    except ValueError:
+        idx = 0
+    selected_idx = st.selectbox(
+        label,
+        options=list(range(len(normalized))),
+        index=idx,
+        key=f"{key_prefix}_select",
+        format_func=lambda i: _candidate_label(normalized[i]),
+    )
+    selected = normalized[selected_idx].get("model_name", "")
+
+    # deprecated 警告
+    if normalized[selected_idx].get("deprecated"):
+        repl = normalized[selected_idx].get("replacement")
+        if repl:
+            st.warning(f"⚠ {selected} は deprecated。代替: {repl}")
+        else:
+            st.warning(f"⚠ {selected} は deprecated。")
 
     # 直接入力欄
     custom = st.text_input(
@@ -193,11 +279,15 @@ def _model_selector(label: str, current_value: str, candidates: list, key_prefix
         label_visibility="visible",
     )
 
-    # 直接入力があればそちらを優先
     final = custom.strip() if custom.strip() else selected
 
-    # プロバイダー表示
-    st.caption(f"プロバイダー: {get_provider_label(final)}")
+    # connection_id 表示 (新形式 candidate 由来があれば優先)
+    sel_conn = normalized[selected_idx].get("connection_id")
+    if sel_conn and not custom.strip():
+        icon = _CONNECTION_ICONS.get(sel_conn, "🔌")
+        st.caption(f"接続: {icon} {sel_conn}")
+    else:
+        st.caption(f"プロバイダー: {get_provider_label(final)}")
 
     return final
 
@@ -714,53 +804,8 @@ def render_settings_screen():
 
         # --- セクション3: 各ロールのモデル選択 ---
         st.subheader("🧠 モデル割り当て")
-        st.caption("💡 ローカルLLM (Ollama) のモデルは自動検出されます。表示されない場合は接続テストを確認してください。")
-
-        # API プロバイダーのプリセット（ハードコード）
-        _API_PRESETS = {
-            "chat": [
-                "gemini-3.5-flash",
-                "gemini-3-flash-preview",
-                "gemini-3.1-pro-preview",
-                "gemini-3.1-flash-lite",
-                "gemini-2.5-pro",
-                "gemini-2.5-flash",
-                "gpt-4o",
-                "gpt-4o-mini",
-                "o3",
-                "o4-mini",
-                "grok-4.20-0309-reasoning",
-                "grok-4.20-0309-non-reasoning",
-                "grok-4-1-fast-reasoning",
-                "grok-4-1-fast-non-reasoning",
-            ],
-            "summary": [
-                "gemini-3.1-flash-lite",
-                "gemini-2.5-flash",
-                "gpt-4o-mini",
-                "grok-4-1-fast-non-reasoning",
-            ],
-            "gatekeeper": [
-                "gemini-3.1-flash-lite",
-                "gemini-2.5-flash-lite",
-                "gpt-4o-mini",
-                "grok-4-1-fast-non-reasoning",
-            ],
-            "embedding": [
-                "gemini-embedding-2",
-                "text-embedding-3-small",
-                "text-embedding-3-large",
-            ],
-        }
-
-        # Ollama モデル（動的取得）
-        _ollama_models_global = _fetch_ollama_models(api_url)
-
-        # 各ロールの候補リスト = APIプリセット + Ollama動的
-        def _get_candidates(role: str) -> list:
-            base = list(_API_PRESETS.get(role, []))
-            base += _ollama_models_global
-            return base
+        st.caption("💡 候補は backend (`/settings/model_candidates`) から取得します。"
+                   "Connection を追加すると Groq / Together などのモデルも自動で並びます。")
 
         ROLE_LABELS = {
             "chat": "Chat (メイン応答)",
@@ -773,11 +818,12 @@ def render_settings_screen():
         model_selections = {}
 
         for role in ["chat", "summary", "gatekeeper", "embedding"]:
-            current_model = provider_ai_cfg.get(role, {}).get("model_name", _API_PRESETS[role][0])
+            current_model = provider_ai_cfg.get(role, {}).get("model_name", "")
+            _candidates = _get_role_candidates(api_url, role)
             model_selections[role] = _model_selector(
                 label=ROLE_LABELS[role],
                 current_value=current_model,
-                candidates=_get_candidates(role),
+                candidates=_candidates,
                 key_prefix=f"provider_model_{role}",
             )
 
@@ -810,6 +856,109 @@ def render_settings_screen():
                         st.error(f"保存エラー: {save_resp.text}")
                 except Exception as e:
                     st.error(f"サーバー接続エラー: {e}")
+
+        st.divider()
+
+        # --- セクション3.5: Connection 管理 (Phase 3) ---
+        st.subheader("🔌 Connection 管理")
+        st.caption(
+            "OpenAI 互換 provider (Groq / Together / DeepInfra / OpenRouter / Ollama Remote 等) を "
+            "Connection エントリとして追加できます。built-in (google/openai/xai/ollama) は削除できません。"
+        )
+
+        with st.expander("既存 Connection 一覧", expanded=True):
+            try:
+                _conn_resp = requests.get(f"{api_url}/settings/connections", timeout=5)
+                _conns = _conn_resp.json().get("connections", []) if _conn_resp.ok else []
+            except Exception as e:
+                _conns = []
+                st.error(f"Connection 取得失敗: {e}")
+
+            for _c in _conns:
+                _cid = _c.get("id")
+                _icon = _CONNECTION_ICONS.get(_cid, "🔌")
+                _label = _c.get("label") or _cid
+                _builtin = _c.get("is_builtin")
+                _key_set = _c.get("api_key_set")
+                _key_env = _c.get("api_key_env")
+                cols = st.columns([3, 2, 2, 1, 1])
+                with cols[0]:
+                    badge = "🔒 built-in" if _builtin else "✏️ user"
+                    st.markdown(f"{_icon} **{_cid}** — {_label}  ·  {badge}")
+                    if _c.get("base_url"):
+                        st.caption(f"`{_c['base_url']}`  protocol=`{_c.get('protocol')}`")
+                with cols[1]:
+                    if _key_env:
+                        if _key_set:
+                            st.caption(f"🔑 {_key_env}: ✅")
+                        else:
+                            st.caption(f"🔑 {_key_env}: ❌ 未設定")
+                    else:
+                        st.caption("🔑 auth 不要")
+                with cols[2]:
+                    st.caption(f"埋め込み: {'対応' if _c.get('embeddings_supported') else '非対応'}")
+                with cols[3]:
+                    if st.button("📡 疎通", key=f"test_conn_{_cid}"):
+                        try:
+                            tr = requests.post(
+                                f"{api_url}/settings/test_connection",
+                                json={"connection_id": _cid},
+                                timeout=15,
+                            )
+                            res = tr.json() if tr.ok else {}
+                            if res.get("status") == "ok":
+                                st.success(f"✅ OK ({len(res.get('models') or [])} モデル)")
+                            else:
+                                st.error(f"❌ {res.get('message', tr.text)}")
+                        except Exception as e:
+                            st.error(f"接続エラー: {e}")
+                with cols[4]:
+                    if not _builtin:
+                        if st.button("🗑️", key=f"del_conn_{_cid}", help="削除"):
+                            try:
+                                dr = requests.delete(
+                                    f"{api_url}/settings/connections/{_cid}", timeout=5,
+                                )
+                                if dr.ok:
+                                    st.success(f"{_cid} を削除しました")
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error(dr.text)
+                            except Exception as e:
+                                st.error(str(e))
+
+        with st.expander("➕ 新規 Connection を追加 (OpenAI 互換)"):
+            new_id = st.text_input("ID (英数字+ハイフン)", key="new_conn_id", placeholder="例: groq")
+            new_label = st.text_input("表示名 (任意)", key="new_conn_label", placeholder="例: Groq")
+            new_base_url = st.text_input("Base URL", key="new_conn_base_url", placeholder="https://api.groq.com/openai/v1")
+            new_api_key_env = st.text_input("API キー env 変数名 (任意)", key="new_conn_api_env", placeholder="GROQ_API_KEY")
+            new_emb = st.checkbox("Embeddings 対応", value=False, key="new_conn_emb",
+                                  help="このプロバイダーが /embeddings をサポートする場合のみ ON")
+            if st.button("💾 Connection を追加", key="add_conn"):
+                payload = {
+                    "id": new_id.strip(),
+                    "protocol": "openai_compat",
+                    "base_url": new_base_url.strip() or None,
+                    "api_key_env": new_api_key_env.strip() or None,
+                    "label": new_label.strip() or None,
+                    "embeddings_supported": bool(new_emb),
+                }
+                if not payload["id"] or not payload["base_url"]:
+                    st.error("ID と Base URL は必須です。")
+                else:
+                    try:
+                        ar = requests.post(
+                            f"{api_url}/settings/connections", json=payload, timeout=5,
+                        )
+                        if ar.ok:
+                            st.success(f"{payload['id']} を追加しました。")
+                            st.cache_data.clear()
+                            st.rerun()
+                        else:
+                            st.error(ar.text)
+                    except Exception as e:
+                        st.error(f"サーバー接続エラー: {e}")
 
         st.divider()
 
@@ -1142,33 +1291,13 @@ def render_instance_settings_screen():
         config["sleeptime"] = {}
 
     # --- 全プロバイダーのモデル候補リスト ---
-    _gemini_models = [
-        'gemini-3.5-flash',
-        'gemini-3.1-pro-preview',
-        'gemini-3.1-flash-lite',
-        'gemini-2.5-pro',
-        'gemini-2.5-flash',
-        'gemini-2.5-flash-lite',
-    ]
-    _openai_models = [
-        'gpt-4o',
-        'gpt-4o-mini',
-        'o3',
-        'o4-mini',
-    ]
-    _xai_models = [
-        'grok-4.20-0309-reasoning',
-        'grok-4.20-0309-non-reasoning',
-        'grok-4-1-fast-reasoning',
-        'grok-4-1-fast-non-reasoning',
-    ]
-    _ollama_models = _fetch_ollama_models(api_url)
-    _all_models = _gemini_models + _openai_models + _xai_models + _ollama_models
-    _all_embedding_models = [
-        'gemini-embedding-2',
-        'text-embedding-3-small',
-        'text-embedding-3-large',
-    ] + _ollama_models
+    # Phase 3: ハードコード撤廃。backend `/settings/model_candidates?role=<role>` から
+    # role 毎に取得し、Connection 追加で増えるモデルもそのまま反映される。
+    _chat_candidates = _get_role_candidates(api_url, "chat")
+    _summary_candidates = _get_role_candidates(api_url, "summary")
+    _knowledge_candidates = _get_role_candidates(api_url, "knowledge")
+    _gatekeeper_candidates = _get_role_candidates(api_url, "gatekeeper")
+    _embedding_candidates = _get_role_candidates(api_url, "embedding")
 
     # =====================
     # タブ分割: 基本設定 / 詳細設定
@@ -1234,7 +1363,7 @@ def render_instance_settings_screen():
         # ---- Chat モデル（メイン応答） ----
         with st.expander("💬 Chat（メイン応答）", expanded=True):
             _chat_gen = config["chat"].get("generation_config", {})
-            model_name = _model_selector("モデル名", config["chat"].get("model_name", "gemini-3.5-flash"), _all_models, "inst_chat_model")
+            model_name = _model_selector("モデル名", config["chat"].get("model_name", "gemini-3.5-flash"), _chat_candidates, "inst_chat_model")
             temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_chat_gen.get("temperature", 1.0)), key="chat_temp")
             max_tokens = st.number_input("最大出力トークン数", min_value=1, value=int(_chat_gen.get("max_output_tokens", 8192)), key="chat_max_tokens")
 
@@ -1255,7 +1384,7 @@ def render_instance_settings_screen():
                 gk_temp = None
             else:
                 _gk_cur = config.get("gatekeeper", {})
-                gk_model_name = _model_selector("モデル名", _gk_cur.get("model_name", _global_ai.get("gatekeeper", {}).get("model_name", "")), _all_models, "inst_gk_model")
+                gk_model_name = _model_selector("モデル名", _gk_cur.get("model_name", _global_ai.get("gatekeeper", {}).get("model_name", "")), _gatekeeper_candidates, "inst_gk_model")
                 gk_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_gk_cur.get("generation_config", {}).get("temperature", 0.0)), key="gk_temp")
 
         # ---- Summary モデル（要約） ----
@@ -1268,7 +1397,7 @@ def render_instance_settings_screen():
                 sum_temp = None
             else:
                 _sum_cur = config.get("summary", {})
-                sum_model_name = _model_selector("モデル名", _sum_cur.get("model_name", _global_ai.get("summary", {}).get("model_name", "")), _all_models, "inst_sum_model")
+                sum_model_name = _model_selector("モデル名", _sum_cur.get("model_name", _global_ai.get("summary", {}).get("model_name", "")), _summary_candidates, "inst_sum_model")
                 sum_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_sum_cur.get("generation_config", {}).get("temperature", 0.3)), key="sum_temp")
 
         # ---- Knowledge モデル（知識抽出） ----
@@ -1281,7 +1410,7 @@ def render_instance_settings_screen():
                 know_temp = None
             else:
                 _know_cur = config.get("knowledge", {})
-                know_model_name = _model_selector("モデル名", _know_cur.get("model_name", _global_ai.get("knowledge", {}).get("model_name", "")), _all_models, "inst_know_model")
+                know_model_name = _model_selector("モデル名", _know_cur.get("model_name", _global_ai.get("knowledge", {}).get("model_name", "")), _knowledge_candidates, "inst_know_model")
                 know_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_know_cur.get("generation_config", {}).get("temperature", 0.7)), key="know_temp")
 
         # ---- Embedding モデル（ベクトル検索） ----
@@ -1294,7 +1423,7 @@ def render_instance_settings_screen():
                 emb_model_name = None
             else:
                 _emb_cur = config.get("embedding", {})
-                emb_model_name = _model_selector("モデル名", _emb_cur.get("model_name", _global_ai.get("embedding", {}).get("model_name", "")), _all_embedding_models, "inst_emb_model")
+                emb_model_name = _model_selector("モデル名", _emb_cur.get("model_name", _global_ai.get("embedding", {}).get("model_name", "")), _embedding_candidates, "inst_emb_model")
 
         st.divider()
         st.subheader("📚 記憶の参照範囲")

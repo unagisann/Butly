@@ -150,6 +150,9 @@ def normalize_ws_payload(raw_payload) -> ChatRequest:
         instance_name = raw_payload.get("instance_name", "00_master")
         use_google_search = raw_payload.get("use_google_search", False)
         use_web_search = raw_payload.get("use_web_search", False)
+        # Phase 3: per-request モデル切替 (UI/サードパーティ拡張向け)
+        model_name = raw_payload.get("model_name") or None
+        connection = raw_payload.get("connection") or None
 
         attachments = []
 
@@ -172,6 +175,8 @@ def normalize_ws_payload(raw_payload) -> ChatRequest:
             text=text,
             attachments=attachments,
             instance_name=instance_name,
+            model_name=model_name,
+            connection=connection,
             use_google_search=use_google_search,
             use_web_search=use_web_search,
         )
