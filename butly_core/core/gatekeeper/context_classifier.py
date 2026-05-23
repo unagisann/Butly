@@ -36,9 +36,9 @@ class ContextClassifier:
         else:
             # フォールバック: 既存の gatekeeper 設定を使用
             gk_config = AI_CONFIG.get("gatekeeper", {})
-            self.model_name = gk_config.get("model_name", "gemini-3.1-flash-lite-preview")
+            self.model_name = gk_config.get("model_name", "gemini-3.1-flash-lite")
             self.gatekeeper_config = gk_config if gk_config else {
-                "model_name": "gemini-3.1-flash-lite-preview",
+                "model_name": "gemini-3.1-flash-lite",
                 "generation_config": {"temperature": 0.0, "max_output_tokens": 256},
                 "safety_settings": [],
             }

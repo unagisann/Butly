@@ -25,7 +25,7 @@
 
     "AI_CONFIG": {
         "chat": {
-            "model_name": "gemini-3-flash-preview",
+            "model_name": "gemini-3.5-flash",
             "generation_config": {
                 "temperature": 1.0,
                 "top_p": 0.95,
@@ -40,7 +40,7 @@
             ]
         },
         "summary": {
-            "model_name": "gemini-3.1-flash-lite-preview",
+            "model_name": "gemini-3.1-flash-lite",
             "generation_config": { "temperature": 0.7 },
             "safety_settings": [
                 { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
@@ -60,10 +60,10 @@
             ]
         },
         "embedding": {
-            "model_name": "models/gemini-embedding-001"
+            "model_name": "gemini-embedding-2"
         },
         "gatekeeper": {
-            "model_name": "gemini-3.1-flash-lite-preview",
+            "model_name": "gemini-3.1-flash-lite",
             "generation_config": { "temperature": 0.0, "max_output_tokens": 512 },
             "safety_settings": [
                 { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },

@@ -2,7 +2,7 @@
 AI_CONFIG = {
     # 1. Chat Model (Main Brain)
     "chat": {
-        "model_name": "gemini-3-flash-preview", # Updated to Gemini 3 Preview as per user request
+        "model_name": "gemini-3.5-flash",  # stable: 旧 gemini-3-flash-preview から差し替え
         "generation_config": {
             "temperature": 0.7,
             "top_p": 0.95,
@@ -19,7 +19,7 @@ AI_CONFIG = {
     
     # 2. Summary Model (Cost-effective, good for long context)
     "summary": {
-        "model_name": "gemini-3.1-flash-lite-preview", 
+        "model_name": "gemini-3.1-flash-lite",  # stable: preview → stable へ昇格
         "generation_config": {
             "temperature": 0.3,
             "max_output_tokens": 4096,
@@ -49,13 +49,13 @@ AI_CONFIG = {
     
     # 4. Embedding Model (Vector search)
     "embedding": {
-        "model_name": "models/gemini-embedding-001",
+        "model_name": "gemini-embedding-2",  # 旧 models/gemini-embedding-001 から差し替え
         # Retrieval task type is usually set at call time
     },
     
     # 5. Gatekeeper Model (Tier classification, fast evaluation)
     "gatekeeper": {
-        "model_name": "gemini-3.1-flash-lite-preview",
+        "model_name": "gemini-3.1-flash-lite",  # stable: preview → stable へ昇格
         "generation_config": {
             "temperature": 0.0,      # 判定の一貫性を最大化
             "max_output_tokens": 512, # JSON出力に十分な量

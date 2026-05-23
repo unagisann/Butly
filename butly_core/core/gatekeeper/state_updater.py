@@ -25,9 +25,9 @@ class StateUpdater:
             self.model_name = AI_CONFIG["gatekeeper"]["model_name"]
             self.gatekeeper_config = AI_CONFIG["gatekeeper"]
         except KeyError:
-            self.model_name = "gemini-3.1-flash-lite-preview"
+            self.model_name = "gemini-3.1-flash-lite"
             self.gatekeeper_config = {
-                "model_name": "gemini-3.1-flash-lite-preview",
+                "model_name": "gemini-3.1-flash-lite",
                 "generation_config": {"temperature": 0.0, "max_output_tokens": 512},
                 "safety_settings": [],
             }

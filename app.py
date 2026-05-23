@@ -305,10 +305,10 @@ def get_active_chat_model(api_url: str, instance_name: str) -> str:
         resp = _requests.get(f"{api_url}/config", timeout=5)
         if resp.ok:
             global_cfg = resp.json()
-            return global_cfg.get("AI_CONFIG", {}).get("chat", {}).get("model_name", "gemini-3-flash-preview")
+            return global_cfg.get("AI_CONFIG", {}).get("chat", {}).get("model_name", "gemini-3.5-flash")
     except Exception:
         pass
-    return "gemini-3-flash-preview"  # 最終フォールバック
+    return "gemini-3.5-flash"  # 最終フォールバック
 
 # ==========================================
 # 🏠 ホーム画面 (Home Screen)
@@ -719,9 +719,9 @@ def render_settings_screen():
         # API プロバイダーのプリセット（ハードコード）
         _API_PRESETS = {
             "chat": [
+                "gemini-3.5-flash",
                 "gemini-3.1-pro-preview",
-                "gemini-3-flash-preview",
-                "gemini-3.1-flash-lite-preview",
+                "gemini-3.1-flash-lite",
                 "gemini-2.5-pro",
                 "gemini-2.5-flash",
                 "gpt-4o",
@@ -734,19 +734,19 @@ def render_settings_screen():
                 "grok-4-1-fast-non-reasoning",
             ],
             "summary": [
-                "gemini-3.1-flash-lite-preview",
+                "gemini-3.1-flash-lite",
                 "gemini-2.5-flash",
                 "gpt-4o-mini",
                 "grok-4-1-fast-non-reasoning",
             ],
             "gatekeeper": [
-                "gemini-3.1-flash-lite-preview",
+                "gemini-3.1-flash-lite",
                 "gemini-2.5-flash-lite",
                 "gpt-4o-mini",
                 "grok-4-1-fast-non-reasoning",
             ],
             "embedding": [
-                "models/gemini-embedding-001",
+                "gemini-embedding-2",
                 "text-embedding-3-small",
                 "text-embedding-3-large",
             ],
@@ -1124,7 +1124,7 @@ def render_instance_settings_screen():
         config["brain"] = {"readable_instances": ["self"]}
     if "chat" not in config:
         config["chat"] = {
-            "model_name": "gemini-3-flash-preview",
+            "model_name": "gemini-3.5-flash",
             "generation_config": {"temperature": 1.0, "top_p": 0.95, "top_k": 40, "max_output_tokens": 8192}
         }
     config["chat"].setdefault("generation_config", {"temperature": 1.0, "max_output_tokens": 8192})
@@ -1142,9 +1142,9 @@ def render_instance_settings_screen():
 
     # --- 全プロバイダーのモデル候補リスト ---
     _gemini_models = [
+        'gemini-3.5-flash',
         'gemini-3.1-pro-preview',
-        'gemini-3-flash-preview',
-        'gemini-3.1-flash-lite-preview',
+        'gemini-3.1-flash-lite',
         'gemini-2.5-pro',
         'gemini-2.5-flash',
         'gemini-2.5-flash-lite',
@@ -1164,7 +1164,7 @@ def render_instance_settings_screen():
     _ollama_models = _fetch_ollama_models(api_url)
     _all_models = _gemini_models + _openai_models + _xai_models + _ollama_models
     _all_embedding_models = [
-        'models/gemini-embedding-001',
+        'gemini-embedding-2',
         'text-embedding-3-small',
         'text-embedding-3-large',
     ] + _ollama_models
@@ -1233,7 +1233,7 @@ def render_instance_settings_screen():
         # ---- Chat モデル（メイン応答） ----
         with st.expander("💬 Chat（メイン応答）", expanded=True):
             _chat_gen = config["chat"].get("generation_config", {})
-            model_name = _model_selector("モデル名", config["chat"].get("model_name", "gemini-3-flash-preview"), _all_models, "inst_chat_model")
+            model_name = _model_selector("モデル名", config["chat"].get("model_name", "gemini-3.5-flash"), _all_models, "inst_chat_model")
             temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_chat_gen.get("temperature", 1.0)), key="chat_temp")
             max_tokens = st.number_input("最大出力トークン数", min_value=1, value=int(_chat_gen.get("max_output_tokens", 8192)), key="chat_max_tokens")
 

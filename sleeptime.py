@@ -505,7 +505,7 @@ class ButlySleeptime:
             instance_name = instance_path.name
             inst_cfg = self._get_instance_config(instance_name)
             summary_conf = self._resolve_conf(inst_cfg, "summary")
-            model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite-preview")
+            model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite")
             
             digest_file = instance_path / "mid_term_digest.txt"
             archive_digest_file = instance_path / "memory_archive" / "3_log" / "archive_digest.txt"
@@ -615,7 +615,7 @@ class ButlySleeptime:
             instance_name = instance_path.name
             inst_cfg = self._get_instance_config(instance_name)
             summary_conf = self._resolve_conf(inst_cfg, "summary")
-            model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite-preview")
+            model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite")
 
             loader = PromptLoader()
             prompt = loader.get(

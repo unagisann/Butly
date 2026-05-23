@@ -28,7 +28,8 @@ from butly_core.llm.base import BaseProvider
 
 # 明示的な非対応リスト（vision 非対応が判明したモデルのみ追加）
 VISION_UNSUPPORTED_MODELS = {
-    "gemini-3.1-flash-lite-preview",  # テキスト特化軽量モデル
+    "gemini-3.1-flash-lite",          # テキスト特化軽量モデル（stable）
+    "gemini-3.1-flash-lite-preview",  # テキスト特化軽量モデル（旧 preview 名・後方互換）
 }
 
 
