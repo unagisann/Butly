@@ -107,10 +107,13 @@ class GeminiProvider(BaseProvider):
             print(f"[GeminiProvider] Summarize Error: {e}")
             return "（要約作成に失敗）"
 
-    def embed(self, text: str) -> Optional[List[float]]:
-        """Gemini Embedding API でベクトルを生成する。"""
+    def embed(self, text: str, config: Optional[dict] = None) -> Optional[List[float]]:
+        """Gemini Embedding API でベクトルを生成する。
+
+        優先順位: config["model_name"] > AI_CONFIG["embedding"]["model_name"]
+        """
         from butly_core.config import AI_CONFIG
-        model_name = AI_CONFIG["embedding"]["model_name"]
+        model_name = (config or {}).get("model_name") or AI_CONFIG["embedding"]["model_name"]
         try:
             response = self.client.models.embed_content(
                 model=model_name,

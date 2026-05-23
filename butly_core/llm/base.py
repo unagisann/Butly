@@ -74,8 +74,17 @@ class BaseProvider(ABC):
         ...
 
     @abstractmethod
-    def embed(self, text: str) -> Optional[List[float]]:
-        """ベクトル埋め込み生成。RAG 検索のインデックス化に使用。"""
+    def embed(self, text: str, config: Optional[dict] = None) -> Optional[List[float]]:
+        """ベクトル埋め込み生成。RAG 検索のインデックス化に使用。
+
+        Parameters
+        ----------
+        text : str
+        config : dict | None
+            Optional. `{"model_name": "text-embedding-3-large", ...}` のような
+            role config 辞書。指定があればその model_name で embed する。
+            未指定なら Provider/Connection の default を使う。
+        """
         ...
 
     @abstractmethod
@@ -100,10 +109,10 @@ class BaseProvider(ABC):
         from starlette.concurrency import run_in_threadpool
         return await run_in_threadpool(self.summarize, conversation_text, config)
 
-    async def async_embed(self, text: str) -> Optional[List[float]]:
+    async def async_embed(self, text: str, config: Optional[dict] = None) -> Optional[List[float]]:
         """非同期版 embed。デフォルトは同期版をスレッドプールで実行。"""
         from starlette.concurrency import run_in_threadpool
-        return await run_in_threadpool(self.embed, text)
+        return await run_in_threadpool(self.embed, text, config)
 
     async def async_generate_stream(
         self,
