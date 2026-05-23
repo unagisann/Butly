@@ -478,36 +478,56 @@ def model_candidates(role: str, include_deprecated: bool = False):
 
     # 3. 動的取得 (/models 成功した connection だけ)
     for conn in list_connections():
-        if conn.protocol != "openai_compat":
-            continue
         # auth が必要なのに env 未設定なら skip
         if conn.api_key_env and not conn.resolve_api_key():
             continue
         # embedding role には embeddings_supported=True の connection だけ
         if role_lower == "embedding" and not conn.embeddings_supported:
             continue
-        try:
-            base = conn.resolve_base_url()
-            if not base:
+
+        if conn.protocol == "gemini_native":
+            # Gemini は SDK 経由で list_models
+            try:
+                from google import genai
+                api_key = conn.resolve_api_key()
+                if not api_key:
+                    continue
+                client = genai.Client(api_key=api_key)
+                for m in client.models.list():
+                    # SDK が返す name は "models/gemini-..." 形式
+                    mid = m.name
+                    if mid and mid.startswith("models/"):
+                        mid = mid[len("models/"):]
+                    if mid:
+                        _push(conn.id, mid, available=True)
+            except Exception:
+                # 1 connection 失敗で全体は止めない
                 continue
-            import urllib.request
-            url = base.rstrip("/") + "/models"
-            headers = {"Accept": "application/json"}
-            api_key = conn.resolve_api_key()
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            if conn.extra_headers:
-                for k, v in conn.extra_headers.items():
-                    headers[k] = v
-            req = urllib.request.Request(url, headers=headers, method="GET")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read())
-            for m in (data.get("data") or [])[:200]:
-                mid = m.get("id") if isinstance(m, dict) else None
-                if mid:
-                    _push(conn.id, mid, available=True)
-        except Exception:
-            # 1 connection 失敗で全体は止めない
-            continue
+
+        elif conn.protocol == "openai_compat":
+            # OpenAI 互換: /models を直叩き
+            try:
+                base = conn.resolve_base_url()
+                if not base:
+                    continue
+                import urllib.request
+                url = base.rstrip("/") + "/models"
+                headers = {"Accept": "application/json"}
+                api_key = conn.resolve_api_key()
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                if conn.extra_headers:
+                    for k, v in conn.extra_headers.items():
+                        headers[k] = v
+                req = urllib.request.Request(url, headers=headers, method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read())
+                for m in (data.get("data") or [])[:200]:
+                    mid = m.get("id") if isinstance(m, dict) else None
+                    if mid:
+                        _push(conn.id, mid, available=True)
+            except Exception:
+                # 1 connection 失敗で全体は止めない
+                continue
 
     return {"role": role_lower, "candidates": candidates}
