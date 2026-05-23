@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 class ButlyDatabase:
     def __init__(self, db_path="butly_memory.db"):
@@ -54,9 +54,19 @@ class ButlyDatabase:
                 cursor.execute("ALTER TABLE knowledge_cards ADD COLUMN is_pinned INTEGER DEFAULT 0;")
             except sqlite3.OperationalError:
                 pass
-                
+
             try:
                 cursor.execute("ALTER TABLE knowledge_cards ADD COLUMN is_archived INTEGER DEFAULT 0;")
+            except sqlite3.OperationalError:
+                pass
+
+            try:
+                cursor.execute("ALTER TABLE knowledge_cards ADD COLUMN usage_count INTEGER DEFAULT 0;")
+            except sqlite3.OperationalError:
+                pass
+
+            try:
+                cursor.execute("ALTER TABLE knowledge_cards ADD COLUMN last_counted_at TEXT;")
             except sqlite3.OperationalError:
                 pass
 
@@ -207,6 +217,39 @@ class ButlyDatabase:
             cursor.execute(query, params)
             conn.commit()
             return cursor.rowcount > 0
+
+    def record_card_usage(self, card_ids: list, dedup_hours: int = 6) -> list:
+        """RAG 経由で Brain に渡されたカードの usage_count をインクリメントする。
+
+        同一カードが dedup_hours 以内に既にカウントされていればスキップする。
+        Returns: 実際に usage_count を増やしたカードの id リスト。
+        """
+        card_ids = list(dict.fromkeys(card_ids))  # 入力側で重複除去
+        if not card_ids:
+            return []
+
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat(timespec="seconds")
+        threshold = (now_dt - timedelta(hours=dedup_hours)).isoformat(timespec="seconds")
+
+        placeholders = ",".join("?" for _ in card_ids)
+        query = f"""
+            UPDATE knowledge_cards
+            SET usage_count = usage_count + 1,
+                last_counted_at = ?
+            WHERE id IN ({placeholders})
+              AND (last_counted_at IS NULL OR last_counted_at < ?)
+            RETURNING id
+        """
+        params = [now, *card_ids, threshold]
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(query, params)
+            updated_ids = [row[0] for row in cursor.fetchall()]
+            conn.commit()
+
+        print(f"[usage_count] incremented {len(updated_ids)}/{len(card_ids)} cards")
+        return updated_ids
 
     def delete_card(self, card_id):
         """カードを削除する"""

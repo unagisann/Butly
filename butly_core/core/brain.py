@@ -179,6 +179,9 @@ class ButlyBrain:
             single = self._quick_vector_search_single_diag(
                 user_input, inst, limit, threshold, brain_conf,
             )
+            # usage_count 用に source_instance を付与（複数 instance 横断時の DB 振り分けに使う）
+            for r in single["results"]:
+                r["source_instance"] = inst
             all_results.extend(single["results"])
             all_raw_scores.extend(single["raw_scores"])
             all_final_scores.extend(single["final_scores"])

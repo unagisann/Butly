@@ -270,6 +270,8 @@ class MemoryBlockBuilder:
                 if c.get("episode"):
                     rag_lines.append(f"  (補足: {c['episode']})")
             blocks["rag_context"] = "\n".join(rag_lines)
+            blocks["rag_card_ids"] = [c["id"] for c in candidates]   # usage_count 用
+            blocks["rag_results_raw"] = candidates                    # debug_info 用
             print(f"[Gatekeeper] MemoryBlock: {tier}（RAG probe hits={len(candidates)}）")
         elif not need:
             print(f"[Gatekeeper] MemoryBlock: {tier}（need=null のため RAG スキップ）")

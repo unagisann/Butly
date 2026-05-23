@@ -92,6 +92,7 @@ SYSTEM_CONFIG = {
         "max_digest_chars": 8000,              # Phase 3: digest上限（超過分はアーカイブ）
         "relationship_update_interval_days": 7, # Phase 3: 関係性スナップショットの更新間隔（日数）
         "use_summarized_mid_term": True,  # ★NEW: True=要約注入 / False=RAW注入
+        "count_dedup_hours": 6,           # usage_count dedup 窓（同一カードの再カウント抑制時間）
     },
     "brain": {
         "search_limit": 3,

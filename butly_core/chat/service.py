@@ -64,6 +64,71 @@ def _build_prompt_full(
     return items
 
 
+def _record_usage_count(
+    *,
+    memory_blocks: dict,
+    brain,
+    instance_name: str,
+    instance_config: dict,
+    context_levels_cfg: dict | None,
+    log_prefix: str = "ChatService",
+) -> None:
+    """
+    RAG 経由で Brain に渡されたカードの usage_count をインクリメントする。
+
+    呼び出し条件:
+      - Brain 呼び出しが成功した直後 (例外なく応答を得た後)
+      - context_levels で rag セクションが "off" でない (off なら Brain にカードが渡っていない)
+
+    multi-instance (readable_instances 横断) 時は candidate に付く `source_instance`
+    に従って各インスタンスの DB に振り分けて記録する。
+    """
+    if not memory_blocks:
+        return
+
+    candidates = memory_blocks.get("rag_results_raw") or []
+    if not candidates:
+        return
+
+    # rag セクションが off なら Brain にカードは渡っていない → カウントしない
+    try:
+        from butly_core.core.gatekeeper.memory_builder import _resolve_levels
+        levels = _resolve_levels(context_levels_cfg, instance_config.get("context_order"))
+        if levels.get("rag", "high") == "off":
+            print(f"[{log_prefix}] usage_count: rag=off のため記録スキップ")
+            return
+    except Exception as _le:
+        print(f"[{log_prefix}] usage_count: rag level 解決失敗、デフォルトで記録継続: {_le}")
+
+    # source_instance ごとにグルーピング (None → 現在の instance_name)
+    by_inst: dict = {}
+    for c in candidates:
+        cid = c.get("id")
+        if not cid:
+            continue
+        src = c.get("source_instance") or instance_name
+        by_inst.setdefault(src, []).append(cid)
+
+    if not by_inst:
+        return
+
+    try:
+        from butly_core.core.database import ButlyDatabase
+        from butly_core.config import SYSTEM_CONFIG as _sc
+        dedup_hours = _sc.get("memory", {}).get("count_dedup_hours", 6)
+
+        for src_inst, ids in by_inst.items():
+            db_path = brain._get_db_path(src_inst)
+            if not db_path.exists():
+                print(f"[{log_prefix}] usage_count: DB が存在しないためスキップ ({src_inst})")
+                continue
+            ButlyDatabase(db_path=str(db_path)).record_card_usage(
+                ids, dedup_hours=dedup_hours
+            )
+    except Exception as _uce:
+        print(f"[{log_prefix}] usage_count 更新エラー（応答には影響なし）: {_uce}")
+
+
 def _save_debug_log(
     instance_dir: Path,
     payload: dict,
@@ -369,6 +434,16 @@ class ChatService:
         if state_delta:
             session_state.apply_delta(state_delta)
             gk_result["state_delta"] = state_delta
+
+        # RAG カードの usage_count インクリメント（Brain 成功時のみ到達）
+        _record_usage_count(
+            memory_blocks=memory_blocks,
+            brain=brain,
+            instance_name=instance_name,
+            instance_config=instance_config,
+            context_levels_cfg=context_levels_cfg,
+            log_prefix="ChatService",
+        )
 
         _t_gen_end = time.time()
         _t_total = time.time() - _t_start
@@ -721,6 +796,16 @@ class ChatService:
         if state_delta:
             session_state.apply_delta(state_delta)
             gk_result["state_delta"] = state_delta
+
+        # RAG カードの usage_count インクリメント（Stream 成功時のみ到達）
+        _record_usage_count(
+            memory_blocks=memory_blocks,
+            brain=brain,
+            instance_name=instance_name,
+            instance_config=instance_config,
+            context_levels_cfg=context_levels_cfg,
+            log_prefix="ChatService.stream",
+        )
 
         # トークン推定
         def _estimate_tokens(text: str) -> int:
