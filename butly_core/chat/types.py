@@ -52,6 +52,10 @@ class ChatRequest(BaseModel):
     attachments: List[Attachment] = []
     instance_name: str = "00_master"
     model_name: Optional[str] = None
+    # Phase 2: provider/connection を明示するためのオプション。
+    # 未指定なら model_name から推定 (旧形式互換)。
+    # user 定義 connection (Groq 等) を指定する場合は必須。
+    connection: Optional[str] = None
     use_rag: bool = True
     use_google_search: bool = False
     use_web_search: bool = False

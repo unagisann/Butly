@@ -1,7 +1,12 @@
 # AI Model Configuration
+#
+# 各 role の dict は ``connection`` (built-in: google/openai/xai/ollama または
+# user 定義 LLM_CONNECTIONS) と ``model_name`` のペアで Provider を決定する。
+# ``connection`` 省略時は ``model_name`` の prefix から推定される (旧形式互換)。
 AI_CONFIG = {
     # 1. Chat Model (Main Brain)
     "chat": {
+        "connection": "google",
         "model_name": "gemini-3.5-flash",  # stable: 旧 gemini-3-flash-preview から差し替え
         "generation_config": {
             "temperature": 0.7,
@@ -19,6 +24,7 @@ AI_CONFIG = {
     
     # 2. Summary Model (Cost-effective, good for long context)
     "summary": {
+        "connection": "google",
         "model_name": "gemini-3.1-flash-lite",  # stable: preview → stable へ昇格
         "generation_config": {
             "temperature": 0.3,
@@ -34,7 +40,8 @@ AI_CONFIG = {
     
     # 3. Knowledge Model (High reasoning for distillation)
     "knowledge": {
-        "model_name": "gemini-3.1-pro-preview", 
+        "connection": "google",
+        "model_name": "gemini-3.1-pro-preview",
         "generation_config": {
             "temperature": 0.7, # Consistent output preferred
             "max_output_tokens": 8192,
@@ -49,12 +56,14 @@ AI_CONFIG = {
     
     # 4. Embedding Model (Vector search)
     "embedding": {
+        "connection": "google",
         "model_name": "gemini-embedding-2",  # 旧 models/gemini-embedding-001 から差し替え
         # Retrieval task type is usually set at call time
     },
     
     # 5. Gatekeeper Model (Tier classification, fast evaluation)
     "gatekeeper": {
+        "connection": "google",
         "model_name": "gemini-3.1-flash-lite",  # stable: preview → stable へ昇格
         "generation_config": {
             "temperature": 0.0,      # 判定の一貫性を最大化
@@ -154,6 +163,111 @@ def _recursive_update(base_dict, update_dict):
         else:
             base_dict[key] = value
 
+
+def _normalize_ai_config(ai_config: dict) -> None:
+    """AI_CONFIG の各 role を Phase 2 形式に正規化する。
+
+    処理内容:
+      1. ``connection`` 未指定なら ``model_name`` から推定して補完
+      2. ``connection`` が built-in でかつ ``model_name`` の prefix と不整合な場合は
+         推定結果で上書き (ユーザーが user_config.json で model_name だけ
+         書き換えたケースに対応)
+      3. 推定不能ならログだけ出して放置 (Provider 呼び出し時に検出)
+
+    user 定義 connection (LLM_CONNECTIONS で登録した Groq 等) は推定できないので
+    そのまま尊重する (built-in との区別で判定)。
+
+    import 循環を避けるため遅延 import。
+    """
+    # 遅延 import (model_registry / connections は config.py を import してはいけない)
+    from butly_core.llm.model_registry import infer_connection_id
+    from butly_core.llm.connections import is_builtin_connection
+
+    for role, cfg in ai_config.items():
+        if not isinstance(cfg, dict):
+            continue
+        model_name = cfg.get("model_name")
+        if not model_name:
+            continue
+        existing = cfg.get("connection")
+        inferred = infer_connection_id(model_name)
+
+        if not existing:
+            if inferred:
+                cfg["connection"] = inferred
+            else:
+                print(
+                    f"[Config] role={role!r} model_name={model_name!r} の "
+                    f"connection を推定できませんでした。明示的に "
+                    f"\"connection\" を指定してください。"
+                )
+            continue
+
+        # 既存 connection と推定結果が異なるケース
+        if inferred and inferred != existing and is_builtin_connection(existing):
+            # built-in 同士の不整合 → user は model_name 上書きで意図が変わった
+            # と判断して推定を優先する
+            print(
+                f"[Config] role={role!r} connection={existing!r} と "
+                f"model_name={model_name!r} の整合が取れません。"
+                f"推定 connection {inferred!r} で置き換えます "
+                f"(明示が必要なら user_config.json で connection を指定してください)。"
+            )
+            cfg["connection"] = inferred
+
+
+def _register_user_connections(connections_list) -> None:
+    """user_config.json の LLM_CONNECTIONS をレジストリに登録する。
+
+    フォーマット (list of dict):
+      [
+        {"id": "groq", "protocol": "openai_compat",
+         "base_url": "https://api.groq.com/openai/v1",
+         "api_key_env": "GROQ_API_KEY", "label": "Groq"},
+        ...
+      ]
+    """
+    if not isinstance(connections_list, list):
+        print(f"[Config] LLM_CONNECTIONS は list で指定してください (got {type(connections_list).__name__})")
+        return
+
+    from butly_core.llm.connections import (  # 遅延 import
+        Connection, is_builtin_connection, register_connection,
+    )
+
+    for entry in connections_list:
+        if not isinstance(entry, dict):
+            print(f"[Config] LLM_CONNECTIONS の各要素は dict であるべきです: {entry!r}")
+            continue
+        cid = entry.get("id")
+        protocol = entry.get("protocol")
+        if not cid or not protocol:
+            print(f"[Config] LLM_CONNECTIONS エントリに id/protocol が必須: {entry!r}")
+            continue
+        if is_builtin_connection(cid):
+            print(f"[Config] built-in connection は上書き不可: {cid!r}")
+            continue
+        try:
+            conn = Connection(
+                id=cid,
+                protocol=protocol,
+                base_url=entry.get("base_url"),
+                base_url_env=entry.get("base_url_env"),
+                api_key_env=entry.get("api_key_env"),
+                api_key_fallback_envs=tuple(entry.get("api_key_fallback_envs", ())),
+                label=entry.get("label"),
+                extra_headers=dict(entry.get("extra_headers") or {}),
+                embeddings_supported=entry.get("embeddings_supported", True),
+                embedding_model_env=entry.get("embedding_model_env"),
+                default_embedding_model=entry.get("default_embedding_model"),
+                model_name_strip_prefix=entry.get("model_name_strip_prefix"),
+            )
+            register_connection(conn, overwrite_user=True)
+            print(f"[Config] Registered user LLM connection: {cid}")
+        except Exception as e:
+            print(f"[Config] Failed to register connection {cid!r}: {e}")
+
+
 USER_CONFIG_PATH = Path(__file__).parent.parent / "user_config.json"
 if USER_CONFIG_PATH.exists():
     try:
@@ -163,6 +277,16 @@ if USER_CONFIG_PATH.exists():
                 _recursive_update(AI_CONFIG, user_config["AI_CONFIG"])
             if "SYSTEM_CONFIG" in user_config:
                 _recursive_update(SYSTEM_CONFIG, user_config["SYSTEM_CONFIG"])
+            if "LLM_CONNECTIONS" in user_config:
+                _register_user_connections(user_config["LLM_CONNECTIONS"])
         print("[Config] Loaded user_config.json")
     except Exception as e:
         print(f"[Config] Failed to load user_config.json: {e}")
+
+# user_config.json マージ後・instance_config 読み込み前に AI_CONFIG を normalize する。
+# 旧形式 (model_name only) で書かれた role に connection を補完。
+# user_config.json が無い場合も default AI_CONFIG に connection が入っているので no-op。
+try:
+    _normalize_ai_config(AI_CONFIG)
+except Exception as e:
+    print(f"[Config] _normalize_ai_config failed: {e}")

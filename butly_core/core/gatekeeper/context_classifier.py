@@ -98,7 +98,9 @@ class ContextClassifier:
 
         try:
             from butly_core.llm.factory import ProviderFactory
-            provider = ProviderFactory.create(model_name)
+            # Phase 2: gk_config が dict 全体 (connection + model_name + ...) を含むので
+            # それを Factory に渡せば ModelRef に正規化される。fallback で model_name のみ。
+            provider = ProviderFactory.create(gk_config if gk_config.get("model_name") else model_name)
             raw_text = provider.classify(prompt, gk_config)
             result = self._parse_response(raw_text, user_input, override_config=override_config)
         except Exception as e:

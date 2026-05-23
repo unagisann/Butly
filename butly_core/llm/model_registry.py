@@ -168,19 +168,25 @@ def resolve_role_model_ref(
 ) -> ModelRef:
     """``AI_CONFIG[role]`` 形式の dict から ModelRef を解決する。
 
-    優先順位:
-      1. role_config["connection"] + role_config["model_name"]
-      2. role_config["model_name"] (connection は推定)
-      3. fallback_model_name + fallback_connection_id
+    優先順位 (connection):
+      1. role_config["connection"] (明示) — 最優先
+      2. role_config["model_name"] からの prefix 推定
+      3. fallback_connection_id
+
+    優先順位 (model_name):
+      1. role_config["model_name"]
+      2. fallback_model_name
     """
     model_name = (role_config or {}).get("model_name") or fallback_model_name
-    connection_id = (role_config or {}).get("connection") or fallback_connection_id
+    explicit_connection_id = (role_config or {}).get("connection")
 
     if not model_name:
         raise ValueError("model_name not found in role_config nor fallback")
 
+    # 明示があれば fallback より優先。
+    # 明示がなければ normalize_model_ref が prefix 推定し、それでも駄目なら fallback。
     return normalize_model_ref(
-        {"connection": connection_id, "model_name": model_name},
+        {"connection": explicit_connection_id, "model_name": model_name},
         default_connection_id=fallback_connection_id,
     )
 

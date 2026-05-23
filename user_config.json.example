@@ -3,18 +3,27 @@
         "Butly ユーザー設定ファイル",
         "config.py のデフォルト値をオーバーライドします。",
         "",
-        "■ プロバイダー自動判定（model_name のプレフィックスで決定）:",
-        "  Gemini  → gemini-* / models/gemini-*   (GOOGLE_API_KEY 必要)",
-        "  OpenAI  → gpt-* / o1 / o3 / o4         (OPENAI_API_KEY 必要)",
-        "  xAI     → grok-* / xai/*               (XAI_API_KEY 必要)",
-        "  Ollama  → ollama/*                       (ローカル実行)",
+        "■ Phase 2 新形式: connection + model_name のペアで Provider を決定。",
+        "  例: \"chat\": {\"connection\": \"openai\", \"model_name\": \"gpt-4o\"}",
         "",
-        "■ 各ロールで異なるプロバイダーを混在させることも可能です。",
-        "  例: chat=OpenAI, embedding=Gemini, gatekeeper=Ollama",
+        "■ Built-in connection (常駐):",
+        "  google  : Gemini native       (GEMINI_API_KEY / GOOGLE_API_KEY)",
+        "  openai  : OpenAI Chat / Embed (OPENAI_API_KEY, OPENAI_BASE_URL で proxy 可)",
+        "  xai     : xAI Grok (OpenAI 互換, XAI_API_KEY)",
+        "  ollama  : Ollama local (OLLAMA_BASE_URL, 認証不要)",
+        "",
+        "■ User 定義 connection は LLM_CONNECTIONS で追加 (下の Groq 例参照)。",
+        "  Groq / Together / DeepInfra / OpenRouter などの OpenAI 互換 provider は",
+        "  Connection エントリだけで使えます (Provider クラス追加不要)。",
+        "",
+        "■ 旧形式 (model_name only) も互換動作: prefix から connection を自動推定。",
+        "  例: \"chat\": {\"model_name\": \"gpt-4o\"} → connection=openai に推定",
+        "",
+        "■ 各ロールで異なる connection を混在させることも可能。",
+        "  例: chat=openai, embedding=google, gatekeeper=ollama",
         "",
         "■ APIキーは設定画面(LLMプロバイダー タブ)から保存できます。",
-        "■ Ollama接続先はLLM_PROVIDERS.ollama.base_urlで変更可能です。",
-        "■ OpenAI reasoning モデル (o1/o3/o4) は reasoning_effort を設定可能です。"
+        "■ OpenAI reasoning モデル (o1/o3/o4) は reasoning_effort を設定可能。"
     ],
 
     "LLM_PROVIDERS": {
@@ -23,8 +32,29 @@
         }
     },
 
+    "_LLM_CONNECTIONS_example": [
+        {
+            "_comment": "Groq (OpenAI 互換) を Butly に追加する例。このキーを LLM_CONNECTIONS にリネームして使用。",
+            "id": "groq",
+            "protocol": "openai_compat",
+            "base_url": "https://api.groq.com/openai/v1",
+            "api_key_env": "GROQ_API_KEY",
+            "label": "Groq",
+            "embeddings_supported": false
+        },
+        {
+            "id": "ollama-remote",
+            "protocol": "openai_compat",
+            "base_url": "http://192.168.1.50:11434/v1",
+            "api_key_env": null,
+            "label": "Ollama Remote",
+            "default_embedding_model": "nomic-embed-text"
+        }
+    ],
+
     "AI_CONFIG": {
         "chat": {
+            "connection": "google",
             "model_name": "gemini-3.5-flash",
             "generation_config": {
                 "temperature": 1.0,
@@ -40,6 +70,7 @@
             ]
         },
         "summary": {
+            "connection": "google",
             "model_name": "gemini-3.1-flash-lite",
             "generation_config": { "temperature": 0.7 },
             "safety_settings": [
@@ -50,6 +81,7 @@
             ]
         },
         "knowledge": {
+            "connection": "google",
             "model_name": "gemini-3.1-pro-preview",
             "generation_config": { "temperature": 1.0 },
             "safety_settings": [
@@ -60,9 +92,11 @@
             ]
         },
         "embedding": {
+            "connection": "google",
             "model_name": "gemini-embedding-2"
         },
         "gatekeeper": {
+            "connection": "google",
             "model_name": "gemini-3.1-flash-lite",
             "generation_config": { "temperature": 0.0, "max_output_tokens": 512 },
             "safety_settings": [

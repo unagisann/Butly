@@ -180,12 +180,12 @@ class ButlySleeptime:
             if instance_name:
                 inst_cfg = self._get_instance_config(instance_name)
                 emb_conf = self._resolve_conf(inst_cfg, "embedding")
-                model_name = emb_conf.get("model_name", AI_CONFIG["embedding"]["model_name"])
             else:
-                model_name = AI_CONFIG["embedding"]["model_name"]
-            provider = ProviderFactory.create(model_name)
+                emb_conf = AI_CONFIG["embedding"]
+            # Phase 2: dict 全体 (connection + model_name) を Factory に渡す
+            provider = ProviderFactory.create(emb_conf)
 
-            result = self._robust_api_call(lambda: provider.embed(text))
+            result = self._robust_api_call(lambda: provider.embed(text, config=emb_conf))
             return result
         except Exception as e:
             print(f"[Embedding Error] {e}")
@@ -230,7 +230,8 @@ class ButlySleeptime:
         )
         try:
             from butly_core.llm.factory import ProviderFactory
-            provider = ProviderFactory.create(k_conf["model_name"])
+            # Phase 2: dict 全体 (connection + model_name) を Factory に渡す
+            provider = ProviderFactory.create(k_conf)
 
             def _call():
                 return provider.classify(prompt, k_conf)
@@ -473,10 +474,12 @@ class ButlySleeptime:
         return chunks
 
     # --- Mid-term Summaries (Phase 3) ---
-    def _get_provider(self, model_name=None):
-        """指定モデル名の Provider を取得する。"""
+    def _get_provider(self, model=None):
+        """Provider を取得する (str / dict / ModelRef 受付)。"""
         from butly_core.llm.factory import ProviderFactory
-        return ProviderFactory.create(model_name or AI_CONFIG["summary"]["model_name"])
+        if model is None:
+            model = AI_CONFIG["summary"]
+        return ProviderFactory.create(model)
 
     def _generate_daily_digest(self, instance_path: Path, new_text: str):
         """

@@ -123,6 +123,40 @@ class OpenAICompatAdapter(BaseProvider):
         )
         return self._strip(m)
 
+    def _to_chat_completion_conf(
+        self,
+        config: dict,
+        *,
+        default_temperature: float = 0.7,
+    ) -> dict:
+        """summarize / classify の flat config を build_chat_completion_kwargs 用の
+        chat_conf 形式 (model_name + generation_config) に正規化する。
+
+        summarize は `temperature` を flat に置く流儀。
+        classify は `generation_config.temperature` 流儀。両方を吸収する。
+        """
+        gen = dict(config.get("generation_config") or {})
+
+        # flat な temperature を generation_config 側に持ち込む
+        if "temperature" not in gen and "temperature" in config:
+            gen["temperature"] = config["temperature"]
+        gen.setdefault("temperature", default_temperature)
+
+        # reasoning_effort が flat か generation_config 内かを吸収
+        reasoning_effort = (
+            config.get("reasoning_effort")
+            or gen.get("reasoning_effort")
+        )
+
+        normalized: dict[str, Any] = {
+            "model_name": config.get("model_name"),
+            "generation_config": gen,
+        }
+        if reasoning_effort is not None:
+            normalized["reasoning_effort"] = reasoning_effort
+
+        return normalized
+
     def _resolve_embedding_model(self, config: Optional[dict]) -> str:
         """embed model を優先順位に従って解決する。
 
@@ -163,14 +197,16 @@ class OpenAICompatAdapter(BaseProvider):
         )
         try:
             model = self._resolve_chat_model(config)
-            kwargs: dict[str, Any] = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": config.get("temperature", 0.3),
-            }
-            max_out = config.get("generation_config", {}).get("max_output_tokens")
-            if max_out:
-                kwargs["max_tokens"] = max_out
+            messages = [{"role": "user", "content": prompt}]
+            # reasoning model (o1/o3/o4) を summary に割り当てても動くよう
+            # build_chat_completion_kwargs に通す
+            normalized_conf = self._to_chat_completion_conf(
+                config, default_temperature=0.3,
+            )
+            kwargs = compat.build_chat_completion_kwargs(
+                normalized_conf, messages, model_name=model,
+            )
+            kwargs["model"] = model
             resp = self.client.chat.completions.create(**kwargs)
             return resp.choices[0].message.content.strip() if resp.choices else "要約なし"
         except Exception as e:
@@ -194,16 +230,16 @@ class OpenAICompatAdapter(BaseProvider):
 
     def classify(self, prompt: str, config: dict) -> str:
         try:
-            _gen = config.get("generation_config", {})
             model = self._resolve_chat_model(config)
-            kwargs: dict[str, Any] = {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "temperature": _gen.get("temperature", 0.0),
-            }
-            max_out = _gen.get("max_output_tokens")
-            if max_out:
-                kwargs["max_tokens"] = max_out
+            messages = [{"role": "user", "content": prompt}]
+            # classify でも reasoning model 対応のため build_chat_completion_kwargs 経由
+            normalized_conf = self._to_chat_completion_conf(
+                config, default_temperature=0.0,
+            )
+            kwargs = compat.build_chat_completion_kwargs(
+                normalized_conf, messages, model_name=model,
+            )
+            kwargs["model"] = model
             resp = self.client.chat.completions.create(**kwargs)
             return resp.choices[0].message.content if resp.choices else ""
         except Exception as e:
@@ -236,7 +272,10 @@ class OpenAICompatAdapter(BaseProvider):
         )
 
         chat_conf = compat.merge_chat_config(AI_CONFIG["chat"], override_config)
-        model_name = self._strip(chat_conf.get("model_name") or self.default_model_name or "gpt-4o")
+        # default_model_name (factory が ChatService の選択をキャプチャしたもの) を
+        # AI_CONFIG / instance_config より優先する。
+        # request.model_name で per-request 切替された場合の整合性確保。
+        model_name = self._strip(self.default_model_name or chat_conf.get("model_name") or "gpt-4o")
 
         _debug_messages = compat.build_debug_messages(messages)
 
@@ -287,7 +326,8 @@ class OpenAICompatAdapter(BaseProvider):
         )
 
         chat_conf = compat.merge_chat_config(AI_CONFIG["chat"], override_config)
-        model_name = self._strip(chat_conf.get("model_name") or self.default_model_name or "gpt-4o")
+        # default_model_name 優先 (generate と同じ理由)
+        model_name = self._strip(self.default_model_name or chat_conf.get("model_name") or "gpt-4o")
         _debug_messages = compat.build_debug_messages(messages)
 
         debug_data = {

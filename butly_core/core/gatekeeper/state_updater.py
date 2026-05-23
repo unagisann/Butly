@@ -77,7 +77,8 @@ class StateUpdater:
 
         try:
             from butly_core.llm.factory import ProviderFactory
-            provider = ProviderFactory.create(model_name)
+            # Phase 2: dict (connection + model_name) を Factory に渡す
+            provider = ProviderFactory.create(gk_config if gk_config.get("model_name") else model_name)
             raw_text = provider.classify(prompt, gk_config)
             result = self._parse_response(raw_text)
         except Exception as e:

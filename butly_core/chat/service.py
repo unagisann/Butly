@@ -24,11 +24,23 @@ from starlette.concurrency import run_in_threadpool
 
 
 def _is_gemini_model(model_name: str) -> bool:
-    """モデル名が Gemini かどうかを判定する"""
+    """モデル名が Gemini かどうかを判定する (旧 API - 後方互換)。
+
+    新コードでは ``model_ref.connection_id == "google"`` を直接判定すること。
+    """
     if not model_name:
         return True  # デフォルトは Gemini
     lower = model_name.lower()
     return lower.startswith("gemini") or lower.startswith("models/gemini")
+
+
+def _uses_google_connection(connection_id: str) -> bool:
+    """connection_id が Google (gemini_native protocol) かを判定する。
+
+    Phase 2: model_name prefix 判定の代わりに connection で分岐する。
+    Web 検索など Gemini 固有経路のスキップ条件に使う。
+    """
+    return connection_id == "google"
 
 
 def _build_prompt_full(
@@ -62,6 +74,53 @@ def _build_prompt_full(
     if user_input:
         items.append({"role": "user", "content": user_input})
     return items
+
+
+def _resolve_chat_model_ref(
+    instance_config: dict,
+    request,
+    ai_config_chat: dict,
+):
+    """ChatService 用の chat ModelRef 解決ロジック。
+
+    優先順位:
+      1. request.connection / request.model_name (per-request override)
+      2. instance_config.chat (.connection + .model_name)
+      3. AI_CONFIG.chat (.connection + .model_name)
+
+    request.model_name だけが指定され connection が省略された場合は、
+    指定モデル名から再推定する (instance_config の古い connection を握りつぶす)。
+    """
+    from butly_core.llm.model_registry import resolve_role_model_ref
+
+    # AI_CONFIG.chat と instance_config.chat をマージ (instance 優先)
+    merged: dict = dict(ai_config_chat or {})
+    if instance_config and isinstance(instance_config.get("chat"), dict):
+        # 浅マージで十分 (provider/model_name は scalar)
+        for k, v in instance_config["chat"].items():
+            merged[k] = v
+
+    # request 側の override を適用
+    requested_model = getattr(request, "model_name", None)
+    requested_connection = getattr(request, "connection", None)
+
+    if requested_model:
+        merged = dict(merged)
+        merged["model_name"] = requested_model
+        if requested_connection:
+            merged["connection"] = requested_connection
+        else:
+            # model_name 変更時は古い connection を捨てて推定し直す
+            merged.pop("connection", None)
+    elif requested_connection:
+        merged = dict(merged)
+        merged["connection"] = requested_connection
+
+    return resolve_role_model_ref(
+        merged,
+        fallback_model_name=ai_config_chat.get("model_name") if ai_config_chat else None,
+        fallback_connection_id=ai_config_chat.get("connection") if ai_config_chat else None,
+    )
 
 
 def _record_usage_count(
@@ -307,13 +366,13 @@ class ChatService:
         _t_mem_end = time.time()
 
         # --- 6. Provider 選択と応答生成 ---
-        # インスタンス設定 > リクエスト指定 > グローバル設定 の優先順で model_name を決定
-        model_name = (
-            instance_config.get("chat", {}).get("model_name")
-            or request.model_name
-            or AI_CONFIG["chat"]["model_name"]
+        # ModelRef (connection + model_name) で Provider を決定
+        model_ref = _resolve_chat_model_ref(
+            instance_config, request, AI_CONFIG["chat"],
         )
-        provider = ProviderFactory.create(model_name)
+        provider = ProviderFactory.create(model_ref)
+        model_name = model_ref.model_name
+        connection_id = model_ref.connection_id
         has_attachments = bool(request.attachments)
 
         # vision 非対応チェック
@@ -334,10 +393,12 @@ class ChatService:
         else:
             print("[ChatService] RAG: なし（Gatekeeper 判断によりスキップ）")
 
-        # --- 5.5 Web検索（非Gemini + 検索ON時） ---
+        # --- 5.5 Web検索（非 Google + 検索ON時） ---
+        # Google (Gemini) は SDK 側の grounding tool を使うのでここはスキップ。
+        # それ以外の connection は汎用検索モジュールで Web 検索を行う。
         web_search_context = ""
         web_sources = []
-        if request.use_web_search and not _is_gemini_model(model_name):
+        if request.use_web_search and not _uses_google_connection(connection_id):
             from butly_core.search import create_search_provider
             search_provider = create_search_provider(chat_model=model_name)
             if search_provider.is_available():
@@ -522,7 +583,8 @@ class ChatService:
             "prompt_full": provider_debug.get("messages_full", []),
             "raw_response": provider_debug.get("raw_response", result.text),
             "provider": type(provider).__name__,
-            "model": instance_config.get("chat", {}).get("model_name", ""),
+            "connection_id": connection_id,
+            "model": model_name,
         }
 
         # Gemini 固有フィールドがあれば追加
@@ -659,13 +721,13 @@ class ChatService:
         )
         _t_mem_end = time.time()
 
-        # Provider
-        model_name = (
-            instance_config.get("chat", {}).get("model_name")
-            or request.model_name
-            or AI_CONFIG["chat"]["model_name"]
+        # Provider (ModelRef ルート: connection + model_name)
+        model_ref = _resolve_chat_model_ref(
+            instance_config, request, AI_CONFIG["chat"],
         )
-        provider = ProviderFactory.create(model_name)
+        provider = ProviderFactory.create(model_ref)
+        model_name = model_ref.model_name
+        connection_id = model_ref.connection_id
         has_attachments = bool(request.attachments)
 
         if has_attachments and not provider.supports_vision(model_name):
@@ -674,10 +736,10 @@ class ChatService:
                    "recoverable": False}
             return
 
-        # Web search (非 Gemini)
+        # Web search (非 Google connection のとき汎用検索を実行)
         web_search_context = ""
         web_sources = []
-        if request.use_web_search and not _is_gemini_model(model_name):
+        if request.use_web_search and not _uses_google_connection(connection_id):
             from butly_core.search import create_search_provider
             search_provider = create_search_provider(chat_model=model_name)
             if search_provider.is_available():
@@ -853,6 +915,7 @@ class ChatService:
             "prompt": [], "prompt_full": [],
             "raw_response": full_text,
             "provider": type(provider).__name__,
+            "connection_id": connection_id,
             "model": model_name,
         }
         if provider_debug.get("system_instruction"):

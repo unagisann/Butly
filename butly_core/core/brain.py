@@ -35,10 +35,22 @@ class ButlyBrain:
         return self.instances_dir / instance_name / self.db_name
 
     # --- Provider アクセス ---
-    def _get_provider(self, model_name=None):
-        """指定モデル名（またはデフォルト chat モデル）の Provider を取得する"""
+    def _get_provider(self, model=None):
+        """Provider を取得する。
+
+        引数として受け付ける形式 (Phase 2):
+          - None: デフォルト chat モデル (self.model_name) を使う (旧形式互換)
+          - str: 旧 API "gpt-4o" 等
+          - dict: 新 API {"connection": "openai", "model_name": "gpt-4o"} or
+                 {"model_name": "gpt-4o"} (旧形式)
+          - ModelRef: 型安全な参照
+
+        ProviderFactory に正規化を委譲する。
+        """
         from butly_core.llm.factory import ProviderFactory
-        return ProviderFactory.create(model_name or self.model_name)
+        if model is None:
+            model = self.model_name
+        return ProviderFactory.create(model)
 
     def _calculate_cosine_similarity(self, vec1, vec2):
         if vec1 is None or vec2 is None: return 0.0
@@ -61,9 +73,11 @@ class ButlyBrain:
 
     def get_embedding(self, text):
         try:
-            model_name = AI_CONFIG["embedding"]["model_name"]
-            provider = self._get_provider(model_name)
-            return provider.embed(text)
+            # Phase 2: connection + model_name の dict 全体を Provider に渡す。
+            # Provider 側 (OpenAICompatAdapter) は config["model_name"] を最優先で使う。
+            embedding_cfg = AI_CONFIG["embedding"]
+            provider = self._get_provider(embedding_cfg)
+            return provider.embed(text, config=embedding_cfg)
         except Exception as e:
             print(f"[Brain] Embedding Error: {e}")
             return None
@@ -95,9 +109,13 @@ class ButlyBrain:
             # プロバイダが model_name / temperature を config から読むため、summary設定をマージ
             merged_conf = brain_conf.copy()
             merged_conf["model_name"] = summary_conf["model_name"]
+            # connection も伝搬 (Phase 2: ProviderFactory が ModelRef に解決する)
+            if summary_conf.get("connection"):
+                merged_conf["connection"] = summary_conf["connection"]
             merged_conf["temperature"] = summary_conf.get("generation_config", {}).get("temperature", 0.3)
 
-            provider = self._get_provider(summary_conf["model_name"])
+            # Phase 2: dict (connection + model_name) を Provider Factory に渡す
+            provider = self._get_provider(summary_conf)
             return provider.summarize(conversation_text, merged_conf)
         except Exception as e:
             print(f"[Brain] Summarize Error: {e}")
@@ -113,8 +131,9 @@ class ButlyBrain:
             from butly_core.prompts import PromptLoader
             loader = PromptLoader()
             prompt = loader.get("brain_extract_keywords", user_input=user_input)
-            
-            provider = self._get_provider(chat_conf["model_name"])
+
+            # Phase 2: chat_conf (connection + model_name) を Provider Factory に渡す
+            provider = self._get_provider(chat_conf)
             text = provider.classify(prompt, chat_conf)
             text = text.strip() if text else ""
             print(f"[Brain] Raw Keyword Response: {text}")
