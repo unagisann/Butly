@@ -388,7 +388,11 @@ def test_connection(connection_id: str = Body(..., embed=True)):
             client = genai.Client(api_key=api_key)
             models = []
             for m in client.models.list():
-                models.append(m.name)
+                mid = m.name
+                if mid and mid.startswith("models/"):
+                    mid = mid[len("models/"):]
+                if mid:
+                    models.append(mid)
                 if len(models) >= 50:
                     break
             return {"status": "ok", "models": models}
