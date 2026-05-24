@@ -40,6 +40,11 @@
 - No `mypy` in CI yet — type hints are documentation, not enforcement.
 - `Optional[T]` over `T | None` for now (most of the codebase still uses the former).
 
+## Config access
+
+- New code should not directly import `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG`. They remain for Phase 1 compatibility, but new or touched code should read settings through `butly_core.settings.get_settings()`.
+- Tests that need config overrides should use `override_settings()` or `get_settings.cache_clear()` / `clear_settings_cache()`. Direct mutation of legacy globals is kept only for existing compatibility tests until the migration reaches those callsites.
+
 ## Comments
 
 - Default: no comments. Names should explain the *what*.

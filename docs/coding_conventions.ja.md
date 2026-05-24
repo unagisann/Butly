@@ -40,6 +40,11 @@
 - `mypy` の CI 強制は未導入。型ヒントはあくまでドキュメント目的。
 - `Optional[T]` を `T | None` より優先（既存コードがほぼ前者なので統一）。
 
+## 設定参照
+
+- 新規コードでは `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG` を直接参照しない。Phase 1 の間は既存コード互換のため残すが、新規・改修コードは `butly_core.settings.get_settings()` を使う。
+- テストで設定を差し替える場合は `override_settings()` または `get_settings.cache_clear()` / `clear_settings_cache()` を使う。legacy global の直接 mutation は段階移行まで既存テストの互換用途に限定する。
+
 ## コメント
 
 - デフォルトはコメントなし。**名前で「何をするか」**を伝える。

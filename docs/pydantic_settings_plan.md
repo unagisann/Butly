@@ -177,18 +177,26 @@ API keys stay under their existing names (no `BUTLY_` prefix):
 
 ### Phase 1 — Add pydantic-settings + compat shim (~1–2 days)
 
-- [ ] `pydantic-settings>=2.5,<3` to `requirements.txt`.
-- [ ] Create `butly_core/settings/` package (models only, not used yet).
-- [ ] Re-implement `_recursive_update` / `_normalize_ai_config` / `_register_user_connections` on the pydantic side.
-- [ ] **Compat shim** — rewrite `butly_core/config.py`:
+- [x] `pydantic-settings>=2.5,<3` to `requirements.txt`.
+- [x] Create `butly_core/settings/` package (Phase 1 uses thin compatibility-first models).
+- [x] Re-implement `_recursive_update` / `_normalize_ai_config` equivalent on the pydantic side.
+- [x] **Compat shim** — rewrite `butly_core/config.py`:
   ```python
   from butly_core.settings import get_settings
   _settings = get_settings()
   AI_CONFIG = _settings.ai.model_dump(by_alias=False, exclude_none=False)
   SYSTEM_CONFIG = _settings.system.model_dump(by_alias=False, exclude_none=False)
   ```
+- [x] Add a golden test proving legacy `AI_CONFIG` / `SYSTEM_CONFIG` match `get_settings()`.
+- [x] Add official test hooks: `override_settings()` and `get_settings.cache_clear()` / `clear_settings_cache()`.
+- [x] Document the rule that new code must not directly import `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG`.
 - [ ] All existing tests pass (we should hold 765 / 766 — the one pre-existing flake stays a known flake).
-- [ ] Add tests that the pydantic validator reproduces `_normalize_ai_config` behavior.
+- [x] Add tests that the settings layer reproduces `_normalize_ai_config` behavior.
+
+Implementation note: Phase 1 is intentionally not a full migration. Existing
+`butly_core.config` readers stay in place; new or touched code should move to
+`get_settings()`. Strict RoleConfig / SystemConfig typing is deferred until
+later phases so existing `user_config.json` files remain compatible.
 
 **Done = no other file is touched, but tests still pass through the shim.**
 

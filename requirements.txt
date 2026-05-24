@@ -7,6 +7,7 @@ streamlit
 fastapi
 uvicorn
 pyyaml
+pydantic-settings>=2.5,<3
 tavily-python>=0.5.0
 tiktoken
 

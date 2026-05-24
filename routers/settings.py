@@ -531,6 +531,17 @@ def model_candidates(role: str, include_deprecated: bool = False):
             }
         )
 
+    def _dynamic_model_matches_role(role_id: str, model_name: str) -> bool:
+        """Best-effort role filter for provider-discovered model IDs."""
+        lower = model_name.lower()
+        is_embedding_name = "embed" in lower or "embedding" in lower
+
+        if role_id == "embedding":
+            return is_embedding_name
+        if is_embedding_name:
+            return False
+        return True
+
     # 1. preset
     for p in get_presets_for_role(role_lower, include_deprecated=include_deprecated):
         _push(p.connection_id, p.model_name, available=True)
@@ -569,7 +580,7 @@ def model_candidates(role: str, include_deprecated: bool = False):
                     mid = m.name
                     if mid and mid.startswith("models/"):
                         mid = mid[len("models/") :]
-                    if mid:
+                    if mid and _dynamic_model_matches_role(role_lower, mid):
                         _push(conn.id, mid, available=True)
             except Exception:
                 # 1 connection 失敗で全体は止めない
@@ -596,7 +607,7 @@ def model_candidates(role: str, include_deprecated: bool = False):
                     data = json.loads(resp.read())
                 for m in (data.get("data") or [])[:200]:
                     mid = m.get("id") if isinstance(m, dict) else None
-                    if mid:
+                    if mid and _dynamic_model_matches_role(role_lower, mid):
                         _push(conn.id, mid, available=True)
             except Exception:
                 # 1 connection 失敗で全体は止めない

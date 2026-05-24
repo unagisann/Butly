@@ -141,7 +141,7 @@ SYSTEM_CONFIG = {
 }
 
 # --- User Config Override ---
-import json
+import copy
 from pathlib import Path
 
 
@@ -266,19 +266,17 @@ def _register_user_connections(connections_list) -> None:
 
 
 USER_CONFIG_PATH = Path(__file__).parent.parent / "user_config.json"
-if USER_CONFIG_PATH.exists():
-    try:
-        with open(USER_CONFIG_PATH, "r", encoding="utf-8") as f:
-            user_config = json.load(f)
-            if "AI_CONFIG" in user_config:
-                _recursive_update(AI_CONFIG, user_config["AI_CONFIG"])
-            if "SYSTEM_CONFIG" in user_config:
-                _recursive_update(SYSTEM_CONFIG, user_config["SYSTEM_CONFIG"])
-            if "LLM_CONNECTIONS" in user_config:
-                _register_user_connections(user_config["LLM_CONNECTIONS"])
+try:
+    from butly_core.settings import get_settings
+
+    _settings = get_settings(USER_CONFIG_PATH)
+    AI_CONFIG = copy.deepcopy(_settings.AI_CONFIG)
+    SYSTEM_CONFIG = copy.deepcopy(_settings.SYSTEM_CONFIG)
+    _register_user_connections(_settings.LLM_CONNECTIONS)
+    if USER_CONFIG_PATH.exists():
         print("[Config] Loaded user_config.json")
-    except Exception as e:
-        print(f"[Config] Failed to load user_config.json: {e}")
+except Exception as e:
+    print(f"[Config] Failed to load settings: {e}")
 
 # user_config.json マージ後・instance_config 読み込み前に AI_CONFIG を normalize する。
 # 旧形式 (model_name only) で書かれた role に connection を補完。

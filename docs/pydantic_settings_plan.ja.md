@@ -267,18 +267,23 @@ BUTLY_AI__CHAT__GENERATION_CONFIG__TEMPERATURE=0.9 # ai.chat.generation_config.t
 
 ### Phase 1 — pydantic-settings の追加と互換シム（1〜2 日）
 
-- [ ] `pydantic-settings>=2.5,<3` を `requirements.txt` に追加
-- [ ] `butly_core/settings/` パッケージを新規作成（モデル定義のみ、まだ使わない）
-- [ ] 既存の `_recursive_update` / `_normalize_ai_config` / `_register_user_connections` を pydantic 側に再実装
-- [ ] **互換シム**: `butly_core/config.py` を以下のように書き換え:
+- [x] `pydantic-settings>=2.5,<3` を `requirements.txt` に追加
+- [x] `butly_core/settings/` パッケージを新規作成（Phase 1 は互換性優先の薄いモデル）
+- [x] 既存の `_recursive_update` / `_normalize_ai_config` 相当を pydantic 側に再実装
+- [x] **互換シム**: `butly_core/config.py` を以下のように書き換え:
   ```python
   from butly_core.settings import get_settings
   _settings = get_settings()
   AI_CONFIG = _settings.ai.model_dump(by_alias=False, exclude_none=False)
   SYSTEM_CONFIG = _settings.system.model_dump(by_alias=False, exclude_none=False)
   ```
+- [x] `AI_CONFIG` / `SYSTEM_CONFIG` と `get_settings()` の値一致を確認するゴールデンテスト追加
+- [x] テスト用の公式手段として `override_settings()` と `get_settings.cache_clear()` / `clear_settings_cache()` を追加
+- [x] 新規コードで `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG` を直接参照しない規約を追加
 - [ ] 既存のすべてのテストが通ることを確認（765 / 766 を維持）
-- [ ] `_normalize_ai_config` の動作を pydantic validator が再現することを confirm するテスト追加
+- [x] `_normalize_ai_config` 相当の動作を settings 側で再現するテスト追加
+
+実装メモ: Phase 1 は全面移行ではなく互換シムまでに留める。既存コードの `butly_core.config` 参照は温存し、新規・改修コードだけ `get_settings()` へ寄せる。厳格な RoleConfig / SystemConfig 型付けは、既存 `user_config.json` 互換を壊さないよう Phase 2 以降で段階的に行う。
 
 **完了条件**: 既存コードに一切手を入れずに、互換シム経由で全テスト通過。
 
