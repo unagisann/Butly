@@ -59,3 +59,4 @@ old/
 old_migration_backup/
 server.spec
 analysis.txt
+flake8_critical.txt

@@ -2,7 +2,7 @@
 
 🌐 [日本語](FILE_STRUCTURE.ja.md) | **English**
 
-> Last updated: 2026-05-17
+> Last updated: 2026-05-24
 
 This document gives an overview of every file and module in the repository. For exhaustive per-method commentary, see the Japanese version — this English version covers the same scope but stays concise.
 
@@ -227,15 +227,28 @@ General-purpose web search package.
 
 ### `butly_core/llm/`
 
+Phase 1–3 (2026-05) introduced the `Connection` / `ModelRef` / Protocol Adapter trio. `Connection` represents *where* to talk (base_url / auth env / protocol); `ModelRef` pairs a connection_id with a model_name; Protocol Adapters carry the actual API logic. Legacy string `model_name` routing is still accepted by `ProviderFactory.create()` for backward compatibility.
+
 - `base.py` — `BaseProvider` ABC: `generate(text, attachments, context)`, `supports_vision(model_name)`, `embed(text)`, `classify(prompt, config)`. Default async wrappers `async_generate` / `async_summarize` / `async_embed` via `run_in_threadpool`. Default `async_generate_stream(...)` falls back to a single `chunk` + `done` yield based on sync `generate()`.
-- `factory.py` — `ProviderFactory.create(model_name)` routes: `gemini-*` → Gemini, `gpt-*` / `o1` / `o3` / `o4` → OpenAI, `ollama/*` → Ollama, `grok-*` / `xai/*` → xAI.
-- `_openai_compat.py` — shared OpenAI-compat helpers (env load, reasoning-model detection, history conversion incl. `role: "model"` → `"assistant"`, message building, kwargs building, response building). Used by OpenAI / Ollama / xAI.
+- `connections.py` — `Connection` dataclass + `ConnectionRegistry`. Built-in connections (`openai` / `xai` / `ollama` / `google`) plus user-defined entries loaded from `user_config.json["LLM_CONNECTIONS"]`. Helpers: `get_connection` / `try_get_connection` / `register_connection` / `list_connections` / `is_builtin_connection`.
+- `model_registry.py` — `ModelRef` (connection_id + model_name) and `ModelPreset` (per-role recommended models). `normalize_model_ref()` accepts str / dict / ModelRef and uses `infer_connection_id()` to back-fill the connection from the model name. `resolve_role_model_ref()` resolves per-role defaults. `get_presets_for_role()` / `find_preset()` / `is_deprecated()` / `get_replacement()` drive the Settings UI dropdowns.
+- `factory.py` — `ProviderFactory.create(model)` accepts `ModelRef`, dict (`{"connection": ..., "model_name": ...}`), or legacy str. Normalizes via `model_registry.normalize_model_ref`, resolves the `Connection`, and instantiates the matching Protocol Adapter (`openai_compat` → `OpenAICompatAdapter`, `gemini_native` → `GeminiNativeAdapter`).
+- `_openai_compat.py` — low-level OpenAI-compat helpers (env load, reasoning-model detection, history conversion incl. `role: "model"` → `"assistant"`, message building, kwargs building, response building, async stream). Imported by `protocols/openai_compat.py` and the slim provider shims.
+
+#### `protocols/`
+Protocol Adapters: take a `Connection` and implement the actual API protocol.
+
+- `__init__.py` — exports `OpenAICompatAdapter`, `GeminiNativeAdapter`.
+- `openai_compat.py` — `OpenAICompatAdapter`. Drives any OpenAI-compatible endpoint (OpenAI, xAI, Ollama, Groq, …) using the helpers in `_openai_compat.py`. Owns `generate` / `async_generate_stream`.
+- `gemini_native.py` — `GeminiNativeAdapter` shim that defers to the existing Gemini provider implementation.
 
 #### `providers/`
-- `gemini.py` — `GeminiProvider`. Implements vision, context cache, search retry / grounding. Streaming via Gemini's async streaming API.
-- `openai.py` — `OpenAIProvider`. Delegates to `_openai_compat`. Vision via `_VISION_MODELS`. Reasoning model branch for `o1`/`o3`/`o4`.
-- `ollama.py` — `OllamaProvider`. OpenAI-compat client at `localhost:11434/v1`. Vision support via `_VISION_MODELS` (e.g. llava).
-- `xai.py` — `XaiProvider`. OpenAI SDK + `base_url="https://api.x.ai/v1"`. Vision for grok-4 family; no embedding (returns `None`).
+Thin shims that pin a Connection to its Adapter (kept for backward compatibility — `ProviderFactory.create("gpt-4o")` still resolves correctly).
+
+- `gemini.py` — `GeminiProvider`. Full implementation: vision, context cache, search retry / grounding, async streaming via Gemini SDK. Used directly by `GeminiNativeAdapter`.
+- `openai.py` — `OpenAIProvider` extends `OpenAICompatAdapter` with `connection=get_connection("openai")`. Vision via `_VISION_MODELS`; module-level `_get_client()` retained as a test patch point.
+- `ollama.py` — `OllamaProvider` shim for the local Ollama OpenAI-compat endpoint (`localhost:11434/v1`).
+- `xai.py` — `XaiProvider` shim (OpenAI SDK + `base_url="https://api.x.ai/v1"`). Vision for the grok-4 family; no embedding (returns `None`).
 
 ---
 

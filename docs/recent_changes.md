@@ -2,6 +2,40 @@
 
 🌐 [日本語](recent_changes.ja.md) | **English**
 
+## Model routing & stream turn-counting fix (2026-05-24)
+
+Follow-up to Phase 1–3 LLM refactor. Fixes a stream-path turn counter regression and a few `ProviderFactory.create()` resolution edge cases (instance config / per-request override interaction). Regression coverage added in `tests/test_chat_stream.py` and `tests/test_chatservice_connection_routing.py`.
+
+## Settings: Gemini model list polish (2026-05)
+
+- `model_candidates` endpoint now exposes dynamically discovered Gemini models (the `gemini_native` path was previously missing from discovery).
+- `test_connection` displays Gemini model names without the `models/` prefix to match the rest of the UI.
+
+## Phase 3 LLM refactor: UI + Dynamic Discovery + per-request override (2026-05)
+
+- **Settings UI**: model dropdowns are grouped per Connection (built-in + user-defined entries from `user_config.json["LLM_CONNECTIONS"]`).
+- **Dynamic discovery**: Gemini model list pulled live from the Google API; non-discoverable connections fall back to `ModelPreset` entries from `model_registry.py`.
+- **Per-request override**: `POST /chat` / `POST /chat/stream` honor a per-call `model_name` (instance > request > global, unchanged precedence) and resolve via `ProviderFactory.create(ModelRef)`.
+
+## Phase 2 LLM refactor: AI_CONFIG + ChatService on the ModelRef route (2026-05)
+
+- Every `AI_CONFIG` role entry now carries `connection` + `model_name`.
+- `ChatService`, `Brain`, `ContextClassifier`, `StateUpdater`, and `sleeptime` all go through `ProviderFactory.create(ModelRef)` instead of legacy string lookup.
+- Legacy string `model_name` still accepted (uses `infer_connection_id()` to backfill the connection).
+
+## Phase 1 LLM refactor: Connection / ModelRef / OpenAICompatAdapter (2026-05)
+
+- **`butly_core/llm/connections.py`** — `Connection` dataclass + `ConnectionRegistry`. Built-in 4 (`openai` / `xai` / `ollama` / `google`); user-defined via `user_config.json["LLM_CONNECTIONS"]` (wired up in Phase 2).
+- **`butly_core/llm/model_registry.py`** — `ModelRef` (connection_id + model_name), `ModelPreset` per role, `normalize_model_ref()` accepts str / dict / ModelRef, `infer_connection_id()` keeps legacy prefix routing alive.
+- **`butly_core/llm/protocols/`** — `OpenAICompatAdapter` (drives OpenAI / xAI / Ollama / Groq / …) and `GeminiNativeAdapter` (delegates to `providers/gemini.py`).
+- **`butly_core/llm/providers/{openai,ollama,xai}.py`** — collapsed into thin shims that pin a `Connection` to its Adapter (`OpenAIProvider(OpenAICompatAdapter)` etc.). `_get_client()` / `_VISION_MODELS` retained as test patch points.
+- `ProviderFactory.create(model)` no longer string-routes directly; it normalizes → resolves Connection → instantiates the right Adapter.
+
+## Gemini model name refresh + `usage_count` for knowledge cards (2026-05)
+
+- `AI_CONFIG` Gemini model names refreshed to the current stable IDs.
+- New `usage_count` field on `knowledge_cards` — tracks RAG-driven card hits separately from `last_accessed_at` so the actual reach of each card is visible.
+
 ## Relative-time Floating Summary header (2026-05-17)
 
 `ButlyMemory.get_floating_summary()` no longer emits filenames or absolute timestamps; each entry is now headed by a relative-time label (e.g., `--- about 30 minutes ago ---`). This stops the LLM from misreading two timestamps as separate conversations.
@@ -69,7 +103,7 @@ Final `need` is set only when both LLM intent and MemoryProbe fact-check agree. 
 
 ## Cortex / legacy Gatekeeper cleanup (#40, 2026-04)
 
-Tier collapsed to `reflex` / `mid` (2 values). Removed `tier_classifier.py`, `search_planner.py`, `memory_judge.py`, `prompts/control/tier_classifier.txt`, etc. `docs/tier_rag_separation_impact.md` is retained as a work-log archive (marked complete).
+Tier collapsed to `reflex` / `mid` (2 values). Removed `tier_classifier.py`, `search_planner.py`, `memory_judge.py`, `prompts/control/tier_classifier.txt`, etc.
 
 ## Lorebook (Glossary extension) (#24, 2026-04)
 

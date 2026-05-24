@@ -2,6 +2,40 @@
 
 🌐 **日本語** | [English](recent_changes.md)
 
+## モデルルーティング / Streaming ターンカウント修正 (2026-05-24)
+
+Phase 1–3 LLM リファクタの追従修正。stream 経路のターンカウンタ回帰と、`ProviderFactory.create()` における instance config / リクエスト override の解決順序のエッジケースを修正。`tests/test_chat_stream.py` / `tests/test_chatservice_connection_routing.py` で回帰テストを追加。
+
+## Settings: Gemini モデル一覧の整備 (2026-05)
+
+- `model_candidates` エンドポイントで `gemini_native` の動的モデル取得が漏れていたバグを修正。
+- `test_connection` の Gemini モデル一覧から `models/` プレフィックスを除去し、他 UI と表示を統一。
+
+## Phase 3 LLM refactor: UI + Dynamic Discovery + リクエスト単位 override (2026-05)
+
+- **Settings UI**: モデルドロップダウンを Connection 別に列挙（built-in + `user_config.json["LLM_CONNECTIONS"]` のユーザー定義）。
+- **Dynamic discovery**: Gemini モデルは Google API から live で取得。動的取得不可な Connection は `model_registry.py` の `ModelPreset` をフォールバック。
+- **リクエスト単位 override**: `POST /chat` / `POST /chat/stream` の `model_name` を尊重し（インスタンス > リクエスト > グローバルの優先順位は不変）、`ProviderFactory.create(ModelRef)` 経由で解決。
+
+## Phase 2 LLM refactor: AI_CONFIG / ChatService を ModelRef ルートへ (2026-05)
+
+- `AI_CONFIG` 各ロールに `connection` + `model_name` を持たせる構造に変更。
+- `ChatService` / `Brain` / `ContextClassifier` / `StateUpdater` / `sleeptime` が `ProviderFactory.create(ModelRef)` 経由で動くよう一斉移行。
+- 旧形式の文字列 `model_name` も引き続き受理（`infer_connection_id()` で connection をバックフィル）。
+
+## Phase 1 LLM refactor: Connection / ModelRef / OpenAICompatAdapter 導入 (2026-05)
+
+- **`butly_core/llm/connections.py`** — `Connection` データクラス + `ConnectionRegistry`。built-in 4 件（`openai` / `xai` / `ollama` / `google`）。ユーザー定義は `user_config.json["LLM_CONNECTIONS"]` から（Phase 2 で配線）。
+- **`butly_core/llm/model_registry.py`** — `ModelRef` (connection_id + model_name) と role 別 `ModelPreset`。`normalize_model_ref()` が str / dict / ModelRef を受理し、`infer_connection_id()` で旧プレフィックス routing を温存。
+- **`butly_core/llm/protocols/`** — `OpenAICompatAdapter`（OpenAI / xAI / Ollama / Groq … を駆動）と `GeminiNativeAdapter`（`providers/gemini.py` に委譲）。
+- **`butly_core/llm/providers/{openai,ollama,xai}.py`** — Connection を Adapter に紐付ける薄シムへ縮退（例: `OpenAIProvider(OpenAICompatAdapter)`）。`_get_client()` / `_VISION_MODELS` はテスト互換のため module-level に残す。
+- `ProviderFactory.create(model)` は直接の文字列ルーティングをやめ、正規化 → Connection 解決 → Adapter インスタンス化の三段に整理。
+
+## Gemini モデル名の最新化 + Knowledge カード `usage_count` 追加 (2026-05)
+
+- `AI_CONFIG` の Gemini モデル名を現行 stable へ差し替え。
+- `knowledge_cards` テーブルに `usage_count` フィールドを新設し、RAG 経由でのカード参照実績を `last_accessed_at` と独立して追跡。
+
 ## Floating Summary 表示の相対時刻化 (2026-05-17)
 
 `ButlyMemory.get_floating_summary()` がファイル名・絶対タイムスタンプを排除し、相対時刻ヘッダー（例: `--- 約30分前 ---`）に統一。LLM が「2 つの別タイムスタンプ = 別会話」と誤認識する問題を解消。
@@ -56,7 +90,7 @@
 
 ## cortex / 旧 Gatekeeper レガシーの cleanup (#40, 2026-04)
 
-tier を `reflex` / `mid` 2 値に簡素化。`tier_classifier.py` / `search_planner.py` / `memory_judge.py` / `prompts/control/tier_classifier.txt` 等の旧コードを削除。`docs/tier_rag_separation_impact.md` は作業履歴として保存（完了マーク済み）。
+tier を `reflex` / `mid` 2 値に簡素化。`tier_classifier.py` / `search_planner.py` / `memory_judge.py` / `prompts/control/tier_classifier.txt` 等の旧コードを削除。
 
 ## Lorebook 機能を Glossary 拡張として実装 (#24, 2026-04)
 

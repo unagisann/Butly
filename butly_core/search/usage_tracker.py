@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from datetime import datetime
 
+from butly_core.io_utils import atomic_write_text
+
 
 class UsageTracker:
     """月次の検索 API 使用量を追跡する。
@@ -24,8 +26,7 @@ class UsageTracker:
 
     @classmethod
     def _save(cls, data: dict):
-        cls._file_path.parent.mkdir(parents=True, exist_ok=True)
-        cls._file_path.write_text(json.dumps(data, indent=2))
+        atomic_write_text(cls._file_path, json.dumps(data, indent=2))
 
     @classmethod
     def _normalize_entry(cls, entry):

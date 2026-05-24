@@ -3,6 +3,8 @@ import json
 import re
 from pathlib import Path
 
+from butly_core.io_utils import atomic_write_text
+
 
 class InstanceManager:
     def __init__(self, base_dir):
@@ -145,7 +147,7 @@ class InstanceManager:
         """性格設定を上書き保存"""
         target_file = self.instances_dir / instance_name / "system_instruction.txt"
         try:
-            target_file.write_text(new_text, encoding="utf-8")
+            atomic_write_text(target_file, new_text)
             return True, "性格設定を更新しました。"
         except Exception as e:
             return False, str(e)
@@ -176,12 +178,14 @@ class InstanceManager:
 
         try:
             if "system_instruction" in data:
-                (instance_dir / "system_instruction.txt").write_text(
-                    data["system_instruction"], encoding="utf-8"
+                atomic_write_text(
+                    instance_dir / "system_instruction.txt",
+                    data["system_instruction"],
                 )
             if "key_memory" in data:
-                (instance_dir / "Key_Memory.txt").write_text(
-                    data["key_memory"], encoding="utf-8"
+                atomic_write_text(
+                    instance_dir / "Key_Memory.txt",
+                    data["key_memory"],
                 )
             return True, "プロンプトを更新しました。"
         except Exception as e:
@@ -211,7 +215,7 @@ class InstanceManager:
         try:
             # Validate JSON serializable
             json_str = json.dumps(new_config, indent=4, ensure_ascii=False)
-            config_path.write_text(json_str, encoding="utf-8")
+            atomic_write_text(config_path, json_str)
             return True, "設定を更新しました。"
         except Exception as e:
             return False, f"設定保存エラー: {str(e)}"
@@ -278,9 +282,9 @@ class InstanceManager:
                     if old_name in readable:
                         readable = [new_name if r == old_name else r for r in readable]
                         config["brain"]["readable_instances"] = readable
-                        config_path.write_text(
+                        atomic_write_text(
+                            config_path,
                             json.dumps(config, indent=2, ensure_ascii=False),
-                            encoding="utf-8",
                         )
                         print(
                             f"[InstanceManager] Updated readable_instances in {inst_dir.name}"
@@ -305,9 +309,9 @@ class InstanceManager:
                         )
                         if agent_config.get("parent") == old_name:
                             agent_config["parent"] = new_name
-                            agent_config_path.write_text(
+                            atomic_write_text(
+                                agent_config_path,
                                 json.dumps(agent_config, indent=2, ensure_ascii=False),
-                                encoding="utf-8",
                             )
                             print(
                                 f"[InstanceManager] Updated parent in agent {agent_dir.name}"
@@ -323,7 +327,7 @@ class InstanceManager:
                     new_content = content.replace(
                         f"プロジェクト名：{old_name}", f"プロジェクト名：{new_name}"
                     )
-                    si_path.write_text(new_content, encoding="utf-8")
+                    atomic_write_text(si_path, new_content)
 
             return True, new_name
         except Exception as e:

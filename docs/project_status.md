@@ -2,7 +2,7 @@
 
 🌐 [日本語](project_status.ja.md) | **English**
 
-> Last updated: 2026-05-17
+> Last updated: 2026-05-24
 
 ## Overview
 Butly is a personal AI assistant platform with a layered memory system (short-term / floating summary / mid-term digest + relationship / long-term vector DB / glossary / key memory). It runs on FastAPI backend + Streamlit UI, supports SSE streaming responses, multi-provider LLMs (Gemini / OpenAI / xAI / Ollama), tier + RAG control via Gatekeeper, and Sleeptime batch memory consolidation.
@@ -11,11 +11,14 @@ Butly is a personal AI assistant platform with a layered memory system (short-te
 - **Frontend:** Streamlit (`app.py`) — web UI, chat, DB browser, Sleeptime management, streaming toggle.
 - **Backend:** FastAPI (`main.py`) — REST `/chat`, SSE `/chat/stream`, WebSocket `/ws`, settings endpoints.
 - **Database:** SQLite (`butly_memory.db`) — per-instance knowledge cards + embeddings.
-- **LLM engine:** multi-provider (Google Gemini / OpenAI / Ollama / xAI)
+- **LLM engine:** multi-provider (Google Gemini / OpenAI / Ollama / xAI) — Phase 1–3 refactor (2026-05) unifies routing through `Connection` + `ModelRef` + Protocol Adapter
   - `butly_core/llm/base.py`: abstract base (`generate`, `summarize`, `embed`, `classify`, `async_generate_stream`)
-  - `butly_core/llm/factory.py`: model-name-prefix routing
-  - `butly_core/llm/_openai_compat.py`: shared helper for OpenAI/Ollama/xAI
-  - `butly_core/llm/providers/{gemini,openai,ollama,xai}.py`: provider implementations
+  - `butly_core/llm/connections.py`: `Connection` dataclass + registry (`openai` / `xai` / `ollama` / `google` built-in + user-defined from `user_config.json`)
+  - `butly_core/llm/model_registry.py`: `ModelRef` (connection_id + model_name) and `ModelPreset`, with `normalize_model_ref()` / `infer_connection_id()` for legacy string compatibility
+  - `butly_core/llm/factory.py`: `ProviderFactory.create(model)` accepts `ModelRef` / dict / str → resolves the right Adapter
+  - `butly_core/llm/protocols/{openai_compat,gemini_native}.py`: protocol adapters used by the provider shims
+  - `butly_core/llm/_openai_compat.py`: low-level shared helpers for OpenAI-compat APIs
+  - `butly_core/llm/providers/{gemini,openai,ollama,xai}.py`: slim provider shims that pin a Connection to its Adapter
 - **Core package:** `butly_core/`
   - `chat/service.py`: chat orchestrator with two paths — `execute()` (buffered) and `execute_stream()` (SSE).
   - `core/gatekeeper/`: ContextClassifier (tier + need_intent) / MemoryProbe (fact-check) / StateUpdater (parallel) / MemoryBlockBuilder.
@@ -26,6 +29,16 @@ Butly is a personal AI assistant platform with a layered memory system (short-te
 - **Search module:** `butly_core/search/` — Tavily / Ollama Cloud Web Search auto-routing.
 
 ## Current Phase & Status
+
+- **Model routing & stream turn-counting fix (2026-05-24)**: Followup to the Phase 1–3 LLM refactor — fixes a stream-path turn counter regression and a couple of model-resolution edge cases. Covered by `tests/test_chat_stream.py` and `tests/test_chatservice_connection_routing.py`.
+
+- **Phase 3 LLM refactor: UI + Dynamic Discovery + per-request override (2026-05)**: Settings UI now lists models per Connection (built-in + user-defined). `model_candidates` endpoint discovers Gemini models dynamically (incl. fix removing the `models/` prefix on display). Per-request `model_name` override is honored in `POST /chat` / `POST /chat/stream`.
+
+- **Phase 2 LLM refactor: AI_CONFIG / ChatService on ModelRef (2026-05)**: `AI_CONFIG` entries now carry `connection` + `model_name`. `ChatService`, `Brain`, `ContextClassifier`, `StateUpdater`, and `sleeptime` all route through `ProviderFactory.create(ModelRef)`. Old-format string `model_name` still accepted for backward compatibility.
+
+- **Phase 1 LLM refactor: Connection / ModelRef / OpenAICompatAdapter (2026-05)**: Introduced `connections.py`, `model_registry.py`, and `protocols/` (`OpenAICompatAdapter`, `GeminiNativeAdapter`). Provider classes became thin shims pinning a `Connection` to its Adapter. Lays the groundwork for user-defined connections (Groq etc.).
+
+- **Knowledge-card `usage_count` (2026-05)**: New field on `knowledge_cards` to track real RAG hit counts (separate from `last_accessed_at`). Surfaces actual reach of each card.
 
 - **Relative-time floating summary (2026-05-17)**: `ButlyMemory.get_floating_summary()` strips filenames and absolute timestamps in favor of relative headers like "about 30 minutes ago". Sleeptime cleans the directory daily, so the in-flight span stays sub-half-day. Legacy `Time: 2026-...` lines are removed for backward compatibility.
 
@@ -65,5 +78,5 @@ Butly is a personal AI assistant platform with a layered memory system (short-te
 - **Model selection precedence**: instance config > request `model_name` > global `AI_CONFIG`.
 - **Memory-block construction**: routed through Gatekeeper. `MemoryBlockBuilder.build_system_instruction_from_blocks()` builds the immutable half; `build_context_prefix()` builds the variable half. The variable half is compressible via `context_levels` presets (`normal` / `compact` / `low` / `custom`) with per-section `high` / `low` / `off`.
 - **Background work**: `sleeptime.py` is heavy and runs via API endpoint on a separate thread.
-- **Provider abstraction**: ChatService → ProviderFactory → provider. OpenAI / Ollama / xAI share `_openai_compat.py`; Gemini keeps its own logic (`google.genai`).
+- **Provider abstraction**: ChatService → `ProviderFactory.create(ModelRef|dict|str)` → Connection → Protocol Adapter. OpenAI / Ollama / xAI share `OpenAICompatAdapter` (+ `_openai_compat.py` helpers); Gemini uses `GeminiNativeAdapter` backed by `providers/gemini.py` (`google.genai`).
 - **Gatekeeper flow**: ContextClassifier (LLM, ~1 s) and MemoryProbe (~100 ms) run serially → MemoryBlockBuilder → response generation runs in parallel with StateUpdater (LLM, ~1 s).

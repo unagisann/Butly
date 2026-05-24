@@ -18,6 +18,7 @@ from butly_core.config import (
     USER_CONFIG_PATH,
     _recursive_update,
 )
+from butly_core.io_utils import atomic_write_text
 import butly_core.prompts as prompts_module
 from butly_core.prompts import USER_PROMPTS_PATH
 
@@ -61,8 +62,7 @@ def load_settings_from_file():
 
 def save_settings_to_file(settings: dict):
     sf = _get_settings_file()
-    with open(sf, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2)
+    atomic_write_text(sf, json.dumps(settings, indent=2))
 
 
 def apply_startup_settings():
@@ -129,7 +129,7 @@ def set_api_key(request: ApiKeyRequest):
     os.environ[env_name] = key
 
     lines = [f"{k}={v}" for k, v in env_vars.items()]
-    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    atomic_write_text(env_path, "\n".join(lines) + "\n")
 
     print(f"[Server] {request.key_type} API key updated and saved to {env_path}")
     return {"message": f"{request.key_type} APIキーを保存しました"}
@@ -197,8 +197,10 @@ def get_config():
 def update_config(config_data: Dict[str, Any] = Body(...)):
     """Update configuration and save to user_config.json."""
     try:
-        with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, indent=4, ensure_ascii=False)
+        atomic_write_text(
+            USER_CONFIG_PATH,
+            json.dumps(config_data, indent=4, ensure_ascii=False),
+        )
 
         if "AI_CONFIG" in config_data:
             _recursive_update(AI_CONFIG, config_data["AI_CONFIG"])
@@ -235,8 +237,10 @@ def update_prompts(prompts_data: Dict[str, str] = Body(...)):
     try:
         safe_data = {k: v for k, v in prompts_data.items() if k in EDITABLE_PROMPTS}
 
-        with open(USER_PROMPTS_PATH, "w", encoding="utf-8") as f:
-            json.dump(safe_data, f, indent=4, ensure_ascii=False)
+        atomic_write_text(
+            USER_PROMPTS_PATH,
+            json.dumps(safe_data, indent=4, ensure_ascii=False),
+        )
 
         for key, value in safe_data.items():
             if hasattr(prompts_module, key):
@@ -280,8 +284,10 @@ def _load_user_config() -> dict:
 
 
 def _save_user_config(data: dict) -> None:
-    with open(USER_CONFIG_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    atomic_write_text(
+        USER_CONFIG_PATH,
+        json.dumps(data, indent=4, ensure_ascii=False),
+    )
 
 
 def _connection_to_dict(conn) -> dict:

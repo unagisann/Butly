@@ -1035,7 +1035,6 @@ class ButlySleeptime:
 
     # --- Status Management ---
     def update_status(self, instance_name, state, progress=0.0, message=""):
-        global sleeptime_store
         sleeptime_store[instance_name] = {
             "state": state, # "idle", "running", "completed", "error"
             "progress": progress,

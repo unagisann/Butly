@@ -2,7 +2,7 @@
 
 🌐 **日本語** | [English](FILE_STRUCTURE.md)
 
-> 最終更新: 2026-05-17
+> 最終更新: 2026-05-24
 
 ---
 
@@ -502,11 +502,47 @@ LLM プロバイダーの抽象化レイヤー。
 ---
 
 ### `butly_core/llm/factory.py`
-モデル名からプロバイダーを生成するファクトリ。
+`ModelRef` / dict / str（旧 API） から Provider を生成するファクトリ。Phase 1–3（2026-05）のリファクタで Connection ベース経路に統合された。
 
 - `ProviderFactory`
-  - `create(model_name)` — モデル名のプレフィックスで Gemini / OpenAI / Ollama / xAI を自動選択
-  - ルーティング: `gemini-*` → Gemini、`gpt-*` / `o1` / `o3` / `o4` → OpenAI、`ollama/*` → Ollama、`grok-*` / `xai/*` → xAI
+  - `create(model)` — 入力を `model_registry.normalize_model_ref()` で `ModelRef` に統一 → `Connection` を引く → `Connection.protocol` に応じた Adapter (`OpenAICompatAdapter` / `GeminiNativeAdapter`) をインスタンス化
+  - 旧 API 互換: 文字列 `model_name`（例: `"gpt-4o"`, `"gemini-2.5-flash"`, `"ollama/llama3.2"`, `"grok-4"`）も受理。`infer_connection_id()` で connection を推定する
+
+---
+
+### `butly_core/llm/connections.py`
+LLM の「接続情報」を表現する一級オブジェクトと、そのレジストリ。
+
+- `Connection` (dataclass, frozen)
+  - フィールド: `connection_id` / `protocol` (`"openai_compat"` | `"gemini_native"`) / `display_name` / `base_url_env` / `api_key_env` / `default_base_url` / `model_prefix` 等
+  - `display_label()` / `resolve_base_url()` / `resolve_api_key()` / `strip_model_prefix(model_name)`
+- `ConnectionRegistry` — built-in 4 件（`openai` / `xai` / `ollama` / `google`）+ user_config.json `LLM_CONNECTIONS` 由来のユーザー定義を管理
+  - `get(id)` / `require(id)` / `list_all()` / `list_user_defined()` / `is_builtin(id)` / `register(conn, *, overwrite_user=False)` / `unregister(id)` / `reset_to_builtin()`
+- モジュール関数: `get_connection(id)` / `try_get_connection(id)` / `register_connection(conn)` / `list_connections()` / `is_builtin_connection(id)` / `get_registry()`
+
+---
+
+### `butly_core/llm/model_registry.py`
+モデルプリセットと `ModelRef`（Connection + ModelName）の正規化を担う。`config.py` から import せず循環を避ける。
+
+- `ModelRef` (dataclass): `connection_id`, `model_name` / `to_dict()`
+- `ModelPreset` (dataclass): 役割 (`chat` / `summary` / `knowledge` / `embedding` / `gatekeeper` / `context_classifier`) ごとの推奨モデル。`ref()` で `ModelRef` を取得
+- `infer_connection_id(model_name)` — プレフィックスから connection を推定（旧 API 互換）
+- `normalize_model_ref(input)` — str / dict / ModelRef を `ModelRef` に統一
+- `resolve_role_model_ref(role, ai_config)` — role 別デフォルトを `AI_CONFIG` から解決
+- `get_presets_for_role(role)` / `find_preset(connection_id, model_name)` — Settings UI のドロップダウン用
+- `is_deprecated(connection_id, model_name)` / `get_replacement(...)` — 旧モデル名検知＋差し替え推奨
+
+---
+
+### `butly_core/llm/protocols/`
+Protocol Adapter 群。`Connection` を受けて、具体的な API protocol を実装する。`providers/` の各シムから利用される。
+
+- `protocols/__init__.py` — `OpenAICompatAdapter` / `GeminiNativeAdapter` を re-export
+- `protocols/openai_compat.py` — `OpenAICompatAdapter`。OpenAI 互換エンドポイント（OpenAI / xAI / Ollama / 将来の Groq 等）を共通実装で駆動する。内部で `_openai_compat` ヘルパーを呼ぶ
+  - `generate(...)` / `async_generate_stream(...)`
+  - サブクラス（`OpenAIProvider` 等）からは `_build_client()` をオーバーライドして接続先 SDK を差し替え可能
+- `protocols/gemini_native.py` — `GeminiNativeAdapter`。`providers/gemini.py` の実装をそのまま委譲する薄いシム
 
 ---
 
@@ -538,29 +574,25 @@ OpenAI 互換プロバイダー (OpenAI / Ollama / xAI) で共通利用するヘ
 ---
 
 ### `butly_core/llm/providers/openai.py`
-OpenAI (GPT) / Azure OpenAI 互換プロバイダー。`_openai_compat` ヘルパーを利用。
+OpenAI (GPT) / Azure OpenAI 互換プロバイダー。Phase 1 リファクタ以降は `OpenAICompatAdapter` を継承する薄シム。
 
-- `OpenAIProvider`
-  - `generate(text, attachments, context)` — Chat Completions API で応答を生成（reasoning_effort 対応）
-  - `supports_vision(model_name)` — `_VISION_MODELS` セットで判定
-  - `embed(text)` — `text-embedding-3-small` で embedding を生成
-  - `classify(prompt, config)` — Gatekeeper / SleepTime 用の分類
-  - `summarize(conversation_text, config)` — 会話要約
+- `OpenAIProvider(OpenAICompatAdapter)`
+  - `__init__()` — `connection=get_connection("openai")` を渡して親に委譲
+  - `_build_client()` — テスト互換のため module-level `_get_client()` を呼ぶ
+  - `supports_vision(model_name)` — `_VISION_MODELS` セットで判定（reasoning モデル含む）
 
 ---
 
 ### `butly_core/llm/providers/ollama.py`
-ローカル Ollama サーバー（OpenAI 互換 API）プロバイダー。`_openai_compat` ヘルパーを利用。
+ローカル Ollama サーバー（OpenAI 互換 API）の `OpenAICompatAdapter` シム。
 
-- `OllamaProvider`
-  - `generate(text, attachments, context)` — ローカル LLM で応答を生成
+- `OllamaProvider(OpenAICompatAdapter)` — `connection=get_connection("ollama")`。`localhost:11434/v1` に接続
   - `supports_vision(model_name)` — `_VISION_MODELS` セットで判定（llava 等）
-  - `embed(text)` — Ollama の embedding エンドポイントを使用
 
 ---
 
 ### `butly_core/llm/providers/xai.py`
-xAI (Grok) プロバイダー。OpenAI SDK + `base_url="https://api.x.ai/v1"` で Chat Completions を利用。`_openai_compat` ヘルパーを利用。
+xAI (Grok) の `OpenAICompatAdapter` シム。OpenAI SDK + `base_url="https://api.x.ai/v1"` で Chat Completions を利用。
 
 - `XaiProvider`
   - `generate(text, attachments, context)` — xAI Chat Completions API で応答を生成

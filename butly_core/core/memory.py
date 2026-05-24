@@ -375,14 +375,15 @@ class ButlyMemory:
         try:
             import yaml
 
-            with open(glossary_file, "w", encoding="utf-8") as f:
-                yaml.dump(
-                    data,
-                    f,
-                    allow_unicode=True,
-                    default_flow_style=False,
-                    sort_keys=False,
-                )
+            from butly_core.io_utils import atomic_write_text
+
+            text = yaml.dump(
+                data,
+                allow_unicode=True,
+                default_flow_style=False,
+                sort_keys=False,
+            )
+            atomic_write_text(glossary_file, text)
             return True
         except Exception as e:
             print(f"[Memory] Failed to save glossary: {e}")
@@ -529,8 +530,12 @@ class ButlyMemory:
             ],
         }
 
-        with open(full_path, "w", encoding="utf-8") as f:
-            json.dump(turn_data, f, ensure_ascii=False, indent=2)
+        from butly_core.io_utils import atomic_write_text
+
+        atomic_write_text(
+            full_path,
+            json.dumps(turn_data, ensure_ascii=False, indent=2),
+        )
 
         return file_name
 
@@ -637,8 +642,9 @@ class ButlyMemory:
                 summary_filename = json_file.stem + ".txt"
                 summary_path = self.floating_summary_dir / summary_filename
 
-                with open(summary_path, "w", encoding="utf-8") as f:
-                    f.write(f"{summary}\n")
+                from butly_core.io_utils import atomic_write_text
+
+                atomic_write_text(summary_path, f"{summary}\n")
 
                 # ファイルをアーカイブフォルダへ移動
                 new_path = self.archive_integrated / json_file.name

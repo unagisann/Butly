@@ -9,6 +9,8 @@ import copy
 import json
 from pathlib import Path
 
+from butly_core.io_utils import atomic_write_text
+
 
 class SessionState:
     """
@@ -49,8 +51,10 @@ class SessionState:
     def _save(self):
         """現在の状態をファイルに書き出す。"""
         try:
-            with open(self.state_file, "w", encoding="utf-8") as f:
-                json.dump(self.state, f, indent=2, ensure_ascii=False)
+            atomic_write_text(
+                self.state_file,
+                json.dumps(self.state, indent=2, ensure_ascii=False),
+            )
         except Exception as e:
             print(f"[SessionState] 状態ファイルの保存エラー: {e}")
 

@@ -34,28 +34,33 @@ args, _unknown = parser.parse_known_args()
 # ゾンビプロセス防止: 親PIDの死亡を監視するバックグラウンドスレッド
 # =====================================================================
 def _watch_parent(parent_pid: int):
-    """親プロセス(Flutter)が終了したらこのサーバーも強制終了する"""
+    """親プロセス(Flutter等)が終了したらこのサーバーも強制終了する。
+
+    psutil による OS 非依存実装。Windows / macOS / Linux で同一コードパスを通る。
+    """
     import time
-    import ctypes
+
+    import psutil
 
     print(f"[Server] Watching parent PID: {parent_pid}")
     while True:
         time.sleep(5)
         try:
-            if sys.platform == "win32":
-                SYNCHRONIZE = 0x00100000
-                handle = ctypes.windll.kernel32.OpenProcess(
-                    SYNCHRONIZE, False, parent_pid
-                )
-                if handle == 0:
-                    print(
-                        f"[Server] Parent PID {parent_pid} is dead. Terminating server."
-                    )
-                    os._exit(0)
-                ctypes.windll.kernel32.CloseHandle(handle)
-            else:
-                os.kill(parent_pid, 0)
-        except (ProcessLookupError, PermissionError, OSError):
+            alive = psutil.pid_exists(parent_pid)
+            if alive:
+                # ゾンビ状態の親も「死亡」とみなして終了する
+                try:
+                    proc = psutil.Process(parent_pid)
+                    if proc.status() == psutil.STATUS_ZOMBIE:
+                        alive = False
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    alive = False
+        except Exception as e:
+            # psutil 内部の予期せぬ例外で監視を止めない
+            print(f"[Server] Parent watch error (ignored): {e}")
+            continue
+
+        if not alive:
             print(f"[Server] Parent PID {parent_pid} is dead. Terminating server.")
             os._exit(0)
 
@@ -136,6 +141,16 @@ async def lifespan(app: FastAPI):
 
     if not deps.INSTANCES_DIR.exists():
         deps.INSTANCES_DIR.mkdir(parents=True, exist_ok=True)
+
+    # 埋め込みベクトルの次元一致チェック（警告のみ、起動は止めない）
+    try:
+        from butly_core.config import AI_CONFIG
+        from butly_core.core.embedding_check import log_startup_check
+
+        configured_model = AI_CONFIG.get("embedding", {}).get("model_name")
+        log_startup_check(deps.INSTANCES_DIR, configured_model)
+    except Exception as e:
+        print(f"[Server] Embedding dim check skipped: {e}")
 
     print("Butly Server Started.")
     yield

@@ -14,6 +14,8 @@ from typing import Optional
 
 import yaml
 
+from butly_core.io_utils import atomic_write_text
+
 YAML_FILENAME = "Key_Memory.yaml"
 TXT_FILENAME = "Key_Memory.txt"
 PROPOSALS_FILENAME = "key_memory_proposals.json"
@@ -39,10 +41,10 @@ def save_yaml(entries: list[dict], yaml_path: Path) -> None:
         duplicates = [i for i in ids if ids.count(i) > 1]
         raise ValueError(f"Duplicate entry IDs found: {set(duplicates)}")
     data = {"version": 1, "entries": entries}
-    with open(yaml_path, "w", encoding="utf-8") as f:
-        yaml.dump(
-            data, f, allow_unicode=True, default_flow_style=False, sort_keys=False
-        )
+    text = yaml.dump(
+        data, allow_unicode=True, default_flow_style=False, sort_keys=False
+    )
+    atomic_write_text(yaml_path, text)
 
 
 def next_id(entries: list[dict]) -> str:
@@ -281,7 +283,4 @@ def load_proposals(instance_path: Path) -> list[dict]:
 def save_proposals(proposals: list[dict], instance_path: Path) -> None:
     """key_memory_proposals.json を書き出す。"""
     p = instance_path / PROPOSALS_FILENAME
-    p.write_text(
-        json.dumps(proposals, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_text(p, json.dumps(proposals, ensure_ascii=False, indent=2))

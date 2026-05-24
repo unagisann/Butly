@@ -2,7 +2,7 @@
 
 🌐 **日本語** | [English](project_status.md)
 
-> 最終更新: 2026-05-17
+> 最終更新: 2026-05-24
 
 ## 概要
 Butly は、多層的な記憶管理（短期 / 浮動要約 / 中期ダイジェスト・関係性 / 長期ベクトル DB / Glossary / 根幹記憶）を備えたパーソナル AI アシスタント基盤です。FastAPI バックエンド + Streamlit UI で動作し、SSE ストリーミング応答、マルチプロバイダー LLM (Gemini / OpenAI / xAI / Ollama)、Gatekeeper による tier・RAG 制御、Sleeptime バッチによる記憶整理を備えます。
@@ -11,11 +11,14 @@ Butly は、多層的な記憶管理（短期 / 浮動要約 / 中期ダイジ�
 - **フロントエンド:** Streamlit (`app.py`) — Web UI、チャット、データベースブラウザ、Sleeptime 管理、Streaming トグル
 - **バックエンド:** FastAPI (`main.py`) — REST `/chat`、SSE `/chat/stream`、WebSocket `/ws`、各種設定エンドポイント
 - **データベース:** SQLite (`butly_memory.db`) — インスタンスごとのナレッジカード + 埋め込み
-- **AI エンジン:** マルチプロバイダー対応 (Google Gemini / OpenAI / Ollama / xAI)
+- **AI エンジン:** マルチプロバイダー対応 (Google Gemini / OpenAI / Ollama / xAI) — Phase 1–3 リファクタ（2026-05）により `Connection` + `ModelRef` + Protocol Adapter 経路に統合
   - `butly_core/llm/base.py`: 抽象基底 (`generate`, `summarize`, `embed`, `classify`, `async_generate_stream`)
-  - `butly_core/llm/factory.py`: モデル名プレフィックスによる自動ルーティング
-  - `butly_core/llm/_openai_compat.py`: OpenAI/Ollama/xAI 共通ヘルパー
-  - `butly_core/llm/providers/{gemini,openai,ollama,xai}.py`: プロバイダー実装
+  - `butly_core/llm/connections.py`: `Connection` データクラス + レジストリ（built-in `openai` / `xai` / `ollama` / `google` + `user_config.json` の `LLM_CONNECTIONS`）
+  - `butly_core/llm/model_registry.py`: `ModelRef`（connection_id + model_name）と `ModelPreset`。`normalize_model_ref()` / `infer_connection_id()` で旧 API（文字列 model_name）互換
+  - `butly_core/llm/factory.py`: `ProviderFactory.create(model)` が `ModelRef` / dict / str を受理し、対応 Adapter をインスタンス化
+  - `butly_core/llm/protocols/{openai_compat,gemini_native}.py`: Protocol Adapter 群（Provider シムから利用）
+  - `butly_core/llm/_openai_compat.py`: OpenAI 互換 API の低レベル共通ヘルパー
+  - `butly_core/llm/providers/{gemini,openai,ollama,xai}.py`: Connection を Adapter に紐付ける薄いシム
 - **コアモジュール:** `butly_core/`
   - `chat/service.py`: チャットオーケストレーター。`execute()`（バッファ応答）と `execute_stream()`（SSE）の 2 系統
   - `core/gatekeeper/`: ContextClassifier（tier + need_intent）/ MemoryProbe（事実裏付け）/ StateUpdater（並列実行）/ MemoryBlockBuilder（記憶ブロック構築）
@@ -26,6 +29,16 @@ Butly は、多層的な記憶管理（短期 / 浮動要約 / 中期ダイジ�
 - **検索モジュール:** `butly_core/search/` — Tavily / Ollama Cloud Web Search 切替対応
 
 ## 現在のフェーズとステータス
+
+- **モデルルーティング / Streaming ターンカウント修正 (2026-05-24)**: Phase 1–3 リファクタ後の追従修正。`tests/test_chat_stream.py` / `tests/test_chatservice_connection_routing.py` で担保。
+
+- **Phase 3 LLM refactor: UI + Dynamic Discovery + リクエスト単位 override (2026-05)**: Settings UI が Connection 別にモデルを列挙（built-in + user-defined）。`model_candidates` で Gemini モデルを動的取得（`models/` プレフィックス除去・表示統一）。`POST /chat` / `POST /chat/stream` のリクエスト単位 `model_name` 上書きを正しく解決。
+
+- **Phase 2 LLM refactor: AI_CONFIG / ChatService を ModelRef ルートへ (2026-05)**: `AI_CONFIG` 各エントリに `connection` + `model_name` を持たせ、`ChatService` / `Brain` / `ContextClassifier` / `StateUpdater` / `sleeptime` が `ProviderFactory.create(ModelRef)` 経由で動くよう整備。旧形式の文字列 `model_name` も継続受理。
+
+- **Phase 1 LLM refactor: Connection / ModelRef / OpenAICompatAdapter 導入 (2026-05)**: `connections.py` / `model_registry.py` / `protocols/`（`OpenAICompatAdapter`, `GeminiNativeAdapter`）を新設。Provider クラスは Connection を Adapter に紐付ける薄シムへ縮退。Groq 等のユーザー定義 Connection 拡張に向けた土台を整備。
+
+- **Knowledge カード `usage_count` 追加 (2026-05)**: `knowledge_cards` テーブルに `usage_count` フィールドを新設し、RAG 経由でのカード参照実績を `last_accessed_at` と独立して追跡。
 
 - **Floating Summary 表示の相対時刻化 (2026-05-17)**: `ButlyMemory.get_floating_summary()` がファイル名・絶対タイムスタンプを排除し、「約30分前」「約2時間前」などの相対時刻ヘッダーに置換。Sleeptime が日次で整理する前提のため、半日以内のスパンに最適化。旧形式 `Time: 2026-...` を含むファイルは後方互換ロジックで除去。
 
@@ -65,5 +78,5 @@ Butly は、多層的な記憶管理（短期 / 浮動要約 / 中期ダイジ�
 - **モデル選択優先順位**: インスタンス config > リクエスト `model_name` > グローバル `AI_CONFIG`。
 - **記憶ブロック構築**: `Gatekeeper` 経由で `MemoryBlockBuilder.build_system_instruction_from_blocks()` (不変) と `build_context_prefix()` (可変) の 2 経路に分割される。可変側は `context_levels` (`normal` / `compact` / `low` / `custom`) で各セクションを `high` / `low` / `off` に圧縮可能。
 - **バックグラウンド処理**: `sleeptime.py` は重い LLM 呼び出しを伴うため、API エンドポイント経由で別スレッド実行。
-- **Provider 抽象化層**: ChatService → ProviderFactory → 各プロバイダー。OpenAI / Ollama / xAI は `_openai_compat.py` の共通ヘルパーで実装され、Gemini のみ独自ロジック（`google.genai`）。
+- **Provider 抽象化層**: ChatService → `ProviderFactory.create(ModelRef|dict|str)` → Connection → Protocol Adapter。OpenAI / Ollama / xAI は `OpenAICompatAdapter`（+ `_openai_compat.py` ヘルパー）で実装され、Gemini は `GeminiNativeAdapter` 経由で `providers/gemini.py`（`google.genai`）を呼ぶ。
 - **Gatekeeper のフロー**: ContextClassifier (LLM, ~1s) + MemoryProbe (~100ms) を直列実行 → MemoryBlockBuilder → 応答生成 と StateUpdater (LLM, ~1s) は並列実行。
