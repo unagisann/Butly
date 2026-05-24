@@ -2671,6 +2671,17 @@ def render_instance_settings_screen():
     # 保存処理（両タブ共通）
     # ==========================================
     if save_basic or save_advanced:
+        from butly_core.llm.model_registry import infer_connection_id
+
+        def _set_model_ref(target: dict, selected_model: str) -> None:
+            """model_name と推定可能な built-in connection を一緒に保存する。"""
+            target["model_name"] = selected_model
+            inferred = infer_connection_id(selected_model)
+            if inferred:
+                target["connection"] = inferred
+            else:
+                target.pop("connection", None)
+
         # Update values
         config["brain"]["default_use_google_search"] = default_gs
         config["brain"]["readable_instances"] = readable_selected
@@ -2681,7 +2692,7 @@ def render_instance_settings_screen():
         config["brain"]["keyword_hit_threshold"] = keyword_thr
 
         # --- Chat ---
-        config["chat"]["model_name"] = model_name
+        _set_model_ref(config["chat"], model_name)
         config["chat"].setdefault("generation_config", {})
         config["chat"]["generation_config"]["temperature"] = temp
         config["chat"]["generation_config"]["max_output_tokens"] = max_tokens
@@ -2689,7 +2700,7 @@ def render_instance_settings_screen():
         # --- Gatekeeper ---
         _gk_save = {"enabled": gk_enabled}
         if gk_model_name is not None:  # "グローバル設定を使う" がOFF
-            _gk_save["model_name"] = gk_model_name
+            _set_model_ref(_gk_save, gk_model_name)
             _gk_save["generation_config"] = {
                 "temperature": gk_temp,
                 "max_output_tokens": 512,
@@ -2699,24 +2710,25 @@ def render_instance_settings_screen():
         # --- Summary ---
         if sum_model_name is not None:
             config["summary"] = {
-                "model_name": sum_model_name,
                 "generation_config": {"temperature": sum_temp},
             }
+            _set_model_ref(config["summary"], sum_model_name)
         else:
             config.pop("summary", None)
 
         # --- Knowledge ---
         if know_model_name is not None:
             config["knowledge"] = {
-                "model_name": know_model_name,
                 "generation_config": {"temperature": know_temp},
             }
+            _set_model_ref(config["knowledge"], know_model_name)
         else:
             config.pop("knowledge", None)
 
         # --- Embedding ---
         if emb_model_name is not None:
-            config["embedding"] = {"model_name": emb_model_name}
+            config["embedding"] = {}
+            _set_model_ref(config["embedding"], emb_model_name)
         else:
             config.pop("embedding", None)
 

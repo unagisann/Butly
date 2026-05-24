@@ -68,7 +68,7 @@ def mock_instance_manager():
     im.get_instance_config.return_value = {
         "chat": {"model_name": "gemini-flash-test"},
         "brain": {"use_rag": False},
-        "gatekeeper": {"enabled": True},
+        "gatekeeper": {"enabled": False},
     }
     return im
 
@@ -147,6 +147,9 @@ class TestExecuteStream:
 
         # save_single_turn が呼ばれている
         mock_components["memory"].save_single_turn.assert_called_once_with("hello", "こんにちは")
+        session_state_mock.increment_turn.assert_called_once_with(
+            "mid", history_msgs=[]
+        )
 
     def test_provider_error_yields_error_event(
         self, tmp_instance_dir, request_obj, mock_components,
@@ -179,6 +182,7 @@ class TestExecuteStream:
         assert "boom" in events[-1]["message"]
         # save_single_turn は呼ばれない (途中失敗のため)
         mock_components["memory"].save_single_turn.assert_not_called()
+        session_state_mock.increment_turn.assert_not_called()
 
     def test_attachment_vision_error(
         self, tmp_instance_dir, request_obj, mock_components,
@@ -210,3 +214,4 @@ class TestExecuteStream:
 
         assert events[-1]["type"] == "error"
         assert "画像入力" in events[-1]["message"]
+        session_state_mock.increment_turn.assert_not_called()

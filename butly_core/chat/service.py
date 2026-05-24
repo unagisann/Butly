@@ -96,8 +96,14 @@ def _resolve_chat_model_ref(
     # AI_CONFIG.chat と instance_config.chat をマージ (instance 優先)
     merged: dict = dict(ai_config_chat or {})
     if instance_config and isinstance(instance_config.get("chat"), dict):
-        # 浅マージで十分 (provider/model_name は scalar)
-        for k, v in instance_config["chat"].items():
+        # 浅マージで十分 (provider/model_name は scalar)。
+        # ただし instance 側が model_name だけを持つ旧形式の場合、AI_CONFIG の
+        # connection を引き継ぐと Grok を Gemini に投げるような不整合が起きる。
+        # request.model_name と同じく connection を捨てて model_name から再推定する。
+        inst_chat = instance_config["chat"]
+        if inst_chat.get("model_name") and not inst_chat.get("connection"):
+            merged.pop("connection", None)
+        for k, v in inst_chat.items():
             merged[k] = v
 
     # request 側の override を適用
@@ -366,8 +372,6 @@ class ChatService:
 
         _t_gk_end = time.time()
 
-        session_state.increment_turn(tier, history_msgs=history_fmt)
-
         # --- 5. 記憶ブロック構築 ---
         use_rag = instance_config.get("brain", {}).get("use_rag", True)
 
@@ -518,6 +522,8 @@ class ChatService:
             _run_generate(),
             _run_state_update(),
         )
+
+        session_state.increment_turn(tier, history_msgs=history_fmt)
 
         # 取得した state_delta を反映 (次ターン以降の context に活かす)
         if state_delta:
@@ -763,7 +769,6 @@ class ChatService:
             }
 
         _t_gk_end = time.time()
-        session_state.increment_turn(tier, history_msgs=history_fmt)
 
         # 5. 記憶ブロック
         use_rag = instance_config.get("brain", {}).get("use_rag", True)
@@ -929,6 +934,7 @@ class ChatService:
             state_delta = await state_task
         except Exception:
             state_delta = {}
+        session_state.increment_turn(tier, history_msgs=history_fmt)
         if state_delta:
             session_state.apply_delta(state_delta)
             gk_result["state_delta"] = state_delta

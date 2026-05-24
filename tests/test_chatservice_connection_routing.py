@@ -65,6 +65,16 @@ class TestResolveChatModelRef:
         assert ref.connection_id == "openai"
         assert ref.model_name == "gpt-4o"
 
+    def test_instance_model_name_only_reinfers_connection(self):
+        """instance_config が旧形式 model_name only なら AI_CONFIG の connection を引き継がない。"""
+        ref = _resolve_chat_model_ref(
+            instance_config={"chat": {"model_name": "grok-4.20-0309-non-reasoning"}},
+            request=self._make_request(),
+            ai_config_chat={"connection": "google", "model_name": "gemini-3.5-flash"},
+        )
+        assert ref.connection_id == "xai"
+        assert ref.model_name == "grok-4.20-0309-non-reasoning"
+
     def test_request_model_name_only_reinfers_connection(self):
         """request.model_name だけ指定 → 古い connection を捨てて推定し直す。"""
         ref = _resolve_chat_model_ref(
