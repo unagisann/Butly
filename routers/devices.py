@@ -3,6 +3,7 @@ routers/devices.py
 ──────────────────
 Fire TV + 将来のデバイス制御エンドポイント。
 """
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -30,6 +31,7 @@ def get_device_status():
 
 class TvKeyRequest(BaseModel):
     key: str
+
 
 class TvLaunchRequest(BaseModel):
     app: str

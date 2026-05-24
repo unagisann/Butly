@@ -3,6 +3,7 @@ routers/instances.py
 ────────────────────
 インスタンス CRUD + config/prompts + history エンドポイント。
 """
+
 from typing import Dict, Any
 
 from fastapi import APIRouter, HTTPException, Body
@@ -21,6 +22,7 @@ class CreateInstanceRequest(BaseModel):
     agent_profile: dict = {}
     user_profile: dict = {}
 
+
 class RenameInstanceRequest(BaseModel):
     new_name: str
 
@@ -30,10 +32,13 @@ def list_instances():
     """List all available AI instances."""
     if not deps.INSTANCES_DIR.exists():
         return []
-    instances = sorted([
-        p.name for p in deps.INSTANCES_DIR.iterdir()
-        if p.is_dir() and not p.name.startswith(".")
-    ])
+    instances = sorted(
+        [
+            p.name
+            for p in deps.INSTANCES_DIR.iterdir()
+            if p.is_dir() and not p.name.startswith(".")
+        ]
+    )
     return instances
 
 
@@ -55,7 +60,9 @@ def create_instance(request: CreateInstanceRequest):
 @router.post("/instances/{instance_name}/rename")
 def rename_instance(instance_name: str, request: RenameInstanceRequest):
     """Rename an existing AI instance."""
-    success, result = deps.instance_manager.rename_instance(instance_name, request.new_name)
+    success, result = deps.instance_manager.rename_instance(
+        instance_name, request.new_name
+    )
     if not success:
         raise HTTPException(status_code=400, detail=result)
 
@@ -104,10 +111,15 @@ def get_instance_config(instance_name: str):
 @router.post("/instances/{instance_name}/config")
 def update_instance_config(instance_name: str, config: Dict[str, Any] = Body(...)):
     """Update instance-specific configuration."""
-    success, message = deps.instance_manager.update_instance_config(instance_name, config)
+    success, message = deps.instance_manager.update_instance_config(
+        instance_name, config
+    )
     if not success:
         raise HTTPException(status_code=500, detail=message)
-    return {"message": message, "config": deps.instance_manager.get_instance_config(instance_name)}
+    return {
+        "message": message,
+        "config": deps.instance_manager.get_instance_config(instance_name),
+    }
 
 
 @router.get("/instances/{instance_name}/prompts")
@@ -122,7 +134,9 @@ def get_instance_prompts(instance_name: str):
 @router.post("/instances/{instance_name}/prompts")
 def update_instance_prompts(instance_name: str, data: Dict[str, str] = Body(...)):
     """インスタンスごとのプロンプトテキストを保存。"""
-    success, message = deps.instance_manager.update_instance_prompts(instance_name, data)
+    success, message = deps.instance_manager.update_instance_prompts(
+        instance_name, data
+    )
     if not success:
         raise HTTPException(status_code=500, detail=message)
     return {"message": message}
@@ -151,6 +165,7 @@ def get_history(instance_name: str, limit: int = 10):
 # 📖 Glossary (共通言語辞書) エンドポイント
 # ==========================================
 
+
 @router.get("/instances/{instance_name}/glossary")
 def get_glossary(instance_name: str):
     """インスタンスの Glossary データを取得する。"""
@@ -174,6 +189,7 @@ def update_glossary(instance_name: str, data: Dict[str, Any] = Body(...)):
 # 🔄 RAW Memory Cache エンドポイント
 # ==========================================
 
+
 @router.post("/instances/{instance_name}/rebuild_raw_cache")
 def rebuild_raw_cache(instance_name: str, params: dict | None = None):
     """RAW メモリキャッシュを即座に再生成する。
@@ -193,16 +209,30 @@ def rebuild_raw_cache(instance_name: str, params: dict | None = None):
 
     # インスタンス設定を読み込み（旧 agent → agent_profile/user_profile 変換込み）
     from butly_core.core.memory import _migrate_legacy_agent
-    config = _migrate_legacy_agent(deps.instance_manager.get_instance_config(instance_name))
+
+    config = _migrate_legacy_agent(
+        deps.instance_manager.get_instance_config(instance_name)
+    )
     mem_cfg = config.get("memory", {})
     agent_profile = config.get("agent_profile", {})
     user_profile = config.get("user_profile", {})
 
     # リクエストボディの値を優先、なければ config → SYSTEM_CONFIG
-    max_tokens = params.get("max_tokens") or mem_cfg.get("max_raw_tokens", SYSTEM_CONFIG["memory"].get("max_raw_tokens", 4096))
-    injection_format = params.get("injection_format") or mem_cfg.get("raw_injection_format", SYSTEM_CONFIG["memory"].get("raw_injection_format", "plaintext"))
-    agent_name = agent_profile.get("ai_name") or SYSTEM_CONFIG["agent"].get("agent_name", "Agent")
-    user_name = user_profile.get("preferred_call") or user_profile.get("user_name") or SYSTEM_CONFIG["agent"].get("user_name", "User")
+    max_tokens = params.get("max_tokens") or mem_cfg.get(
+        "max_raw_tokens", SYSTEM_CONFIG["memory"].get("max_raw_tokens", 4096)
+    )
+    injection_format = params.get("injection_format") or mem_cfg.get(
+        "raw_injection_format",
+        SYSTEM_CONFIG["memory"].get("raw_injection_format", "plaintext"),
+    )
+    agent_name = agent_profile.get("ai_name") or SYSTEM_CONFIG["agent"].get(
+        "agent_name", "Agent"
+    )
+    user_name = (
+        user_profile.get("preferred_call")
+        or user_profile.get("user_name")
+        or SYSTEM_CONFIG["agent"].get("user_name", "User")
+    )
 
     result = build_raw_memory_cache(
         instance_dir,
@@ -218,6 +248,7 @@ def rebuild_raw_cache(instance_name: str, params: dict | None = None):
 # ==========================================
 # 🔑 Key Memory CRUD エンドポイント
 # ==========================================
+
 
 @router.get("/instances/{instance_name}/key_memory")
 def get_key_memory(instance_name: str):
@@ -248,7 +279,9 @@ def add_key_memory(instance_name: str, data: Dict[str, str] = Body(...)):
 
 
 @router.put("/instances/{instance_name}/key_memory/{entry_id}")
-def update_key_memory(instance_name: str, entry_id: str, data: Dict[str, str] = Body(...)):
+def update_key_memory(
+    instance_name: str, entry_id: str, data: Dict[str, str] = Body(...)
+):
     """指定 ID の Key Memory エントリを更新する。"""
     components = deps.get_instance_components(instance_name)
     memory = components["memory"]
@@ -285,6 +318,7 @@ def delete_key_memory(instance_name: str, entry_id: str):
 # 📝 Key Memory Proposals エンドポイント
 # ==========================================
 
+
 @router.get("/instances/{instance_name}/key_memory/proposals")
 def get_key_memory_proposals(instance_name: str):
     """Key Memory 更新提案の一覧を返す。"""
@@ -308,7 +342,10 @@ def approve_key_memory_proposal(
         content: str — 承認時に内容を上書きする場合に指定。
     """
     from butly_core.core.key_memory import (
-        load_proposals, save_proposals, apply_proposal, YAML_FILENAME,
+        load_proposals,
+        save_proposals,
+        apply_proposal,
+        YAML_FILENAME,
     )
 
     instance_dir = deps.INSTANCES_DIR / instance_name
@@ -317,7 +354,9 @@ def approve_key_memory_proposal(
 
     proposals = load_proposals(instance_dir)
     if proposal_idx < 0 or proposal_idx >= len(proposals):
-        raise HTTPException(status_code=404, detail=f"Proposal index {proposal_idx} not found.")
+        raise HTTPException(
+            status_code=404, detail=f"Proposal index {proposal_idx} not found."
+        )
 
     proposal = proposals[proposal_idx]
     if proposal.get("status") != "pending":
@@ -351,7 +390,9 @@ def reject_key_memory_proposal(instance_name: str, proposal_idx: int):
 
     proposals = load_proposals(instance_dir)
     if proposal_idx < 0 or proposal_idx >= len(proposals):
-        raise HTTPException(status_code=404, detail=f"Proposal index {proposal_idx} not found.")
+        raise HTTPException(
+            status_code=404, detail=f"Proposal index {proposal_idx} not found."
+        )
 
     proposal = proposals[proposal_idx]
     if proposal.get("status") != "pending":

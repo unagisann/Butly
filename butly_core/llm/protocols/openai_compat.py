@@ -143,10 +143,7 @@ class OpenAICompatAdapter(BaseProvider):
         gen.setdefault("temperature", default_temperature)
 
         # reasoning_effort が flat か generation_config 内かを吸収
-        reasoning_effort = (
-            config.get("reasoning_effort")
-            or gen.get("reasoning_effort")
-        )
+        reasoning_effort = config.get("reasoning_effort") or gen.get("reasoning_effort")
 
         normalized: dict[str, Any] = {
             "model_name": config.get("model_name"),
@@ -201,14 +198,19 @@ class OpenAICompatAdapter(BaseProvider):
             # reasoning model (o1/o3/o4) を summary に割り当てても動くよう
             # build_chat_completion_kwargs に通す
             normalized_conf = self._to_chat_completion_conf(
-                config, default_temperature=0.3,
+                config,
+                default_temperature=0.3,
             )
             kwargs = compat.build_chat_completion_kwargs(
-                normalized_conf, messages, model_name=model,
+                normalized_conf,
+                messages,
+                model_name=model,
             )
             kwargs["model"] = model
             resp = self.client.chat.completions.create(**kwargs)
-            return resp.choices[0].message.content.strip() if resp.choices else "要約なし"
+            return (
+                resp.choices[0].message.content.strip() if resp.choices else "要約なし"
+            )
         except Exception as e:
             print(f"[{self._log_tag()}] Summarize Error: {e}")
             return "（要約作成に失敗）"
@@ -234,10 +236,13 @@ class OpenAICompatAdapter(BaseProvider):
             messages = [{"role": "user", "content": prompt}]
             # classify でも reasoning model 対応のため build_chat_completion_kwargs 経由
             normalized_conf = self._to_chat_completion_conf(
-                config, default_temperature=0.0,
+                config,
+                default_temperature=0.0,
             )
             kwargs = compat.build_chat_completion_kwargs(
-                normalized_conf, messages, model_name=model,
+                normalized_conf,
+                messages,
+                model_name=model,
             )
             kwargs["model"] = model
             resp = self.client.chat.completions.create(**kwargs)
@@ -275,13 +280,17 @@ class OpenAICompatAdapter(BaseProvider):
         # default_model_name (factory が ChatService の選択をキャプチャしたもの) を
         # AI_CONFIG / instance_config より優先する。
         # request.model_name で per-request 切替された場合の整合性確保。
-        model_name = self._strip(self.default_model_name or chat_conf.get("model_name") or "gpt-4o")
+        model_name = self._strip(
+            self.default_model_name or chat_conf.get("model_name") or "gpt-4o"
+        )
 
         _debug_messages = compat.build_debug_messages(messages)
 
         try:
             kwargs = compat.build_chat_completion_kwargs(
-                chat_conf, messages, model_name=model_name,
+                chat_conf,
+                messages,
+                model_name=model_name,
             )
             resp = self.client.chat.completions.create(model=model_name, **kwargs)
             response_text = resp.choices[0].message.content if resp.choices else ""
@@ -295,6 +304,7 @@ class OpenAICompatAdapter(BaseProvider):
             return result
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             return ChatResponse(text=f"Error: {e}")
 
@@ -327,7 +337,9 @@ class OpenAICompatAdapter(BaseProvider):
 
         chat_conf = compat.merge_chat_config(AI_CONFIG["chat"], override_config)
         # default_model_name 優先 (generate と同じ理由)
-        model_name = self._strip(self.default_model_name or chat_conf.get("model_name") or "gpt-4o")
+        model_name = self._strip(
+            self.default_model_name or chat_conf.get("model_name") or "gpt-4o"
+        )
         _debug_messages = compat.build_debug_messages(messages)
 
         debug_data = {

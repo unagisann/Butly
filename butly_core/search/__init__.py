@@ -5,7 +5,9 @@ from butly_core.search.tavily_provider import TavilySearchProvider
 from butly_core.search.ollama_provider import OllamaWebSearchProvider
 
 
-def create_search_provider(chat_model: str = "") -> TavilySearchProvider | OllamaWebSearchProvider:
+def create_search_provider(
+    chat_model: str = "",
+) -> TavilySearchProvider | OllamaWebSearchProvider:
     """設定に基づいて検索プロバイダーを生成する。
 
     v3.1: Ollama chat + OLLAMA_WEB_SEARCH_API_KEY → OllamaWebSearchProvider。

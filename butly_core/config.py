@@ -19,9 +19,8 @@ AI_CONFIG = {
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
+        ],
     },
-    
     # 2. Summary Model (Cost-effective, good for long context)
     "summary": {
         "connection": "google",
@@ -35,15 +34,14 @@ AI_CONFIG = {
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
+        ],
     },
-    
     # 3. Knowledge Model (High reasoning for distillation)
     "knowledge": {
         "connection": "google",
         "model_name": "gemini-3.1-pro-preview",
         "generation_config": {
-            "temperature": 0.7, # Consistent output preferred
+            "temperature": 0.7,  # Consistent output preferred
             "max_output_tokens": 8192,
         },
         "safety_settings": [
@@ -51,57 +49,50 @@ AI_CONFIG = {
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
+        ],
     },
-    
     # 4. Embedding Model (Vector search)
     "embedding": {
         "connection": "google",
         "model_name": "gemini-embedding-2",  # 旧 models/gemini-embedding-001 から差し替え
         # Retrieval task type is usually set at call time
     },
-    
     # 5. Gatekeeper Model (Tier classification, fast evaluation)
     "gatekeeper": {
         "connection": "google",
         "model_name": "gemini-3.1-flash-lite",  # stable: preview → stable へ昇格
         "generation_config": {
-            "temperature": 0.0,      # 判定の一貫性を最大化
-            "max_output_tokens": 512, # JSON出力に十分な量
+            "temperature": 0.0,  # 判定の一貫性を最大化
+            "max_output_tokens": 512,  # JSON出力に十分な量
         },
         "safety_settings": [
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
+        ],
     },
-
     # 6. ContextClassifier Model (未設定時は gatekeeper にフォールバック)
     "context_classifier": {},
 }
 
 # System Configuration (Paths, Thresholds, Limits)
 SYSTEM_CONFIG = {
-    "agent": {
-        "agent_name": "Butly",
-        "user_name": "User",
-        "locale": "en"
-    },
+    "agent": {"agent_name": "Butly", "user_name": "User", "locale": "en"},
     "paths": {
         "db_name": "butly_memory.db",
         "system_instruction": "system_instruction.txt",
-        "key_memory": "Key_Memory.txt"
+        "key_memory": "Key_Memory.txt",
     },
     "memory": {
-        "max_raw_tokens": 4096,                 # RAW 読み込みトークン上限
-        "raw_injection_format": "plaintext",     # "markdown" | "plaintext" | "compact"
+        "max_raw_tokens": 4096,  # RAW 読み込みトークン上限
+        "raw_injection_format": "plaintext",  # "markdown" | "plaintext" | "compact"
         "short_term_limit": 6,
-        "generate_mid_term_summaries": True,   # Phase 3: 二層要約の生成を有効化
-        "max_digest_chars": 8000,              # Phase 3: digest上限（超過分はアーカイブ）
-        "relationship_update_interval_days": 7, # Phase 3: 関係性スナップショットの更新間隔（日数）
+        "generate_mid_term_summaries": True,  # Phase 3: 二層要約の生成を有効化
+        "max_digest_chars": 8000,  # Phase 3: digest上限（超過分はアーカイブ）
+        "relationship_update_interval_days": 7,  # Phase 3: 関係性スナップショットの更新間隔（日数）
         "use_summarized_mid_term": True,  # ★NEW: True=要約注入 / False=RAW注入
-        "count_dedup_hours": 6,           # usage_count dedup 窓（同一カードの再カウント抑制時間）
+        "count_dedup_hours": 6,  # usage_count dedup 窓（同一カードの再カウント抑制時間）
     },
     "brain": {
         "search_limit": 3,
@@ -109,14 +100,11 @@ SYSTEM_CONFIG = {
         "fallback_fetch_limit": 100,  # 0.005 decay 下で 3ヶ月以上前のカードも候補に残るよう拡大
         "time_decay_rate": 0.003,  # 日数あたりの減衰率。 small = old cards retain visibility
         "summary_char_limit": 200,
-        "readable_instances": ["self"], # ["self"], ["self", "00_master"] 等で横断検索
-        "dynamic_threshold": 0.6, # Google Search Dynamic Retrieval Threshold (0.0 - 1.0)
-        "default_use_google_search": False # デフォルトでGoogle検索グラウンディングを使用するか
+        "readable_instances": ["self"],  # ["self"], ["self", "00_master"] 等で横断検索
+        "dynamic_threshold": 0.6,  # Google Search Dynamic Retrieval Threshold (0.0 - 1.0)
+        "default_use_google_search": False,  # デフォルトでGoogle検索グラウンディングを使用するか
     },
-    "backup": {
-        "generations": 7,
-        "dir_name": "db_backups"
-    },
+    "backup": {"generations": 7, "dir_name": "db_backups"},
     "search": {
         "provider": "tavily",
         "max_results": 3,
@@ -156,9 +144,14 @@ SYSTEM_CONFIG = {
 import json
 from pathlib import Path
 
+
 def _recursive_update(base_dict, update_dict):
     for key, value in update_dict.items():
-        if isinstance(value, dict) and key in base_dict and isinstance(base_dict[key], dict):
+        if (
+            isinstance(value, dict)
+            and key in base_dict
+            and isinstance(base_dict[key], dict)
+        ):
             _recursive_update(base_dict[key], value)
         else:
             base_dict[key] = value
@@ -199,7 +192,7 @@ def _normalize_ai_config(ai_config: dict) -> None:
                 print(
                     f"[Config] role={role!r} model_name={model_name!r} の "
                     f"connection を推定できませんでした。明示的に "
-                    f"\"connection\" を指定してください。"
+                    f'"connection" を指定してください。'
                 )
             continue
 
@@ -228,11 +221,15 @@ def _register_user_connections(connections_list) -> None:
       ]
     """
     if not isinstance(connections_list, list):
-        print(f"[Config] LLM_CONNECTIONS は list で指定してください (got {type(connections_list).__name__})")
+        print(
+            f"[Config] LLM_CONNECTIONS は list で指定してください (got {type(connections_list).__name__})"
+        )
         return
 
     from butly_core.llm.connections import (  # 遅延 import
-        Connection, is_builtin_connection, register_connection,
+        Connection,
+        is_builtin_connection,
+        register_connection,
     )
 
     for entry in connections_list:

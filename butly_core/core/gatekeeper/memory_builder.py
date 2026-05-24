@@ -83,6 +83,7 @@ CONTEXT_LEVEL_PRESETS = {
 # 後方互換マイグレーション
 # ===================================================================
 
+
 def migrate_context_order_to_levels(config: dict) -> dict:
     """旧 context_order → 新 context_levels への変換。"""
     old = config.get("context_order")
@@ -91,7 +92,9 @@ def migrate_context_order_to_levels(config: dict) -> dict:
     if "context_levels" in config:
         return config  # すでに新形式
 
-    si_order = old.get("system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"])
+    si_order = old.get(
+        "system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"]
+    )
     cp_order = old.get("context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"])
     position = old.get("system_instruction_position", "top")
 
@@ -120,6 +123,7 @@ def migrate_context_order_to_levels(config: dict) -> dict:
 # レベル解決ヘルパー
 # ===================================================================
 
+
 def _resolve_levels(context_levels: dict | None, context_order: dict | None) -> dict:
     """context_levels または context_order からレベル辞書を解決する。"""
     if context_levels:
@@ -133,12 +137,16 @@ def _resolve_levels(context_levels: dict | None, context_order: dict | None) -> 
         cp_order = context_order.get("context_prefix", [])
         active = set(si_order + cp_order)
         return {s: ("high" if s in active else "off") for s in all_sections}
-    return {s: "high" for s in
-            DEFAULT_CONTEXT_ORDER["system_instruction"]
-            + DEFAULT_CONTEXT_ORDER["context_prefix"]}
+    return {
+        s: "high"
+        for s in DEFAULT_CONTEXT_ORDER["system_instruction"]
+        + DEFAULT_CONTEXT_ORDER["context_prefix"]
+    }
 
 
-def _resolve_order(context_levels: dict | None, context_order: dict | None, key: str) -> list:
+def _resolve_order(
+    context_levels: dict | None, context_order: dict | None, key: str
+) -> list:
     """セクション順序を解決する。off要素も順序上は保持される。"""
     if context_levels and "order" in context_levels:
         return context_levels["order"].get(key, DEFAULT_CONTEXT_ORDER[key])
@@ -210,7 +218,9 @@ class MemoryBlockBuilder:
             "rag_context": "",
             "topic": topic,
             "need": gatekeeper_output.get("need") if gatekeeper_output else None,
-            "search_targets": gatekeeper_output.get("search_targets") if gatekeeper_output else None,
+            "search_targets": (
+                gatekeeper_output.get("search_targets") if gatekeeper_output else None
+            ),
         }
 
         if tier == "reflex":
@@ -237,19 +247,25 @@ class MemoryBlockBuilder:
                 blocks["mid_term"] = ""  # RAWは空にする
                 blocks["mid_term_mode"] = "summary"
                 total_chars = len(digest) + len(recent_snapshot)
-                print(f"[Gatekeeper] MemoryBlock: {tier}（+ digest {len(digest)}文字 + recent_snapshot {len(recent_snapshot)}文字 = {total_chars}文字）")
+                print(
+                    f"[Gatekeeper] MemoryBlock: {tier}（+ digest {len(digest)}文字 + recent_snapshot {len(recent_snapshot)}文字 = {total_chars}文字）"
+                )
             else:
                 # 要約ファイルが存在しない → RAWにフォールバック
                 mid_term = memory_manager.get_raw_memory()
                 blocks["mid_term"] = mid_term
                 blocks["mid_term_mode"] = "raw_fallback"
-                print(f"[Gatekeeper] MemoryBlock: {tier}（要約なし → RAWフォールバック {len(mid_term)}文字）")
+                print(
+                    f"[Gatekeeper] MemoryBlock: {tier}（要約なし → RAWフォールバック {len(mid_term)}文字）"
+                )
         else:
             # RAWモード: 1_integrated + 2_knowledgeized から読み込み
             mid_term = memory_manager.get_raw_memory()
             blocks["mid_term"] = mid_term
             blocks["mid_term_mode"] = "raw"
-            print(f"[Gatekeeper] MemoryBlock: {tier}（+ mid_term RAW {len(mid_term)}文字）")
+            print(
+                f"[Gatekeeper] MemoryBlock: {tier}（+ mid_term RAW {len(mid_term)}文字）"
+            )
 
         # --- RAG: need がある場合、probe candidates から RAG コンテキストを構築 ---
         need = blocks.get("need")
@@ -270,9 +286,11 @@ class MemoryBlockBuilder:
                 if c.get("episode"):
                     rag_lines.append(f"  (補足: {c['episode']})")
             blocks["rag_context"] = "\n".join(rag_lines)
-            blocks["rag_card_ids"] = [c["id"] for c in candidates]   # usage_count 用
-            blocks["rag_results_raw"] = candidates                    # debug_info 用
-            print(f"[Gatekeeper] MemoryBlock: {tier}（RAG probe hits={len(candidates)}）")
+            blocks["rag_card_ids"] = [c["id"] for c in candidates]  # usage_count 用
+            blocks["rag_results_raw"] = candidates  # debug_info 用
+            print(
+                f"[Gatekeeper] MemoryBlock: {tier}（RAG probe hits={len(candidates)}）"
+            )
         elif not need:
             print(f"[Gatekeeper] MemoryBlock: {tier}（need=null のため RAG スキップ）")
         else:
@@ -343,13 +361,18 @@ def build_system_instruction_from_blocks(
     )
 
     builders = {
-        "system_instruction": lambda: _build_si_section(sys_inst, si_level, h, agent_profile_header),
+        "system_instruction": lambda: _build_si_section(
+            sys_inst, si_level, h, agent_profile_header
+        ),
         "key_memory": lambda: _build_km_section(key_mem, km_level, h),
     }
 
     sections = []
     for section_id in order:
-        if levels.get(section_id, "high") == "off" and section_id != "system_instruction":
+        if (
+            levels.get(section_id, "high") == "off"
+            and section_id != "system_instruction"
+        ):
             continue  # off はスキップ。system_instruction は off 不可
         builder = builders.get(section_id)
         if builder:
@@ -360,7 +383,9 @@ def build_system_instruction_from_blocks(
     return "\n\n".join(sections)
 
 
-def _build_si_section(sys_inst: str, level: str, h, agent_profile_header: str = "") -> str | None:
+def _build_si_section(
+    sys_inst: str, level: str, h, agent_profile_header: str = ""
+) -> str | None:
     if not sys_inst and not agent_profile_header:
         return None
     body = (sys_inst or "").strip()
@@ -426,14 +451,26 @@ def build_context_prefix(
 
     builders = {
         "label_notes": lambda: _build_label_notes(levels.get("label_notes", "high"), h),
-        "current_time": lambda: _build_current_time(levels.get("current_time", "high"), h),
-        "glossary": lambda: _build_glossary(blocks, memory_manager, levels.get("glossary", "high"), h),
-        "mid_term": lambda: _build_mid_term(blocks, levels.get("mid_term", "high"), tier, h),
+        "current_time": lambda: _build_current_time(
+            levels.get("current_time", "high"), h
+        ),
+        "glossary": lambda: _build_glossary(
+            blocks, memory_manager, levels.get("glossary", "high"), h
+        ),
+        "mid_term": lambda: _build_mid_term(
+            blocks, levels.get("mid_term", "high"), tier, h
+        ),
         "rag": lambda: _build_rag(blocks, levels.get("rag", "high"), tier, h),
         "floating": lambda: _build_floating(blocks, levels.get("floating", "high"), h),
-        "tier_info": lambda: _build_tier_info(blocks, levels.get("tier_info", "high"), h),
-        "google_search": lambda: _build_google_search(levels.get("google_search", "high"), use_google_search, h),
-        "web_search": lambda: _build_web_search(blocks, levels.get("web_search", "high"), h),
+        "tier_info": lambda: _build_tier_info(
+            blocks, levels.get("tier_info", "high"), h
+        ),
+        "google_search": lambda: _build_google_search(
+            levels.get("google_search", "high"), use_google_search, h
+        ),
+        "web_search": lambda: _build_web_search(
+            blocks, levels.get("web_search", "high"), h
+        ),
     }
 
     sections = []
@@ -458,11 +495,11 @@ def _build_label_notes(level: str, h) -> str | None:
     if level in ("off", "low"):
         return None
     parts = []
-    label = h('context_prefix_label')
-    if label and label != 'context_prefix_label':
+    label = h("context_prefix_label")
+    if label and label != "context_prefix_label":
         parts.append(label)
-    note = h('note_context_prefix')
-    if note and note != 'note_context_prefix':
+    note = h("note_context_prefix")
+    if note and note != "note_context_prefix":
         parts.append(note)
     return "\n\n".join(parts) if parts else None
 
@@ -471,6 +508,7 @@ def _build_current_time(level: str, h) -> str | None:
     if level == "off":
         return None
     from butly_core.core.chronos import ButlyChronos
+
     current_time = ButlyChronos().get_system_note()
     if level == "low":
         return current_time.split("\n")[0].strip()  # 時刻のみ1行
@@ -513,11 +551,7 @@ def _build_glossary(blocks: dict, memory_manager, level: str, h) -> str | None:
         return None
     glossary_text = memory_manager.get_glossary()
     if glossary_text:
-        return (
-            f"{h('glossary')}\n"
-            f"{h('note_glossary')}\n"
-            f"{glossary_text}"
-        )
+        return f"{h('glossary')}\n" f"{h('note_glossary')}\n" f"{glossary_text}"
     return None
 
 
@@ -630,9 +664,7 @@ def _build_mid_term(blocks: dict, level: str, tier: str, h) -> str | None:
         recent_snapshot = blocks.get("mid_term_recent_snapshot", "")
         if digest:
             parts.append(
-                f"{h('mid_term_digest')}\n"
-                f"{h('note_mid_term_digest')}\n"
-                f"{digest}"
+                f"{h('mid_term_digest')}\n" f"{h('note_mid_term_digest')}\n" f"{digest}"
             )
         if recent_snapshot:
             parts.append(
@@ -676,17 +708,17 @@ def _build_tier_info(blocks: dict, level: str, h) -> str | None:
     if level in ("off", "low"):
         return None
     tier = blocks.get("tier", "mid")
-    tier_text = h('tier_mode').format(tier=tier)
+    tier_text = h("tier_mode").format(tier=tier)
     topic = blocks.get("topic", "")
     if tier in ("mid",) and topic:
-        tier_text += "\n" + h('tier_topic').format(topic=topic)
+        tier_text += "\n" + h("tier_topic").format(topic=topic)
     return f"{h('tier_info')}\n{tier_text}"
 
 
 def _build_google_search(level: str, use_google_search: bool, h) -> str | None:
     if level == "off" or not use_google_search:
         return None
-    return h('note_google_search')
+    return h("note_google_search")
 
 
 def _build_web_search(blocks: dict, level: str, h) -> str | None:

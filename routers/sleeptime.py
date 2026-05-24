@@ -3,6 +3,7 @@ routers/sleeptime.py
 ──────────────────────
 Sleeptime 実行・ステータス・推定エンドポイント。
 """
+
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
@@ -29,7 +30,9 @@ class SleeptimeRunRequest(BaseModel):
 
 
 @router.post("/sleeptime/run")
-async def run_sleeptime(request: SleeptimeRunRequest, background_tasks: BackgroundTasks):
+async def run_sleeptime(
+    request: SleeptimeRunRequest, background_tasks: BackgroundTasks
+):
     """Run Sleeptime in background."""
     instance_name = request.instance_name
 
@@ -39,7 +42,9 @@ async def run_sleeptime(request: SleeptimeRunRequest, background_tasks: Backgrou
 
     sleeptime_instance.update_status(instance_name, "running", 0.0, "Starting...")
 
-    background_tasks.add_task(run_in_threadpool, sleeptime_instance.run_with_progress, instance_name)
+    background_tasks.add_task(
+        run_in_threadpool, sleeptime_instance.run_with_progress, instance_name
+    )
 
     return {"message": "Sleeptime started", "status": sleeptime_store[instance_name]}
 
@@ -47,4 +52,6 @@ async def run_sleeptime(request: SleeptimeRunRequest, background_tasks: Backgrou
 @router.get("/sleeptime/status/{instance_name}")
 def get_sleeptime_status(instance_name: str):
     """Get current Sleeptime status."""
-    return sleeptime_store.get(instance_name, {"state": "idle", "progress": 0.0, "message": ""})
+    return sleeptime_store.get(
+        instance_name, {"state": "idle", "progress": 0.0, "message": ""}
+    )

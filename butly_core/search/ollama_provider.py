@@ -50,14 +50,17 @@ class OllamaWebSearchProvider(BaseSearchProvider):
 
             results = []
             for item in data.get("results", [])[:max_results]:
-                results.append(SearchResult(
-                    title=item.get("title", ""),
-                    url=item.get("url", ""),
-                    content=item.get("snippet", ""),
-                    score=None,  # Ollama API は score を返さない
-                ))
+                results.append(
+                    SearchResult(
+                        title=item.get("title", ""),
+                        url=item.get("url", ""),
+                        content=item.get("snippet", ""),
+                        score=None,  # Ollama API は score を返さない
+                    )
+                )
 
             from butly_core.search.usage_tracker import UsageTracker
+
             UsageTracker.increment("ollama")
 
             return results

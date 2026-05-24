@@ -34,6 +34,7 @@ class StateUpdater:
 
     def _get_provider(self):
         from butly_core.llm.factory import ProviderFactory
+
         return ProviderFactory.create(self.model_name)
 
     def _resolve_config(self, override_config=None):
@@ -41,13 +42,25 @@ class StateUpdater:
         if not override_config or "gatekeeper" not in override_config:
             return self.model_name, self.gatekeeper_config
         merged = {**self.gatekeeper_config, **override_config["gatekeeper"]}
-        if "generation_config" in self.gatekeeper_config and "generation_config" in override_config.get("gatekeeper", {}):
-            merged["generation_config"] = {**self.gatekeeper_config["generation_config"], **override_config["gatekeeper"]["generation_config"]}
+        if (
+            "generation_config" in self.gatekeeper_config
+            and "generation_config" in override_config.get("gatekeeper", {})
+        ):
+            merged["generation_config"] = {
+                **self.gatekeeper_config["generation_config"],
+                **override_config["gatekeeper"]["generation_config"],
+            }
         model = merged.get("model_name", self.model_name)
         return model, merged
 
-    def update(self, user_input: str, history_msgs: list,
-               current_state: dict, override_config=None, agent_name: str = None) -> dict:
+    def update(
+        self,
+        user_input: str,
+        history_msgs: list,
+        current_state: dict,
+        override_config=None,
+        agent_name: str = None,
+    ) -> dict:
         """
         Returns:
             {
@@ -63,7 +76,9 @@ class StateUpdater:
         t0 = time.time()
 
         _agent_name = agent_name or SYSTEM_CONFIG["agent"]["agent_name"]
-        history_text = self._format_history(history_msgs, max_turns=3, agent_name=_agent_name)
+        history_text = self._format_history(
+            history_msgs, max_turns=3, agent_name=_agent_name
+        )
 
         # Format session state text
         state_text = self._format_state(current_state)
@@ -77,8 +92,11 @@ class StateUpdater:
 
         try:
             from butly_core.llm.factory import ProviderFactory
+
             # Phase 2: dict (connection + model_name) を Factory に渡す
-            provider = ProviderFactory.create(gk_config if gk_config.get("model_name") else model_name)
+            provider = ProviderFactory.create(
+                gk_config if gk_config.get("model_name") else model_name
+            )
             raw_text = provider.classify(prompt, gk_config)
             result = self._parse_response(raw_text)
         except Exception as e:
@@ -102,7 +120,7 @@ class StateUpdater:
             else:
                 json_str = raw_text.strip()
                 if json_str.startswith("{") and "}" in json_str:
-                    json_str = json_str[json_str.find("{"):json_str.rfind("}") + 1]
+                    json_str = json_str[json_str.find("{") : json_str.rfind("}") + 1]
 
             data = json.loads(json_str)
 
@@ -135,13 +153,15 @@ class StateUpdater:
         ]
         return "\n".join(lines)
 
-    def _format_history(self, history_msgs: list, max_turns: int = 3, agent_name: str = None) -> str:
+    def _format_history(
+        self, history_msgs: list, max_turns: int = 3, agent_name: str = None
+    ) -> str:
         """history_msgs の末尾 max_turns 件を文字列へ変換する。"""
         if not history_msgs:
             return "（履歴なし）"
 
         _agent_name = agent_name or SYSTEM_CONFIG["agent"]["agent_name"]
-        recent = history_msgs[-(max_turns * 2):]
+        recent = history_msgs[-(max_turns * 2) :]
         lines = []
         for msg in recent:
             role = msg.get("role", "unknown")

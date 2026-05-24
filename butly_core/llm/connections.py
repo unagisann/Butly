@@ -26,6 +26,7 @@ ProtocolId = Literal["openai_compat", "gemini_native"]
 # Connection データクラス
 # =====================================================================
 
+
 @dataclass(frozen=True)
 class Connection:
     """LLM 接続情報。
@@ -98,8 +99,10 @@ class Connection:
 
     def strip_model_prefix(self, model_name: str) -> str:
         """API 渡す前に prefix を除去する。"""
-        if self.model_name_strip_prefix and model_name.startswith(self.model_name_strip_prefix):
-            return model_name[len(self.model_name_strip_prefix):]
+        if self.model_name_strip_prefix and model_name.startswith(
+            self.model_name_strip_prefix
+        ):
+            return model_name[len(self.model_name_strip_prefix) :]
         return model_name
 
 
@@ -157,6 +160,7 @@ _BUILTIN_CONNECTIONS: tuple[Connection, ...] = (
 # Registry
 # =====================================================================
 
+
 class ConnectionRegistry:
     """Connection レジストリ。
 
@@ -166,7 +170,9 @@ class ConnectionRegistry:
 
     def __init__(self) -> None:
         self._builtin_ids: set[str] = {c.id for c in _BUILTIN_CONNECTIONS}
-        self._connections: dict[str, Connection] = {c.id: c for c in _BUILTIN_CONNECTIONS}
+        self._connections: dict[str, Connection] = {
+            c.id: c for c in _BUILTIN_CONNECTIONS
+        }
 
     def get(self, connection_id: str) -> Optional[Connection]:
         return self._connections.get(connection_id)
@@ -181,7 +187,9 @@ class ConnectionRegistry:
         return list(self._connections.values())
 
     def list_user_defined(self) -> list[Connection]:
-        return [c for cid, c in self._connections.items() if cid not in self._builtin_ids]
+        return [
+            c for cid, c in self._connections.items() if cid not in self._builtin_ids
+        ]
 
     def is_builtin(self, connection_id: str) -> bool:
         return connection_id in self._builtin_ids
@@ -202,7 +210,9 @@ class ConnectionRegistry:
 
     def unregister(self, connection_id: str) -> None:
         if connection_id in self._builtin_ids:
-            raise ValueError(f"Cannot unregister built-in connection: {connection_id!r}")
+            raise ValueError(
+                f"Cannot unregister built-in connection: {connection_id!r}"
+            )
         self._connections.pop(connection_id, None)
 
     def reset_to_builtin(self) -> None:

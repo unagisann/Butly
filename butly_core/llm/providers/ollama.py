@@ -34,7 +34,9 @@ def _get_client():
     try:
         import openai
     except ImportError:
-        raise RuntimeError("openai パッケージが必要です。`pip install openai` を実行してください。")
+        raise RuntimeError(
+            "openai パッケージが必要です。`pip install openai` を実行してください。"
+        )
 
     compat.load_env_file()
 

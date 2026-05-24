@@ -28,16 +28,24 @@ def _get_client():
     try:
         import openai
     except ImportError:
-        raise RuntimeError("openai パッケージが必要です。`pip install openai` を実行してください。")
+        raise RuntimeError(
+            "openai パッケージが必要です。`pip install openai` を実行してください。"
+        )
 
     compat.load_env_file()
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        raise RuntimeError("OpenAI API キーが見つかりません。APIkey.env に OPENAI_API_KEY を設定してください。")
+        raise RuntimeError(
+            "OpenAI API キーが見つかりません。APIkey.env に OPENAI_API_KEY を設定してください。"
+        )
 
     base_url = os.environ.get("OPENAI_BASE_URL")
-    return openai.OpenAI(api_key=api_key, base_url=base_url) if base_url else openai.OpenAI(api_key=api_key)
+    return (
+        openai.OpenAI(api_key=api_key, base_url=base_url)
+        if base_url
+        else openai.OpenAI(api_key=api_key)
+    )
 
 
 class OpenAIProvider(OpenAICompatAdapter):

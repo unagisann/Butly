@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, field_validator
 
-
 # ===================================================================
 # 定数
 # ===================================================================
@@ -26,8 +25,8 @@ MAX_ATTACHMENTS = 3
 MAX_ATTACHMENT_SIZE = 20 * 1024 * 1024  # 20MB
 
 # inline 送信の閾値（Provider 側で使用）
-INLINE_SIZE_PER_FILE = 2 * 1024 * 1024   # 2MB
-INLINE_SIZE_TOTAL = 8 * 1024 * 1024      # 8MB
+INLINE_SIZE_PER_FILE = 2 * 1024 * 1024  # 2MB
+INLINE_SIZE_TOTAL = 8 * 1024 * 1024  # 8MB
 
 # data URL ヘッダのパターン
 _DATA_URL_PATTERN = re.compile(r"^data:[^;]+;base64,")
@@ -37,8 +36,10 @@ _DATA_URL_PATTERN = re.compile(r"^data:[^;]+;base64,")
 # Pydantic モデル
 # ===================================================================
 
+
 class Attachment(BaseModel):
     """添付ファイル（現在は画像のみ対応）"""
+
     kind: Literal["image"] = "image"
     mime_type: str
     data_base64: str
@@ -48,6 +49,7 @@ class Attachment(BaseModel):
 
 class ChatRequest(BaseModel):
     """チャットリクエスト（アプリ内標準 DTO）"""
+
     text: str = ""
     attachments: List[Attachment] = []
     instance_name: str = "00_master"
@@ -64,6 +66,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     """チャットレスポンス（アプリ内標準 DTO）"""
+
     text: str
     keywords: List[str] = []
     refs: List[Dict[str, Any]] = []
@@ -79,6 +82,7 @@ class ChatResponse(BaseModel):
 # ===================================================================
 # バリデーション関数
 # ===================================================================
+
 
 def strip_data_url_header(data_base64: str) -> str:
     """
@@ -110,7 +114,9 @@ def validate_attachments(attachments: List[Attachment]) -> Optional[str]:
         # MIME チェック
         if att.mime_type not in ALLOWED_IMAGE_MIMES:
             allowed = " / ".join(sorted(ALLOWED_IMAGE_MIMES))
-            return f"サポートされていない画像形式です: {att.mime_type}（許可: {allowed}）"
+            return (
+                f"サポートされていない画像形式です: {att.mime_type}（許可: {allowed}）"
+            )
 
         # data URL ヘッダ除去（副作用あり: 元の att を書き換える）
         att.data_base64 = strip_data_url_header(att.data_base64)
@@ -165,11 +171,13 @@ def normalize_ws_payload(raw_payload) -> ChatRequest:
         elif "images" in raw_payload:
             for b64 in raw_payload["images"]:
                 cleaned = strip_data_url_header(b64)
-                attachments.append(Attachment(
-                    kind="image",
-                    mime_type="image/jpeg",  # 旧形式は MIME 情報がないため JPEG と仮定
-                    data_base64=cleaned,
-                ))
+                attachments.append(
+                    Attachment(
+                        kind="image",
+                        mime_type="image/jpeg",  # 旧形式は MIME 情報がないため JPEG と仮定
+                        data_base64=cleaned,
+                    )
+                )
 
         return ChatRequest(
             text=text,

@@ -18,6 +18,7 @@ class TavilySearchProvider(BaseSearchProvider):
 
         try:
             from tavily import TavilyClient
+
             client = TavilyClient(api_key=self.api_key)
             response = client.search(
                 query=query,
@@ -28,14 +29,17 @@ class TavilySearchProvider(BaseSearchProvider):
 
             results = []
             for item in response.get("results", []):
-                results.append(SearchResult(
-                    title=item.get("title", ""),
-                    url=item.get("url", ""),
-                    content=item.get("content", ""),
-                    score=item.get("score"),
-                ))
+                results.append(
+                    SearchResult(
+                        title=item.get("title", ""),
+                        url=item.get("url", ""),
+                        content=item.get("content", ""),
+                        score=item.get("score"),
+                    )
+                )
 
             from butly_core.search.usage_tracker import UsageTracker
+
             UsageTracker.increment("tavily")
 
             return results

@@ -62,7 +62,7 @@ def _build_prompt_full(
         items.append({"role": "system", "content": system_instruction})
     if context_prefix:
         items.append({"role": "user", "content": context_prefix})
-    for m in (history_msgs or []):
+    for m in history_msgs or []:
         role = m.get("role", "user")
         if role in ("model", "assistant"):
             role = "assistant"
@@ -118,8 +118,12 @@ def _resolve_chat_model_ref(
 
     return resolve_role_model_ref(
         merged,
-        fallback_model_name=ai_config_chat.get("model_name") if ai_config_chat else None,
-        fallback_connection_id=ai_config_chat.get("connection") if ai_config_chat else None,
+        fallback_model_name=(
+            ai_config_chat.get("model_name") if ai_config_chat else None
+        ),
+        fallback_connection_id=(
+            ai_config_chat.get("connection") if ai_config_chat else None
+        ),
     )
 
 
@@ -152,12 +156,17 @@ def _record_usage_count(
     # rag セクションが off なら Brain にカードは渡っていない → カウントしない
     try:
         from butly_core.core.gatekeeper.memory_builder import _resolve_levels
-        levels = _resolve_levels(context_levels_cfg, instance_config.get("context_order"))
+
+        levels = _resolve_levels(
+            context_levels_cfg, instance_config.get("context_order")
+        )
         if levels.get("rag", "high") == "off":
             print(f"[{log_prefix}] usage_count: rag=off のため記録スキップ")
             return
     except Exception as _le:
-        print(f"[{log_prefix}] usage_count: rag level 解決失敗、デフォルトで記録継続: {_le}")
+        print(
+            f"[{log_prefix}] usage_count: rag level 解決失敗、デフォルトで記録継続: {_le}"
+        )
 
     # source_instance ごとにグルーピング (None → 現在の instance_name)
     by_inst: dict = {}
@@ -174,12 +183,15 @@ def _record_usage_count(
     try:
         from butly_core.core.database import ButlyDatabase
         from butly_core.config import SYSTEM_CONFIG as _sc
+
         dedup_hours = _sc.get("memory", {}).get("count_dedup_hours", 6)
 
         for src_inst, ids in by_inst.items():
             db_path = brain._get_db_path(src_inst)
             if not db_path.exists():
-                print(f"[{log_prefix}] usage_count: DB が存在しないためスキップ ({src_inst})")
+                print(
+                    f"[{log_prefix}] usage_count: DB が存在しないためスキップ ({src_inst})"
+                )
                 continue
             ButlyDatabase(db_path=str(db_path)).record_card_usage(
                 ids, dedup_hours=dedup_hours
@@ -326,9 +338,12 @@ class ChatService:
             except Exception as e:
                 print(f"[ChatService] Gatekeeper エラー、フォールバック: {e}")
                 gk_result = {
-                    "tier": "mid", "topic": "", "need": None,
+                    "tier": "mid",
+                    "topic": "",
+                    "need": None,
                     "need_intent": None,
-                    "search_targets": None, "state_delta": {},
+                    "search_targets": None,
+                    "state_delta": {},
                 }
                 tier = "mid"
 
@@ -338,11 +353,16 @@ class ChatService:
             use_rag = instance_config.get("brain", {}).get("use_rag", True)
             tier = "mid"
             gk_result = {
-                "tier": tier, "topic": "", "need": "rag_search" if use_rag else None,
+                "tier": tier,
+                "topic": "",
+                "need": "rag_search" if use_rag else None,
                 "need_intent": "past_fact" if use_rag else None,
-                "search_targets": None, "state_delta": {},
+                "search_targets": None,
+                "state_delta": {},
             }
-            print(f"[ChatService] Gatekeeper disabled — defaulting to {tier} tier (rag={'on' if use_rag else 'off'})")
+            print(
+                f"[ChatService] Gatekeeper disabled — defaulting to {tier} tier (rag={'on' if use_rag else 'off'})"
+            )
 
         _t_gk_end = time.time()
 
@@ -368,7 +388,9 @@ class ChatService:
         # --- 6. Provider 選択と応答生成 ---
         # ModelRef (connection + model_name) で Provider を決定
         model_ref = _resolve_chat_model_ref(
-            instance_config, request, AI_CONFIG["chat"],
+            instance_config,
+            request,
+            AI_CONFIG["chat"],
         )
         provider = ProviderFactory.create(model_ref)
         model_name = model_ref.model_name
@@ -400,6 +422,7 @@ class ChatService:
         web_sources = []
         if request.use_web_search and not _uses_google_connection(connection_id):
             from butly_core.search import create_search_provider
+
             search_provider = create_search_provider(chat_model=model_name)
             if search_provider.is_available():
                 print("[ChatService] Web Search: 汎用検索モジュールで検索実行")
@@ -416,7 +439,9 @@ class ChatService:
                         lines.append(f"    {r.content}")
                         lines.append("")
                     web_search_context = "\n".join(lines)
-                    web_sources = [{"title": r.title, "url": r.url} for r in search_results]
+                    web_sources = [
+                        {"title": r.title, "url": r.url} for r in search_results
+                    ]
                     print(f"[ChatService] Web Search: {len(search_results)} 件取得")
                 else:
                     print("[ChatService] Web Search: 結果なし")
@@ -430,6 +455,7 @@ class ChatService:
         context_levels_cfg = instance_config.get("context_levels")
         if context_levels_cfg is None and "context_order" in instance_config:
             from butly_core.core.gatekeeper import migrate_context_order_to_levels
+
             instance_config = migrate_context_order_to_levels(instance_config)
             context_levels_cfg = instance_config.get("context_levels")
 
@@ -447,7 +473,9 @@ class ChatService:
         }
 
         if has_attachments:
-            print(f"[ChatService] Provider: {type(provider).__name__}, attachments={len(request.attachments)}")
+            print(
+                f"[ChatService] Provider: {type(provider).__name__}, attachments={len(request.attachments)}"
+            )
 
         _t_gen_start = time.time()
 
@@ -524,8 +552,8 @@ class ChatService:
         def _estimate_tokens(text: str) -> int:
             if not text:
                 return 0
-            ja_chars = len(re.findall(r'[\u3000-\u9fff\uff00-\uffef]', text))
-            en_words = len(re.findall(r'[a-zA-Z]+', text))
+            ja_chars = len(re.findall(r"[\u3000-\u9fff\uff00-\uffef]", text))
+            en_words = len(re.findall(r"[a-zA-Z]+", text))
             return int(ja_chars * 1.5 + en_words + len(text) * 0.1)
 
         provider_debug = result.debug_info or {}
@@ -546,10 +574,18 @@ class ChatService:
         rag_debug_results = []
         if memory_blocks and memory_blocks.get("rag_context"):
             rag_raw = memory_blocks.get("rag_results_raw", [])
-            rag_debug_results = [
-                {"title": r.get("title", ""), "score": r.get("score", 0), "episode": r.get("episode", "")}
-                for r in rag_raw
-            ] if rag_raw else []
+            rag_debug_results = (
+                [
+                    {
+                        "title": r.get("title", ""),
+                        "score": r.get("score", 0),
+                        "episode": r.get("episode", ""),
+                    }
+                    for r in rag_raw
+                ]
+                if rag_raw
+                else []
+            )
 
         result.debug_info = {
             "timing": {
@@ -589,9 +625,15 @@ class ChatService:
 
         # Gemini 固有フィールドがあれば追加
         if provider_debug.get("system_instruction"):
-            result.debug_info["gemini_system_instruction"] = provider_debug["system_instruction"]
-            result.debug_info["gemini_context_prefix"] = provider_debug.get("context_prefix", "")
-            result.debug_info["gemini_history_count"] = provider_debug.get("history_count", 0)
+            result.debug_info["gemini_system_instruction"] = provider_debug[
+                "system_instruction"
+            ]
+            result.debug_info["gemini_context_prefix"] = provider_debug.get(
+                "context_prefix", ""
+            )
+            result.debug_info["gemini_history_count"] = provider_debug.get(
+                "history_count", 0
+            )
             result.debug_info["prompt_full"] = _build_prompt_full(
                 system_instruction=provider_debug.get("system_instruction_full", ""),
                 context_prefix=provider_debug.get("context_prefix_full", ""),
@@ -648,7 +690,11 @@ class ChatService:
         if request.attachments:
             error = validate_attachments(request.attachments)
             if error:
-                yield {"type": "error", "message": f"[エラー] {error}", "recoverable": False}
+                yield {
+                    "type": "error",
+                    "message": f"[エラー] {error}",
+                    "recoverable": False,
+                }
                 return
 
         # 1. コンポーネント取得
@@ -659,7 +705,9 @@ class ChatService:
 
         # 2. 時刻コンテキスト
         last_ts = memory.get_last_interaction_time()
-        sys_note = chronos.get_system_note(is_holiday=False, last_interaction_time=last_ts)
+        sys_note = chronos.get_system_note(
+            is_holiday=False, last_interaction_time=last_ts
+        )
         full_prompt = f"{sys_note}\n\n{request.text}"
 
         # 3. インスタンス設定
@@ -694,17 +742,24 @@ class ChatService:
             except Exception as e:
                 print(f"[ChatService.stream] Gatekeeper エラー、フォールバック: {e}")
                 gk_result = {
-                    "tier": "mid", "topic": "", "need": None,
-                    "need_intent": None, "search_targets": None, "state_delta": {},
+                    "tier": "mid",
+                    "topic": "",
+                    "need": None,
+                    "need_intent": None,
+                    "search_targets": None,
+                    "state_delta": {},
                 }
                 tier = "mid"
         else:
             use_rag = instance_config.get("brain", {}).get("use_rag", True)
             tier = "mid"
             gk_result = {
-                "tier": tier, "topic": "", "need": "rag_search" if use_rag else None,
+                "tier": tier,
+                "topic": "",
+                "need": "rag_search" if use_rag else None,
                 "need_intent": "past_fact" if use_rag else None,
-                "search_targets": None, "state_delta": {},
+                "search_targets": None,
+                "state_delta": {},
             }
 
         _t_gk_end = time.time()
@@ -714,16 +769,21 @@ class ChatService:
         use_rag = instance_config.get("brain", {}).get("use_rag", True)
         _t_mem_start = time.time()
         memory_blocks = mem_block_builder.build(
-            tier=tier, memory_manager=memory,
+            tier=tier,
+            memory_manager=memory,
             brain=brain if (gk_result.get("need") and use_rag) else None,
-            user_input=request.text, instance_name=instance_name,
-            override_config=instance_config, gatekeeper_output=gk_result,
+            user_input=request.text,
+            instance_name=instance_name,
+            override_config=instance_config,
+            gatekeeper_output=gk_result,
         )
         _t_mem_end = time.time()
 
         # Provider (ModelRef ルート: connection + model_name)
         model_ref = _resolve_chat_model_ref(
-            instance_config, request, AI_CONFIG["chat"],
+            instance_config,
+            request,
+            AI_CONFIG["chat"],
         )
         provider = ProviderFactory.create(model_ref)
         model_name = model_ref.model_name
@@ -731,9 +791,11 @@ class ChatService:
         has_attachments = bool(request.attachments)
 
         if has_attachments and not provider.supports_vision(model_name):
-            yield {"type": "error",
-                   "message": "[エラー] 選択中のモデルは画像入力に対応していません",
-                   "recoverable": False}
+            yield {
+                "type": "error",
+                "message": "[エラー] 選択中のモデルは画像入力に対応していません",
+                "recoverable": False,
+            }
             return
 
         # Web search (非 Google connection のとき汎用検索を実行)
@@ -741,10 +803,13 @@ class ChatService:
         web_sources = []
         if request.use_web_search and not _uses_google_connection(connection_id):
             from butly_core.search import create_search_provider
+
             search_provider = create_search_provider(chat_model=model_name)
             if search_provider.is_available():
                 search_results = await run_in_threadpool(
-                    search_provider.search, query=request.text, max_results=3,
+                    search_provider.search,
+                    query=request.text,
+                    max_results=3,
                 )
                 if search_results:
                     lines = []
@@ -754,21 +819,28 @@ class ChatService:
                         lines.append(f"    {r.content}")
                         lines.append("")
                     web_search_context = "\n".join(lines)
-                    web_sources = [{"title": r.title, "url": r.url} for r in search_results]
+                    web_sources = [
+                        {"title": r.title, "url": r.url} for r in search_results
+                    ]
         if web_search_context:
             memory_blocks["web_search_context"] = web_search_context
 
         context_levels_cfg = instance_config.get("context_levels")
         if context_levels_cfg is None and "context_order" in instance_config:
             from butly_core.core.gatekeeper import migrate_context_order_to_levels
+
             instance_config = migrate_context_order_to_levels(instance_config)
             context_levels_cfg = instance_config.get("context_levels")
 
         context = {
-            "brain": brain, "memory_manager": memory, "history": history_fmt,
-            "override_config": instance_config, "memory_blocks": memory_blocks,
+            "brain": brain,
+            "memory_manager": memory,
+            "history": history_fmt,
+            "override_config": instance_config,
+            "memory_blocks": memory_blocks,
             "use_google_search": request.use_google_search,
-            "rag_results": [], "use_rag": request.use_rag,
+            "rag_results": [],
+            "use_rag": request.use_rag,
             "context_order": instance_config.get("context_order"),
             "context_levels": context_levels_cfg,
         }
@@ -798,9 +870,11 @@ class ChatService:
             try:
                 res = await run_in_threadpool(
                     gatekeeper.update_state,
-                    user_input=request.text, history_msgs=history_fmt,
+                    user_input=request.text,
+                    history_msgs=history_fmt,
                     session_state=session_state.to_dict(),
-                    override_config=instance_config, instance_dir=instance_dir,
+                    override_config=instance_config,
+                    instance_dir=instance_dir,
                 )
             except Exception as e:
                 print(f"[ChatService.stream] StateUpdater エラー: {e}")
@@ -873,8 +947,8 @@ class ChatService:
         def _estimate_tokens(text: str) -> int:
             if not text:
                 return 0
-            ja_chars = len(re.findall(r'[　-鿿＀-￯]', text))
-            en_words = len(re.findall(r'[a-zA-Z]+', text))
+            ja_chars = len(re.findall(r"[　-鿿＀-￯]", text))
+            en_words = len(re.findall(r"[a-zA-Z]+", text))
             return int(ja_chars * 1.5 + en_words + len(text) * 0.1)
 
         total_prompt_text = ""
@@ -903,7 +977,8 @@ class ChatService:
                 "response": _estimate_tokens(full_text),
             },
             "gatekeeper": {
-                "tier": tier, "enabled": gk_enabled,
+                "tier": tier,
+                "enabled": gk_enabled,
                 "scores": gk_result.get("llm_scoring"),
                 "need": gk_result.get("need"),
                 "need_intent": gk_result.get("need_intent"),
@@ -912,15 +987,20 @@ class ChatService:
                 "session_state": session_state.to_dict(),
             },
             "rag": {"query": gk_result.get("need"), "results": []},
-            "prompt": [], "prompt_full": [],
+            "prompt": [],
+            "prompt_full": [],
             "raw_response": full_text,
             "provider": type(provider).__name__,
             "connection_id": connection_id,
             "model": model_name,
         }
         if provider_debug.get("system_instruction"):
-            debug_info["gemini_system_instruction"] = provider_debug["system_instruction"]
-            debug_info["gemini_context_prefix"] = provider_debug.get("context_prefix", "")
+            debug_info["gemini_system_instruction"] = provider_debug[
+                "system_instruction"
+            ]
+            debug_info["gemini_context_prefix"] = provider_debug.get(
+                "context_prefix", ""
+            )
             debug_info["gemini_history_count"] = provider_debug.get("history_count", 0)
             debug_info["prompt_full"] = _build_prompt_full(
                 system_instruction=provider_debug.get("system_instruction_full", ""),

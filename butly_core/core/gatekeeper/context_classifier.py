@@ -13,7 +13,6 @@ from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
 from butly_core.prompts import PromptLoader
 from butly_core.core.gatekeeper.memory_probe import asks_for_specific_past_detail
 
-
 VALID_NEED_INTENTS = ("past_fact", "glossary", "relationship")
 
 
@@ -37,11 +36,15 @@ class ContextClassifier:
             # フォールバック: 既存の gatekeeper 設定を使用
             gk_config = AI_CONFIG.get("gatekeeper", {})
             self.model_name = gk_config.get("model_name", "gemini-3.1-flash-lite")
-            self.gatekeeper_config = gk_config if gk_config else {
-                "model_name": "gemini-3.1-flash-lite",
-                "generation_config": {"temperature": 0.0, "max_output_tokens": 256},
-                "safety_settings": [],
-            }
+            self.gatekeeper_config = (
+                gk_config
+                if gk_config
+                else {
+                    "model_name": "gemini-3.1-flash-lite",
+                    "generation_config": {"temperature": 0.0, "max_output_tokens": 256},
+                    "safety_settings": [],
+                }
+            )
 
     def _resolve_config(self, override_config=None):
         """override_config から設定を解決する。
@@ -51,22 +54,40 @@ class ContextClassifier:
         # override に context_classifier があればそれを使う
         if override_config and "context_classifier" in override_config:
             merged = {**self.gatekeeper_config, **override_config["context_classifier"]}
-            if "generation_config" in self.gatekeeper_config and "generation_config" in override_config.get("context_classifier", {}):
-                merged["generation_config"] = {**self.gatekeeper_config.get("generation_config", {}), **override_config["context_classifier"]["generation_config"]}
+            if (
+                "generation_config" in self.gatekeeper_config
+                and "generation_config" in override_config.get("context_classifier", {})
+            ):
+                merged["generation_config"] = {
+                    **self.gatekeeper_config.get("generation_config", {}),
+                    **override_config["context_classifier"]["generation_config"],
+                }
             return merged.get("model_name", self.model_name), merged
 
         # override に gatekeeper があればフォールバック
         if override_config and "gatekeeper" in override_config:
             merged = {**self.gatekeeper_config, **override_config["gatekeeper"]}
-            if "generation_config" in self.gatekeeper_config and "generation_config" in override_config.get("gatekeeper", {}):
-                merged["generation_config"] = {**self.gatekeeper_config.get("generation_config", {}), **override_config["gatekeeper"]["generation_config"]}
+            if (
+                "generation_config" in self.gatekeeper_config
+                and "generation_config" in override_config.get("gatekeeper", {})
+            ):
+                merged["generation_config"] = {
+                    **self.gatekeeper_config.get("generation_config", {}),
+                    **override_config["gatekeeper"]["generation_config"],
+                }
             return merged.get("model_name", self.model_name), merged
 
         return self.model_name, self.gatekeeper_config
 
-    def classify(self, user_input: str, history_msgs: list,
-                 current_topic: str = "", recent_headlines: str = "",
-                 override_config=None, agent_name: str = None) -> dict:
+    def classify(
+        self,
+        user_input: str,
+        history_msgs: list,
+        current_topic: str = "",
+        recent_headlines: str = "",
+        override_config=None,
+        agent_name: str = None,
+    ) -> dict:
         """
         Returns:
             {
@@ -87,7 +108,9 @@ class ContextClassifier:
         t0 = time.time()
 
         _agent_name = agent_name or SYSTEM_CONFIG["agent"]["agent_name"]
-        history_text = self._format_history(history_msgs, max_turns=3, agent_name=_agent_name)
+        history_text = self._format_history(
+            history_msgs, max_turns=3, agent_name=_agent_name
+        )
         prompt = self._prompt_loader.get(
             "context_classifier",
             agent_name=_agent_name,
@@ -98,11 +121,16 @@ class ContextClassifier:
 
         try:
             from butly_core.llm.factory import ProviderFactory
+
             # Phase 2: gk_config が dict 全体 (connection + model_name + ...) を含むので
             # それを Factory に渡せば ModelRef に正規化される。fallback で model_name のみ。
-            provider = ProviderFactory.create(gk_config if gk_config.get("model_name") else model_name)
+            provider = ProviderFactory.create(
+                gk_config if gk_config.get("model_name") else model_name
+            )
             raw_text = provider.classify(prompt, gk_config)
-            result = self._parse_response(raw_text, user_input, override_config=override_config)
+            result = self._parse_response(
+                raw_text, user_input, override_config=override_config
+            )
         except Exception as e:
             print(f"[ContextClassifier] API呼び出しエラー: {e}")
             result = self._default_output(user_input)
@@ -118,7 +146,9 @@ class ContextClassifier:
         )
         return result
 
-    def _determine_tier_from_scores(self, scores: dict, override_config: dict = None) -> str:
+    def _determine_tier_from_scores(
+        self, scores: dict, override_config: dict = None
+    ) -> str:
         """llm_scoring のスコアから tier を決定する (reflex/mid の 2 値)。
         閾値は SYSTEM_CONFIG["gatekeeper"] / instance_config["gatekeeper"] で上書き可。
         """
@@ -140,8 +170,9 @@ class ContextClassifier:
         cn_threshold = float(gk_conf.get("tier_cn_threshold", 0.3))
         return rc_threshold, cn_threshold
 
-    def _parse_response(self, raw_text: str, user_input: str = "",
-                        override_config: dict = None) -> dict:
+    def _parse_response(
+        self, raw_text: str, user_input: str = "", override_config: dict = None
+    ) -> dict:
         """LLM応答からJSONを抽出しパースする。"""
         default = self._default_output(user_input)
         if not raw_text:
@@ -154,7 +185,7 @@ class ContextClassifier:
             else:
                 json_str = raw_text.strip()
                 if json_str.startswith("{") and "}" in json_str:
-                    json_str = json_str[json_str.find("{"):json_str.rfind("}") + 1]
+                    json_str = json_str[json_str.find("{") : json_str.rfind("}") + 1]
 
             data = json.loads(json_str)
 
@@ -164,7 +195,9 @@ class ContextClassifier:
                 if key in llm_scoring:
                     llm_scoring[key] = max(0.0, min(1.0, float(llm_scoring[key])))
 
-            tier = self._determine_tier_from_scores(llm_scoring, override_config=override_config)
+            tier = self._determine_tier_from_scores(
+                llm_scoring, override_config=override_config
+            )
             need_intent = self._parse_need_intent(data, user_input)
 
             return {
@@ -212,13 +245,15 @@ class ContextClassifier:
             "need_intent": self._rule_based_need_intent(user_input),
         }
 
-    def _format_history(self, history_msgs: list, max_turns: int = 3, agent_name: str = None) -> str:
+    def _format_history(
+        self, history_msgs: list, max_turns: int = 3, agent_name: str = None
+    ) -> str:
         """history_msgs の末尾 max_turns 件を文字列へ変換する。"""
         if not history_msgs:
             return "（履歴なし）"
 
         _agent_name = agent_name or SYSTEM_CONFIG["agent"]["agent_name"]
-        recent = history_msgs[-(max_turns * 2):]
+        recent = history_msgs[-(max_turns * 2) :]
         lines = []
         for msg in recent:
             role = msg.get("role", "unknown")

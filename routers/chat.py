@@ -3,10 +3,17 @@ routers/chat.py
 ───────────────
 チャット REST + WebSocket エンドポイント。
 """
+
 import json
 from typing import List, Dict, Any, Optional
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    HTTPException,
+    BackgroundTasks,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from starlette.websockets import WebSocketState
@@ -61,6 +68,7 @@ async def notify_ai_status(status: str):
 # =====================================================================
 class ChatRequest(BaseModel):
     """REST /chat 用リクエスト（旧互換）"""
+
     message: str
     instance_name: str = "00_master"
     use_rag: bool = True
@@ -70,6 +78,7 @@ class ChatRequest(BaseModel):
     # Phase 3: per-request モデル切替。未指定なら AI_CONFIG / instance_config に従う。
     model_name: Optional[str] = None
     connection: Optional[str] = None
+
 
 class ChatResponse(BaseModel):
     response: str
@@ -95,7 +104,9 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         try:
             attachments.append(Attachment(**att_data))
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"添付データの形式が不正です: {e}")
+            raise HTTPException(
+                status_code=400, detail=f"添付データの形式が不正です: {e}"
+            )
 
     internal_request = _InternalChatRequest(
         text=request.message,
@@ -140,6 +151,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
 # SSE Streaming Endpoint
 # =====================================================================
 
+
 def _sse_event(event_name: str, data: Any) -> str:
     """SSE フォーマット文字列を組み立てる。"""
     payload = json.dumps(data, ensure_ascii=False, default=str)
@@ -162,7 +174,9 @@ async def chat_stream(request: ChatRequest):
         try:
             attachments.append(Attachment(**att_data))
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"添付データの形式が不正です: {e}")
+            raise HTTPException(
+                status_code=400, detail=f"添付データの形式が不正です: {e}"
+            )
 
     internal_request = _InternalChatRequest(
         text=request.message,
@@ -193,10 +207,13 @@ async def chat_stream(request: ChatRequest):
                 elif ev_type == "done":
                     yield _sse_event("done", event.get("data", {}))
                 elif ev_type == "error":
-                    yield _sse_event("error", {
-                        "message": event.get("message", "unknown"),
-                        "recoverable": event.get("recoverable", False),
-                    })
+                    yield _sse_event(
+                        "error",
+                        {
+                            "message": event.get("message", "unknown"),
+                            "recoverable": event.get("recoverable", False),
+                        },
+                    )
         except Exception as e:
             print(f"[chat/stream] unexpected error: {e}")
             yield _sse_event("error", {"message": str(e), "recoverable": False})
@@ -232,10 +249,12 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg_type == "mic_control":
                 status = data.get("payload")
                 print(f"[WebSocket] mic_control: {status}")
-                await ws_manager.broadcast({
-                    "type": "ai_status",
-                    "payload": "listening" if status == "on" else "idle",
-                })
+                await ws_manager.broadcast(
+                    {
+                        "type": "ai_status",
+                        "payload": "listening" if status == "on" else "idle",
+                    }
+                )
 
             elif msg_type == "chat_message":
                 raw_payload = data.get("payload", "")
@@ -249,7 +268,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not chat_request.text and not chat_request.attachments:
                     continue
 
-                att_info = f", attachments={len(chat_request.attachments)}" if chat_request.attachments else ""
+                att_info = (
+                    f", attachments={len(chat_request.attachments)}"
+                    if chat_request.attachments
+                    else ""
+                )
                 print(f"[WebSocket] chat_message: {chat_request.text[:50]}{att_info}")
 
                 await ws_manager.broadcast({"type": "ai_status", "payload": "thinking"})
@@ -265,17 +288,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         ws_manager=ws_manager,
                     )
 
-                    await ws_manager.broadcast({"type": "ai_status", "payload": "speaking"})
-                    await ws_manager.broadcast({"type": "chat_response", "payload": result.text})
+                    await ws_manager.broadcast(
+                        {"type": "ai_status", "payload": "speaking"}
+                    )
+                    await ws_manager.broadcast(
+                        {"type": "chat_response", "payload": result.text}
+                    )
                     await ws_manager.broadcast({"type": "ai_status", "payload": "idle"})
 
                 except Exception as e:
                     print(f"[WebSocket] chat error: {e}")
                     await ws_manager.broadcast({"type": "ai_status", "payload": "idle"})
-                    await ws_manager.broadcast({
-                        "type": "chat_response",
-                        "payload": f"[エラー] 応答の生成に失敗しました: {str(e)[:100]}",
-                    })
+                    await ws_manager.broadcast(
+                        {
+                            "type": "chat_response",
+                            "payload": f"[エラー] 応答の生成に失敗しました: {str(e)[:100]}",
+                        }
+                    )
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
         print("[WebSocket] Client disconnected")

@@ -14,7 +14,6 @@ from typing import Optional
 
 import yaml
 
-
 YAML_FILENAME = "Key_Memory.yaml"
 TXT_FILENAME = "Key_Memory.txt"
 PROPOSALS_FILENAME = "key_memory_proposals.json"
@@ -41,7 +40,9 @@ def save_yaml(entries: list[dict], yaml_path: Path) -> None:
         raise ValueError(f"Duplicate entry IDs found: {set(duplicates)}")
     data = {"version": 1, "entries": entries}
     with open(yaml_path, "w", encoding="utf-8") as f:
-        yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+        yaml.dump(
+            data, f, allow_unicode=True, default_flow_style=False, sort_keys=False
+        )
 
 
 def next_id(entries: list[dict]) -> str:
@@ -96,6 +97,7 @@ def yaml_to_llm_format(entries: list[dict]) -> str:
 # 提案のパース・解決・適用
 # ==========================================
 
+
 def parse_proposals(llm_output: str, entries: list[dict]) -> list[dict]:
     """LLM 出力テキストから ADD / REMOVE / UPDATE 提案をパースする。
 
@@ -124,13 +126,15 @@ def parse_proposals(llm_output: str, entries: list[dict]) -> list[dict]:
         if m_add:
             target, content = m_add.group(1), m_add.group(2)
             reason = _extract_reason(lines, i + 1)
-            proposals.append({
-                "action": "add",
-                "target": target,
-                "content": content,
-                "reason": reason,
-                "entry_id": None,
-            })
+            proposals.append(
+                {
+                    "action": "add",
+                    "target": target,
+                    "content": content,
+                    "reason": reason,
+                    "entry_id": None,
+                }
+            )
             i += 2 if reason else 1
             continue
 
@@ -140,13 +144,15 @@ def parse_proposals(llm_output: str, entries: list[dict]) -> list[dict]:
             target, content = m_rm.group(1), m_rm.group(2)
             reason = _extract_reason(lines, i + 1)
             eid = resolve_entry_id(entries, target, content)
-            proposals.append({
-                "action": "remove",
-                "target": target,
-                "content": content,
-                "reason": reason,
-                "entry_id": eid,
-            })
+            proposals.append(
+                {
+                    "action": "remove",
+                    "target": target,
+                    "content": content,
+                    "reason": reason,
+                    "entry_id": eid,
+                }
+            )
             i += 2 if reason else 1
             continue
 
@@ -158,14 +164,16 @@ def parse_proposals(llm_output: str, entries: list[dict]) -> list[dict]:
             new_content = m_up.group(3).strip()
             reason = _extract_reason(lines, i + 1)
             eid = resolve_entry_id(entries, target, old_content)
-            proposals.append({
-                "action": "update",
-                "target": target,
-                "old_content": old_content,
-                "new_content": new_content,
-                "reason": reason,
-                "entry_id": eid,
-            })
+            proposals.append(
+                {
+                    "action": "update",
+                    "target": target,
+                    "old_content": old_content,
+                    "new_content": new_content,
+                    "reason": reason,
+                    "entry_id": eid,
+                }
+            )
             i += 2 if reason else 1
             continue
 
@@ -183,9 +191,7 @@ def _extract_reason(lines: list[str], idx: int) -> str:
     return ""
 
 
-def resolve_entry_id(
-    entries: list[dict], target: str, content: str
-) -> Optional[str]:
+def resolve_entry_id(entries: list[dict], target: str, content: str) -> Optional[str]:
     """content と target から既存エントリの ID を特定する。
 
     1. 完全一致
@@ -259,6 +265,7 @@ def apply_proposal(proposal: dict, yaml_path: Path) -> bool:
 # ==========================================
 # 提案ファイル I/O
 # ==========================================
+
 
 def load_proposals(instance_path: Path) -> list[dict]:
     """key_memory_proposals.json を読み込む。"""

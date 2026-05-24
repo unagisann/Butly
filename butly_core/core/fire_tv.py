@@ -4,6 +4,7 @@ fire_tv.py
 ADB over TCP で Fire TV を制御するモジュール。
 main.py の /devices, /tv/* エンドポイントから呼び出す。
 """
+
 import os
 import subprocess
 import time
@@ -14,7 +15,7 @@ from typing import Optional
 # ========================================================
 FIRE_TV_IP = os.getenv("FIRE_TV_IP", "192.168.10.105")
 FIRE_TV_PORT = int(os.getenv("FIRE_TV_PORT", "5555"))
-ADB_TIMEOUT = 3               # コマンドタイムアウト（秒）
+ADB_TIMEOUT = 3  # コマンドタイムアウト（秒）
 
 # 接続状態キャッシュ（30秒有効）
 _connection_cache: dict = {"status": "unknown", "checked_at": 0}
@@ -49,7 +50,7 @@ def get_status() -> dict:
     """
     接続状態と現在の再生状態を返す。
     キャッシュ TTL 内なら再チェックしない。
-    
+
     Returns:
         {
             "status": "active" | "standby" | "offline",
@@ -72,14 +73,21 @@ def get_status() -> dict:
         result = {"status": "offline", "current_app": None}
     else:
         # フォアグラウンドアプリを取得
-        ok2, app_out = _run_adb([
-            "-s", f"{FIRE_TV_IP}:{FIRE_TV_PORT}",
-            "shell", "dumpsys", "window", "windows",
-        ])
+        ok2, app_out = _run_adb(
+            [
+                "-s",
+                f"{FIRE_TV_IP}:{FIRE_TV_PORT}",
+                "shell",
+                "dumpsys",
+                "window",
+                "windows",
+            ]
+        )
         current_app = None
         if ok2 and "mCurrentFocus" in app_out:
             # "mCurrentFocus=Window{... com.amazon.firetv.launcher/...}"
             import re
+
             m = re.search(r"mCurrentFocus=Window\{[^}]+ ([^/]+)/", app_out)
             if m:
                 current_app = m.group(1)
@@ -106,22 +114,30 @@ def get_status() -> dict:
 # コントロールコマンド
 # ========================================================
 
+
 def send_key(keycode: str) -> bool:
     """キー入力を送信する（KEYCODE_HOME, KEYCODE_BACK, etc.）"""
-    ok, _ = _run_adb([
-        "-s", f"{FIRE_TV_IP}:{FIRE_TV_PORT}",
-        "shell", "input", "keyevent", keycode
-    ])
+    ok, _ = _run_adb(
+        ["-s", f"{FIRE_TV_IP}:{FIRE_TV_PORT}", "shell", "input", "keyevent", keycode]
+    )
     return ok
 
 
 def launch_app(package: str) -> bool:
     """指定パッケージ名のアプリを起動する"""
-    ok, _ = _run_adb([
-        "-s", f"{FIRE_TV_IP}:{FIRE_TV_PORT}",
-        "shell", "monkey", "-p", package,
-        "-c", "android.intent.category.LAUNCHER", "1"
-    ])
+    ok, _ = _run_adb(
+        [
+            "-s",
+            f"{FIRE_TV_IP}:{FIRE_TV_PORT}",
+            "shell",
+            "monkey",
+            "-p",
+            package,
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "1",
+        ]
+    )
     return ok
 
 
@@ -130,25 +146,25 @@ def launch_app(package: str) -> bool:
 # ========================================================
 
 KEYCODES = {
-    "home":        "KEYCODE_HOME",
-    "back":        "KEYCODE_BACK",
-    "play_pause":  "KEYCODE_MEDIA_PLAY_PAUSE",
-    "next":        "KEYCODE_MEDIA_NEXT",
-    "prev":        "KEYCODE_MEDIA_PREVIOUS",
-    "volume_up":   "KEYCODE_VOLUME_UP",
+    "home": "KEYCODE_HOME",
+    "back": "KEYCODE_BACK",
+    "play_pause": "KEYCODE_MEDIA_PLAY_PAUSE",
+    "next": "KEYCODE_MEDIA_NEXT",
+    "prev": "KEYCODE_MEDIA_PREVIOUS",
+    "volume_up": "KEYCODE_VOLUME_UP",
     "volume_down": "KEYCODE_VOLUME_DOWN",
-    "mute":        "KEYCODE_VOLUME_MUTE",
-    "select":      "KEYCODE_DPAD_CENTER",
-    "up":          "KEYCODE_DPAD_UP",
-    "down":        "KEYCODE_DPAD_DOWN",
-    "left":        "KEYCODE_DPAD_LEFT",
-    "right":       "KEYCODE_DPAD_RIGHT",
+    "mute": "KEYCODE_VOLUME_MUTE",
+    "select": "KEYCODE_DPAD_CENTER",
+    "up": "KEYCODE_DPAD_UP",
+    "down": "KEYCODE_DPAD_DOWN",
+    "left": "KEYCODE_DPAD_LEFT",
+    "right": "KEYCODE_DPAD_RIGHT",
 }
 
 APPS = {
-    "youtube":  "com.amazon.firetv.youtube",
-    "twitch":   "tv.twitch.android.viewer",
-    "netflix":  "com.netflix.ninja",
-    "prime":    "com.amazon.avod.thirdpartyclient",
+    "youtube": "com.amazon.firetv.youtube",
+    "twitch": "tv.twitch.android.viewer",
+    "netflix": "com.netflix.ninja",
+    "prime": "com.amazon.avod.thirdpartyclient",
     "launcher": "com.amazon.firetv.launcher",
 }

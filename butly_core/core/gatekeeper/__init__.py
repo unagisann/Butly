@@ -75,7 +75,9 @@ class Gatekeeper:
         instance_name = instance_dir.name if instance_dir else "00_master"
 
         ctx_result = self.context_classifier.classify(
-            user_input, history_msgs, current_topic,
+            user_input,
+            history_msgs,
+            current_topic,
             recent_headlines=recent_headlines,
             override_config=override_config,
             agent_name=agent_name,
@@ -99,7 +101,7 @@ class Gatekeeper:
             need_intent=need_intent,
         )
 
-        tier = ctx_result["tier"]          # "reflex" or "mid"
+        tier = ctx_result["tier"]  # "reflex" or "mid"
         candidates = probe_result.get("candidates", [])
         glossary_hits = probe_result.get("glossary_hits", [])
 
@@ -117,7 +119,8 @@ class Gatekeeper:
         # session_state の既存 topic を採用 (1 ターン前の値)
         current_topic_resolved = (
             session_state.get("topic", current_topic)
-            if isinstance(session_state, dict) else current_topic
+            if isinstance(session_state, dict)
+            else current_topic
         )
 
         return {
@@ -151,7 +154,9 @@ class Gatekeeper:
         """
         agent_name = self._resolve_agent_name(instance_dir)
         return self.state_updater.update(
-            user_input, history_msgs, session_state,
+            user_input,
+            history_msgs,
+            session_state,
             override_config=override_config,
             agent_name=agent_name,
         )
@@ -189,14 +194,15 @@ class Gatekeeper:
                 except Exception:
                     pass
         from butly_core.config import SYSTEM_CONFIG
+
         return SYSTEM_CONFIG["agent"].get("agent_name", "Butly")
 
-    def classify_tier_only(self, user_input: str, history_msgs: list,
-                           current_topic: str = "") -> str:
+    def classify_tier_only(
+        self, user_input: str, history_msgs: list, current_topic: str = ""
+    ) -> str:
         """後方互換用: tier文字列のみを返す。"""
         result = self.classify(
-            user_input, history_msgs,
-            session_state={}, current_topic=current_topic
+            user_input, history_msgs, session_state={}, current_topic=current_topic
         )
         return result.get("tier", "mid")
 

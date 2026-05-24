@@ -3,6 +3,7 @@ routers/database.py
 ───────────────────
 ナレッジカード CRUD エンドポイント。
 """
+
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -64,7 +65,9 @@ def update_database_card(instance_name: str, card_id: str, request: UpdateCardRe
         return {"message": "No fields to update"}
     success = db.update_card(card_id, update_data)
     if not success:
-        raise HTTPException(status_code=404, detail="Card not found or failed to update")
+        raise HTTPException(
+            status_code=404, detail="Card not found or failed to update"
+        )
     return {"message": "Card updated successfully"}
 
 
@@ -75,7 +78,9 @@ def delete_database_card(instance_name: str, card_id: str):
     db = ButlyDatabase(db_path=str(db_path))
     success = db.delete_card(card_id)
     if not success:
-        raise HTTPException(status_code=404, detail="Card not found or failed to delete")
+        raise HTTPException(
+            status_code=404, detail="Card not found or failed to delete"
+        )
     return {"message": "Card deleted successfully"}
 
 
@@ -87,7 +92,9 @@ def pin_database_card(instance_name: str, card_id: str, request: CardPinRequest)
 
     success = db.toggle_pin(card_id, request.is_pinned)
     if not success:
-        raise HTTPException(status_code=404, detail="Card not found or failed to update pin state")
+        raise HTTPException(
+            status_code=404, detail="Card not found or failed to update pin state"
+        )
 
     if request.is_pinned:
         card = db.get_card(card_id)
@@ -100,4 +107,7 @@ def pin_database_card(instance_name: str, card_id: str, request: CardPinRequest)
             else:
                 km_path.write_text(additional_text.strip(), encoding="utf-8")
 
-    return {"message": "Card pin state updated successfully", "is_pinned": request.is_pinned}
+    return {
+        "message": "Card pin state updated successfully",
+        "is_pinned": request.is_pinned,
+    }

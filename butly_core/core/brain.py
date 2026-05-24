@@ -1,4 +1,3 @@
-
 import os
 import json
 import re
@@ -16,16 +15,18 @@ try:
 except ImportError:
     # パス解決のためのフォールバック (実行環境による)
     import sys
+
     sys.path.append(str(Path(__file__).resolve().parent.parent))
     from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
     from butly_core import prompts
+
 
 class ButlyBrain:
     def __init__(self, base_dir):
         self.base_dir = Path(base_dir)
         # Configから読み込む (デフォルト値はConfig依存)
         self.model_name = AI_CONFIG["chat"]["model_name"]
-        
+
         # db_path はインスタンスごとに _get_db_path() で解決するため、固定値を持たない
         self.instances_dir = self.base_dir / "butly_core" / "instances"
         self.db_name = SYSTEM_CONFIG["paths"]["db_name"]
@@ -48,24 +49,29 @@ class ButlyBrain:
         ProviderFactory に正規化を委譲する。
         """
         from butly_core.llm.factory import ProviderFactory
+
         if model is None:
             model = self.model_name
         return ProviderFactory.create(model)
 
     def _calculate_cosine_similarity(self, vec1, vec2):
-        if vec1 is None or vec2 is None: return 0.0
+        if vec1 is None or vec2 is None:
+            return 0.0
         try:
             # numpy array conversion
             v1 = np.array(vec1)
             v2 = np.array(vec2)
             if v1.shape != v2.shape:
-                print(f"[Brain] Dimension mismatch: {v1.shape} vs {v2.shape}. Skipping.")
+                print(
+                    f"[Brain] Dimension mismatch: {v1.shape} vs {v2.shape}. Skipping."
+                )
                 return 0.0
-            
+
             norm1 = np.linalg.norm(v1)
             norm2 = np.linalg.norm(v2)
-            
-            if norm1 == 0 or norm2 == 0: return 0.0
+
+            if norm1 == 0 or norm2 == 0:
+                return 0.0
             return float(np.dot(v1, v2) / (norm1 * norm2))
         except Exception as e:
             print(f"[Brain] Cosine Sim Error: {e}")
@@ -86,21 +92,29 @@ class ButlyBrain:
         """Deep merge config dictionaries"""
         if not override_conf:
             return base_conf
-        
+
         merged = base_conf.copy()
         for key, value in override_conf.items():
-            if isinstance(value, dict) and key in merged and isinstance(merged[key], dict):
+            if (
+                isinstance(value, dict)
+                and key in merged
+                and isinstance(merged[key], dict)
+            ):
                 merged[key] = self._merge_config(merged[key], value)
             else:
                 merged[key] = value
         return merged
 
-    def summarize_conversation(self, conversation_text: str, override_config=None) -> str:
+    def summarize_conversation(
+        self, conversation_text: str, override_config=None
+    ) -> str:
         """会話ログをサマリーモデルで要約する（memory.maintain_memory から呼ばれる）"""
         try:
             summary_conf = AI_CONFIG["summary"].copy()
             if override_config and "summary" in override_config:
-                summary_conf = self._merge_config(summary_conf, override_config["summary"])
+                summary_conf = self._merge_config(
+                    summary_conf, override_config["summary"]
+                )
 
             brain_conf = SYSTEM_CONFIG["brain"].copy()
             if override_config and "brain" in override_config:
@@ -112,7 +126,9 @@ class ButlyBrain:
             # connection も伝搬 (Phase 2: ProviderFactory が ModelRef に解決する)
             if summary_conf.get("connection"):
                 merged_conf["connection"] = summary_conf["connection"]
-            merged_conf["temperature"] = summary_conf.get("generation_config", {}).get("temperature", 0.3)
+            merged_conf["temperature"] = summary_conf.get("generation_config", {}).get(
+                "temperature", 0.3
+            )
 
             # Phase 2: dict (connection + model_name) を Provider Factory に渡す
             provider = self._get_provider(summary_conf)
@@ -129,6 +145,7 @@ class ButlyBrain:
                 chat_conf = self._merge_config(chat_conf, override_config["chat"])
 
             from butly_core.prompts import PromptLoader
+
             loader = PromptLoader()
             prompt = loader.get("brain_extract_keywords", user_input=user_input)
 
@@ -137,27 +154,38 @@ class ButlyBrain:
             text = provider.classify(prompt, chat_conf)
             text = text.strip() if text else ""
             print(f"[Brain] Raw Keyword Response: {text}")
-            
+
             match = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
-            if match: text = match.group(1).strip()
+            if match:
+                text = match.group(1).strip()
             return json.loads(text)
         except Exception as e:
             print(f"[Brain] Keyword Extraction Error: {e}")
             return {"keywords": []}
 
     def quick_vector_search(
-        self, user_input: str, instance_name: str,
-        limit: int = 3, threshold: float = 0.6,
+        self,
+        user_input: str,
+        instance_name: str,
+        limit: int = 3,
+        threshold: float = 0.6,
         override_config: dict = None,
     ) -> list:
         """既存 API: 結果リストのみを返す (後方互換)。"""
         return self.quick_vector_search_diag(
-            user_input, instance_name, limit, threshold, override_config,
+            user_input,
+            instance_name,
+            limit,
+            threshold,
+            override_config,
         )["results"]
 
     def quick_vector_search_diag(
-        self, user_input: str, instance_name: str,
-        limit: int = 3, threshold: float = 0.6,
+        self,
+        user_input: str,
+        instance_name: str,
+        limit: int = 3,
+        threshold: float = 0.6,
         override_config: dict = None,
     ) -> dict:
         """
@@ -196,7 +224,11 @@ class ButlyBrain:
         total_fetched = 0
         for inst in target_instances:
             single = self._quick_vector_search_single_diag(
-                user_input, inst, limit, threshold, brain_conf,
+                user_input,
+                inst,
+                limit,
+                threshold,
+                brain_conf,
             )
             # usage_count 用に source_instance を付与（複数 instance 横断時の DB 振り分けに使う）
             for r in single["results"]:
@@ -225,17 +257,29 @@ class ButlyBrain:
         return {"results": top, "diagnostics": diagnostics}
 
     def _quick_vector_search_single(
-        self, user_input: str, instance_name: str,
-        limit: int, threshold: float, brain_conf: dict,
+        self,
+        user_input: str,
+        instance_name: str,
+        limit: int,
+        threshold: float,
+        brain_conf: dict,
     ) -> list:
         """後方互換: 結果リストのみを返すラッパー。"""
         return self._quick_vector_search_single_diag(
-            user_input, instance_name, limit, threshold, brain_conf,
+            user_input,
+            instance_name,
+            limit,
+            threshold,
+            brain_conf,
         )["results"]
 
     def _quick_vector_search_single_diag(
-        self, user_input: str, instance_name: str,
-        limit: int, threshold: float, brain_conf: dict,
+        self,
+        user_input: str,
+        instance_name: str,
+        limit: int,
+        threshold: float,
+        brain_conf: dict,
     ) -> dict:
         """単一インスタンスDBに対する純粋ベクトル検索 + 診断情報。
 
@@ -247,7 +291,12 @@ class ButlyBrain:
                 "fetched_count": int
             }
         """
-        empty = {"results": [], "raw_scores": [], "final_scores": [], "fetched_count": 0}
+        empty = {
+            "results": [],
+            "raw_scores": [],
+            "final_scores": [],
+            "fetched_count": 0,
+        }
         instance_db_path = self._get_db_path(instance_name)
         if not instance_db_path.exists():
             return empty
@@ -294,12 +343,16 @@ class ButlyBrain:
                 if blob_data:
                     try:
                         db_emb = np.frombuffer(blob_data, dtype=np.float32)
-                        raw_score = float(self._calculate_cosine_similarity(query_embedding, db_emb))
+                        raw_score = float(
+                            self._calculate_cosine_similarity(query_embedding, db_emb)
+                        )
                         score = raw_score
 
                         if created_at_str:
                             try:
-                                created_at_dt = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+                                created_at_dt = datetime.strptime(
+                                    created_at_str, "%Y-%m-%d %H:%M:%S"
+                                )
                                 days_diff = (now - created_at_dt).days
                                 if days_diff > 0:
                                     decay_factor = math.exp(-decay_rate * days_diff)
@@ -332,14 +385,21 @@ class ButlyBrain:
             print(f"[Brain] Quick Vector Search Error: {e}")
             return []
 
-    def search_knowledge(self, keywords, user_query, instance_name="00_master", limit=None, override_config=None):
+    def search_knowledge(
+        self,
+        keywords,
+        user_query,
+        instance_name="00_master",
+        limit=None,
+        override_config=None,
+    ):
         """
         ハイブリッド検索: キーワードフィルター + ベクトル類似度
         readable_instances に基づき複数DB横断検索に対応。
         """
         brain_conf = SYSTEM_CONFIG["brain"].copy()
         if override_config and "brain" in override_config:
-             brain_conf.update(override_config["brain"])
+            brain_conf.update(override_config["brain"])
 
         if limit is None:
             limit = brain_conf["search_limit"]
@@ -390,22 +450,23 @@ class ButlyBrain:
         (キーワードフィルター + ベクトル類似度リランキング)
         """
         instance_db_path = self._get_db_path(instance_name)
-        if not instance_db_path.exists(): return []
+        if not instance_db_path.exists():
+            return []
 
         try:
             conn = sqlite3.connect(instance_db_path)
             conn.execute("PRAGMA journal_mode=WAL;")
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
+
             # ---------------------------------------------------------
             # 1. Broad Keyword Search (Filter)
             # ---------------------------------------------------------
             rows = []
-            
+
             # 共通カラム定義: embedding -> embedding_blob
             select_cols = "id, title, summary, episode, type, embedding_blob, created_at, is_archived"
-            
+
             # Keyword Filter
             kw_conditions = []
             kw_params = []
@@ -413,11 +474,11 @@ class ButlyBrain:
                 for k in keywords:
                     kw_conditions.append("(title LIKE ? OR summary LIKE ?)")
                     kw_params.extend([f"%{k}%", f"%{k}%"])
-            
+
             # --- Primary Search (Keyword Filter) ---
             if kw_conditions:
                 where_sql = f"({' OR '.join(kw_conditions)})"
-                
+
                 # Fetch more candidates for reranking
                 fetch_limit = brain_conf["fallback_fetch_limit"]
                 query = f"""
@@ -433,11 +494,13 @@ class ButlyBrain:
             # --- Fallback Logic ---
             # キーワード検索結果が少なすぎる場合、直近のデータを無条件で取得して対象にする
             KEYWORD_HIT_THRESHOLD = brain_conf["keyword_hit_threshold"]
-            
+
             if len(rows) < KEYWORD_HIT_THRESHOLD:
                 # フォールバック: 直近50件 (キーワード条件なし)
-                print(f"[Brain] Fallback triggered (Hits: {len(rows)}). Fetching recent logs.")
-                
+                print(
+                    f"[Brain] Fallback triggered (Hits: {len(rows)}). Fetching recent logs."
+                )
+
                 fetch_limit = brain_conf["fallback_fetch_limit"]
                 query_fb = f"""
                     SELECT {select_cols}
@@ -447,16 +510,17 @@ class ButlyBrain:
                 """
                 cursor.execute(query_fb)
                 fallback_rows = cursor.fetchall()
-                
+
                 # 重複排除しながらマージ (IDをキーにする)
-                existing_ids = {row['id'] for row in rows}
+                existing_ids = {row["id"] for row in rows}
                 for fb_row in fallback_rows:
-                    if fb_row['id'] not in existing_ids:
+                    if fb_row["id"] not in existing_ids:
                         rows.append(fb_row)
 
             conn.close()
-            
-            if not rows: return []
+
+            if not rows:
+                return []
 
             # ---------------------------------------------------------
             # 2. Vector Reranking (BLOB / Float32)
@@ -465,51 +529,57 @@ class ButlyBrain:
             if not query_embedding:
                 # ベクトル生成失敗時はそのまま返す(上位limit件)
                 return [dict(row) for row in rows[:limit]]
-            
+
             scored_results = []
-            
+
             # --- Scoring Modifiers ---
-            decay_rate = brain_conf.get("time_decay_rate", 0.005) # 0.005 means half-life of ~138 days
+            decay_rate = brain_conf.get(
+                "time_decay_rate", 0.005
+            )  # 0.005 means half-life of ~138 days
             now = datetime.now()
-            
+
             for row in rows:
                 row_dict = dict(row)
-                blob_data = row_dict.pop('embedding_blob') # Remove from result dict
-                created_at_str = row_dict.get('created_at')
-                is_archived = row_dict.get('is_archived') or 0
-                
+                blob_data = row_dict.pop("embedding_blob")  # Remove from result dict
+                created_at_str = row_dict.get("created_at")
+                is_archived = row_dict.get("is_archived") or 0
+
                 score = 0.0
                 if blob_data:
                     try:
                         # BLOB -> NumPy (float32)
                         db_emb = np.frombuffer(blob_data, dtype=np.float32)
-                        score = float(self._calculate_cosine_similarity(query_embedding, db_emb))
-                        
+                        score = float(
+                            self._calculate_cosine_similarity(query_embedding, db_emb)
+                        )
+
                         # Apply Time Decay
                         if created_at_str:
                             try:
                                 # SQLite DEFAULT CURRENT_TIMESTAMP format is 'YYYY-MM-DD HH:MM:SS'
-                                created_at_dt = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+                                created_at_dt = datetime.strptime(
+                                    created_at_str, "%Y-%m-%d %H:%M:%S"
+                                )
                                 days_diff = (now - created_at_dt).days
                                 if days_diff > 0:
                                     decay_factor = math.exp(-decay_rate * days_diff)
                                     score *= decay_factor
                             except ValueError:
-                                pass # Ignore parse errors
-                        
+                                pass  # Ignore parse errors
+
                         # Apply Archive Penalty
                         if is_archived:
                             score *= 0.5
-                            
-                    except Exception as e: 
+
+                    except Exception as e:
                         pass
-                
-                row_dict['score'] = float(score)  # Ensure it is a float
+
+                row_dict["score"] = float(score)  # Ensure it is a float
                 scored_results.append(row_dict)
-            
+
             # Sort by score descending
-            scored_results.sort(key=lambda x: x['score'], reverse=True)
-            
+            scored_results.sort(key=lambda x: x["score"], reverse=True)
+
             return scored_results[:limit]
 
         except Exception as e:

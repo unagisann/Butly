@@ -58,3 +58,4 @@ build_pyinstaller/
 old/
 old_migration_backup/
 server.spec
+analysis.txt

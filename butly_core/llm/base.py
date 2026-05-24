@@ -102,16 +102,21 @@ class BaseProvider(ABC):
     ) -> ChatResponse:
         """非同期版 generate。デフォルトは同期版をスレッドプールで実行。"""
         from starlette.concurrency import run_in_threadpool
+
         return await run_in_threadpool(self.generate, text, attachments, context)
 
     async def async_summarize(self, conversation_text: str, config: dict) -> str:
         """非同期版 summarize。デフォルトは同期版をスレッドプールで実行。"""
         from starlette.concurrency import run_in_threadpool
+
         return await run_in_threadpool(self.summarize, conversation_text, config)
 
-    async def async_embed(self, text: str, config: Optional[dict] = None) -> Optional[List[float]]:
+    async def async_embed(
+        self, text: str, config: Optional[dict] = None
+    ) -> Optional[List[float]]:
         """非同期版 embed。デフォルトは同期版をスレッドプールで実行。"""
         from starlette.concurrency import run_in_threadpool
+
         return await run_in_threadpool(self.embed, text, config)
 
     async def async_generate_stream(

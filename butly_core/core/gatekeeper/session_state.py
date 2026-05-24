@@ -75,7 +75,7 @@ class SessionState:
         topic = self.state.get("topic", "")
         if not topic:
             return False
-        recent = history_msgs[-(3 * 2):] if history_msgs else []
+        recent = history_msgs[-(3 * 2) :] if history_msgs else []
         for msg in recent:
             parts = msg.get("parts", [""])
             text = parts[0] if parts else ""
@@ -87,7 +87,9 @@ class SessionState:
         self.state["turn_count"] += 1
         self.state["last_tier"] = tier
         # topic 寿命チェック: 10ターン経過 かつ 直近3ターン内でtopicへの言及がない場合のみリセット
-        turns_since_topic = self.state["turn_count"] - self.state.get("topic_set_at_turn", 0)
+        turns_since_topic = self.state["turn_count"] - self.state.get(
+            "topic_set_at_turn", 0
+        )
         if self.state["topic"] and turns_since_topic >= 10:
             if not self._has_recent_topic_reference(history_msgs or []):
                 self.state["topic"] = ""

@@ -40,13 +40,24 @@ def asks_for_specific_past_detail(user_input):
     """ユーザー発言に具体的な過去参照パターンが含まれるか判定する。"""
     # 明示的な過去参照パターン（日本語）
     ja_patterns = [
-        "前に", "以前", "あの時", "あのとき", "この前", "昔",
-        "前回", "前話した", "覚えてる",
+        "前に",
+        "以前",
+        "あの時",
+        "あのとき",
+        "この前",
+        "昔",
+        "前回",
+        "前話した",
+        "覚えてる",
     ]
     # 明示的な過去参照パターン（英語）
     en_patterns = [
-        "before", "remember", "last time", "we discussed",
-        "we talked about", "you mentioned",
+        "before",
+        "remember",
+        "last time",
+        "we discussed",
+        "we talked about",
+        "you mentioned",
     ]
     input_lower = user_input.lower()
     for marker in ja_patterns + en_patterns:
@@ -108,11 +119,16 @@ class MemoryProbe:
         layers: dict = {}
 
         # Layer 1.5: Glossary Match (常時実行 — LLM 不要で軽量)
-        glossary_hits = self._match_glossary(
-            user_input, memory_manager,
-            history_msgs=history_msgs,
-            override_config=override_config,
-        ) if memory_manager is not None else []
+        glossary_hits = (
+            self._match_glossary(
+                user_input,
+                memory_manager,
+                history_msgs=history_msgs,
+                override_config=override_config,
+            )
+            if memory_manager is not None
+            else []
+        )
         layers["glossary"] = {
             "executed": memory_manager is not None,
             "matches": len(glossary_hits),
@@ -123,8 +139,10 @@ class MemoryProbe:
             t1 = time.time()
             status = "hit" if glossary_hits else "no_hit"
             tag = "intent=None" if need_intent is None else "glossary-only"
-            print(f"[MemoryProbe] {tag}: glossary={len(glossary_hits)} "
-                  f"({int((t1-t0)*1000)}ms)")
+            print(
+                f"[MemoryProbe] {tag}: glossary={len(glossary_hits)} "
+                f"({int((t1-t0)*1000)}ms)"
+            )
             return {
                 "status": status,
                 "candidates": [],
@@ -137,8 +155,10 @@ class MemoryProbe:
             t1 = time.time()
             status = "hit" if glossary_hits else "no_hit"
             layers["vector"] = {"executed": False, "reason": "no brain"}
-            print(f"[MemoryProbe] no brain (intent={need_intent}): "
-                  f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)")
+            print(
+                f"[MemoryProbe] no brain (intent={need_intent}): "
+                f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"
+            )
             return {
                 "status": status,
                 "candidates": [],
@@ -153,8 +173,11 @@ class MemoryProbe:
 
         # Layer 1: Quick Vector Search (past_fact / relationship)
         v_diag = self._quick_vector_search_diag(
-            user_input, brain, instance_name,
-            limit=vector_limit, threshold=vector_threshold,
+            user_input,
+            brain,
+            instance_name,
+            limit=vector_limit,
+            threshold=vector_threshold,
             override_config=override_config,
         )
         candidates = v_diag["results"]
@@ -168,9 +191,11 @@ class MemoryProbe:
 
         # Layer 1 でヒットあり → 即返却
         if candidates:
-            print(f"[MemoryProbe] Layer 1 hit (intent={need_intent}): "
-                  f"{len(candidates)} candidates, "
-                  f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)")
+            print(
+                f"[MemoryProbe] Layer 1 hit (intent={need_intent}): "
+                f"{len(candidates)} candidates, "
+                f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"
+            )
             return {
                 "status": "hit",
                 "candidates": candidates,
@@ -181,8 +206,10 @@ class MemoryProbe:
         # Layer 2 トリガー判定
         if not deep_enabled:
             layers["deep"] = {"executed": False, "reason": "disabled"}
-            print(f"[MemoryProbe] no_hit (intent={need_intent}, deep_search disabled), "
-                  f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)")
+            print(
+                f"[MemoryProbe] no_hit (intent={need_intent}, deep_search disabled), "
+                f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"
+            )
             return {
                 "status": "no_hit",
                 "candidates": [],
@@ -192,7 +219,9 @@ class MemoryProbe:
 
         headline_match = self._check_headline_match(user_input, recent_headlines)
 
-        if should_deep_search(user_input, candidates, headline_match, bool(glossary_hits)):
+        if should_deep_search(
+            user_input, candidates, headline_match, bool(glossary_hits)
+        ):
             deep_data = self._deep_search_diag(
                 user_input, brain, instance_name, override_config
             )
@@ -205,21 +234,27 @@ class MemoryProbe:
             }
             t2 = time.time()
             if deep_candidates:
-                print(f"[MemoryProbe] deep_search hit (intent={need_intent}): "
-                      f"{len(deep_candidates)} candidates, "
-                      f"glossary={len(glossary_hits)} ({int((t2-t0)*1000)}ms)")
+                print(
+                    f"[MemoryProbe] deep_search hit (intent={need_intent}): "
+                    f"{len(deep_candidates)} candidates, "
+                    f"glossary={len(glossary_hits)} ({int((t2-t0)*1000)}ms)"
+                )
                 return {
                     "status": "deep_search",
                     "candidates": deep_candidates,
                     "glossary_hits": glossary_hits,
                     "layers": layers,
                 }
-            print(f"[MemoryProbe] deep_search no_hit (intent={need_intent}), "
-                  f"glossary={len(glossary_hits)} ({int((t2-t0)*1000)}ms)")
+            print(
+                f"[MemoryProbe] deep_search no_hit (intent={need_intent}), "
+                f"glossary={len(glossary_hits)} ({int((t2-t0)*1000)}ms)"
+            )
         else:
             layers["deep"] = {"executed": False, "reason": "no past_ref_pattern"}
-            print(f"[MemoryProbe] no_hit (intent={need_intent}, no deep_search trigger), "
-                  f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)")
+            print(
+                f"[MemoryProbe] no_hit (intent={need_intent}, no deep_search trigger), "
+                f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"
+            )
 
         return {
             "status": "no_hit",
@@ -229,23 +264,40 @@ class MemoryProbe:
         }
 
     def _quick_vector_search(
-        self, user_input, brain, instance_name,
-        limit=3, threshold=0.6, override_config=None,
+        self,
+        user_input,
+        brain,
+        instance_name,
+        limit=3,
+        threshold=0.6,
+        override_config=None,
     ) -> list:
         """Layer 1: キーワード抽出なしの純粋なベクトル検索。"""
         return self._quick_vector_search_diag(
-            user_input, brain, instance_name, limit, threshold, override_config,
+            user_input,
+            brain,
+            instance_name,
+            limit,
+            threshold,
+            override_config,
         )["results"]
 
     def _quick_vector_search_diag(
-        self, user_input, brain, instance_name,
-        limit=3, threshold=0.6, override_config=None,
+        self,
+        user_input,
+        brain,
+        instance_name,
+        limit=3,
+        threshold=0.6,
+        override_config=None,
     ) -> dict:
         """Layer 1 + 診断情報。Returns {"results": [...], "diagnostics": {...}}"""
         try:
             return brain.quick_vector_search_diag(
-                user_input, instance_name,
-                limit=limit, threshold=threshold,
+                user_input,
+                instance_name,
+                limit=limit,
+                threshold=threshold,
                 override_config=override_config,
             )
         except Exception as e:
@@ -443,11 +495,17 @@ class MemoryProbe:
 
         return len(overlap) >= 1
 
-    def _deep_search(self, user_input, brain, instance_name, override_config=None) -> list:
+    def _deep_search(
+        self, user_input, brain, instance_name, override_config=None
+    ) -> list:
         """後方互換: 結果リストのみ。"""
-        return self._deep_search_diag(user_input, brain, instance_name, override_config)["results"]
+        return self._deep_search_diag(
+            user_input, brain, instance_name, override_config
+        )["results"]
 
-    def _deep_search_diag(self, user_input, brain, instance_name, override_config=None) -> dict:
+    def _deep_search_diag(
+        self, user_input, brain, instance_name, override_config=None
+    ) -> dict:
         """Layer 2 + 診断情報。Returns {"results": [...], "keywords": [...]}"""
         try:
             keyword_data = brain.extract_keywords(user_input, override_config)
@@ -457,7 +515,8 @@ class MemoryProbe:
 
             limit = SYSTEM_CONFIG["brain"]["search_limit"]
             results = brain.search_knowledge(
-                keywords, user_input,
+                keywords,
+                user_input,
                 instance_name=instance_name,
                 limit=limit,
                 override_config=override_config,

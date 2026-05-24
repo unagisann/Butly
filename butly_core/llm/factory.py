@@ -65,21 +65,27 @@ class ProviderFactory:
             # (module-level _get_client パッチポイントを温存)。
             if connection.id == "openai":
                 from butly_core.llm.providers.openai import OpenAIProvider
+
                 return OpenAIProvider(default_model_name=ref.model_name)
             if connection.id == "xai":
                 from butly_core.llm.providers.xai import XaiProvider
+
                 return XaiProvider(default_model_name=ref.model_name)
             if connection.id == "ollama":
                 from butly_core.llm.providers.ollama import OllamaProvider
+
                 return OllamaProvider(default_model_name=ref.model_name)
             # user 定義 connection (Groq 等) はそのまま adapter を使う
             from butly_core.llm.protocols.openai_compat import OpenAICompatAdapter
+
             return OpenAICompatAdapter(
-                connection=connection, default_model_name=ref.model_name,
+                connection=connection,
+                default_model_name=ref.model_name,
             )
 
         if connection.protocol == "gemini_native":
             from butly_core.llm.providers.gemini import GeminiProvider
+
             return GeminiProvider(default_model_name=ref.model_name)
 
         raise NotImplementedError(

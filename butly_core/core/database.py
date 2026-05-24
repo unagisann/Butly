@@ -2,6 +2,7 @@ import sqlite3
 import os
 from datetime import datetime, timezone, timedelta
 
+
 class ButlyDatabase:
     def __init__(self, db_path="butly_memory.db"):
         self.db_path = db_path
@@ -16,7 +17,7 @@ class ButlyDatabase:
         """スプレッドシートの定義に基づいたテーブル構築"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            
+
             # 1. ナレッジカード本体テーブル
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS knowledge_cards (
@@ -48,25 +49,33 @@ class ButlyDatabase:
                 FOREIGN KEY(card_id) REFERENCES knowledge_cards(id)
             )
             """)
-            
+
             # DB Migration: Add is_pinned and is_archived columns if not exist
             try:
-                cursor.execute("ALTER TABLE knowledge_cards ADD COLUMN is_pinned INTEGER DEFAULT 0;")
+                cursor.execute(
+                    "ALTER TABLE knowledge_cards ADD COLUMN is_pinned INTEGER DEFAULT 0;"
+                )
             except sqlite3.OperationalError:
                 pass
 
             try:
-                cursor.execute("ALTER TABLE knowledge_cards ADD COLUMN is_archived INTEGER DEFAULT 0;")
+                cursor.execute(
+                    "ALTER TABLE knowledge_cards ADD COLUMN is_archived INTEGER DEFAULT 0;"
+                )
             except sqlite3.OperationalError:
                 pass
 
             try:
-                cursor.execute("ALTER TABLE knowledge_cards ADD COLUMN usage_count INTEGER DEFAULT 0;")
+                cursor.execute(
+                    "ALTER TABLE knowledge_cards ADD COLUMN usage_count INTEGER DEFAULT 0;"
+                )
             except sqlite3.OperationalError:
                 pass
 
             try:
-                cursor.execute("ALTER TABLE knowledge_cards ADD COLUMN last_counted_at TEXT;")
+                cursor.execute(
+                    "ALTER TABLE knowledge_cards ADD COLUMN last_counted_at TEXT;"
+                )
             except sqlite3.OperationalError:
                 pass
 
@@ -76,39 +85,54 @@ class ButlyDatabase:
         """ナレッジカードをDBに登録または更新する"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            
+
             # 既存のIDがあるか確認（統合ロジック）
-            cursor.execute("SELECT count FROM knowledge_cards WHERE id = ?", (card_data['id'],))
+            cursor.execute(
+                "SELECT count FROM knowledge_cards WHERE id = ?", (card_data["id"],)
+            )
             row = cursor.fetchone()
-            
+
             if row:
                 # 既存カードの更新（カウントアップ）
                 new_count = row[0] + 1
-                cursor.execute("""
+                cursor.execute(
+                    """
                 UPDATE knowledge_cards SET 
                     count = ?, 
                     updated_at = CURRENT_TIMESTAMP 
                 WHERE id = ?
-                """, (new_count, card_data['id']))
+                """,
+                    (new_count, card_data["id"]),
+                )
             else:
                 # 新規登録
-                cursor.execute("""
+                cursor.execute(
+                    """
                 INSERT INTO knowledge_cards (
                     id, type, category, title, tags, ai_importance, 
                     humanity_importance, summary, episode, raw_reference
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    card_data['id'], card_data.get('type', 'Master'), 
-                    card_data['category'], card_data['title'], card_data.get('tags', ''),
-                    card_data['ai_importance'], card_data['humanity_importance'],
-                    card_data['summary'], card_data['episode'], card_data['raw_reference']
-                ))
-            
+                """,
+                    (
+                        card_data["id"],
+                        card_data.get("type", "Master"),
+                        card_data["category"],
+                        card_data["title"],
+                        card_data.get("tags", ""),
+                        card_data["ai_importance"],
+                        card_data["humanity_importance"],
+                        card_data["summary"],
+                        card_data["episode"],
+                        card_data["raw_reference"],
+                    ),
+                )
+
             # アクセスログの記録
-            cursor.execute("INSERT INTO access_logs (card_id, accessed_at) VALUES (?, ?)", 
-                           (card_data['id'], datetime.now().date().isoformat()))
-            
-            
+            cursor.execute(
+                "INSERT INTO access_logs (card_id, accessed_at) VALUES (?, ?)",
+                (card_data["id"], datetime.now().date().isoformat()),
+            )
+
             conn.commit()
             return True
 
@@ -117,26 +141,26 @@ class ButlyDatabase:
         with self._get_connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
+
             query = """
             SELECT id, type, category, title, tags, ai_importance, humanity_importance, updated_at, is_pinned, is_archived 
             FROM knowledge_cards 
             WHERE 1=1
             """
             params = []
-            
+
             if category:
                 query += " AND category = ?"
                 params.append(category)
-                
+
             if search:
                 query += " AND (title LIKE ? OR summary LIKE ? OR tags LIKE ?)"
                 search_term = f"%{search}%"
                 params.extend([search_term, search_term, search_term])
-                
+
             query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
             params.extend([limit, offset])
-            
+
             cursor.execute(query, params)
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
@@ -146,14 +170,17 @@ class ButlyDatabase:
         with self._get_connection() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            
-            cursor.execute("""
+
+            cursor.execute(
+                """
             SELECT id, type, category, title, tags, ai_importance, humanity_importance, 
                    summary, episode, count, raw_reference, created_at, updated_at, is_pinned, is_archived 
             FROM knowledge_cards 
             WHERE id = ?
-            """, (card_id,))
-            
+            """,
+                (card_id,),
+            )
+
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -162,13 +189,16 @@ class ButlyDatabase:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             status_int = 1 if pin_status else 0
-            cursor.execute("""
+            cursor.execute(
+                """
             UPDATE knowledge_cards SET 
                 is_pinned = ?, 
                 updated_at = CURRENT_TIMESTAMP 
             WHERE id = ?
-            """, (status_int, card_id))
-            
+            """,
+                (status_int, card_id),
+            )
+
             if cursor.rowcount == 0:
                 return False
             conn.commit()
@@ -179,13 +209,16 @@ class ButlyDatabase:
         with self._get_connection() as conn:
             cursor = conn.cursor()
             status_int = 1 if archive_status else 0
-            cursor.execute("""
+            cursor.execute(
+                """
             UPDATE knowledge_cards SET 
                 is_archived = ?, 
                 updated_at = CURRENT_TIMESTAMP 
             WHERE id = ?
-            """, (status_int, card_id))
-            
+            """,
+                (status_int, card_id),
+            )
+
             if cursor.rowcount == 0:
                 return False
             conn.commit()
@@ -195,25 +228,33 @@ class ButlyDatabase:
         """カード情報を更新する"""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            
+
             # 更新可能なフィールド
-            fields = ['category', 'title', 'tags', 'ai_importance', 'humanity_importance', 'summary', 'episode']
+            fields = [
+                "category",
+                "title",
+                "tags",
+                "ai_importance",
+                "humanity_importance",
+                "summary",
+                "episode",
+            ]
             set_clauses = []
             params = []
-            
+
             for field in fields:
                 if field in data:
                     set_clauses.append(f"{field} = ?")
                     params.append(data[field])
-                    
+
             if not set_clauses:
                 return False
-                
+
             set_clauses.append("updated_at = CURRENT_TIMESTAMP")
-            
+
             query = f"UPDATE knowledge_cards SET {', '.join(set_clauses)} WHERE id = ?"
             params.append(card_id)
-            
+
             cursor.execute(query, params)
             conn.commit()
             return cursor.rowcount > 0
@@ -230,7 +271,9 @@ class ButlyDatabase:
 
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat(timespec="seconds")
-        threshold = (now_dt - timedelta(hours=dedup_hours)).isoformat(timespec="seconds")
+        threshold = (now_dt - timedelta(hours=dedup_hours)).isoformat(
+            timespec="seconds"
+        )
 
         placeholders = ",".join("?" for _ in card_ids)
         query = f"""

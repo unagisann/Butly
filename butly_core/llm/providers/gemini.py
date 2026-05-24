@@ -25,10 +25,9 @@ from butly_core.chat.types import (
 )
 from butly_core.llm.base import BaseProvider
 
-
 # 明示的な非対応リスト（vision 非対応が判明したモデルのみ追加）
 VISION_UNSUPPORTED_MODELS = {
-    "gemini-3.1-flash-lite",          # テキスト特化軽量モデル（stable）
+    "gemini-3.1-flash-lite",  # テキスト特化軽量モデル（stable）
     "gemini-3.1-flash-lite-preview",  # テキスト特化軽量モデル（旧 preview 名・後方互換）
 }
 
@@ -36,6 +35,7 @@ VISION_UNSUPPORTED_MODELS = {
 def _get_client() -> genai.Client:
     """Gemini API クライアントを取得する（API キー自動解決）。"""
     from pathlib import Path
+
     env_files = ["APIkey.env", ".env"]
     for env_name in env_files:
         env_path = Path(__file__).resolve().parents[3] / env_name
@@ -44,7 +44,9 @@ def _get_client() -> genai.Client:
             break
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
-        raise RuntimeError("Gemini API キーが見つかりません。APIkey.env に GEMINI_API_KEY を設定してください。")
+        raise RuntimeError(
+            "Gemini API キーが見つかりません。APIkey.env に GEMINI_API_KEY を設定してください。"
+        )
     return genai.Client(api_key=api_key)
 
 
@@ -91,8 +93,13 @@ class GeminiProvider(BaseProvider):
 
         # config から model_name / temperature を取得（brain.summarize_conversation がマージ済み）
         model_name = config.get("model_name", AI_CONFIG["summary"]["model_name"])
-        temperature = config.get("temperature", AI_CONFIG["summary"]["generation_config"].get("temperature", 0.3))
-        char_limit = config.get("summary_char_limit", SYSTEM_CONFIG["brain"]["summary_char_limit"])
+        temperature = config.get(
+            "temperature",
+            AI_CONFIG["summary"]["generation_config"].get("temperature", 0.3),
+        )
+        char_limit = config.get(
+            "summary_char_limit", SYSTEM_CONFIG["brain"]["summary_char_limit"]
+        )
         safety_settings = AI_CONFIG["summary"].get("safety_settings")
 
         loader = PromptLoader()
@@ -123,7 +130,10 @@ class GeminiProvider(BaseProvider):
         優先順位: config["model_name"] > AI_CONFIG["embedding"]["model_name"]
         """
         from butly_core.config import AI_CONFIG
-        model_name = (config or {}).get("model_name") or AI_CONFIG["embedding"]["model_name"]
+
+        model_name = (config or {}).get("model_name") or AI_CONFIG["embedding"][
+            "model_name"
+        ]
         try:
             response = self.client.models.embed_content(
                 model=model_name,
@@ -142,7 +152,9 @@ class GeminiProvider(BaseProvider):
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=config["generation_config"].get("temperature", 0.0),
-                    max_output_tokens=config["generation_config"].get("max_output_tokens", 512),
+                    max_output_tokens=config["generation_config"].get(
+                        "max_output_tokens", 512
+                    ),
                     safety_settings=config.get("safety_settings"),
                 ),
             )
@@ -199,8 +211,12 @@ class GeminiProvider(BaseProvider):
         try:
             if use_google_search:
                 response_text, sources = self._try_search_with_retry(
-                    full_prompt, image_parts, history,
-                    memory_manager, override_config, memory_blocks,
+                    full_prompt,
+                    image_parts,
+                    history,
+                    memory_manager,
+                    override_config,
+                    memory_blocks,
                     context_order=context_order,
                     context_levels=context_levels,
                 )
@@ -225,6 +241,7 @@ class GeminiProvider(BaseProvider):
                 build_system_instruction_from_blocks,
                 build_context_prefix,
             )
+
             _debug_sys_inst = build_system_instruction_from_blocks(
                 blocks=memory_blocks,
                 memory_manager=memory_manager,
@@ -247,9 +264,17 @@ class GeminiProvider(BaseProvider):
                 sources=sources if sources else [],
             )
             result.debug_info = {
-                "system_instruction": (_debug_sys_inst[:500] + "...") if len(_debug_sys_inst) > 500 else _debug_sys_inst,
+                "system_instruction": (
+                    (_debug_sys_inst[:500] + "...")
+                    if len(_debug_sys_inst) > 500
+                    else _debug_sys_inst
+                ),
                 "system_instruction_full": _debug_sys_inst,
-                "context_prefix": (_debug_ctx_prefix[:500] + "...") if len(_debug_ctx_prefix) > 500 else _debug_ctx_prefix,
+                "context_prefix": (
+                    (_debug_ctx_prefix[:500] + "...")
+                    if len(_debug_ctx_prefix) > 500
+                    else _debug_ctx_prefix
+                ),
                 "context_prefix_full": _debug_ctx_prefix,
                 "history_count": len(history),
                 "user_input": full_prompt,
@@ -258,6 +283,7 @@ class GeminiProvider(BaseProvider):
             return result
         except Exception as e:
             import traceback
+
             traceback.print_exc()
             return ChatResponse(
                 text=f"Error: {e}",
@@ -312,6 +338,7 @@ class GeminiProvider(BaseProvider):
             build_system_instruction_from_blocks,
             build_context_prefix,
         )
+
         _debug_sys_inst = build_system_instruction_from_blocks(
             blocks=memory_blocks,
             memory_manager=memory_manager,
@@ -363,26 +390,42 @@ class GeminiProvider(BaseProvider):
                             queue.put_nowait, {"type": "chunk", "text": chunk_text}
                         )
                 print("[GeminiProvider] Streaming done")
-                loop.call_soon_threadsafe(queue.put_nowait, {
-                    "type": "done",
-                    "full_text": full_text,
-                    "sources": [],
-                    "debug": {
-                        "system_instruction": (_debug_sys_inst[:500] + "...") if len(_debug_sys_inst) > 500 else _debug_sys_inst,
-                        "system_instruction_full": _debug_sys_inst,
-                        "context_prefix": (_debug_ctx_prefix[:500] + "...") if len(_debug_ctx_prefix) > 500 else _debug_ctx_prefix,
-                        "context_prefix_full": _debug_ctx_prefix,
-                        "history_count": len(history),
-                        "user_input": text,
-                        "raw_response": full_text,
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    {
+                        "type": "done",
+                        "full_text": full_text,
+                        "sources": [],
+                        "debug": {
+                            "system_instruction": (
+                                (_debug_sys_inst[:500] + "...")
+                                if len(_debug_sys_inst) > 500
+                                else _debug_sys_inst
+                            ),
+                            "system_instruction_full": _debug_sys_inst,
+                            "context_prefix": (
+                                (_debug_ctx_prefix[:500] + "...")
+                                if len(_debug_ctx_prefix) > 500
+                                else _debug_ctx_prefix
+                            ),
+                            "context_prefix_full": _debug_ctx_prefix,
+                            "history_count": len(history),
+                            "user_input": text,
+                            "raw_response": full_text,
+                        },
                     },
-                })
+                )
             except Exception as e:
                 import traceback
+
                 traceback.print_exc()
-                loop.call_soon_threadsafe(queue.put_nowait, {
-                    "type": "error", "message": str(e),
-                })
+                loop.call_soon_threadsafe(
+                    queue.put_nowait,
+                    {
+                        "type": "error",
+                        "message": str(e),
+                    },
+                )
 
         producer_future = loop.run_in_executor(None, _producer)
 
@@ -432,10 +475,12 @@ class GeminiProvider(BaseProvider):
                 if metadata.grounding_chunks:
                     for chunk in metadata.grounding_chunks:
                         if chunk.web:
-                            sources.append({
-                                "title": chunk.web.title or "Google Search",
-                                "url": chunk.web.uri,
-                            })
+                            sources.append(
+                                {
+                                    "title": chunk.web.title or "Google Search",
+                                    "url": chunk.web.uri,
+                                }
+                            )
         except Exception as e:
             print(f"[GeminiProvider] Grounding Extraction Error: {e}")
 
@@ -463,7 +508,11 @@ class GeminiProvider(BaseProvider):
             return base_conf
         merged = base_conf.copy()
         for key, value in override_conf.items():
-            if isinstance(value, dict) and key in merged and isinstance(merged[key], dict):
+            if (
+                isinstance(value, dict)
+                and key in merged
+                and isinstance(merged[key], dict)
+            ):
                 merged[key] = self._merge_config(merged[key], value)
             else:
                 merged[key] = value
@@ -499,7 +548,11 @@ class GeminiProvider(BaseProvider):
             if isinstance(h, dict):
                 role = h.get("role")
                 parts = [
-                    types.Part(text=p) if isinstance(p, str) else types.Part(text=str(p))
+                    (
+                        types.Part(text=p)
+                        if isinstance(p, str)
+                        else types.Part(text=str(p))
+                    )
                     for p in h.get("parts", [])
                 ]
                 history_contents.append(types.Content(role=role, parts=parts))
@@ -529,6 +582,7 @@ class GeminiProvider(BaseProvider):
             build_system_instruction_from_blocks,
             build_context_prefix,
         )
+
         base_instruction = build_system_instruction_from_blocks(
             blocks=memory_blocks,
             memory_manager=memory_manager,
@@ -547,8 +601,7 @@ class GeminiProvider(BaseProvider):
         )
         if context_prefix:
             prefix_content = types.Content(
-                role="user",
-                parts=[types.Part(text=context_prefix)]
+                role="user", parts=[types.Part(text=context_prefix)]
             )
             history_contents = [prefix_content] + history_contents
 
@@ -577,10 +630,17 @@ class GeminiProvider(BaseProvider):
                 file_size = len(img_bytes)
                 total_size += file_size
 
-                if file_size <= INLINE_SIZE_PER_FILE and total_size <= INLINE_SIZE_TOTAL:
-                    part = types.Part.from_bytes(data=img_bytes, mime_type=att.mime_type)
+                if (
+                    file_size <= INLINE_SIZE_PER_FILE
+                    and total_size <= INLINE_SIZE_TOTAL
+                ):
+                    part = types.Part.from_bytes(
+                        data=img_bytes, mime_type=att.mime_type
+                    )
                     parts.append(part)
-                    print(f"[GeminiProvider] 画像{i+1}: inline ({file_size / 1024:.0f}KB)")
+                    print(
+                        f"[GeminiProvider] 画像{i+1}: inline ({file_size / 1024:.0f}KB)"
+                    )
                 else:
                     part, tmp_path = self._upload_via_files_api(img_bytes, att, i)
                     parts.append(part)
@@ -596,7 +656,9 @@ class GeminiProvider(BaseProvider):
 
         return parts
 
-    def _upload_via_files_api(self, img_bytes: bytes, att: Attachment, index: int) -> tuple:
+    def _upload_via_files_api(
+        self, img_bytes: bytes, att: Attachment, index: int
+    ) -> tuple:
         """Files API で画像をアップロードし Part を返す。"""
         ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
         ext = ext_map.get(att.mime_type, ".bin")
@@ -606,8 +668,12 @@ class GeminiProvider(BaseProvider):
             with os.fdopen(tmp_fd, "wb") as f:
                 f.write(img_bytes)
 
-            uploaded = self.client.files.upload(file=tmp_path, config={"mime_type": att.mime_type})
-            print(f"[GeminiProvider] 画像{index+1}: Files API ({len(img_bytes) / 1024:.0f}KB) → {uploaded.name}")
+            uploaded = self.client.files.upload(
+                file=tmp_path, config={"mime_type": att.mime_type}
+            )
+            print(
+                f"[GeminiProvider] 画像{index+1}: Files API ({len(img_bytes) / 1024:.0f}KB) → {uploaded.name}"
+            )
             return uploaded, tmp_path
         except Exception as e:
             print(f"[GeminiProvider] Files API アップロードエラー: {e}")
@@ -634,9 +700,12 @@ class GeminiProvider(BaseProvider):
         try:
             chat_session = self._start_chat(
                 history=history,
-                memory_manager=memory_manager, override_config=override_config,
-                use_google_search=True, memory_blocks=memory_blocks,
-                context_order=context_order, context_levels=context_levels,
+                memory_manager=memory_manager,
+                override_config=override_config,
+                use_google_search=True,
+                memory_blocks=memory_blocks,
+                context_order=context_order,
+                context_levels=context_levels,
             )
             prompt_parts = [full_prompt] + image_parts
             print("[GeminiProvider] Sending message to Gemini API...")
@@ -656,12 +725,18 @@ class GeminiProvider(BaseProvider):
         # === Retry 1 ===
         print("[GeminiProvider] Search: Retry 1")
         try:
-            corrected_prompt = full_prompt + "\n\n【システム注意】前回のGoogle検索ツール呼び出しが不正な形式でした。google_searchツールは自動的に実行されます。関数を明示的に呼び出す必要はありません。通常通り回答してください。"
+            corrected_prompt = (
+                full_prompt
+                + "\n\n【システム注意】前回のGoogle検索ツール呼び出しが不正な形式でした。google_searchツールは自動的に実行されます。関数を明示的に呼び出す必要はありません。通常通り回答してください。"
+            )
             chat_session = self._start_chat(
                 history=history,
-                memory_manager=memory_manager, override_config=override_config,
-                use_google_search=True, memory_blocks=memory_blocks,
-                context_order=context_order, context_levels=context_levels,
+                memory_manager=memory_manager,
+                override_config=override_config,
+                use_google_search=True,
+                memory_blocks=memory_blocks,
+                context_order=context_order,
+                context_levels=context_levels,
             )
             prompt_parts = [corrected_prompt] + image_parts
             print("[GeminiProvider] Sending message to Gemini API...")
@@ -682,9 +757,12 @@ class GeminiProvider(BaseProvider):
         print("[GeminiProvider] Search: Fallback (without search)")
         chat_session = self._start_chat(
             history=history,
-            memory_manager=memory_manager, override_config=override_config,
-            use_google_search=False, memory_blocks=memory_blocks,
-            context_order=context_order, context_levels=context_levels,
+            memory_manager=memory_manager,
+            override_config=override_config,
+            use_google_search=False,
+            memory_blocks=memory_blocks,
+            context_order=context_order,
+            context_levels=context_levels,
         )
         prompt_parts = [full_prompt] + image_parts
         print("[GeminiProvider] Sending message to Gemini API...")
@@ -693,7 +771,10 @@ class GeminiProvider(BaseProvider):
         response_text, sources, _ = self._extract_response(response)
 
         if response_text:
-            response_text = "【検索エラー】外部情報にアクセスできませんでした。以下は内部知識に基づく回答です。\n\n" + response_text
+            response_text = (
+                "【検索エラー】外部情報にアクセスできませんでした。以下は内部知識に基づく回答です。\n\n"
+                + response_text
+            )
         else:
             response_text = "【検索エラー】外部情報にアクセスできませんでした。回答を生成できませんでした。"
 

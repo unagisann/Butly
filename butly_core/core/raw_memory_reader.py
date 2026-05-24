@@ -13,9 +13,9 @@ from pathlib import Path
 from butly_core.core.tokenizer import count_tokens
 
 # ファイル名からタイムスタンプを抽出する正規表現
-_TS_PATTERN_8 = re.compile(r"session_(\d{8}_\d{6})")       # session_YYYYMMDD_HHMMSS
-_TS_PATTERN_6D = re.compile(r"session_(\d{6}_\d{6})")      # session_YYMMDD_HHMMSS
-_TS_PATTERN_TIME = re.compile(r"session_(\d{6})\.json$")    # session_HHMMSS.json
+_TS_PATTERN_8 = re.compile(r"session_(\d{8}_\d{6})")  # session_YYYYMMDD_HHMMSS
+_TS_PATTERN_6D = re.compile(r"session_(\d{6}_\d{6})")  # session_YYMMDD_HHMMSS
+_TS_PATTERN_TIME = re.compile(r"session_(\d{6})\.json$")  # session_HHMMSS.json
 _DIR_DATE_PATTERN = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")  # YYYY-MM-DD
 
 CACHE_FILENAME = "raw_memory_cache.txt"
@@ -109,11 +109,13 @@ def collect_raw_sessions(
             break  # 上限超過 → ここまでで打ち切り
 
         total_tokens += session_tokens
-        collected.append({
-            "timestamp": _format_timestamp(data.get("timestamp", "")),
-            "messages": messages,
-            "filename": filepath.name,
-        })
+        collected.append(
+            {
+                "timestamp": _format_timestamp(data.get("timestamp", "")),
+                "messages": messages,
+                "filename": filepath.name,
+            }
+        )
 
         if total_tokens >= max_tokens:
             break  # ちょうど上限到達でも終了
@@ -221,7 +223,9 @@ def build_raw_memory_cache(
     cache_path.write_text(text, encoding="utf-8")
 
     tokens = count_tokens(text) if text else 0
-    print(f"[RawMemoryReader] Cache written: {len(sessions)} sessions, {tokens} tokens, format={injection_format}")
+    print(
+        f"[RawMemoryReader] Cache written: {len(sessions)} sessions, {tokens} tokens, format={injection_format}"
+    )
 
     return {
         "sessions": len(sessions),

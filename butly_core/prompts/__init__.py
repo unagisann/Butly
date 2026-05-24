@@ -52,6 +52,7 @@ class PromptLoader:
         if locale is None:
             try:
                 from butly_core.config import SYSTEM_CONFIG
+
                 locale = SYSTEM_CONFIG.get("agent", {}).get("locale", "ja")
             except ImportError:
                 locale = "ja"
@@ -68,6 +69,7 @@ class PromptLoader:
         if registry_path.exists():
             try:
                 import yaml
+
                 with open(registry_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f)
                 return data.get("prompts", {}) if data else {}
@@ -141,9 +143,7 @@ class PromptLoader:
             path = _CONTROL_DIR / f"{name}.txt"
             if path.exists():
                 return path.read_text(encoding="utf-8")
-            raise FileNotFoundError(
-                f"Control prompt '{name}' not found: {path}"
-            )
+            raise FileNotFoundError(f"Control prompt '{name}' not found: {path}")
 
         # locales プロンプト: user_prompts.json を先にチェック
         legacy_key = _LEGACY_KEY_MAP.get(name)
@@ -183,7 +183,9 @@ _loader = PromptLoader()
 
 SLEEPTIME_SUMMARIZE_PROMPT = _loader.get_template("sleeptime_summarize")
 BRAIN_EXTRACT_KEYWORDS_PROMPT = _loader.get_template("brain_extract_keywords")
-BRAIN_SUMMARIZE_CONVERSATION_PROMPT = _loader.get_template("brain_summarize_conversation")
+BRAIN_SUMMARIZE_CONVERSATION_PROMPT = _loader.get_template(
+    "brain_summarize_conversation"
+)
 MIDTERM_DIGEST_PROMPT = _loader.get_template("midterm_digest")
 MIDTERM_RELATIONSHIP_PROMPT = _loader.get_template("midterm_relationship")
 RECENT_SNAPSHOT_PROMPT = _loader.get_template("recent_snapshot")

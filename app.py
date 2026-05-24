@@ -16,10 +16,16 @@ BASE_DIR = Path(__file__).resolve().parent
 INSTANCES_DIR = BASE_DIR / "butly_core" / "instances"
 
 # --- UI設定 ---
-st.set_page_config(page_title="Butly Web Console", page_icon="🤖", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(
+    page_title="Butly Web Console",
+    page_icon="🤖",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 # --- マテリアル3風のカスタムCSS ---
-st.markdown("""
+st.markdown(
+    """
 <style>
     /* 全体のフォントを Noto Sans JP 風に */
     html, body, [class*="css"]  {
@@ -130,7 +136,9 @@ st.markdown("""
     .debug-box { background-color: #262730; border-radius: 5px; padding: 10px; border: 1px solid #444; margin-top: 10px;}
     .rag-ref { font-size: 0.9em; color: #aaa; border-left: 2px solid #00ff00; padding-left: 10px; margin-bottom: 5px;}
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # --- 共通ヘルパー関数 ---
 
@@ -157,6 +165,7 @@ def _get_role_candidates(api_url: str, role: str) -> list:
     """
     try:
         import requests as _req
+
         resp = _req.get(
             f"{api_url}/settings/model_candidates",
             params={"role": role},
@@ -169,6 +178,7 @@ def _get_role_candidates(api_url: str, role: str) -> list:
     # フォールバック: model_registry から直接 (backend 到達不能時)
     try:
         from butly_core.llm.model_registry import get_presets_for_role
+
         return [
             {
                 "connection_id": p.connection_id,
@@ -213,7 +223,9 @@ def get_provider_label(model_name: str) -> str:
         return "❓ 不明"
 
 
-def _model_selector(label: str, current_value: str, candidates: list, key_prefix: str) -> str:
+def _model_selector(
+    label: str, current_value: str, candidates: list, key_prefix: str
+) -> str:
     """
     モデル選択の共通ウィジェット。
     selectbox + 直接入力欄を表示し、最終的なモデル名を返す。
@@ -235,7 +247,9 @@ def _model_selector(label: str, current_value: str, candidates: list, key_prefix
     model_names = [c.get("model_name") for c in normalized if c.get("model_name")]
     # 現在値がリストになければ追加（過去に設定したカスタム値の保持）
     if current_value and current_value not in model_names:
-        normalized.append({"model_name": current_value, "connection_id": None, "label": current_value})
+        normalized.append(
+            {"model_name": current_value, "connection_id": None, "label": current_value}
+        )
         model_names.append(current_value)
 
     # selectbox には index を渡す (label は format_func で整形)
@@ -295,26 +309,36 @@ def _model_selector(label: str, current_value: str, candidates: list, key_prefix
 # --- マネージャー初期化 ---
 instance_manager = InstanceManager(BASE_DIR)
 
+
 # --- システム初期化 ---
 @st.cache_resource
 def initialize_system(base_dir, instance_name):
     print(f"[System] Initializing instance: {instance_name}")
     memory = ButlyMemory(base_dir, instance_name=instance_name)
-    brain = ButlyBrain(base_dir) 
+    brain = ButlyBrain(base_dir)
     chronos = ButlyChronos()
     return memory, brain, chronos
+
 
 # --- 初期化・ディレクトリ作成 ---
 if not INSTANCES_DIR.exists():
     INSTANCES_DIR.mkdir(parents=True, exist_ok=True)
 
-available_instances = sorted([p.name for p in INSTANCES_DIR.iterdir() if p.is_dir() and not p.name.startswith(".")])
+available_instances = sorted(
+    [
+        p.name
+        for p in INSTANCES_DIR.iterdir()
+        if p.is_dir() and not p.name.startswith(".")
+    ]
+)
 
 # --- セッションステートの初期化 ---
 if "current_page" not in st.session_state:
     st.session_state.current_page = "home"
 if "current_instance" not in st.session_state:
-    st.session_state.current_instance = available_instances[0] if available_instances else None
+    st.session_state.current_instance = (
+        available_instances[0] if available_instances else None
+    )
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "is_holiday" not in st.session_state:
@@ -327,7 +351,7 @@ if "use_google_search" not in st.session_state:
 if "use_web_search" not in st.session_state:
     st.session_state.use_web_search = False
 if "input_key_counter" not in st.session_state:
-    st.session_state.input_key_counter = 0 # チャット入力欄クリア用
+    st.session_state.input_key_counter = 0  # チャット入力欄クリア用
 if "pending_attachments" not in st.session_state:
     st.session_state.pending_attachments = []
 # デフォルトAPI接続先
@@ -344,6 +368,7 @@ if "db_browser_instance" not in st.session_state:
 if "card_edit_id" not in st.session_state:
     st.session_state.card_edit_id = None
 
+
 # 画面遷移ヘルパー
 def navigate_to(page, instance=None):
     st.session_state.current_page = page
@@ -355,6 +380,7 @@ def navigate_to(page, instance=None):
                 del st.session_state.last_interaction_time
             st.cache_resource.clear()
     st.rerun()
+
 
 # 性格テンプレート読み込みヘルパー
 def load_personality_templates(base_dir, locale="ja"):
@@ -369,6 +395,7 @@ def load_personality_templates(base_dir, locale="ja"):
             templates[name] = f.read_text(encoding="utf-8")
     return templates
 
+
 # Key Memory ビルダー
 def is_gemini_provider(model_name: str) -> bool:
     """model_name がGeminiプロバイダーかどうかを判定する。"""
@@ -377,9 +404,11 @@ def is_gemini_provider(model_name: str) -> bool:
     name = model_name.lower()
     return name.startswith("gemini") or name.startswith("models/gemini")
 
+
 def get_active_chat_model(api_url: str, instance_name: str) -> str:
     """現在のインスタンスの chat model_name を取得する。"""
     import requests as _requests
+
     # 1. インスタンス固有config
     try:
         resp = _requests.get(f"{api_url}/instances/{instance_name}/config", timeout=5)
@@ -395,10 +424,15 @@ def get_active_chat_model(api_url: str, instance_name: str) -> str:
         resp = _requests.get(f"{api_url}/config", timeout=5)
         if resp.ok:
             global_cfg = resp.json()
-            return global_cfg.get("AI_CONFIG", {}).get("chat", {}).get("model_name", "gemini-3.5-flash")
+            return (
+                global_cfg.get("AI_CONFIG", {})
+                .get("chat", {})
+                .get("model_name", "gemini-3.5-flash")
+            )
     except Exception:
         pass
     return "gemini-3.5-flash"  # 最終フォールバック
+
 
 # ==========================================
 # 🏠 ホーム画面 (Home Screen)
@@ -430,23 +464,34 @@ def render_home_screen():
     else:
         for name in available_instances:
             # st.button()を使った簡易なカード風リスト
-            if st.button(f"🤖 {name}", key=f"btn_inst_{name}", use_container_width=True):
+            if st.button(
+                f"🤖 {name}", key=f"btn_inst_{name}", use_container_width=True
+            ):
                 navigate_to("chat", instance=name)
 
     st.divider()
 
     # locale 取得（テンプレート選択に使用）
     import requests as _req_home
+
     try:
-        _home_cfg = _req_home.get(f"{st.session_state.api_base_url}/config", timeout=5).json()
+        _home_cfg = _req_home.get(
+            f"{st.session_state.api_base_url}/config", timeout=5
+        ).json()
     except Exception:
         _home_cfg = {"SYSTEM_CONFIG": {}}
-    _home_locale = _home_cfg.get("SYSTEM_CONFIG", {}).get("agent", {}).get("locale", "ja")
+    _home_locale = (
+        _home_cfg.get("SYSTEM_CONFIG", {}).get("agent", {}).get("locale", "ja")
+    )
 
     # 新規インスタンス作成 (FABの代わり)
     with st.expander("➕ 新しいインスタンスを作成"):
         new_proj_name = st.text_input(
-            "インスタンス名（半角英数字・_）" if _home_locale != "en" else "Instance Name (alphanumeric & _)",
+            (
+                "インスタンス名（半角英数字・_）"
+                if _home_locale != "en"
+                else "Instance Name (alphanumeric & _)"
+            ),
             placeholder="e.g. new_agent",
         )
 
@@ -472,7 +517,9 @@ def render_home_screen():
         _options = list(_templates.keys()) + ["custom"]
 
         if "prev_template_choice" not in st.session_state:
-            st.session_state.prev_template_choice = _options[0] if _options else "custom"
+            st.session_state.prev_template_choice = (
+                _options[0] if _options else "custom"
+            )
 
         _selected = st.selectbox(
             "性格テンプレート" if _home_locale != "en" else "Personality Template",
@@ -498,12 +545,22 @@ def render_home_screen():
         st.divider()
 
         # --- Key Memory 初期設定 ---
-        st.markdown("**🧠 初期設定**" if _home_locale == "ja" else "**🧠 Initial Setup**")
+        st.markdown(
+            "**🧠 初期設定**" if _home_locale == "ja" else "**🧠 Initial Setup**"
+        )
 
         ai_name_input = st.text_input(
             "AIの名前" if _home_locale == "ja" else "AI Name",
-            placeholder="ジャービス、ルナ、アトラス..." if _home_locale == "ja" else "Jarvis, Luna, Atlas...",
-            help="AIの呼び名を決めてください。" if _home_locale == "ja" else "Choose a name for your AI.",
+            placeholder=(
+                "ジャービス、ルナ、アトラス..."
+                if _home_locale == "ja"
+                else "Jarvis, Luna, Atlas..."
+            ),
+            help=(
+                "AIの呼び名を決めてください。"
+                if _home_locale == "ja"
+                else "Choose a name for your AI."
+            ),
         )
 
         _col_name, _col_nick = st.columns(2)
@@ -511,20 +568,37 @@ def render_home_screen():
             user_name_input = st.text_input(
                 "あなたの名前" if _home_locale == "ja" else "Your Name",
                 placeholder="太郎" if _home_locale == "ja" else "John",
-                help="AIがあなたを認識するための名前です。" if _home_locale == "ja"
-                     else "The name your AI will use to recognize you.",
+                help=(
+                    "AIがあなたを認識するための名前です。"
+                    if _home_locale == "ja"
+                    else "The name your AI will use to recognize you."
+                ),
             )
         with _col_nick:
             nickname_input = st.text_input(
                 "呼ばれたい名前" if _home_locale == "ja" else "Preferred Name",
-                placeholder="たろ、マスター、〇〇さん" if _home_locale == "ja" else "Johnny, Boss, Mr. Smith",
-                help="AIがあなたを呼ぶときの名前です。空欄なら「あなたの名前」を使います。"
-                     if _home_locale == "ja"
-                     else "How your AI will address you. Leave blank to use your name.",
+                placeholder=(
+                    "たろ、マスター、〇〇さん"
+                    if _home_locale == "ja"
+                    else "Johnny, Boss, Mr. Smith"
+                ),
+                help=(
+                    "AIがあなたを呼ぶときの名前です。空欄なら「あなたの名前」を使います。"
+                    if _home_locale == "ja"
+                    else "How your AI will address you. Leave blank to use your name."
+                ),
             )
 
-        with st.expander("🎁 追加設定（任意）" if _home_locale == "ja" else "🎁 Additional Settings (Optional)"):
-            _gender_opts = ["", "男性", "女性", "その他"] if _home_locale == "ja" else ["", "Male", "Female", "Other"]
+        with st.expander(
+            "🎁 追加設定（任意）"
+            if _home_locale == "ja"
+            else "🎁 Additional Settings (Optional)"
+        ):
+            _gender_opts = (
+                ["", "男性", "女性", "その他"]
+                if _home_locale == "ja"
+                else ["", "Male", "Female", "Other"]
+            )
             gender_input = st.selectbox(
                 "性別" if _home_locale == "ja" else "Gender",
                 options=_gender_opts,
@@ -543,11 +617,20 @@ def render_home_screen():
 
         if st.button("作成" if _home_locale == "ja" else "Create", type="primary"):
             if not new_proj_name:
-                st.error("インスタンス名を入力してください。" if _home_locale == "ja" else "Please enter an instance name.")
+                st.error(
+                    "インスタンス名を入力してください。"
+                    if _home_locale == "ja"
+                    else "Please enter an instance name."
+                )
             elif not ai_name_input:
-                st.error("AIの名前を入力してください。" if _home_locale == "ja" else "Please enter an AI name.")
+                st.error(
+                    "AIの名前を入力してください。"
+                    if _home_locale == "ja"
+                    else "Please enter an AI name."
+                )
             else:
                 import requests
+
                 api_url = st.session_state.api_base_url
                 try:
                     _agent_profile = {
@@ -557,7 +640,9 @@ def render_home_screen():
                     }
                     _user_profile = {
                         "user_name": user_name_input,
-                        "preferred_call": nickname_input if nickname_input else user_name_input,
+                        "preferred_call": (
+                            nickname_input if nickname_input else user_name_input
+                        ),
                         "gender": gender_input if gender_input else "",
                         "birthday": _birthday_str,
                         "location": "",
@@ -576,9 +661,14 @@ def render_home_screen():
                     if res.ok:
                         st.rerun()
                     else:
-                        st.error(f"エラー: {res.text}" if _home_locale == "ja" else f"Error: {res.text}")
+                        st.error(
+                            f"エラー: {res.text}"
+                            if _home_locale == "ja"
+                            else f"Error: {res.text}"
+                        )
                 except Exception as e:
                     st.error(f"エラー: {e}" if _home_locale == "ja" else f"Error: {e}")
+
 
 # ==========================================
 # ⚙️ 設定画面 (タブ3構成) - Butly Client準拠
@@ -586,7 +676,8 @@ def render_home_screen():
 def render_settings_screen():
     col1, col2 = st.columns([1, 8])
     with col1:
-        if st.button("＜ 戻る"): navigate_to("home")
+        if st.button("＜ 戻る"):
+            navigate_to("home")
     with col2:
         st.markdown('<h1 class="app-title">⚙️ 設定</h1>', unsafe_allow_html=True)
 
@@ -598,19 +689,27 @@ def render_settings_screen():
     with tab1:
         st.subheader("🔗 API接続先 (サーバーアドレス)")
         st.caption("ラズパイなどのバックエンドサーバのアドレスを入力してください。")
-        new_url = st.text_input("サーバアドレス (URL)", value=st.session_state.api_base_url, placeholder="http://127.0.0.1:8000")
+        new_url = st.text_input(
+            "サーバアドレス (URL)",
+            value=st.session_state.api_base_url,
+            placeholder="http://127.0.0.1:8000",
+        )
         if st.button("💾 接続先を保存", key="save_url"):
             st.session_state.api_base_url = new_url
             st.success(f"接続先を {new_url} に変更しました。")
 
         st.divider()
         st.subheader("🏖️ Holiday Mode (休暇設定)")
-        st.session_state.is_holiday = st.toggle("🏖️ 休暇モードを有効にする", value=st.session_state.is_holiday)
+        st.session_state.is_holiday = st.toggle(
+            "🏖️ 休暇モードを有効にする", value=st.session_state.is_holiday
+        )
         st.caption("有効にすると、AIは今日が休日であると認識して応答します。")
 
         st.divider()
         st.subheader("🔧 System Toggles")
-        st.session_state.debug_mode = st.toggle("🐛 Debug Mode", value=st.session_state.debug_mode)
+        st.session_state.debug_mode = st.toggle(
+            "🐛 Debug Mode", value=st.session_state.debug_mode
+        )
         if "streaming_enabled" not in st.session_state:
             st.session_state.streaming_enabled = True
         st.session_state.streaming_enabled = st.toggle(
@@ -626,6 +725,7 @@ def render_settings_screen():
         st.divider()
         st.subheader("🌐 言語設定")
         import requests as _req_lang
+
         _lang_api_url = st.session_state.api_base_url
         try:
             _lang_cfg = _req_lang.get(f"{_lang_api_url}/config", timeout=5).json()
@@ -635,7 +735,11 @@ def render_settings_screen():
         _locale_options = {"ja": "日本語", "en": "English"}
         _locale_keys = list(_locale_options.keys())
         _current_locale = _lang_agent_s.get("locale", "ja")
-        _locale_index = _locale_keys.index(_current_locale) if _current_locale in _locale_keys else 0
+        _locale_index = (
+            _locale_keys.index(_current_locale)
+            if _current_locale in _locale_keys
+            else 0
+        )
         _selected_locale = st.selectbox(
             "Language / 言語",
             options=_locale_keys,
@@ -644,9 +748,13 @@ def render_settings_screen():
             key="tab1_locale",
         )
         if st.button("💾 言語設定を保存", key="save_locale_tab1"):
-            _lang_cfg.setdefault("SYSTEM_CONFIG", {}).setdefault("agent", {})["locale"] = _selected_locale
+            _lang_cfg.setdefault("SYSTEM_CONFIG", {}).setdefault("agent", {})[
+                "locale"
+            ] = _selected_locale
             try:
-                _r = _req_lang.post(f"{_lang_api_url}/config", json=_lang_cfg, timeout=5)
+                _r = _req_lang.post(
+                    f"{_lang_api_url}/config", json=_lang_cfg, timeout=5
+                )
                 if _r.ok:
                     st.success("言語設定を保存しました。")
                 else:
@@ -659,8 +767,11 @@ def render_settings_screen():
     # ========================
     with tab2:
         st.subheader("📝 グローバルプロンプト編集")
-        st.caption("各インスタンス共通のタイムコンテキストなどのグローバルプロンプトを編集できます。")
+        st.caption(
+            "各インスタンス共通のタイムコンテキストなどのグローバルプロンプトを編集できます。"
+        )
         import requests
+
         api_url = st.session_state.api_base_url
         try:
             resp = requests.get(f"{api_url}/prompts", timeout=5)
@@ -668,9 +779,13 @@ def render_settings_screen():
                 raw_prompts = resp.json()
                 for key, val in raw_prompts.items():
                     with st.expander(f"📌 {key}"):
-                        new_val = st.text_area(key, value=val, height=200, key=f"prompt_{key}")
+                        new_val = st.text_area(
+                            key, value=val, height=200, key=f"prompt_{key}"
+                        )
                         if st.button("💾 保存", key=f"save_prompt_{key}"):
-                            update_resp = requests.post(f"{api_url}/prompts", json={key: new_val}, timeout=5)
+                            update_resp = requests.post(
+                                f"{api_url}/prompts", json={key: new_val}, timeout=5
+                            )
                             if update_resp.ok:
                                 st.success(f"{key} を保存しました。")
                             else:
@@ -685,13 +800,19 @@ def render_settings_screen():
     # ========================
     with tab3:
         import requests
+
         api_url = st.session_state.api_base_url
 
         # --- セクション1: APIキー管理 ---
         st.subheader("🔑 APIキー設定")
 
         # ステータス取得
-        key_status = {"gemini": False, "openai": False, "xai": False, "ollama_web_search": False}
+        key_status = {
+            "gemini": False,
+            "openai": False,
+            "xai": False,
+            "ollama_web_search": False,
+        }
         try:
             status_resp = requests.get(f"{api_url}/settings/api_key_status", timeout=5)
             if status_resp.ok:
@@ -702,16 +823,29 @@ def render_settings_screen():
         gemini_status = "✅ 設定済み" if key_status.get("gemini") else "❌ 未設定"
         openai_status = "✅ 設定済み" if key_status.get("openai") else "❌ 未設定"
         xai_status = "✅ 設定済み" if key_status.get("xai") else "❌ 未設定"
-        ollama_ws_status = "✅ 設定済み" if key_status.get("ollama_web_search") else "❌ 未設定"
-        st.caption(f"Gemini: {gemini_status} / OpenAI: {openai_status} / xAI: {xai_status} / Ollama WebSearch: {ollama_ws_status}")
+        ollama_ws_status = (
+            "✅ 設定済み" if key_status.get("ollama_web_search") else "❌ 未設定"
+        )
+        st.caption(
+            f"Gemini: {gemini_status} / OpenAI: {openai_status} / xAI: {xai_status} / Ollama WebSearch: {ollama_ws_status}"
+        )
 
         col_k1, col_k2, col_k3, col_k4 = st.columns(4)
         with col_k1:
-            gemini_key = st.text_input("Google Gemini API Key", type="password", placeholder="AIza...", key="provider_gemini_key")
+            gemini_key = st.text_input(
+                "Google Gemini API Key",
+                type="password",
+                placeholder="AIza...",
+                key="provider_gemini_key",
+            )
             if st.button("💾 保存", key="save_gemini_key"):
                 if gemini_key:
                     try:
-                        resp = requests.post(f"{api_url}/settings/api_key", json={"api_key": gemini_key, "key_type": "gemini"}, timeout=5)
+                        resp = requests.post(
+                            f"{api_url}/settings/api_key",
+                            json={"api_key": gemini_key, "key_type": "gemini"},
+                            timeout=5,
+                        )
                         if resp.ok:
                             st.success("✅ Gemini APIキーを保存しました。")
                             st.rerun()
@@ -722,11 +856,20 @@ def render_settings_screen():
                 else:
                     st.warning("キーが入力されていません。")
         with col_k2:
-            openai_key = st.text_input("OpenAI API Key", type="password", placeholder="sk-...", key="provider_openai_key")
+            openai_key = st.text_input(
+                "OpenAI API Key",
+                type="password",
+                placeholder="sk-...",
+                key="provider_openai_key",
+            )
             if st.button("💾 保存", key="save_openai_key"):
                 if openai_key:
                     try:
-                        resp = requests.post(f"{api_url}/settings/api_key", json={"api_key": openai_key, "key_type": "openai"}, timeout=5)
+                        resp = requests.post(
+                            f"{api_url}/settings/api_key",
+                            json={"api_key": openai_key, "key_type": "openai"},
+                            timeout=5,
+                        )
                         if resp.ok:
                             st.success("✅ OpenAI APIキーを保存しました。")
                             st.rerun()
@@ -737,11 +880,20 @@ def render_settings_screen():
                 else:
                     st.warning("キーが入力されていません。")
         with col_k3:
-            xai_key = st.text_input("xAI (Grok) API Key", type="password", placeholder="xai-...", key="provider_xai_key")
+            xai_key = st.text_input(
+                "xAI (Grok) API Key",
+                type="password",
+                placeholder="xai-...",
+                key="provider_xai_key",
+            )
             if st.button("💾 保存", key="save_xai_key"):
                 if xai_key:
                     try:
-                        resp = requests.post(f"{api_url}/settings/api_key", json={"api_key": xai_key, "key_type": "xai"}, timeout=5)
+                        resp = requests.post(
+                            f"{api_url}/settings/api_key",
+                            json={"api_key": xai_key, "key_type": "xai"},
+                            timeout=5,
+                        )
                         if resp.ok:
                             st.success("✅ xAI APIキーを保存しました。")
                             st.rerun()
@@ -752,11 +904,23 @@ def render_settings_screen():
                 else:
                     st.warning("キーが入力されていません。")
         with col_k4:
-            ollama_ws_key = st.text_input("Ollama WebSearch API Key", type="password", placeholder="ollama-...", key="provider_ollama_ws_key")
+            ollama_ws_key = st.text_input(
+                "Ollama WebSearch API Key",
+                type="password",
+                placeholder="ollama-...",
+                key="provider_ollama_ws_key",
+            )
             if st.button("💾 保存", key="save_ollama_ws_key"):
                 if ollama_ws_key:
                     try:
-                        resp = requests.post(f"{api_url}/settings/api_key", json={"api_key": ollama_ws_key, "key_type": "ollama_web_search"}, timeout=5)
+                        resp = requests.post(
+                            f"{api_url}/settings/api_key",
+                            json={
+                                "api_key": ollama_ws_key,
+                                "key_type": "ollama_web_search",
+                            },
+                            timeout=5,
+                        )
                         if resp.ok:
                             st.success("✅ Ollama WebSearch APIキーを保存しました。")
                             st.rerun()
@@ -775,7 +939,11 @@ def render_settings_screen():
         # 現在の設定を取得
         try:
             cfg_resp = requests.get(f"{api_url}/config", timeout=5)
-            provider_cfg = cfg_resp.json() if cfg_resp.ok else {"AI_CONFIG": {}, "SYSTEM_CONFIG": {}}
+            provider_cfg = (
+                cfg_resp.json()
+                if cfg_resp.ok
+                else {"AI_CONFIG": {}, "SYSTEM_CONFIG": {}}
+            )
         except Exception:
             provider_cfg = {"AI_CONFIG": {}, "SYSTEM_CONFIG": {}}
 
@@ -787,7 +955,11 @@ def render_settings_screen():
         )
         if st.button("🔍 接続テスト", key="test_ollama"):
             try:
-                resp = requests.post(f"{api_url}/settings/ollama_test", json={"url": ollama_url}, timeout=10)
+                resp = requests.post(
+                    f"{api_url}/settings/ollama_test",
+                    json={"url": ollama_url},
+                    timeout=10,
+                )
                 if resp.ok:
                     result = resp.json()
                     if result.get("status") == "ok":
@@ -804,8 +976,10 @@ def render_settings_screen():
 
         # --- セクション3: 各ロールのモデル選択 ---
         st.subheader("🧠 モデル割り当て")
-        st.caption("💡 候補は backend (`/settings/model_candidates`) から取得します。"
-                   "Connection を追加すると Groq / Together などのモデルも自動で並びます。")
+        st.caption(
+            "💡 候補は backend (`/settings/model_candidates`) から取得します。"
+            "Connection を追加すると Groq / Together などのモデルも自動で並びます。"
+        )
 
         ROLE_LABELS = {
             "chat": "Chat (メイン応答)",
@@ -829,27 +1003,54 @@ def render_settings_screen():
 
         st.divider()
         st.subheader("🌡️ Temperature 設定")
-        st.caption("バックグラウンドロールの生成パラメータを設定します（Chat の Temperature はインスタンス設定から変更できます）。")
-        _TEMP_ROLES = {"summary": "Summary (要約)", "gatekeeper": "Gatekeeper (Tier判定)", "knowledge": "Knowledge (知識蒸留)"}
+        st.caption(
+            "バックグラウンドロールの生成パラメータを設定します（Chat の Temperature はインスタンス設定から変更できます）。"
+        )
+        _TEMP_ROLES = {
+            "summary": "Summary (要約)",
+            "gatekeeper": "Gatekeeper (Tier判定)",
+            "knowledge": "Knowledge (知識蒸留)",
+        }
         _TEMP_DEFAULTS = {"summary": 0.3, "gatekeeper": 0.0, "knowledge": 0.7}
         for _t_role, _t_label in _TEMP_ROLES.items():
             _mc = provider_ai_cfg.get(_t_role, {})
-            _cur_temp = float(_mc.get("generation_config", {}).get("temperature", _TEMP_DEFAULTS[_t_role]))
-            _new_temp = st.slider(_t_label, 0.0, 2.0, value=_cur_temp, step=0.1, key=f"provider_temp_{_t_role}")
-            provider_ai_cfg.setdefault(_t_role, {}).setdefault("generation_config", {})["temperature"] = _new_temp
+            _cur_temp = float(
+                _mc.get("generation_config", {}).get(
+                    "temperature", _TEMP_DEFAULTS[_t_role]
+                )
+            )
+            _new_temp = st.slider(
+                _t_label,
+                0.0,
+                2.0,
+                value=_cur_temp,
+                step=0.1,
+                key=f"provider_temp_{_t_role}",
+            )
+            provider_ai_cfg.setdefault(_t_role, {}).setdefault("generation_config", {})[
+                "temperature"
+            ] = _new_temp
 
         if st.button("💾 モデル設定を保存", type="primary", key="save_provider_models"):
             # 空白ガード
-            empty_roles = [r for r, m in model_selections.items() if not m or not m.strip()]
+            empty_roles = [
+                r for r, m in model_selections.items() if not m or not m.strip()
+            ]
             if empty_roles:
-                st.error(f"モデル名が未入力のロールがあります: {', '.join(empty_roles)}")
+                st.error(
+                    f"モデル名が未入力のロールがあります: {', '.join(empty_roles)}"
+                )
             else:
                 # provider_cfg のAI_CONFIGを更新
                 for role, model_name in model_selections.items():
-                    provider_ai_cfg.setdefault(role, {})["model_name"] = model_name.strip()
+                    provider_ai_cfg.setdefault(role, {})[
+                        "model_name"
+                    ] = model_name.strip()
                 provider_cfg["AI_CONFIG"] = provider_ai_cfg
                 try:
-                    save_resp = requests.post(f"{api_url}/config", json=provider_cfg, timeout=5)
+                    save_resp = requests.post(
+                        f"{api_url}/config", json=provider_cfg, timeout=5
+                    )
                     if save_resp.ok:
                         st.success("モデル設定を保存しました。")
                     else:
@@ -869,7 +1070,9 @@ def render_settings_screen():
         with st.expander("既存 Connection 一覧", expanded=True):
             try:
                 _conn_resp = requests.get(f"{api_url}/settings/connections", timeout=5)
-                _conns = _conn_resp.json().get("connections", []) if _conn_resp.ok else []
+                _conns = (
+                    _conn_resp.json().get("connections", []) if _conn_resp.ok else []
+                )
             except Exception as e:
                 _conns = []
                 st.error(f"Connection 取得失敗: {e}")
@@ -886,7 +1089,9 @@ def render_settings_screen():
                     badge = "🔒 built-in" if _builtin else "✏️ user"
                     st.markdown(f"{_icon} **{_cid}** — {_label}  ·  {badge}")
                     if _c.get("base_url"):
-                        st.caption(f"`{_c['base_url']}`  protocol=`{_c.get('protocol')}`")
+                        st.caption(
+                            f"`{_c['base_url']}`  protocol=`{_c.get('protocol')}`"
+                        )
                 with cols[1]:
                     if _key_env:
                         if _key_set:
@@ -896,7 +1101,9 @@ def render_settings_screen():
                     else:
                         st.caption("🔑 auth 不要")
                 with cols[2]:
-                    st.caption(f"埋め込み: {'対応' if _c.get('embeddings_supported') else '非対応'}")
+                    st.caption(
+                        f"埋め込み: {'対応' if _c.get('embeddings_supported') else '非対応'}"
+                    )
                 with cols[3]:
                     if st.button("📡 疎通", key=f"test_conn_{_cid}"):
                         try:
@@ -907,7 +1114,9 @@ def render_settings_screen():
                             )
                             res = tr.json() if tr.ok else {}
                             if res.get("status") == "ok":
-                                st.success(f"✅ OK ({len(res.get('models') or [])} モデル)")
+                                st.success(
+                                    f"✅ OK ({len(res.get('models') or [])} モデル)"
+                                )
                             else:
                                 st.error(f"❌ {res.get('message', tr.text)}")
                         except Exception as e:
@@ -917,7 +1126,8 @@ def render_settings_screen():
                         if st.button("🗑️", key=f"del_conn_{_cid}", help="削除"):
                             try:
                                 dr = requests.delete(
-                                    f"{api_url}/settings/connections/{_cid}", timeout=5,
+                                    f"{api_url}/settings/connections/{_cid}",
+                                    timeout=5,
                                 )
                                 if dr.ok:
                                     st.success(f"{_cid} を削除しました")
@@ -929,12 +1139,28 @@ def render_settings_screen():
                                 st.error(str(e))
 
         with st.expander("➕ 新規 Connection を追加 (OpenAI 互換)"):
-            new_id = st.text_input("ID (英数字+ハイフン)", key="new_conn_id", placeholder="例: groq")
-            new_label = st.text_input("表示名 (任意)", key="new_conn_label", placeholder="例: Groq")
-            new_base_url = st.text_input("Base URL", key="new_conn_base_url", placeholder="https://api.groq.com/openai/v1")
-            new_api_key_env = st.text_input("API キー env 変数名 (任意)", key="new_conn_api_env", placeholder="GROQ_API_KEY")
-            new_emb = st.checkbox("Embeddings 対応", value=False, key="new_conn_emb",
-                                  help="このプロバイダーが /embeddings をサポートする場合のみ ON")
+            new_id = st.text_input(
+                "ID (英数字+ハイフン)", key="new_conn_id", placeholder="例: groq"
+            )
+            new_label = st.text_input(
+                "表示名 (任意)", key="new_conn_label", placeholder="例: Groq"
+            )
+            new_base_url = st.text_input(
+                "Base URL",
+                key="new_conn_base_url",
+                placeholder="https://api.groq.com/openai/v1",
+            )
+            new_api_key_env = st.text_input(
+                "API キー env 変数名 (任意)",
+                key="new_conn_api_env",
+                placeholder="GROQ_API_KEY",
+            )
+            new_emb = st.checkbox(
+                "Embeddings 対応",
+                value=False,
+                key="new_conn_emb",
+                help="このプロバイダーが /embeddings をサポートする場合のみ ON",
+            )
             if st.button("💾 Connection を追加", key="add_conn"):
                 payload = {
                     "id": new_id.strip(),
@@ -949,7 +1175,9 @@ def render_settings_screen():
                 else:
                     try:
                         ar = requests.post(
-                            f"{api_url}/settings/connections", json=payload, timeout=5,
+                            f"{api_url}/settings/connections",
+                            json=payload,
+                            timeout=5,
                         )
                         if ar.ok:
                             st.success(f"{payload['id']} を追加しました。")
@@ -964,7 +1192,9 @@ def render_settings_screen():
 
         # --- セクション4: Embedding再生成 ---
         st.subheader("🔄 Embeddingの再生成")
-        st.caption("Embeddingモデルを変更した場合、既存の記憶データベースのベクトルを再生成する必要があります。")
+        st.caption(
+            "Embeddingモデルを変更した場合、既存の記憶データベースのベクトルを再生成する必要があります。"
+        )
 
         reindex_target = st.selectbox(
             "対象インスタンス",
@@ -980,7 +1210,9 @@ def render_settings_screen():
                     timeout=10,
                 )
                 if resp.ok:
-                    st.success(f"Embedding再生成を開始しました。(対象: {reindex_target})")
+                    st.success(
+                        f"Embedding再生成を開始しました。(対象: {reindex_target})"
+                    )
                 else:
                     st.error(f"エラー: {resp.text}")
             except Exception as e:
@@ -992,20 +1224,29 @@ def render_settings_screen():
 # ==========================================
 def render_sleeptime_screen():
     import requests
-    instance_name = st.session_state.sleeptime_instance or st.session_state.current_instance
+
+    instance_name = (
+        st.session_state.sleeptime_instance or st.session_state.current_instance
+    )
     api_url = st.session_state.api_base_url
 
     col1, col2 = st.columns([1, 8])
     with col1:
-        if st.button("＜ 戻る", key="hk_back"): navigate_to("chat")
+        if st.button("＜ 戻る", key="hk_back"):
+            navigate_to("chat")
     with col2:
-        st.markdown(f'<h1 class="app-title">🧹 記憶の整理: {instance_name}</h1>', unsafe_allow_html=True)
+        st.markdown(
+            f'<h1 class="app-title">🧹 記憶の整理: {instance_name}</h1>',
+            unsafe_allow_html=True,
+        )
     st.divider()
 
     # 実行中かどうかをまずサーバーに確認
     is_running = st.session_state.get("hk_running", False)
     try:
-        status_resp = requests.get(f"{api_url}/sleeptime/status/{instance_name}", timeout=5)
+        status_resp = requests.get(
+            f"{api_url}/sleeptime/status/{instance_name}", timeout=5
+        )
         if status_resp.ok:
             server_status = status_resp.json()
             if server_status.get("state") == "running":
@@ -1021,7 +1262,9 @@ def render_sleeptime_screen():
         progress_bar = st.progress(0)
         for _ in range(600):  # 最大10分ポーリング
             try:
-                r = requests.get(f"{api_url}/sleeptime/status/{instance_name}", timeout=5)
+                r = requests.get(
+                    f"{api_url}/sleeptime/status/{instance_name}", timeout=5
+                )
                 status = r.json() if r.ok else {}
             except Exception:
                 status = {}
@@ -1043,7 +1286,9 @@ def render_sleeptime_screen():
         # --- 待機中UI ---
         # 推定情報の取得
         try:
-            resp = requests.get(f"{api_url}/sleeptime/estimate/{instance_name}", timeout=5)
+            resp = requests.get(
+                f"{api_url}/sleeptime/estimate/{instance_name}", timeout=5
+            )
             est = resp.json() if resp.ok else {}
         except Exception:
             est = {}
@@ -1058,22 +1303,34 @@ def render_sleeptime_screen():
             if isinstance(est_seconds, (int, float)) and est_seconds > 0:
                 minutes = est_seconds // 60
                 secs = est_seconds % 60
-                time_str = f"{int(minutes)}分 {int(secs)}秒" if minutes > 0 else f"約 {int(secs)} 秒"
+                time_str = (
+                    f"{int(minutes)}分 {int(secs)}秒"
+                    if minutes > 0
+                    else f"約 {int(secs)} 秒"
+                )
             else:
                 time_str = f"約 {est_seconds} 秒"
             st.metric("予測所要時間", time_str)
 
         st.divider()
 
-        st.caption("短期記憶のログを整理し、知識カードとして長期記憶データベースに保存します。")
-        st.info("💡 実行中はチャットを控えてください。記憶データへの同時アクセスで不整合が起きる可能性があります。")
+        st.caption(
+            "短期記憶のログを整理し、知識カードとして長期記憶データベースに保存します。"
+        )
+        st.info(
+            "💡 実行中はチャットを控えてください。記憶データへの同時アクセスで不整合が起きる可能性があります。"
+        )
 
         if group_count == 0:
             st.success("整理する記憶はありません。すべて最新の状態です。")
         else:
             if st.button("▶ 整理を開始する", type="primary", use_container_width=True):
                 try:
-                    r = requests.post(f"{api_url}/sleeptime/run", json={"instance_name": instance_name}, timeout=5)
+                    r = requests.post(
+                        f"{api_url}/sleeptime/run",
+                        json={"instance_name": instance_name},
+                        timeout=5,
+                    )
                     if r.ok:
                         st.session_state["hk_running"] = True
                         st.rerun()
@@ -1081,6 +1338,7 @@ def render_sleeptime_screen():
                         st.error(f"エラー: {r.text}")
                 except Exception as e:
                     st.error(f"サーバー接続エラー: {e}")
+
 
 # ==========================================
 # 🗋 DBブラウザ (Database Browser Screen)
@@ -1090,40 +1348,72 @@ def render_database_browser_screen():
 
     col1, col2 = st.columns([1, 8])
     with col1:
-        if st.button("＜ 戻る", key="db_back"): navigate_to("home")
+        if st.button("＜ 戻る", key="db_back"):
+            navigate_to("home")
     with col2:
-        st.markdown('<h1 class="app-title">🗋 データベースブラウザ</h1>', unsafe_allow_html=True)
+        st.markdown(
+            '<h1 class="app-title">🗋 データベースブラウザ</h1>', unsafe_allow_html=True
+        )
     st.divider()
 
     # インスタンス選択 & フィルター
     col_f1, col_f2, col_f3 = st.columns([2, 2, 3])
     with col_f1:
-        sel_inst = st.selectbox("対象AI", available_instances,
-            index=available_instances.index(st.session_state.db_browser_instance)
-            if st.session_state.db_browser_instance in available_instances else 0,
-            key="db_inst_sel")
+        sel_inst = st.selectbox(
+            "対象AI",
+            available_instances,
+            index=(
+                available_instances.index(st.session_state.db_browser_instance)
+                if st.session_state.db_browser_instance in available_instances
+                else 0
+            ),
+            key="db_inst_sel",
+        )
         st.session_state.db_browser_instance = sel_inst
-    CATEGORIES = ["", "Unclassified", "UserPreference", "LifeEvent", "Task", "Thought", "Project"]
+    CATEGORIES = [
+        "",
+        "Unclassified",
+        "UserPreference",
+        "LifeEvent",
+        "Task",
+        "Thought",
+        "Project",
+    ]
     with col_f2:
-        sel_cat = st.selectbox("カテゴリ", CATEGORIES,
-            format_func=lambda c: "すべて" if c == "" else c, key="db_cat_sel")
+        sel_cat = st.selectbox(
+            "カテゴリ",
+            CATEGORIES,
+            format_func=lambda c: "すべて" if c == "" else c,
+            key="db_cat_sel",
+        )
     with col_f3:
-        search_q = st.text_input("🔍 検索", placeholder="キーワードを入力...", key="db_search")
+        search_q = st.text_input(
+            "🔍 検索", placeholder="キーワードを入力...", key="db_search"
+        )
 
     # API経由でカード一覧を取得
     import requests
+
     api_url = st.session_state.api_base_url
-    
+
     try:
         req_params = {"limit": 100, "offset": 0}
-        if sel_cat: req_params["category"] = sel_cat
-        if search_q: req_params["search"] = search_q
-        
-        resp = requests.get(f"{api_url}/database/cards/{sel_inst}", params=req_params, timeout=10)
+        if sel_cat:
+            req_params["category"] = sel_cat
+        if search_q:
+            req_params["search"] = search_q
+
+        resp = requests.get(
+            f"{api_url}/database/cards/{sel_inst}", params=req_params, timeout=10
+        )
         if resp.ok:
             rows = resp.json()
             # 取得した辞書のリストをソート
-            rows = sorted(rows, key=lambda x: (x.get('is_pinned') or 0, x.get('ai_importance') or 0), reverse=True)
+            rows = sorted(
+                rows,
+                key=lambda x: (x.get("is_pinned") or 0, x.get("ai_importance") or 0),
+                reverse=True,
+            )
         elif resp.status_code == 404:
             st.info("データベースがまだ存在しません。")
             rows = []
@@ -1147,32 +1437,42 @@ def render_database_browser_screen():
         with st.container(border=True):
             c1, c2 = st.columns([8, 1])
             with c1:
-                st.markdown(f"**{pinned_icon} {title}** `{cat}` &nbsp; ⭐{ai_imp} 💓{hu_imp}", unsafe_allow_html=True)
-                st.caption((episode or "")[:120] + ("..." if episode and len(episode) > 120 else ""))
+                st.markdown(
+                    f"**{pinned_icon} {title}** `{cat}` &nbsp; ⭐{ai_imp} 💓{hu_imp}",
+                    unsafe_allow_html=True,
+                )
+                st.caption(
+                    (episode or "")[:120]
+                    + ("..." if episode and len(episode) > 120 else "")
+                )
             with c2:
                 if st.button("✏️", key=f"edit_card_{cid}"):
                     st.session_state.card_edit_id = cid
                     st.session_state.db_browser_instance = sel_inst
                     navigate_to("card_edit")
 
+
 # ==========================================
 # ✏️ カード編集画面 (Card Edit Screen)
 # ==========================================
 def render_card_edit_screen():
     from butly_core.core.database import ButlyDatabase
+
     card_id = st.session_state.card_edit_id
     inst = st.session_state.db_browser_instance or st.session_state.current_instance
 
     col1, col2 = st.columns([1, 8])
     with col1:
-        if st.button("＜ 戻る", key="ce_back"): navigate_to("database_browser")
+        if st.button("＜ 戻る", key="ce_back"):
+            navigate_to("database_browser")
     with col2:
         st.markdown(f'<h1 class="app-title">✏️ カード編集</h1>', unsafe_allow_html=True)
     st.divider()
 
     import requests
+
     api_url = st.session_state.api_base_url
-    
+
     try:
         resp = requests.get(f"{api_url}/database/cards/{inst}/{card_id}", timeout=5)
         if resp.ok:
@@ -1184,17 +1484,31 @@ def render_card_edit_screen():
         st.error(f"API接続エラー: {e}")
         return
 
-    CATEGORIES = ["Unclassified", "UserPreference", "LifeEvent", "Task", "Thought", "Project"]
+    CATEGORIES = [
+        "Unclassified",
+        "UserPreference",
+        "LifeEvent",
+        "Task",
+        "Thought",
+        "Project",
+    ]
     cat_val = card_info.get("category", "")
     title = st.text_input("タイトル", value=card_info.get("title", ""))
-    cat = st.selectbox("カテゴリ", CATEGORIES,
-        index=CATEGORIES.index(cat_val) if cat_val in CATEGORIES else 0)
-    episode = st.text_area("エピソード", value=card_info.get("episode") or "", height=200)
+    cat = st.selectbox(
+        "カテゴリ",
+        CATEGORIES,
+        index=CATEGORIES.index(cat_val) if cat_val in CATEGORIES else 0,
+    )
+    episode = st.text_area(
+        "エピソード", value=card_info.get("episode") or "", height=200
+    )
     col_i1, col_i2 = st.columns(2)
     with col_i1:
         ai_imp = st.slider("AI重要度", 0, 10, int(card_info.get("ai_importance") or 5))
     with col_i2:
-        hu_imp = st.slider("人間重要度", 0, 10, int(card_info.get("humanity_importance") or 5))
+        hu_imp = st.slider(
+            "人間重要度", 0, 10, int(card_info.get("humanity_importance") or 5)
+        )
     pinned = st.checkbox("📌 ピン留め", value=bool(card_info.get("is_pinned")))
 
     col_a1, col_a2 = st.columns([6, 2])
@@ -1206,18 +1520,26 @@ def render_card_edit_screen():
                     "category": cat,
                     "episode": episode,
                     "ai_importance": ai_imp,
-                    "humanity_importance": hu_imp
+                    "humanity_importance": hu_imp,
                 }
-                
+
                 # Check for pin update
                 is_pinned_prev = bool(card_info.get("is_pinned"))
                 if pinned != is_pinned_prev:
-                    pin_resp = requests.post(f"{api_url}/database/cards/{inst}/{card_id}/pin", json={"is_pinned": pinned}, timeout=5)
+                    pin_resp = requests.post(
+                        f"{api_url}/database/cards/{inst}/{card_id}/pin",
+                        json={"is_pinned": pinned},
+                        timeout=5,
+                    )
                     if not pin_resp.ok:
-                         st.error(f"ピン留め更新エラー: {pin_resp.text}")
-                
-                upd_resp = requests.put(f"{api_url}/database/cards/{inst}/{card_id}", json=update_data, timeout=5)
-                
+                        st.error(f"ピン留め更新エラー: {pin_resp.text}")
+
+                upd_resp = requests.put(
+                    f"{api_url}/database/cards/{inst}/{card_id}",
+                    json=update_data,
+                    timeout=5,
+                )
+
                 if upd_resp.ok:
                     st.success("保存しました。")
                     time.sleep(1)
@@ -1231,7 +1553,9 @@ def render_card_edit_screen():
             st.warning("このカードを削除します。この操作は取り消せません。")
             if st.button("完全に削除", type="primary"):
                 try:
-                    del_resp = requests.delete(f"{api_url}/database/cards/{inst}/{card_id}", timeout=5)
+                    del_resp = requests.delete(
+                        f"{api_url}/database/cards/{inst}/{card_id}", timeout=5
+                    )
                     if del_resp.ok:
                         st.success("削除しました。")
                         time.sleep(1)
@@ -1241,47 +1565,72 @@ def render_card_edit_screen():
                 except Exception as e:
                     st.error(f"削除エラー: {e}")
 
+
 # ==========================================
 # 🛠 インスタンス設定画面 (Instance Settings Screen)
 # ==========================================
 def render_instance_settings_screen():
     instance_name = st.session_state.current_instance
-    
+
     col1, col2 = st.columns([1, 8])
     with col1:
-        if st.button("＜ 戻る", key="btn_back_inst_settings"): navigate_to("chat")
+        if st.button("＜ 戻る", key="btn_back_inst_settings"):
+            navigate_to("chat")
     with col2:
-        st.markdown(f'<h1 class="app-title">設定: {instance_name}</h1>', unsafe_allow_html=True)
-    
+        st.markdown(
+            f'<h1 class="app-title">設定: {instance_name}</h1>', unsafe_allow_html=True
+        )
+
     st.divider()
 
     import requests
+
     api_url = st.session_state.api_base_url
-    
+
     # Load Configs
     try:
-        cfg_resp = requests.get(f"{api_url}/instances/{instance_name}/config", timeout=5)
+        cfg_resp = requests.get(
+            f"{api_url}/instances/{instance_name}/config", timeout=5
+        )
         config = cfg_resp.json() if cfg_resp.ok else {}
-        prm_resp = requests.get(f"{api_url}/instances/{instance_name}/prompts", timeout=5)
-        prompts = prm_resp.json() if prm_resp.ok else {"system_instruction": "", "key_memory": ""}
+        prm_resp = requests.get(
+            f"{api_url}/instances/{instance_name}/prompts", timeout=5
+        )
+        prompts = (
+            prm_resp.json()
+            if prm_resp.ok
+            else {"system_instruction": "", "key_memory": ""}
+        )
     except Exception as e:
         st.error(f"API接続エラー: {e}")
         config = {}
         prompts = {"system_instruction": "", "key_memory": ""}
-    
+
     # Initialize defaults if empty
     if "brain" not in config:
         config["brain"] = {"readable_instances": ["self"]}
     if "chat" not in config:
         config["chat"] = {
             "model_name": "gemini-3.5-flash",
-            "generation_config": {"temperature": 1.0, "top_p": 0.95, "top_k": 40, "max_output_tokens": 8192}
+            "generation_config": {
+                "temperature": 1.0,
+                "top_p": 0.95,
+                "top_k": 40,
+                "max_output_tokens": 8192,
+            },
         }
-    config["chat"].setdefault("generation_config", {"temperature": 1.0, "max_output_tokens": 8192})
+    config["chat"].setdefault(
+        "generation_config", {"temperature": 1.0, "max_output_tokens": 8192}
+    )
     if "memory" not in config:
-        config["memory"] = {"max_raw_tokens": 4096, "raw_injection_format": "plaintext", "short_term_limit": 6}
+        config["memory"] = {
+            "max_raw_tokens": 4096,
+            "raw_injection_format": "plaintext",
+            "short_term_limit": 6,
+        }
     # 旧 agent セクション → agent_profile / user_profile 変換（UI 表示用に in-memory マイグレーション）
     from butly_core.core.memory import _migrate_legacy_agent
+
     config = _migrate_legacy_agent(config)
     if "agent_profile" not in config:
         config["agent_profile"] = {}
@@ -1314,13 +1663,25 @@ def render_instance_settings_screen():
         _ap = config.get("agent_profile", {})
         _ap_col1, _ap_col2 = st.columns(2)
         with _ap_col1:
-            pf_ai_name = st.text_input("AIの名前", value=_ap.get("ai_name", ""), key="pf_ai_name")
-            pf_ai_gender = st.text_input("AIの性別表現（任意）", value=_ap.get("ai_gender", ""), key="pf_ai_gender",
-                                          help="空欄なら SI に出力されません。")
+            pf_ai_name = st.text_input(
+                "AIの名前", value=_ap.get("ai_name", ""), key="pf_ai_name"
+            )
+            pf_ai_gender = st.text_input(
+                "AIの性別表現（任意）",
+                value=_ap.get("ai_gender", ""),
+                key="pf_ai_gender",
+                help="空欄なら SI に出力されません。",
+            )
         with _ap_col2:
             _locale_opts = ["ja", "en"]
-            _locale_idx = _locale_opts.index(_ap.get("locale", "ja")) if _ap.get("locale", "ja") in _locale_opts else 0
-            pf_locale = st.selectbox("ロケール", options=_locale_opts, index=_locale_idx, key="pf_locale")
+            _locale_idx = (
+                _locale_opts.index(_ap.get("locale", "ja"))
+                if _ap.get("locale", "ja") in _locale_opts
+                else 0
+            )
+            pf_locale = st.selectbox(
+                "ロケール", options=_locale_opts, index=_locale_idx, key="pf_locale"
+            )
 
         st.divider()
 
@@ -1330,48 +1691,100 @@ def render_instance_settings_screen():
         _up = config.get("user_profile", {})
         _up_col1, _up_col2 = st.columns(2)
         with _up_col1:
-            pf_user_name = st.text_input("あなたの名前", value=_up.get("user_name", ""), key="pf_user_name")
-            pf_preferred_call = st.text_input("呼ばれたい名前", value=_up.get("preferred_call", ""), key="pf_preferred_call",
-                                               help="空欄なら「あなたの名前」を使います。")
-            pf_location = st.text_input("居住地（任意）", value=_up.get("location", ""), key="pf_location")
+            pf_user_name = st.text_input(
+                "あなたの名前", value=_up.get("user_name", ""), key="pf_user_name"
+            )
+            pf_preferred_call = st.text_input(
+                "呼ばれたい名前",
+                value=_up.get("preferred_call", ""),
+                key="pf_preferred_call",
+                help="空欄なら「あなたの名前」を使います。",
+            )
+            pf_location = st.text_input(
+                "居住地（任意）", value=_up.get("location", ""), key="pf_location"
+            )
         with _up_col2:
             _gender_opts_pf = ["", "男性", "女性", "その他"]
             _current_gender = _up.get("gender", "")
-            _gender_idx = _gender_opts_pf.index(_current_gender) if _current_gender in _gender_opts_pf else 0
-            pf_gender = st.selectbox("性別", options=_gender_opts_pf, index=_gender_idx, key="pf_gender")
+            _gender_idx = (
+                _gender_opts_pf.index(_current_gender)
+                if _current_gender in _gender_opts_pf
+                else 0
+            )
+            pf_gender = st.selectbox(
+                "性別", options=_gender_opts_pf, index=_gender_idx, key="pf_gender"
+            )
             _current_bd = _up.get("birthday", "")
             try:
                 from datetime import date as _date
-                _bd_val = _date.fromisoformat(_current_bd.replace("/", "-")) if _current_bd else None
+
+                _bd_val = (
+                    _date.fromisoformat(_current_bd.replace("/", "-"))
+                    if _current_bd
+                    else None
+                )
             except Exception:
                 _bd_val = None
-            pf_birthday = st.date_input("生年月日", value=_bd_val, key="pf_birthday", format="YYYY/MM/DD")
+            pf_birthday = st.date_input(
+                "生年月日", value=_bd_val, key="pf_birthday", format="YYYY/MM/DD"
+            )
 
         st.divider()
 
         # State elements
-        sys_inst = st.text_area("System Instruction (性格設定)", value=prompts.get("system_instruction", ""), height=150)
-        key_mem = st.text_area("Key Memory (根幹記憶 — プロファイル以外の内容)", value=prompts.get("key_memory", ""), height=150,
-                                help="AIの名前・ユーザー名などのプロファイル情報は上の「エージェントプロファイル」セクションで管理されます。")
+        sys_inst = st.text_area(
+            "System Instruction (性格設定)",
+            value=prompts.get("system_instruction", ""),
+            height=150,
+        )
+        key_mem = st.text_area(
+            "Key Memory (根幹記憶 — プロファイル以外の内容)",
+            value=prompts.get("key_memory", ""),
+            height=150,
+            help="AIの名前・ユーザー名などのプロファイル情報は上の「エージェントプロファイル」セクションで管理されます。",
+        )
 
         st.divider()
         st.subheader("🤖 生成モデル設定")
-        st.caption("各ロールのモデルを個別に設定できます。「グローバル設定を使う」をONにすると user_config.json / config.py のデフォルト値が使われます。")
+        st.caption(
+            "各ロールのモデルを個別に設定できます。「グローバル設定を使う」をONにすると user_config.json / config.py のデフォルト値が使われます。"
+        )
 
         from butly_core.config import AI_CONFIG as _global_ai
 
         # ---- Chat モデル（メイン応答） ----
         with st.expander("💬 Chat（メイン応答）", expanded=True):
             _chat_gen = config["chat"].get("generation_config", {})
-            model_name = _model_selector("モデル名", config["chat"].get("model_name", "gemini-3.5-flash"), _chat_candidates, "inst_chat_model")
-            temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_chat_gen.get("temperature", 1.0)), key="chat_temp")
-            max_tokens = st.number_input("最大出力トークン数", min_value=1, value=int(_chat_gen.get("max_output_tokens", 8192)), key="chat_max_tokens")
+            model_name = _model_selector(
+                "モデル名",
+                config["chat"].get("model_name", "gemini-3.5-flash"),
+                _chat_candidates,
+                "inst_chat_model",
+            )
+            temp = st.slider(
+                "Temperature",
+                min_value=0.0,
+                max_value=2.0,
+                step=0.1,
+                value=float(_chat_gen.get("temperature", 1.0)),
+                key="chat_temp",
+            )
+            max_tokens = st.number_input(
+                "最大出力トークン数",
+                min_value=1,
+                value=int(_chat_gen.get("max_output_tokens", 8192)),
+                key="chat_max_tokens",
+            )
 
         # ---- Gatekeeper モデル（Tier分類） ----
         with st.expander("🛡 Gatekeeper（Tier分類）"):
             if "gatekeeper" not in config:
                 config["gatekeeper"] = {}
-            _gk_use_global = st.toggle("グローバル設定を使う", value=("model_name" not in config.get("gatekeeper", {})), key="gk_global")
+            _gk_use_global = st.toggle(
+                "グローバル設定を使う",
+                value=("model_name" not in config.get("gatekeeper", {})),
+                key="gk_global",
+            )
             gk_enabled = st.toggle(
                 "Gatekeeper (Tier自動判定)",
                 value=config.get("gatekeeper", {}).get("enabled", True),
@@ -1384,12 +1797,33 @@ def render_instance_settings_screen():
                 gk_temp = None
             else:
                 _gk_cur = config.get("gatekeeper", {})
-                gk_model_name = _model_selector("モデル名", _gk_cur.get("model_name", _global_ai.get("gatekeeper", {}).get("model_name", "")), _gatekeeper_candidates, "inst_gk_model")
-                gk_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_gk_cur.get("generation_config", {}).get("temperature", 0.0)), key="gk_temp")
+                gk_model_name = _model_selector(
+                    "モデル名",
+                    _gk_cur.get(
+                        "model_name",
+                        _global_ai.get("gatekeeper", {}).get("model_name", ""),
+                    ),
+                    _gatekeeper_candidates,
+                    "inst_gk_model",
+                )
+                gk_temp = st.slider(
+                    "Temperature",
+                    min_value=0.0,
+                    max_value=2.0,
+                    step=0.1,
+                    value=float(
+                        _gk_cur.get("generation_config", {}).get("temperature", 0.0)
+                    ),
+                    key="gk_temp",
+                )
 
         # ---- Summary モデル（要約） ----
         with st.expander("📝 Summary（要約）"):
-            _sum_use_global = st.toggle("グローバル設定を使う", value=("summary" not in config), key="sum_global")
+            _sum_use_global = st.toggle(
+                "グローバル設定を使う",
+                value=("summary" not in config),
+                key="sum_global",
+            )
             if _sum_use_global:
                 _sum_default = _global_ai.get("summary", {})
                 st.info(f"グローバル設定: {_sum_default.get('model_name', '未設定')}")
@@ -1397,12 +1831,33 @@ def render_instance_settings_screen():
                 sum_temp = None
             else:
                 _sum_cur = config.get("summary", {})
-                sum_model_name = _model_selector("モデル名", _sum_cur.get("model_name", _global_ai.get("summary", {}).get("model_name", "")), _summary_candidates, "inst_sum_model")
-                sum_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_sum_cur.get("generation_config", {}).get("temperature", 0.3)), key="sum_temp")
+                sum_model_name = _model_selector(
+                    "モデル名",
+                    _sum_cur.get(
+                        "model_name",
+                        _global_ai.get("summary", {}).get("model_name", ""),
+                    ),
+                    _summary_candidates,
+                    "inst_sum_model",
+                )
+                sum_temp = st.slider(
+                    "Temperature",
+                    min_value=0.0,
+                    max_value=2.0,
+                    step=0.1,
+                    value=float(
+                        _sum_cur.get("generation_config", {}).get("temperature", 0.3)
+                    ),
+                    key="sum_temp",
+                )
 
         # ---- Knowledge モデル（知識抽出） ----
         with st.expander("🧠 Knowledge（知識抽出）"):
-            _know_use_global = st.toggle("グローバル設定を使う", value=("knowledge" not in config), key="know_global")
+            _know_use_global = st.toggle(
+                "グローバル設定を使う",
+                value=("knowledge" not in config),
+                key="know_global",
+            )
             if _know_use_global:
                 _know_default = _global_ai.get("knowledge", {})
                 st.info(f"グローバル設定: {_know_default.get('model_name', '未設定')}")
@@ -1410,20 +1865,51 @@ def render_instance_settings_screen():
                 know_temp = None
             else:
                 _know_cur = config.get("knowledge", {})
-                know_model_name = _model_selector("モデル名", _know_cur.get("model_name", _global_ai.get("knowledge", {}).get("model_name", "")), _knowledge_candidates, "inst_know_model")
-                know_temp = st.slider("Temperature", min_value=0.0, max_value=2.0, step=0.1, value=float(_know_cur.get("generation_config", {}).get("temperature", 0.7)), key="know_temp")
+                know_model_name = _model_selector(
+                    "モデル名",
+                    _know_cur.get(
+                        "model_name",
+                        _global_ai.get("knowledge", {}).get("model_name", ""),
+                    ),
+                    _knowledge_candidates,
+                    "inst_know_model",
+                )
+                know_temp = st.slider(
+                    "Temperature",
+                    min_value=0.0,
+                    max_value=2.0,
+                    step=0.1,
+                    value=float(
+                        _know_cur.get("generation_config", {}).get("temperature", 0.7)
+                    ),
+                    key="know_temp",
+                )
 
         # ---- Embedding モデル（ベクトル検索） ----
         with st.expander("🔢 Embedding（ベクトル検索）"):
-            st.caption("Ollama で embedding を使う場合は専用モデル (nomic-embed-text 等) が必要です。\n`ollama pull nomic-embed-text` を実行し `ollama/nomic-embed-text` を選択してください。")
-            _emb_use_global = st.toggle("グローバル設定を使う", value=("embedding" not in config), key="emb_global")
+            st.caption(
+                "Ollama で embedding を使う場合は専用モデル (nomic-embed-text 等) が必要です。\n`ollama pull nomic-embed-text` を実行し `ollama/nomic-embed-text` を選択してください。"
+            )
+            _emb_use_global = st.toggle(
+                "グローバル設定を使う",
+                value=("embedding" not in config),
+                key="emb_global",
+            )
             if _emb_use_global:
                 _emb_default = _global_ai.get("embedding", {})
                 st.info(f"グローバル設定: {_emb_default.get('model_name', '未設定')}")
                 emb_model_name = None
             else:
                 _emb_cur = config.get("embedding", {})
-                emb_model_name = _model_selector("モデル名", _emb_cur.get("model_name", _global_ai.get("embedding", {}).get("model_name", "")), _embedding_candidates, "inst_emb_model")
+                emb_model_name = _model_selector(
+                    "モデル名",
+                    _emb_cur.get(
+                        "model_name",
+                        _global_ai.get("embedding", {}).get("model_name", ""),
+                    ),
+                    _embedding_candidates,
+                    "inst_emb_model",
+                )
 
         st.divider()
         st.subheader("📚 記憶の参照範囲")
@@ -1431,14 +1917,14 @@ def render_instance_settings_screen():
         current_readable = config["brain"].get("readable_instances", ["self"])
         readable_selected = []
         for inst in available_instances:
-            is_self = (inst == instance_name)
+            is_self = inst == instance_name
             is_checked = is_self or inst in current_readable
             disabled = is_self
             if st.checkbox(
                 f"{'📌 ' if is_self else ''}{inst}",
                 value=is_checked,
                 disabled=disabled,
-                key=f"readable_{inst}"
+                key=f"readable_{inst}",
             ):
                 if is_self:
                     readable_selected.append("self")
@@ -1452,13 +1938,19 @@ def render_instance_settings_screen():
         # ---- 基本設定タブの保存・削除ボタン ----
         col_a1, col_a2, col_a3 = st.columns([6, 2, 2])
         with col_a2:
-            save_basic = st.button("設定を保存", type="primary", use_container_width=True, key="save_basic")
+            save_basic = st.button(
+                "設定を保存", type="primary", use_container_width=True, key="save_basic"
+            )
         with col_a3:
             with st.popover("🗑️ インスタンスを完全に削除"):
-                st.warning("この操作は取り消せません。インスタンスのフォルダ、設定、短期記憶・長期記憶がすべて完全に削除されます。")
+                st.warning(
+                    "この操作は取り消せません。インスタンスのフォルダ、設定、短期記憶・長期記憶がすべて完全に削除されます。"
+                )
                 if st.button("完全に削除する", type="primary", key="delete_basic"):
                     try:
-                        del_resp = requests.delete(f"{api_url}/instances/{instance_name}", timeout=5)
+                        del_resp = requests.delete(
+                            f"{api_url}/instances/{instance_name}", timeout=5
+                        )
                         if del_resp.ok:
                             msg = del_resp.json().get("message", "Deleted")
                             st.success(msg)
@@ -1496,19 +1988,61 @@ def render_instance_settings_screen():
             )
         col_r1, col_r2 = st.columns(2)
         with col_r1:
-            search_lim = st.number_input("検索リミット", min_value=1, max_value=10, value=config["brain"].get("search_limit", 3))
-            fallback_lim = st.slider("フォールバック取得数", min_value=10, max_value=100, step=10, value=config["brain"].get("fallback_fetch_limit", 50))
-            st_limit = st.number_input("短期記憶 保存数", min_value=1, max_value=12, step=1, value=config["memory"].get("short_term_limit", 6), help="保持するセッション数")
+            search_lim = st.number_input(
+                "検索リミット",
+                min_value=1,
+                max_value=10,
+                value=config["brain"].get("search_limit", 3),
+            )
+            fallback_lim = st.slider(
+                "フォールバック取得数",
+                min_value=10,
+                max_value=100,
+                step=10,
+                value=config["brain"].get("fallback_fetch_limit", 50),
+            )
+            st_limit = st.number_input(
+                "短期記憶 保存数",
+                min_value=1,
+                max_value=12,
+                step=1,
+                value=config["memory"].get("short_term_limit", 6),
+                help="保持するセッション数",
+            )
         with col_r2:
-            keyword_thr = st.number_input("記憶検索の感度", min_value=1, max_value=10, value=config["brain"].get("keyword_hit_threshold", 5), help="値が大きいほど直近の会話記憶が検索補完に加わりやすくなります。")
+            keyword_thr = st.number_input(
+                "記憶検索の感度",
+                min_value=1,
+                max_value=10,
+                value=config["brain"].get("keyword_hit_threshold", 5),
+                help="値が大きいほど直近の会話記憶が検索補完に加わりやすくなります。",
+            )
             use_summarized = st.toggle(
                 "中期記憶に要約版を使用",
                 value=config["memory"].get("use_summarized_mid_term", True),
                 help="ON: digest + relationship（トークン効率◎）/ OFF: RAWキャッシュ（詳細だがトークン消費大）",
             )
-            raw_tokens = st.slider("RAW記憶 トークン上限", min_value=1024, max_value=16384, step=1024, value=config["memory"].get("max_raw_tokens", 4096), disabled=use_summarized)
-            raw_format = st.selectbox("RAW注入形式", ["plaintext", "markdown", "compact"], index=["plaintext", "markdown", "compact"].index(config["memory"].get("raw_injection_format", "plaintext")), disabled=use_summarized)
-            if st.button("🔄 RAWキャッシュ再生成", help="現在のスライダー/セレクトの値で即座に再生成します", disabled=use_summarized):
+            raw_tokens = st.slider(
+                "RAW記憶 トークン上限",
+                min_value=1024,
+                max_value=16384,
+                step=1024,
+                value=config["memory"].get("max_raw_tokens", 4096),
+                disabled=use_summarized,
+            )
+            raw_format = st.selectbox(
+                "RAW注入形式",
+                ["plaintext", "markdown", "compact"],
+                index=["plaintext", "markdown", "compact"].index(
+                    config["memory"].get("raw_injection_format", "plaintext")
+                ),
+                disabled=use_summarized,
+            )
+            if st.button(
+                "🔄 RAWキャッシュ再生成",
+                help="現在のスライダー/セレクトの値で即座に再生成します",
+                disabled=use_summarized,
+            ):
                 try:
                     resp = requests.post(
                         f"{st.session_state.api_base_url}/instances/{instance_name}/rebuild_raw_cache",
@@ -1516,7 +2050,9 @@ def render_instance_settings_screen():
                     )
                     if resp.status_code == 200:
                         data = resp.json()
-                        st.success(f"再生成完了: {data.get('sessions', 0)}セッション, {data.get('tokens', 0)}トークン ({data.get('format', 'plaintext')})")
+                        st.success(
+                            f"再生成完了: {data.get('sessions', 0)}セッション, {data.get('tokens', 0)}トークン ({data.get('format', 'plaintext')})"
+                        )
                     else:
                         st.error(f"再生成失敗: {resp.text}")
                 except Exception as e:
@@ -1542,28 +2078,36 @@ def render_instance_settings_screen():
         with hk_col1:
             hk_max_digest = st.number_input(
                 "Digest 最大文字数",
-                min_value=500, max_value=20000, step=500,
+                min_value=500,
+                max_value=20000,
+                step=500,
                 value=_hk_conf.get("max_digest_chars", 3000),
                 help="中期記憶の要約版（日次ダイジェスト）の最大文字数",
                 key="hk_max_digest",
             )
             hk_max_relationship = st.number_input(
                 "Recent Snapshot 最大文字数",
-                min_value=500, max_value=20000, step=500,
+                min_value=500,
+                max_value=20000,
+                step=500,
                 value=_hk_conf.get("max_relationship_chars", 5000),
                 help="近況スナップショットの最大文字数",
                 key="hk_max_relationship",
             )
             hk_relationship_interval = st.number_input(
                 "Recent Snapshot 更新間隔 (日)",
-                min_value=1, max_value=30, step=1,
+                min_value=1,
+                max_value=30,
+                step=1,
                 value=_hk_conf.get("relationship_update_interval_days", 7),
                 help="近況スナップショットを更新する間隔",
                 key="hk_rel_interval",
             )
             hk_digest_max_input = st.number_input(
                 "Digest 1回あたり最大入力文字数",
-                min_value=0, max_value=100000, step=1000,
+                min_value=0,
+                max_value=100000,
+                step=1000,
                 value=_hk_conf.get("digest_max_input_chars", 0),
                 help="Stage 1 (Digest) の1回あたりの最大入力文字数。0 = 無制限。",
                 key="hk_digest_max_input",
@@ -1571,21 +2115,27 @@ def render_instance_settings_screen():
         with hk_col2:
             hk_summary_tokens = st.number_input(
                 "Summary 最大出力トークン数",
-                min_value=256, max_value=16384, step=256,
+                min_value=256,
+                max_value=16384,
+                step=256,
                 value=_hk_conf.get("summary_max_output_tokens", 4096),
                 help="Digest / Headlines 生成時の最大出力トークン (classify API)",
                 key="hk_summary_tokens",
             )
             hk_knowledge_tokens = st.number_input(
                 "Knowledge 最大出力トークン数",
-                min_value=256, max_value=16384, step=256,
+                min_value=256,
+                max_value=16384,
+                step=256,
                 value=_hk_conf.get("knowledge_max_output_tokens", 8192),
                 help="ナレッジ抽出 / Recent Snapshot 生成時の最大出力トークン (classify API)",
                 key="hk_knowledge_tokens",
             )
             hk_knowledge_max_input = st.number_input(
                 "Knowledge 1回あたり最大入力文字数",
-                min_value=0, max_value=100000, step=1000,
+                min_value=0,
+                max_value=100000,
+                step=1000,
                 value=_hk_conf.get("knowledge_max_input_chars", 0),
                 help="Stage 2 (Knowledge) の1回あたりの最大入力文字数。0 = 無制限。",
                 key="hk_knowledge_max_input",
@@ -1599,19 +2149,36 @@ def render_instance_settings_screen():
         st.subheader("🧩 コンテキスト注入設定")
         st.caption("LLMに渡すコンテキストのプリセットとレベルを設定できます。")
 
-        from butly_core.core.gatekeeper.memory_builder import DEFAULT_CONTEXT_ORDER, CONTEXT_LEVEL_PRESETS
+        from butly_core.core.gatekeeper.memory_builder import (
+            DEFAULT_CONTEXT_ORDER,
+            CONTEXT_LEVEL_PRESETS,
+        )
 
         # config から読み込み（context_levels 優先、なければ context_order から変換）
         ctx_cfg = config.get("context_levels", {})
         if not ctx_cfg and "context_order" in config:
-            from butly_core.core.gatekeeper.memory_builder import migrate_context_order_to_levels
+            from butly_core.core.gatekeeper.memory_builder import (
+                migrate_context_order_to_levels,
+            )
+
             config = migrate_context_order_to_levels(config)
             ctx_cfg = config.get("context_levels", {})
 
         current_preset = ctx_cfg.get("preset", "normal")
-        _si_order = list(ctx_cfg.get("order", {}).get("system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"]))
-        _cp_order = list(ctx_cfg.get("order", {}).get("context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"]))
-        _si_position = ctx_cfg.get("system_instruction_position", DEFAULT_CONTEXT_ORDER.get("system_instruction_position", "top"))
+        _si_order = list(
+            ctx_cfg.get("order", {}).get(
+                "system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"]
+            )
+        )
+        _cp_order = list(
+            ctx_cfg.get("order", {}).get(
+                "context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"]
+            )
+        )
+        _si_position = ctx_cfg.get(
+            "system_instruction_position",
+            DEFAULT_CONTEXT_ORDER.get("system_instruction_position", "top"),
+        )
 
         # セクションの日本語ラベル
         _SECTION_LABELS = {
@@ -1637,7 +2204,11 @@ def render_instance_settings_screen():
         preset = st.selectbox(
             "プリセット",
             options=["normal", "compact", "low", "custom"],
-            index=["normal", "compact", "low", "custom"].index(current_preset) if current_preset in ["normal", "compact", "low", "custom"] else 0,
+            index=(
+                ["normal", "compact", "low", "custom"].index(current_preset)
+                if current_preset in ["normal", "compact", "low", "custom"]
+                else 0
+            ),
             format_func=lambda x: _preset_labels[x],
             key="ctx_preset",
         )
@@ -1659,14 +2230,21 @@ def render_instance_settings_screen():
                 level_settings[section_id] = st.selectbox(
                     label,
                     options=_LEVEL_OPTIONS,
-                    index=_LEVEL_OPTIONS.index(current) if current in _LEVEL_OPTIONS else 0,
+                    index=(
+                        _LEVEL_OPTIONS.index(current)
+                        if current in _LEVEL_OPTIONS
+                        else 0
+                    ),
                     key=f"ctx_level_{section_id}",
                     disabled=(preset != "custom"),
                 )
 
         # --- system_instruction_position ---
         st.markdown("**▎ System Instruction の配置**")
-        _pos_options = {"top": "先頭 (top) — 標準・Gemini推奨", "bottom": "末尾 (bottom) — SillyTavern方式・OpenAI/Ollama向け"}
+        _pos_options = {
+            "top": "先頭 (top) — 標準・Gemini推奨",
+            "bottom": "末尾 (bottom) — SillyTavern方式・OpenAI/Ollama向け",
+        }
         _si_position = st.radio(
             "配置位置",
             options=list(_pos_options.keys()),
@@ -1675,7 +2253,9 @@ def render_instance_settings_screen():
             key="ctx_si_position",
             horizontal=True,
         )
-        st.caption("ℹ️ Gemini API では system_instruction は常に独立パラメータとして渡されるため、この設定は無視されます。")
+        st.caption(
+            "ℹ️ Gemini API では system_instruction は常に独立パラメータとして渡されるため、この設定は無視されます。"
+        )
 
         # --- session_state 初期化 ---
         if "ctx_si_order" not in st.session_state:
@@ -1729,8 +2309,12 @@ def render_instance_settings_screen():
 
             # デフォルトに戻すボタン
             if st.button("デフォルトに戻す", key="ctx_reset_default"):
-                st.session_state.ctx_si_order = list(DEFAULT_CONTEXT_ORDER["system_instruction"])
-                st.session_state.ctx_cp_order = list(DEFAULT_CONTEXT_ORDER["context_prefix"])
+                st.session_state.ctx_si_order = list(
+                    DEFAULT_CONTEXT_ORDER["system_instruction"]
+                )
+                st.session_state.ctx_cp_order = list(
+                    DEFAULT_CONTEXT_ORDER["context_prefix"]
+                )
                 st.rerun()
 
         st.divider()
@@ -1739,11 +2323,15 @@ def render_instance_settings_screen():
         # 📖 Glossary (共通言語辞書 / Lorebook) 管理
         # ==========================================
         st.subheader("📖 Glossary（共通言語辞書 / Lorebook）")
-        st.caption("キーワード一致で context に注入されます。短い定義は『用語説明』、複数行の定義は『関連設定』として注入されます。")
+        st.caption(
+            "キーワード一致で context に注入されます。短い定義は『用語説明』、複数行の定義は『関連設定』として注入されます。"
+        )
 
         glossary_data = {"version": 1, "entries": []}
         try:
-            gl_resp = requests.get(f"{api_url}/instances/{instance_name}/glossary", timeout=5)
+            gl_resp = requests.get(
+                f"{api_url}/instances/{instance_name}/glossary", timeout=5
+            )
             if gl_resp.ok:
                 glossary_data = gl_resp.json()
         except Exception:
@@ -1751,7 +2339,10 @@ def render_instance_settings_screen():
 
         entries = glossary_data.get("entries", [])
 
-        if "glossary_entries" not in st.session_state or st.session_state.get("glossary_instance") != instance_name:
+        if (
+            "glossary_entries" not in st.session_state
+            or st.session_state.get("glossary_instance") != instance_name
+        ):
             st.session_state.glossary_entries = [dict(e) for e in entries]
             st.session_state.glossary_instance = instance_name
 
@@ -1759,9 +2350,15 @@ def render_instance_settings_screen():
 
         gl_filter_col1, gl_filter_col2 = st.columns([2, 2])
         with gl_filter_col1:
-            gl_status_filter = st.selectbox("ステータス", ["all", "active", "pending", "archived"], key="gl_status_filter")
+            gl_status_filter = st.selectbox(
+                "ステータス",
+                ["all", "active", "pending", "archived"],
+                key="gl_status_filter",
+            )
         with gl_filter_col2:
-            gl_search = st.text_input("🔍 用語検索", key="gl_search", placeholder="用語名で絞り込み")
+            gl_search = st.text_input(
+                "🔍 用語検索", key="gl_search", placeholder="用語名で絞り込み"
+            )
 
         filtered_indices = []
         for i, entry in enumerate(gl_entries):
@@ -1782,7 +2379,9 @@ def render_instance_settings_screen():
             with st.container(border=True):
                 gc1, gc2, gc3 = st.columns([5, 2, 1])
                 with gc1:
-                    st.markdown(f"**{entry.get('term', '')}** ・ {badge} ・ priority: {entry.get('priority', 100)}")
+                    st.markdown(
+                        f"**{entry.get('term', '')}** ・ {badge} ・ priority: {entry.get('priority', 100)}"
+                    )
                     if is_long:
                         with st.expander("定義を表示", expanded=False):
                             st.text(definition.strip())
@@ -1795,7 +2394,9 @@ def render_instance_settings_screen():
                     new_status = st.selectbox(
                         "status",
                         ["active", "pending", "archived"],
-                        index=["active", "pending", "archived"].index(entry.get("status", "active")),
+                        index=["active", "pending", "archived"].index(
+                            entry.get("status", "active")
+                        ),
                         key=f"gl_status_{idx}",
                         label_visibility="collapsed",
                     )
@@ -1807,7 +2408,9 @@ def render_instance_settings_screen():
                         st.rerun()
 
                 with st.expander("✏️ 編集", expanded=False):
-                    new_term_val = st.text_input("用語名", value=entry.get("term", ""), key=f"gl_edit_term_{idx}")
+                    new_term_val = st.text_input(
+                        "用語名", value=entry.get("term", ""), key=f"gl_edit_term_{idx}"
+                    )
                     new_def_val = st.text_area(
                         "定義（複数行で『関連設定』扱い）",
                         value=definition,
@@ -1827,15 +2430,34 @@ def render_instance_settings_screen():
                         step=10,
                         key=f"gl_edit_prio_{idx}",
                     )
-                    cat_options = ["system", "hardware", "project", "tool", "world", "character", "other"]
+                    cat_options = [
+                        "system",
+                        "hardware",
+                        "project",
+                        "tool",
+                        "world",
+                        "character",
+                        "other",
+                    ]
                     cur_cat = entry.get("category", "other")
-                    cat_index = cat_options.index(cur_cat) if cur_cat in cat_options else len(cat_options) - 1
-                    new_cat_val = st.selectbox("カテゴリ", cat_options, index=cat_index, key=f"gl_edit_cat_{idx}")
+                    cat_index = (
+                        cat_options.index(cur_cat)
+                        if cur_cat in cat_options
+                        else len(cat_options) - 1
+                    )
+                    new_cat_val = st.selectbox(
+                        "カテゴリ",
+                        cat_options,
+                        index=cat_index,
+                        key=f"gl_edit_cat_{idx}",
+                    )
                     if st.button("変更を反映", key=f"gl_edit_apply_{idx}"):
                         gl_entries[idx]["term"] = new_term_val
                         gl_entries[idx]["definition"] = new_def_val
                         gl_entries[idx]["aliases"] = [
-                            a.strip() for a in (new_aliases_val or "").split(",") if a.strip()
+                            a.strip()
+                            for a in (new_aliases_val or "").split(",")
+                            if a.strip()
                         ]
                         gl_entries[idx]["priority"] = int(new_priority_val)
                         gl_entries[idx]["category"] = new_cat_val
@@ -1852,24 +2474,42 @@ def render_instance_settings_screen():
             new_aliases = st.text_input("別名（カンマ区切り）", key="gl_new_aliases")
             new_cat = st.selectbox(
                 "カテゴリ",
-                ["system", "hardware", "project", "tool", "world", "character", "other"],
+                [
+                    "system",
+                    "hardware",
+                    "project",
+                    "tool",
+                    "world",
+                    "character",
+                    "other",
+                ],
                 key="gl_new_cat",
             )
             new_prio = st.number_input(
                 "priority（小さいほど先に注入）",
-                min_value=0, max_value=9999, value=100, step=10, key="gl_new_prio",
+                min_value=0,
+                max_value=9999,
+                value=100,
+                step=10,
+                key="gl_new_prio",
             )
             if st.button("追加", key="gl_add_entry"):
                 if new_term and new_def:
-                    alias_list = [a.strip() for a in new_aliases.split(",") if a.strip()] if new_aliases else []
-                    gl_entries.append({
-                        "term": new_term,
-                        "definition": new_def,
-                        "aliases": alias_list,
-                        "category": new_cat,
-                        "status": "active",
-                        "priority": int(new_prio),
-                    })
+                    alias_list = (
+                        [a.strip() for a in new_aliases.split(",") if a.strip()]
+                        if new_aliases
+                        else []
+                    )
+                    gl_entries.append(
+                        {
+                            "term": new_term,
+                            "definition": new_def,
+                            "aliases": alias_list,
+                            "category": new_cat,
+                            "status": "active",
+                            "priority": int(new_prio),
+                        }
+                    )
                     st.rerun()
                 else:
                     st.warning("用語名と定義は必須です。")
@@ -1889,15 +2529,23 @@ def render_instance_settings_screen():
             with cfg_col1:
                 sd = st.number_input(
                     "scan_depth（直近何ターン分の履歴をスキャン）",
-                    min_value=0, max_value=20,
-                    value=int(current_gl_cfg.get("scan_depth", sys_default["scan_depth"])),
-                    step=1, key="gl_cfg_scan_depth",
+                    min_value=0,
+                    max_value=20,
+                    value=int(
+                        current_gl_cfg.get("scan_depth", sys_default["scan_depth"])
+                    ),
+                    step=1,
+                    key="gl_cfg_scan_depth",
                 )
                 me = st.number_input(
                     "max_entries（注入する最大エントリ数）",
-                    min_value=0, max_value=200,
-                    value=int(current_gl_cfg.get("max_entries", sys_default["max_entries"])),
-                    step=1, key="gl_cfg_max_entries",
+                    min_value=0,
+                    max_value=200,
+                    value=int(
+                        current_gl_cfg.get("max_entries", sys_default["max_entries"])
+                    ),
+                    step=1,
+                    key="gl_cfg_max_entries",
                 )
             with cfg_col2:
                 tgt_options = ["both", "user", "assistant"]
@@ -1905,13 +2553,19 @@ def render_instance_settings_screen():
                 tgt_idx = tgt_options.index(cur_tgt) if cur_tgt in tgt_options else 0
                 st_val = st.selectbox(
                     "scan_target（履歴のどちらをスキャン）",
-                    tgt_options, index=tgt_idx, key="gl_cfg_scan_target",
+                    tgt_options,
+                    index=tgt_idx,
+                    key="gl_cfg_scan_target",
                 )
                 mc = st.number_input(
                     "max_chars（注入合計文字数の上限）",
-                    min_value=0, max_value=100000,
-                    value=int(current_gl_cfg.get("max_chars", sys_default["max_chars"])),
-                    step=100, key="gl_cfg_max_chars",
+                    min_value=0,
+                    max_value=100000,
+                    value=int(
+                        current_gl_cfg.get("max_chars", sys_default["max_chars"])
+                    ),
+                    step=100,
+                    key="gl_cfg_max_chars",
                 )
 
             if st.button("スキャン設定を保存", key="gl_cfg_save"):
@@ -1967,7 +2621,11 @@ def render_instance_settings_screen():
         st.subheader("✏️ インスタンス名の変更")
         rename_col1, rename_col2 = st.columns([3, 1])
         with rename_col1:
-            new_inst_name = st.text_input("新しいインスタンス名（半角英数字・_）", placeholder=instance_name, key="rename_input")
+            new_inst_name = st.text_input(
+                "新しいインスタンス名（半角英数字・_）",
+                placeholder=instance_name,
+                key="rename_input",
+            )
         with rename_col2:
             st.write("")
             st.write("")
@@ -2002,7 +2660,12 @@ def render_instance_settings_screen():
         # ---- 詳細設定タブの保存ボタン ----
         col_b1, col_b2 = st.columns([8, 2])
         with col_b2:
-            save_advanced = st.button("設定を保存", type="primary", use_container_width=True, key="save_advanced")
+            save_advanced = st.button(
+                "設定を保存",
+                type="primary",
+                use_container_width=True,
+                key="save_advanced",
+            )
 
     # ==========================================
     # 保存処理（両タブ共通）
@@ -2027,7 +2690,10 @@ def render_instance_settings_screen():
         _gk_save = {"enabled": gk_enabled}
         if gk_model_name is not None:  # "グローバル設定を使う" がOFF
             _gk_save["model_name"] = gk_model_name
-            _gk_save["generation_config"] = {"temperature": gk_temp, "max_output_tokens": 512}
+            _gk_save["generation_config"] = {
+                "temperature": gk_temp,
+                "max_output_tokens": 512,
+            }
         config["gatekeeper"] = _gk_save
 
         # --- Summary ---
@@ -2089,7 +2755,9 @@ def render_instance_settings_screen():
         # context_levels の保存
         config["context_levels"] = {
             "preset": preset,
-            "levels": level_settings if preset == "custom" else CONTEXT_LEVEL_PRESETS[preset],
+            "levels": (
+                level_settings if preset == "custom" else CONTEXT_LEVEL_PRESETS[preset]
+            ),
             "order": {
                 "system_instruction": list(st.session_state.ctx_si_order),
                 "context_prefix": list(st.session_state.ctx_cp_order),
@@ -2100,20 +2768,26 @@ def render_instance_settings_screen():
 
         # Save configs
         try:
-            c_resp = requests.post(f"{api_url}/instances/{instance_name}/config", json=config, timeout=5)
-            p_resp = requests.post(f"{api_url}/instances/{instance_name}/prompts", json={
-                "system_instruction": sys_inst,
-                "key_memory": key_mem
-            }, timeout=5)
+            c_resp = requests.post(
+                f"{api_url}/instances/{instance_name}/config", json=config, timeout=5
+            )
+            p_resp = requests.post(
+                f"{api_url}/instances/{instance_name}/prompts",
+                json={"system_instruction": sys_inst, "key_memory": key_mem},
+                timeout=5,
+            )
 
             if c_resp.ok and p_resp.ok:
                 st.success("設定を保存しました。")
                 time.sleep(1)
                 navigate_to("chat")
             else:
-                st.error(f"保存エラー: Config[{c_resp.status_code}], Prompts[{p_resp.status_code}]")
+                st.error(
+                    f"保存エラー: Config[{c_resp.status_code}], Prompts[{p_resp.status_code}]"
+                )
         except Exception as e:
             st.error(f"保存エラー: {e}")
+
 
 def render_chat_screen():
     instance_name = st.session_state.current_instance
@@ -2128,9 +2802,12 @@ def render_chat_screen():
     # --- チャットヘッダー ---
     col1, col2, col3, col4, col5, col_stream, col6 = st.columns([1, 4, 1, 1, 1, 1, 1])
     with col1:
-        if st.button("＜", help="戻る"): navigate_to("home")
+        if st.button("＜", help="戻る"):
+            navigate_to("home")
     with col2:
-        st.markdown(f'<h1 class="app-title">{instance_name}</h1>', unsafe_allow_html=True)
+        st.markdown(
+            f'<h1 class="app-title">{instance_name}</h1>', unsafe_allow_html=True
+        )
     with col3:
         if st.button("⚙️", help="インスタンス設定"):
             navigate_to("instance_settings")
@@ -2149,7 +2826,8 @@ def render_chat_screen():
         _streaming_on = st.session_state.streaming_enabled
         _stream_label = "⚡ ON" if _streaming_on else "⚡"
         _stream_help = (
-            "Streaming: ON（クリックでOFF）" if _streaming_on
+            "Streaming: ON（クリックでOFF）"
+            if _streaming_on
             else "Streaming: OFF（クリックでON、応答を逐次表示）"
         )
         if st.button(_stream_label, help=_stream_help, key="header_streaming_toggle"):
@@ -2166,7 +2844,11 @@ def render_chat_screen():
         if is_gemini:
             # Gemini: 通常通りトグル可能（Native Grounding）
             gs_label = "🌐 ON" if gs_on else "🌐"
-            gs_help = "Google検索: ON（クリックでOFF）" if gs_on else "Google検索: OFF（クリックでON）"
+            gs_help = (
+                "Google検索: ON（クリックでOFF）"
+                if gs_on
+                else "Google検索: OFF（クリックでON）"
+            )
             if st.button(gs_label, help=gs_help):
                 st.session_state.use_google_search = not gs_on
                 st.rerun()
@@ -2176,6 +2858,7 @@ def render_chat_screen():
                 st.session_state.use_google_search = False
 
             import os
+
             tavily_available = bool(os.environ.get("TAVILY_API_KEY", ""))
             ollama_ws_available = bool(os.environ.get("OLLAMA_WEB_SEARCH_API_KEY", ""))
             web_search_available = tavily_available or ollama_ws_available
@@ -2183,7 +2866,11 @@ def render_chat_screen():
 
             if web_search_available:
                 ws_label = "🔍 ON" if ws_on else "🔍"
-                ws_help = "Web検索: ON（クリックでOFF）" if ws_on else "Web検索: OFF（クリックでON）"
+                ws_help = (
+                    "Web検索: ON（クリックでOFF）"
+                    if ws_on
+                    else "Web検索: OFF（クリックでON）"
+                )
                 if st.button(ws_label, help=ws_help):
                     st.session_state.use_web_search = not ws_on
                     st.rerun()
@@ -2195,18 +2882,19 @@ def render_chat_screen():
                 )
 
     st.divider()
-    
+
     # --- 履歴の読み込み処理 ---
     if not st.session_state.messages:
         history_msgs, last_ts = memory.load_recent_sessions(limit=6)
         if last_ts is None:
             last_ts = memory.get_last_interaction_time()
-        
+
         st.session_state.last_interaction_time = last_ts
         for msg in history_msgs:
             role = msg.get("role")
             content = msg.get("parts", [""])[0]
-            if isinstance(content, dict): content = content.get("text", "")
+            if isinstance(content, dict):
+                content = content.get("text", "")
             msg_to_append = {"role": role, "parts": [content]}
             if "timestamp" in msg:
                 msg_to_append["timestamp"] = msg["timestamp"]
@@ -2214,7 +2902,7 @@ def render_chat_screen():
 
     sys_note = chronos.get_system_note(
         is_holiday=st.session_state.is_holiday,
-        last_interaction_time=st.session_state.get("last_interaction_time")
+        last_interaction_time=st.session_state.get("last_interaction_time"),
     )
 
     if False:  # Chronos debug — removed, now part of unified debug panel
@@ -2225,23 +2913,30 @@ def render_chat_screen():
     for msg in st.session_state.messages:
         role = msg["role"]
         text = msg["parts"][0]
-        
+
         ts_display = ""
         msg_ts = msg.get("timestamp")
         if msg_ts:
             try:
                 dt = datetime.fromisoformat(msg_ts)
                 ts_display = f'<div style="font-size: 0.75rem; color: #888; margin-bottom: 4px;">{dt.strftime("%Y-%m-%d %H:%M")}</div>'
-            except: pass
-            
+            except:
+                pass
+
         if role == "user":
             # 添付画像のサムネイルHTML
             img_html = ""
             for att in msg.get("attachments", []):
                 img_html += f'<img class="attachment-thumb" src="data:{att["mime_type"]};base64,{att["data_base64"]}" alt="{att.get("name", "image")}" />'
-            st.markdown(f'<div class="chat-bubble-user">{ts_display}{text}{img_html}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="chat-bubble-user">{ts_display}{text}{img_html}</div>',
+                unsafe_allow_html=True,
+            )
         else:
-            st.markdown(f'<div class="chat-bubble-ai">{ts_display}{text}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="chat-bubble-ai">{ts_display}{text}</div>',
+                unsafe_allow_html=True,
+            )
 
             # --- Debug Panel (永続表示: メッセージに紐付けて保存済みデータを描画) ---
             if st.session_state.get("debug_mode"):
@@ -2260,11 +2955,21 @@ def render_chat_screen():
 
                         st.caption("⏱️ Timing (Gen ∥ State は並列実行)")
                         cols = st.columns(5)
-                        cols[0].metric("Gatekeeper", f"{timing.get('gatekeeper_ms', 0)}ms")
-                        cols[1].metric("Memory Build", f"{timing.get('memory_build_ms', 0)}ms")
-                        cols[2].metric("RAG Search", f"{timing.get('rag_search_ms', 0)}ms")
-                        cols[3].metric("Generation", f"{timing.get('generation_ms', 0)}ms")
-                        cols[4].metric("State Update", f"{timing.get('state_update_ms', 0)}ms")
+                        cols[0].metric(
+                            "Gatekeeper", f"{timing.get('gatekeeper_ms', 0)}ms"
+                        )
+                        cols[1].metric(
+                            "Memory Build", f"{timing.get('memory_build_ms', 0)}ms"
+                        )
+                        cols[2].metric(
+                            "RAG Search", f"{timing.get('rag_search_ms', 0)}ms"
+                        )
+                        cols[3].metric(
+                            "Generation", f"{timing.get('generation_ms', 0)}ms"
+                        )
+                        cols[4].metric(
+                            "State Update", f"{timing.get('state_update_ms', 0)}ms"
+                        )
 
                         st.caption("🧠 Gatekeeper")
                         if not gk.get("enabled", True):
@@ -2272,14 +2977,21 @@ def render_chat_screen():
                         else:
                             scores = gk.get("scores", {})
                             if scores:
-                                for key in ["response_complexity", "emotional_weight",
-                                            "continuity_need"]:
+                                for key in [
+                                    "response_complexity",
+                                    "emotional_weight",
+                                    "continuity_need",
+                                ]:
                                     val = scores.get(key, 0.0)
                                     filled = int(val * 10)
                                     bar = "█" * filled + "░" * (10 - filled)
                                     st.text(f"  {key:>30s}: {val:.2f} {bar}")
-                            st.text(f"  {'need_intent':>30s}: {gk.get('need_intent') or '(null — probe skipped)'}")
-                            st.text(f"  {'memory_probe_status':>30s}: {gk.get('memory_probe_status') or '(n/a)'}")
+                            st.text(
+                                f"  {'need_intent':>30s}: {gk.get('need_intent') or '(null — probe skipped)'}"
+                            )
+                            st.text(
+                                f"  {'memory_probe_status':>30s}: {gk.get('memory_probe_status') or '(n/a)'}"
+                            )
                             if gk.get("need"):
                                 st.text(f"  Need: {gk['need']}")
                             if gk.get("search_targets"):
@@ -2288,9 +3000,13 @@ def render_chat_screen():
                             # MemoryProbe layer 詳細 (vector の閾値判定など)
                             probe_layers = gk.get("memory_probe_layers")
                             if probe_layers:
-                                with st.expander("📊 MemoryProbe Layers (詳細診断)", expanded=False):
+                                with st.expander(
+                                    "📊 MemoryProbe Layers (詳細診断)", expanded=False
+                                ):
                                     _gl = probe_layers.get("glossary", {})
-                                    st.text(f"glossary: executed={_gl.get('executed')} matches={_gl.get('matches', 0)}")
+                                    st.text(
+                                        f"glossary: executed={_gl.get('executed')} matches={_gl.get('matches', 0)}"
+                                    )
                                     _v = probe_layers.get("vector")
                                     if _v:
                                         if _v.get("executed"):
@@ -2301,11 +3017,17 @@ def render_chat_screen():
                                                 f"decay={_v.get('decay_rate', '?')}"
                                             )
                                             if _v.get("top_raw_scores"):
-                                                st.text(f"  top raw     : {_v['top_raw_scores']}")
+                                                st.text(
+                                                    f"  top raw     : {_v['top_raw_scores']}"
+                                                )
                                             if _v.get("top_final_scores"):
-                                                st.text(f"  top w/decay : {_v['top_final_scores']}")
+                                                st.text(
+                                                    f"  top w/decay : {_v['top_final_scores']}"
+                                                )
                                         else:
-                                            st.text(f"vector: skipped ({_v.get('reason', '?')})")
+                                            st.text(
+                                                f"vector: skipped ({_v.get('reason', '?')})"
+                                            )
                                     _d = probe_layers.get("deep")
                                     if _d:
                                         if _d.get("executed"):
@@ -2315,7 +3037,9 @@ def render_chat_screen():
                                                 f"hits={_d.get('result_count', 0)}"
                                             )
                                         else:
-                                            st.text(f"deep: skipped ({_d.get('reason', '?')})")
+                                            st.text(
+                                                f"deep: skipped ({_d.get('reason', '?')})"
+                                            )
 
                         rag = debug.get("rag", {})
                         if rag.get("results"):
@@ -2335,7 +3059,9 @@ def render_chat_screen():
 
                         prompt_full = debug.get("prompt_full", [])
                         if prompt_full:
-                            with st.expander("📝 Full Prompt (untruncated)", expanded=False):
+                            with st.expander(
+                                "📝 Full Prompt (untruncated)", expanded=False
+                            ):
                                 for i, m in enumerate(prompt_full):
                                     st.text(f"--- [{i}] role={m.get('role','?')} ---")
                                     st.code(m.get("content", ""), language=None)
@@ -2359,7 +3085,7 @@ def render_chat_screen():
                         title = src.get("title", url)
                         st.markdown(f"- [{title}]({url})")
 
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     # 上記の描画が行われた後、少しスペースを空ける
     st.write("")
@@ -2376,13 +3102,15 @@ def render_chat_screen():
         new_attachments = []
         for uf in uploaded_files[:3]:  # 最大3枚
             raw = uf.read()
-            new_attachments.append({
-                "kind": "image",
-                "mime_type": uf.type,
-                "data_base64": base64.b64encode(raw).decode(),
-                "name": uf.name,
-                "size": len(raw),
-            })
+            new_attachments.append(
+                {
+                    "kind": "image",
+                    "mime_type": uf.type,
+                    "data_base64": base64.b64encode(raw).decode(),
+                    "name": uf.name,
+                    "size": len(raw),
+                }
+            )
         st.session_state.pending_attachments = new_attachments
         st.caption(f"📎 {len(new_attachments)} 枚の画像を添付中")
     else:
@@ -2406,10 +3134,11 @@ def render_chat_screen():
     # --- 直前のユーザー入力があった場合に応答を生成 ---
     if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
         prompt_text = st.session_state.messages[-1]["parts"][0]
-        
+
         with st.spinner("Thinking..."):
             try:
                 import requests
+
                 use_rag = True  # ChatRequestには常にTrueを渡す（実際のON/OFFはconfig.brain.use_ragでサーバー側が制御）
                 use_gs = st.session_state.get("use_google_search", False)
 
@@ -2417,7 +3146,11 @@ def render_chat_screen():
                 if use_gs and not is_gemini:
                     use_gs = False
 
-                use_ws = st.session_state.get("use_web_search", False) if not is_gemini else False
+                use_ws = (
+                    st.session_state.get("use_web_search", False)
+                    if not is_gemini
+                    else False
+                )
 
                 # 添付画像をペイロードに変換
                 last_msg = st.session_state.messages[-1]
@@ -2451,6 +3184,7 @@ def render_chat_screen():
 
                     def _sse_generator():
                         import json as _json
+
                         try:
                             with requests.post(
                                 f"{api_url}/chat/stream",
@@ -2459,7 +3193,9 @@ def render_chat_screen():
                                 timeout=180,
                             ) as resp:
                                 if not resp.ok:
-                                    stream_state["error"] = f"APIエラー [{resp.status_code}]: {resp.text}"
+                                    stream_state["error"] = (
+                                        f"APIエラー [{resp.status_code}]: {resp.text}"
+                                    )
                                     return
                                 current_event = None
                                 event_data_lines = []
@@ -2467,12 +3203,17 @@ def render_chat_screen():
                                     if raw_line is None:
                                         continue
                                     if raw_line == "":
-                                        if current_event is None or not event_data_lines:
+                                        if (
+                                            current_event is None
+                                            or not event_data_lines
+                                        ):
                                             current_event = None
                                             event_data_lines = []
                                             continue
                                         try:
-                                            data = _json.loads("\n".join(event_data_lines))
+                                            data = _json.loads(
+                                                "\n".join(event_data_lines)
+                                            )
                                         except Exception:
                                             current_event = None
                                             event_data_lines = []
@@ -2486,13 +3227,19 @@ def render_chat_screen():
                                         elif current_event == "done":
                                             stream_state["done"] = data
                                         elif current_event == "error":
-                                            stream_state["error"] = data.get("message", "stream error")
+                                            stream_state["error"] = data.get(
+                                                "message", "stream error"
+                                            )
                                         current_event = None
                                         event_data_lines = []
                                     elif raw_line.startswith("event:"):
-                                        current_event = raw_line[len("event:"):].strip()
+                                        current_event = raw_line[
+                                            len("event:") :
+                                        ].strip()
                                     elif raw_line.startswith("data:"):
-                                        event_data_lines.append(raw_line[len("data:"):].strip())
+                                        event_data_lines.append(
+                                            raw_line[len("data:") :].strip()
+                                        )
                         except Exception as e:
                             stream_state["error"] = f"ストリーミングエラー: {e}"
 
@@ -2505,17 +3252,21 @@ def render_chat_screen():
                         st.stop()
 
                     done_data = stream_state["done"] or {}
-                    response_text = done_data.get("full_text", stream_state["full_text"])
+                    response_text = done_data.get(
+                        "full_text", stream_state["full_text"]
+                    )
                     sources = done_data.get("sources", []) or []
                     debug_info = done_data.get("debug_info")
 
-                    st.session_state.messages.append({
-                        "role": "model",
-                        "parts": [response_text],
-                        "timestamp": datetime.now().isoformat(),
-                        "debug_info": debug_info,
-                        "sources": sources,
-                    })
+                    st.session_state.messages.append(
+                        {
+                            "role": "model",
+                            "parts": [response_text],
+                            "timestamp": datetime.now().isoformat(),
+                            "debug_info": debug_info,
+                            "sources": sources,
+                        }
+                    )
                     st.session_state.last_interaction_time = datetime.now()
                     st.rerun()
                 else:
@@ -2532,18 +3283,20 @@ def render_chat_screen():
 
                     data = resp.json()
                     response_text = data.get("response", "")
-                    keywords     = data.get("keywords", [])
-                    refs         = data.get("references", [])
-                    sources      = data.get("sources", [])
-                    tier         = data.get("tier", "")
+                    keywords = data.get("keywords", [])
+                    refs = data.get("references", [])
+                    sources = data.get("sources", [])
+                    tier = data.get("tier", "")
 
-                    st.session_state.messages.append({
-                        "role": "model",
-                        "parts": [response_text],
-                        "timestamp": datetime.now().isoformat(),
-                        "debug_info": data.get("debug_info"),
-                        "sources": sources,
-                    })
+                    st.session_state.messages.append(
+                        {
+                            "role": "model",
+                            "parts": [response_text],
+                            "timestamp": datetime.now().isoformat(),
+                            "debug_info": data.get("debug_info"),
+                            "sources": sources,
+                        }
+                    )
                     st.session_state.last_interaction_time = datetime.now()
 
                     # 記憶の保存・整理は main.py 内の /chat で完結しているためここでは不要
@@ -2551,19 +3304,24 @@ def render_chat_screen():
                     st.rerun()
 
             except requests.exceptions.ConnectionError:
-                st.error(f"⚠️ FastAPIサーバーに接続できません。`uvicorn main:app --port 8000` が起動しているか確認してください。\n\n接続先: {api_url}")
+                st.error(
+                    f"⚠️ FastAPIサーバーに接続できません。`uvicorn main:app --port 8000` が起動しているか確認してください。\n\n接続先: {api_url}"
+                )
             except requests.exceptions.Timeout:
-                st.error("⚠️ タイムアウトしました。Ollamaの応答やネットワークの状態を確認してください。")
+                st.error(
+                    "⚠️ タイムアウトしました。Ollamaの応答やネットワークの状態を確認してください。"
+                )
             except Exception as e:
                 error_msg = str(e)
                 if "403" in error_msg or "404" in error_msg:
-                    st.warning("⚠️ 脳のキャッシュが期限切れです。記憶を再構築してリロードします... (Auto-healing)")
+                    st.warning(
+                        "⚠️ 脳のキャッシュが期限切れです。記憶を再構築してリロードします... (Auto-healing)"
+                    )
                     st.cache_resource.clear()
                     time.sleep(1)
                     st.rerun()
                 else:
                     st.error(f"Error: {error_msg}")
-
 
 
 # ==========================================
@@ -2574,16 +3332,28 @@ def render_onboarding_screen():
     st.write("まずは最初のAIインスタンスを作成しましょう。")
     st.divider()
 
-    new_proj_name = st.text_input("インスタンス名（半角英数字・_）", placeholder="e.g. my_agent")
+    new_proj_name = st.text_input(
+        "インスタンス名（半角英数字・_）", placeholder="e.g. my_agent"
+    )
     from butly_core import prompts
-    new_template = st.text_area("性格テンプレート", value=prompts.WEB_UI_DEFAULT_TEMPLATE.format(agent_name="{agent_name}"), height=100)
+
+    new_template = st.text_area(
+        "性格テンプレート",
+        value=prompts.WEB_UI_DEFAULT_TEMPLATE.format(agent_name="{agent_name}"),
+        height=100,
+    )
 
     if st.button("作成", type="primary"):
         if new_proj_name:
             import requests
+
             api_url = st.session_state.api_base_url
             try:
-                res = requests.post(f"{api_url}/instances", json={"name": new_proj_name, "template": new_template}, timeout=5)
+                res = requests.post(
+                    f"{api_url}/instances",
+                    json={"name": new_proj_name, "template": new_template},
+                    timeout=5,
+                )
                 if res.ok:
                     st.session_state.current_instance = new_proj_name
                     st.rerun()
@@ -2599,7 +3369,17 @@ def render_onboarding_screen():
 def main():
     # Re-scan instances (may have changed since startup)
     global available_instances
-    available_instances = sorted([p.name for p in INSTANCES_DIR.iterdir() if p.is_dir() and not p.name.startswith(".")]) if INSTANCES_DIR.exists() else []
+    available_instances = (
+        sorted(
+            [
+                p.name
+                for p in INSTANCES_DIR.iterdir()
+                if p.is_dir() and not p.name.startswith(".")
+            ]
+        )
+        if INSTANCES_DIR.exists()
+        else []
+    )
 
     if not available_instances:
         # インスタンス未作成でもホーム画面を表示（新規作成UIがホーム画面にある）
@@ -2626,6 +3406,7 @@ def main():
     else:
         st.session_state.current_page = "home"
         st.rerun()
+
 
 if __name__ == "__main__":
     main()

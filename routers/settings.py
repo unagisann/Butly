@@ -3,6 +3,7 @@ routers/settings.py
 ───────────────────
 グローバル設定・APIキー・config・prompts エンドポイント。
 """
+
 import json
 import os
 from typing import Dict, Any, Optional
@@ -11,7 +12,12 @@ from fastapi import APIRouter, HTTPException, Body, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
-from butly_core.config import AI_CONFIG, SYSTEM_CONFIG, USER_CONFIG_PATH, _recursive_update
+from butly_core.config import (
+    AI_CONFIG,
+    SYSTEM_CONFIG,
+    USER_CONFIG_PATH,
+    _recursive_update,
+)
 import butly_core.prompts as prompts_module
 from butly_core.prompts import USER_PROMPTS_PATH
 
@@ -21,21 +27,26 @@ router = APIRouter()
 
 # --- Pydantic Models ---
 
+
 class SettingsRequest(BaseModel):
     pass
+
 
 class ApiKeyRequest(BaseModel):
     api_key: str
     key_type: str = "gemini"
 
+
 # --- Settings Persistence Helpers ---
 SETTINGS_FILE = None  # set during init_settings()
+
 
 def _get_settings_file():
     global SETTINGS_FILE
     if SETTINGS_FILE is None:
         SETTINGS_FILE = deps.BASE_DIR / "system_config.json"
     return SETTINGS_FILE
+
 
 def load_settings_from_file():
     sf = _get_settings_file()
@@ -47,14 +58,17 @@ def load_settings_from_file():
             pass
     return {}
 
+
 def save_settings_to_file(settings: dict):
     sf = _get_settings_file()
     with open(sf, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=2)
 
+
 def apply_startup_settings():
     """起動時に永続化設定を適用する。main.py から呼ばれる。"""
     pass
+
 
 # --- Editable Prompts ---
 EDITABLE_PROMPTS = [
@@ -66,15 +80,18 @@ EDITABLE_PROMPTS = [
 
 # --- Endpoints ---
 
+
 @router.get("/settings")
 def get_settings():
     """Get current system settings."""
     return {}
 
+
 @router.post("/settings")
 def update_settings(request: SettingsRequest):
     """Update system settings."""
     return {"message": "Settings updated", "settings": get_settings()}
+
 
 @router.post("/settings/api_key")
 def set_api_key(request: ApiKeyRequest):
@@ -104,8 +121,8 @@ def set_api_key(request: ApiKeyRequest):
     if env_path.exists():
         for line in env_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                k, _, v = line.partition('=')
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
                 env_vars[k.strip()] = v.strip()
 
     env_vars[env_name] = key
@@ -117,6 +134,7 @@ def set_api_key(request: ApiKeyRequest):
     print(f"[Server] {request.key_type} API key updated and saved to {env_path}")
     return {"message": f"{request.key_type} APIキーを保存しました"}
 
+
 @router.get("/settings/api_key_status")
 def get_api_key_status():
     """各プロバイダーのAPIキー設定状況を返す。"""
@@ -127,10 +145,12 @@ def get_api_key_status():
         "ollama_web_search": bool(os.getenv("OLLAMA_WEB_SEARCH_API_KEY")),
     }
 
+
 @router.post("/settings/ollama_test")
 def test_ollama_connection(url: str = Body(..., embed=True)):
     """Ollama の接続テストを行う。"""
     import urllib.request
+
     try:
         req = urllib.request.Request(f"{url.rstrip('/')}/api/tags", method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -139,6 +159,7 @@ def test_ollama_connection(url: str = Body(..., embed=True)):
             return {"status": "ok", "models": models}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
 
 @router.post("/settings/reindex_embeddings")
 async def reindex_embeddings(
@@ -162,12 +183,15 @@ async def reindex_embeddings(
     background_tasks.add_task(run_in_threadpool, _run_reindex, instance_name)
     return {"message": "Embedding再生成を開始しました", "target": instance_name}
 
+
 # --- Config & Prompts ---
+
 
 @router.get("/config")
 def get_config():
     """Get current effective configuration."""
     return {"AI_CONFIG": AI_CONFIG, "SYSTEM_CONFIG": SYSTEM_CONFIG}
+
 
 @router.post("/config")
 def update_config(config_data: Dict[str, Any] = Body(...)):
@@ -185,10 +209,12 @@ def update_config(config_data: Dict[str, Any] = Body(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save config: {e}")
 
+
 @router.get("/prompts")
 def get_prompts():
     """Get editable prompts (locale-aware)."""
     from butly_core.prompts import PromptLoader, _REVERSE_LEGACY_MAP
+
     loader = PromptLoader()
     result = {}
     for key in EDITABLE_PROMPTS:
@@ -201,6 +227,7 @@ def get_prompts():
         else:
             result[key] = getattr(prompts_module, key, "")
     return result
+
 
 @router.post("/prompts")
 def update_prompts(prompts_data: Dict[str, str] = Body(...)):
@@ -224,8 +251,10 @@ def update_prompts(prompts_data: Dict[str, str] = Body(...)):
 # Connection 管理 (Phase 3)
 # =====================================================================
 
+
 class ConnectionPayload(BaseModel):
     """user_config.json の LLM_CONNECTIONS 1 エントリ。"""
+
     id: str
     protocol: str = "openai_compat"
     base_url: Optional[str] = None
@@ -277,6 +306,7 @@ def _connection_to_dict(conn) -> dict:
 def list_connections_endpoint():
     """全 Connection (built-in + user 定義) を返す。"""
     from butly_core.llm.connections import list_connections, is_builtin_connection
+
     items = []
     for conn in list_connections():
         d = _connection_to_dict(conn)
@@ -290,8 +320,11 @@ def list_connections_endpoint():
 def add_connection(payload: ConnectionPayload):
     """user 定義 Connection を追加する。built-in id は拒否。"""
     from butly_core.llm.connections import (
-        Connection, is_builtin_connection, register_connection,
+        Connection,
+        is_builtin_connection,
+        register_connection,
     )
+
     if is_builtin_connection(payload.id):
         raise HTTPException(
             status_code=400,
@@ -341,13 +374,17 @@ def add_connection(payload: ConnectionPayload):
     cfg["LLM_CONNECTIONS"] = existing
     _save_user_config(cfg)
 
-    return {"message": f"Connection {payload.id!r} を登録しました", "connection": _connection_to_dict(conn)}
+    return {
+        "message": f"Connection {payload.id!r} を登録しました",
+        "connection": _connection_to_dict(conn),
+    }
 
 
 @router.delete("/settings/connections/{connection_id}")
 def delete_connection(connection_id: str):
     """user 定義 Connection を削除する。built-in は不可。"""
     from butly_core.llm.connections import get_registry, is_builtin_connection
+
     if is_builtin_connection(connection_id):
         raise HTTPException(
             status_code=400,
@@ -355,7 +392,9 @@ def delete_connection(connection_id: str):
         )
     reg = get_registry()
     if reg.get(connection_id) is None:
-        raise HTTPException(status_code=404, detail=f"Connection 未登録: {connection_id}")
+        raise HTTPException(
+            status_code=404, detail=f"Connection 未登録: {connection_id}"
+        )
     reg.unregister(connection_id)
 
     # user_config.json から除去
@@ -363,7 +402,8 @@ def delete_connection(connection_id: str):
     existing = cfg.get("LLM_CONNECTIONS", []) or []
     if isinstance(existing, list):
         cfg["LLM_CONNECTIONS"] = [
-            e for e in existing
+            e
+            for e in existing
             if not (isinstance(e, dict) and e.get("id") == connection_id)
         ]
         _save_user_config(cfg)
@@ -374,14 +414,18 @@ def delete_connection(connection_id: str):
 def test_connection(connection_id: str = Body(..., embed=True)):
     """指定 Connection の /models を叩いて疎通確認する。"""
     from butly_core.llm.connections import try_get_connection
+
     conn = try_get_connection(connection_id)
     if conn is None:
-        raise HTTPException(status_code=404, detail=f"Connection 未登録: {connection_id}")
+        raise HTTPException(
+            status_code=404, detail=f"Connection 未登録: {connection_id}"
+        )
 
     if conn.protocol == "gemini_native":
         # Gemini は SDK 経由で list_models
         try:
             from google import genai
+
             api_key = conn.resolve_api_key()
             if not api_key:
                 return {"status": "error", "message": "API キー未設定", "models": []}
@@ -390,7 +434,7 @@ def test_connection(connection_id: str = Body(..., embed=True)):
             for m in client.models.list():
                 mid = m.name
                 if mid and mid.startswith("models/"):
-                    mid = mid[len("models/"):]
+                    mid = mid[len("models/") :]
                 if mid:
                     models.append(mid)
                 if len(models) >= 50:
@@ -401,6 +445,7 @@ def test_connection(connection_id: str = Body(..., embed=True)):
 
     # openai_compat: /models を直叩き
     import urllib.request
+
     base_url = conn.resolve_base_url()
     if not base_url:
         return {"status": "error", "message": "base_url 未設定", "models": []}
@@ -418,7 +463,7 @@ def test_connection(connection_id: str = Body(..., embed=True)):
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
         models = []
-        for m in (data.get("data") or []):
+        for m in data.get("data") or []:
             mid = m.get("id") if isinstance(m, dict) else None
             if mid:
                 models.append(mid)
@@ -438,12 +483,21 @@ def model_candidates(role: str, include_deprecated: bool = False):
         (Ollama / Groq 等)
     """
     from butly_core.llm.model_registry import (
-        get_presets_for_role, find_preset, RoleId,
+        get_presets_for_role,
+        find_preset,
+        RoleId,
     )
     from butly_core.llm.connections import list_connections, is_builtin_connection
 
     role_lower = role.lower().strip()
-    valid_roles = ("chat", "summary", "gatekeeper", "knowledge", "embedding", "context_classifier")
+    valid_roles = (
+        "chat",
+        "summary",
+        "gatekeeper",
+        "knowledge",
+        "embedding",
+        "context_classifier",
+    )
     if role_lower not in valid_roles:
         raise HTTPException(status_code=400, detail=f"未対応の role: {role}")
 
@@ -456,25 +510,31 @@ def model_candidates(role: str, include_deprecated: bool = False):
             return
         seen.add(key)
         preset = find_preset(connection_id, model_name)
-        candidates.append({
-            "connection_id": connection_id,
-            "model_name": model_name,
-            "label": preset.label if preset else model_name,
-            "available": available,
-            "deprecated": preset.deprecated if preset else False,
-            "preview": preset.preview if preset else False,
-            "replacement": preset.replacement if preset else None,
-            "capabilities": list(preset.capabilities) if preset else [],
-            "source": "preset" if preset else "dynamic",
-            "is_builtin_connection": is_builtin_connection(connection_id),
-        })
+        candidates.append(
+            {
+                "connection_id": connection_id,
+                "model_name": model_name,
+                "label": preset.label if preset else model_name,
+                "available": available,
+                "deprecated": preset.deprecated if preset else False,
+                "preview": preset.preview if preset else False,
+                "replacement": preset.replacement if preset else None,
+                "capabilities": list(preset.capabilities) if preset else [],
+                "source": "preset" if preset else "dynamic",
+                "is_builtin_connection": is_builtin_connection(connection_id),
+            }
+        )
 
     # 1. preset
     for p in get_presets_for_role(role_lower, include_deprecated=include_deprecated):
         _push(p.connection_id, p.model_name, available=True)
 
     # 2. 現在 AI_CONFIG に保存されているもの
-    saved = AI_CONFIG.get(role_lower, {}) if isinstance(AI_CONFIG.get(role_lower), dict) else {}
+    saved = (
+        AI_CONFIG.get(role_lower, {})
+        if isinstance(AI_CONFIG.get(role_lower), dict)
+        else {}
+    )
     saved_model = saved.get("model_name") if saved else None
     saved_connection = saved.get("connection") if saved else None
     if saved_model and saved_connection:
@@ -493,6 +553,7 @@ def model_candidates(role: str, include_deprecated: bool = False):
             # Gemini は SDK 経由で list_models
             try:
                 from google import genai
+
                 api_key = conn.resolve_api_key()
                 if not api_key:
                     continue
@@ -501,7 +562,7 @@ def model_candidates(role: str, include_deprecated: bool = False):
                     # SDK が返す name は "models/gemini-..." 形式
                     mid = m.name
                     if mid and mid.startswith("models/"):
-                        mid = mid[len("models/"):]
+                        mid = mid[len("models/") :]
                     if mid:
                         _push(conn.id, mid, available=True)
             except Exception:
@@ -515,6 +576,7 @@ def model_candidates(role: str, include_deprecated: bool = False):
                 if not base:
                     continue
                 import urllib.request
+
                 url = base.rstrip("/") + "/models"
                 headers = {"Accept": "application/json"}
                 api_key = conn.resolve_api_key()

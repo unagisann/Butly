@@ -3,6 +3,7 @@ routers/dashboard.py
 ────────────────────
 システムステータス / Discovery / News エンドポイント。
 """
+
 import json
 import platform
 import time as time_module
@@ -21,7 +22,7 @@ def get_system_status():
     try:
         temps = psutil.sensors_temperatures()
         if temps:
-            for key in ['cpu_thermal', 'coretemp', 'k10temp']:
+            for key in ["cpu_thermal", "coretemp", "k10temp"]:
                 if key in temps:
                     cpu_temp = round(temps[key][0].current, 1)
                     break
@@ -31,6 +32,7 @@ def get_system_status():
     net_connected = False
     try:
         import socket
+
         socket.create_connection(("8.8.8.8", 53), timeout=1)
         net_connected = True
     except Exception:

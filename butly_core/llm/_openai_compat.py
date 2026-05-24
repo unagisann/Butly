@@ -17,10 +17,10 @@ from dotenv import load_dotenv
 
 from butly_core.chat.types import Attachment, ChatResponse
 
-
 # =====================================================================
 # 環境変数ロード (M4 対応: Provider 間共通)
 # =====================================================================
+
 
 def _find_env_path() -> Optional[str]:
     """APIkey.env / .env を探す。
@@ -56,6 +56,7 @@ def load_env_file():
 # =====================================================================
 # Reasoning モデル判定 (B1 対応)
 # =====================================================================
+
 
 def is_reasoning_model(model_name: str) -> bool:
     """OpenAI の o1/o3/o4 系 (reasoning モデル) かを判定する。
@@ -98,6 +99,7 @@ def resolve_system_instruction(context: Dict[str, Any]) -> str:
     override_config は引数に取らない (現状どちらの Provider でも未使用)。
     """
     from butly_core.core.gatekeeper import build_system_instruction_from_blocks
+
     return build_system_instruction_from_blocks(
         blocks=context.get("memory_blocks"),
         memory_manager=context.get("memory_manager"),
@@ -110,6 +112,7 @@ def resolve_system_instruction(context: Dict[str, Any]) -> str:
 def resolve_context_prefix(context: Dict[str, Any]) -> str:
     """context から context_prefix を構築する。"""
     from butly_core.core.gatekeeper import build_context_prefix
+
     return build_context_prefix(
         blocks=context.get("memory_blocks"),
         memory_manager=context.get("memory_manager"),
@@ -123,6 +126,7 @@ def resolve_context_prefix(context: Dict[str, Any]) -> str:
 # メッセージ構築
 # =====================================================================
 
+
 def build_user_content(text: str, attachments: List[Attachment]):
     """テキスト + 画像 → OpenAI 形式の content に変換する。
 
@@ -135,10 +139,12 @@ def build_user_content(text: str, attachments: List[Attachment]):
     content = [{"type": "text", "text": text}]
     for att in attachments:
         data_url = f"data:{att.mime_type};base64,{att.data_base64}"
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": data_url},
-        })
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": data_url},
+            }
+        )
     return content
 
 
@@ -193,12 +199,17 @@ def build_messages(
 # デバッグ
 # =====================================================================
 
+
 def _debug_content(c, max_len: int = 500) -> str:
     """content が str / list(multimodal) のどちらでも安全に truncate する。"""
     if isinstance(c, str):
         return (c[:max_len] + "...") if len(c) > max_len else c
     if isinstance(c, list):
-        texts = [p.get("text", "") for p in c if isinstance(p, dict) and p.get("type") == "text"]
+        texts = [
+            p.get("text", "")
+            for p in c
+            if isinstance(p, dict) and p.get("type") == "text"
+        ]
         joined = " ".join(texts)
         return (joined[:max_len] + "...") if len(joined) > max_len else joined
     return str(c)[:max_len]
@@ -216,6 +227,7 @@ def build_debug_messages(messages: list, max_len: int = 500) -> list:
 # 設定マージ
 # =====================================================================
 
+
 def merge_chat_config(base_conf: dict, override_config: Optional[dict]) -> dict:
     """AI_CONFIG["chat"] と override_config["chat"] をマージする。"""
     if override_config and "chat" in override_config:
@@ -226,6 +238,7 @@ def merge_chat_config(base_conf: dict, override_config: Optional[dict]) -> dict:
 # =====================================================================
 # API 呼び出しパラメータ構築 (B1 対応: reasoning / 通常の 2 系統分岐)
 # =====================================================================
+
 
 def build_chat_completion_kwargs(
     chat_conf: dict,
@@ -266,6 +279,7 @@ def build_chat_completion_kwargs(
 # ChatResponse 組み立て
 # =====================================================================
 
+
 def build_chat_response(
     response_text: str,
     rag_results: list,
@@ -284,6 +298,7 @@ def build_chat_response(
 # =====================================================================
 # ストリーミング (OpenAI 互換 SDK 共通)
 # =====================================================================
+
 
 async def async_chat_completion_stream(
     client,
@@ -342,18 +357,26 @@ async def async_chat_completion_stream(
                         queue.put_nowait, {"type": "chunk", "text": text_chunk}
                     )
             print(f"[{log_tag}] Streaming done")
-            loop.call_soon_threadsafe(queue.put_nowait, {
-                "type": "done",
-                "full_text": full_text,
-                "sources": list(web_sources or []),
-                "debug": debug_data or {},
-            })
+            loop.call_soon_threadsafe(
+                queue.put_nowait,
+                {
+                    "type": "done",
+                    "full_text": full_text,
+                    "sources": list(web_sources or []),
+                    "debug": debug_data or {},
+                },
+            )
         except Exception as e:
             import traceback
+
             traceback.print_exc()
-            loop.call_soon_threadsafe(queue.put_nowait, {
-                "type": "error", "message": str(e),
-            })
+            loop.call_soon_threadsafe(
+                queue.put_nowait,
+                {
+                    "type": "error",
+                    "message": str(e),
+                },
+            )
 
     producer_future = loop.run_in_executor(None, _producer)
 

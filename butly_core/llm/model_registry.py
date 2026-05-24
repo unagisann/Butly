@@ -25,7 +25,6 @@ from butly_core.llm.connections import (
     try_get_connection,
 )
 
-
 RoleId = Literal[
     "chat",
     "summary",
@@ -49,6 +48,7 @@ Capability = Literal[
 # =====================================================================
 # ModelRef / ModelPreset
 # =====================================================================
+
 
 @dataclass(frozen=True)
 class ModelRef:
@@ -117,6 +117,7 @@ def infer_connection_id(model_name: str) -> Optional[str]:
 # Normalize / Resolve
 # =====================================================================
 
+
 def normalize_model_ref(
     raw: Any,
     *,
@@ -141,7 +142,9 @@ def normalize_model_ref(
     if isinstance(raw, dict):
         # 新形式 / 旧形式 dict 両対応
         model_name = (raw.get("model_name") or raw.get("model") or "").strip()
-        connection_id = (raw.get("connection") or raw.get("connection_id") or "").strip() or None
+        connection_id = (
+            raw.get("connection") or raw.get("connection_id") or ""
+        ).strip() or None
     else:
         model_name = str(raw or "").strip()
         connection_id = None
@@ -205,7 +208,13 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
         connection_id="google",
         model_name="gemini-3.5-flash",
         roles=("chat", "summary", "knowledge"),
-        capabilities=("chat", "vision", "tool_calling", "structured_outputs", "reasoning"),
+        capabilities=(
+            "chat",
+            "vision",
+            "tool_calling",
+            "structured_outputs",
+            "reasoning",
+        ),
         label="Gemini 3.5 Flash",
         stable=True,
     ),
@@ -213,7 +222,13 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
         connection_id="google",
         model_name="gemini-3.1-pro-preview",
         roles=("chat", "knowledge"),
-        capabilities=("chat", "vision", "tool_calling", "structured_outputs", "reasoning"),
+        capabilities=(
+            "chat",
+            "vision",
+            "tool_calling",
+            "structured_outputs",
+            "reasoning",
+        ),
         label="Gemini 3.1 Pro (Preview)",
         stable=False,
         preview=True,
@@ -230,7 +245,13 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
         connection_id="google",
         model_name="gemini-2.5-pro",
         roles=("chat", "knowledge"),
-        capabilities=("chat", "vision", "tool_calling", "structured_outputs", "reasoning"),
+        capabilities=(
+            "chat",
+            "vision",
+            "tool_calling",
+            "structured_outputs",
+            "reasoning",
+        ),
         label="Gemini 2.5 Pro",
         stable=True,
     ),
@@ -258,7 +279,6 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
         label="Gemini Embedding 2",
         stable=True,
     ),
-
     # ---------- OpenAI ----------
     ModelPreset(
         connection_id="openai",
@@ -280,7 +300,13 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
         connection_id="openai",
         model_name="o3",
         roles=("chat", "knowledge"),
-        capabilities=("chat", "vision", "tool_calling", "structured_outputs", "reasoning"),
+        capabilities=(
+            "chat",
+            "vision",
+            "tool_calling",
+            "structured_outputs",
+            "reasoning",
+        ),
         label="o3 (reasoning)",
         stable=True,
     ),
@@ -288,7 +314,13 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
         connection_id="openai",
         model_name="o4-mini",
         roles=("chat", "summary", "gatekeeper"),
-        capabilities=("chat", "vision", "tool_calling", "structured_outputs", "reasoning"),
+        capabilities=(
+            "chat",
+            "vision",
+            "tool_calling",
+            "structured_outputs",
+            "reasoning",
+        ),
         label="o4-mini (reasoning)",
         stable=True,
     ),
@@ -308,13 +340,18 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
         label="text-embedding-3-large",
         stable=True,
     ),
-
     # ---------- xAI ----------
     ModelPreset(
         connection_id="xai",
         model_name="grok-4.20-0309-reasoning",
         roles=("chat", "knowledge"),
-        capabilities=("chat", "vision", "tool_calling", "structured_outputs", "reasoning"),
+        capabilities=(
+            "chat",
+            "vision",
+            "tool_calling",
+            "structured_outputs",
+            "reasoning",
+        ),
         label="Grok 4.20 Reasoning",
         stable=True,
     ),
@@ -353,6 +390,7 @@ MODEL_PRESETS: tuple[ModelPreset, ...] = (
 # =====================================================================
 # Lookup helpers
 # =====================================================================
+
 
 def get_presets_for_role(
     role: RoleId,
