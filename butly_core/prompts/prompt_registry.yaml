@@ -60,3 +60,8 @@ prompts:
     location: locales
     description: "Key Memory update proposal generation"
     variables: [agent_name, current_key_memory, digest_text]
+
+  stage3_node_review:
+    location: locales
+    description: "Stage 3 Knowledge Maturation: link cards to nodes / propose candidate nodes"
+    variables: [agent_name, system_instruction, key_memory, existing_nodes_json, review_cards_json]

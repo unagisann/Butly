@@ -121,6 +121,7 @@ class ButlySleeptime:
             "key_memory": False,
             "knowledge_cards": True,
             "raw_memory_cache": True,
+            "knowledge_maturation": False,
         }
         # skip_knowledge_generation 後方互換
         if target == "knowledge_cards":
@@ -299,16 +300,22 @@ class ButlySleeptime:
         instance_id = instance_path.name
         # "Master" への変換は廃止。インスタンス名をそのまま db_type として使用する
         db_type = instance_id
-        
+
         # Stage 1: 整理
         self.stage_1_cleanup(instance_path)
-        
+
         # Stage 2: ナレッジ化（update_targets で抑制可能）
         inst_cfg = self._get_instance_config(instance_id)
-        if not self._should_update(inst_cfg, "knowledge_cards"):
+        if self._should_update(inst_cfg, "knowledge_cards"):
+            self.stage_2_knowledgeize(instance_path, db_type)
+        else:
             print(f"[Sleeptime] Stage 2 skipped for {instance_id} (knowledge_cards disabled)")
-            return
-        self.stage_2_knowledgeize(instance_path, db_type)
+
+        # Stage 3: 知識熟成（デフォルト OFF）
+        if self._should_run_stage_3(inst_cfg):
+            self.stage_3_mature_knowledge(instance_path)
+        else:
+            print(f"[Sleeptime] Stage 3 skipped for {instance_id} (knowledge_maturation disabled)")
 
     def stage_1_cleanup(self, instance_name):
         """
@@ -346,7 +353,7 @@ class ButlySleeptime:
             except Exception:
                 processed_set = set()
 
-        all_json_files = sorted(integrated_dir.glob("*.json"))
+        all_json_files = sorted(f for f in integrated_dir.glob("*.json") if not f.name.startswith("."))
         json_files = [f for f in all_json_files if f.name not in processed_set]
         
         if not json_files and not list(floating_summary_dir.glob("*.txt")) and not legacy_floating_file.exists():
@@ -830,6 +837,243 @@ class ButlySleeptime:
         except Exception as e:
             print(f"[Sleeptime] Key Memory proposal generation error: {e}")
 
+    # --- Stage 3: Knowledge Maturation ---
+    def _should_run_stage_3(self, inst_cfg: dict) -> bool:
+        """update_targets の `knowledge_maturation`、設定の `knowledge_maturation_enabled`
+        が両方有効な場合のみ Stage 3 を走らせる。"""
+        if not self._should_update(inst_cfg, "knowledge_maturation"):
+            return False
+        mem_cfg = inst_cfg.get("memory", {})
+        enabled = mem_cfg.get(
+            "knowledge_maturation_enabled",
+            SYSTEM_CONFIG.get("memory", {}).get("knowledge_maturation_enabled", False),
+        )
+        return bool(enabled)
+
+    def _stage_3_param(self, inst_cfg: dict, key: str, default):
+        """memory section の Stage 3 用パラメータをインスタンス→グローバルの順で取得。"""
+        mem_cfg = inst_cfg.get("memory", {})
+        if key in mem_cfg:
+            return mem_cfg[key]
+        return SYSTEM_CONFIG.get("memory", {}).get(key, default)
+
+    def stage_3_mature_knowledge(self, instance_path):
+        """Stage 3: Knowledge Maturation.
+
+        計画書 §6 の手順を実装する:
+          - start_maturation_run
+          - collect_review_cards
+          - LLM 推論 (link / candidate)
+          - apply link_existing / new_nodes / supersede
+          - uncertain status の反映
+          - promotion proposal 出力
+          - complete_maturation_run
+        """
+        from butly_core.core.database import ButlyDatabase
+        from butly_core.core.memory_nodes import MemoryNodeRepository
+        from butly_core.core import knowledge_maturation as km
+        from butly_core.prompts import PromptLoader
+
+        instance_name = instance_path.name
+        instance_db_path = str(INSTANCES_DIR / instance_name / "butly_memory.db")
+        if not Path(instance_db_path).exists():
+            print(f"[Stage3] DB not found, skipping: {instance_db_path}")
+            return
+
+        # DB migration の保証（Stage 3 tables の存在確認）
+        ButlyDatabase(db_path=instance_db_path)
+
+        repo = MemoryNodeRepository(instance_db_path)
+        inst_cfg = self._get_instance_config(instance_name)
+
+        window_days = int(self._stage_3_param(inst_cfg, "knowledge_maturation_window_days", 7))
+        max_cards = int(self._stage_3_param(inst_cfg, "knowledge_maturation_max_cards", 30))
+        min_usage = int(self._stage_3_param(inst_cfg, "knowledge_maturation_min_usage_count", 1))
+        candidate_threshold = float(
+            self._stage_3_param(inst_cfg, "memory_node_candidate_threshold", 0.65)
+        )
+        active_threshold = float(
+            self._stage_3_param(inst_cfg, "memory_node_active_threshold", 0.75)
+        )
+        promotion_threshold = float(
+            self._stage_3_param(inst_cfg, "memory_node_promotion_threshold", 0.85)
+        )
+        promotion_min_sources = int(
+            self._stage_3_param(inst_cfg, "memory_node_promotion_min_sources", 2)
+        )
+
+        # 1. レビュー対象カード収集
+        review_cards = km.collect_review_cards(
+            instance_db_path,
+            window_days=window_days,
+            max_cards=max_cards,
+            min_usage_count=min_usage,
+        )
+        if not review_cards:
+            print(f"[Stage3] No review cards for {instance_name}, skipping.")
+            run_id = repo.start_run(instance_name, metadata={"reason": "no_review_cards"})
+            repo.complete_run(run_id, status="skipped")
+            return
+
+        # 2. run 開始
+        run_id = repo.start_run(
+            instance_name,
+            metadata={
+                "window_days": window_days,
+                "max_cards": max_cards,
+                "min_usage_count": min_usage,
+            },
+        )
+        print(f"[Stage3] Run started: {run_id} (cards={len(review_cards)})")
+
+        try:
+            # 3. 既存 node を取得（superseded は除外）
+            existing_nodes = repo.find_nodes(
+                statuses=["candidate", "active", "uncertain"],
+                limit=200,
+            )
+
+            # 4. LLM 推論
+            loader = PromptLoader()
+            agent_instruction = self.get_instance_instruction(instance_name)
+            agent_key_memory = self.get_instance_key_memory(instance_name)
+
+            prompt = km.build_review_prompt(
+                loader=loader,
+                agent_name=self.get_instance_agent_name(instance_name),
+                system_instruction=agent_instruction,
+                key_memory=agent_key_memory,
+                existing_nodes=existing_nodes,
+                review_cards=review_cards,
+            )
+
+            k_conf = self._resolve_conf(inst_cfg, "knowledge")
+            provider = self._get_provider(k_conf)
+            llm_raw = self._robust_api_call(lambda: provider.classify(prompt, k_conf))
+            if not llm_raw:
+                print("[Stage3] LLM returned empty output; finishing run as completed (no-op).")
+                repo.update_run_counters(run_id, reviewed_card_count=len(review_cards))
+                repo.complete_run(run_id, status="completed")
+                return
+
+            parsed = km.parse_llm_output(llm_raw)
+
+            # 5. 適用
+            valid_card_ids = {c["id"] for c in review_cards}
+            valid_node_ids = {n["id"] for n in existing_nodes}
+
+            linked, uncertain_ids = km.apply_link_existing(
+                repo=repo,
+                entries=parsed["link_existing"],
+                valid_node_ids=valid_node_ids,
+                valid_card_ids=valid_card_ids,
+                run_id=run_id,
+            )
+
+            # supports が紐付いた node は confidence を緩やかに更新 + 補強日時を打つ
+            self._reinforce_linked_nodes(
+                repo=repo,
+                run_id=run_id,
+                link_entries=parsed["link_existing"],
+                valid_node_ids=valid_node_ids,
+            )
+
+            created, superseded = km.apply_new_nodes(
+                repo=repo,
+                entries=parsed["new_nodes"],
+                valid_card_ids=valid_card_ids,
+                run_id=run_id,
+                candidate_threshold=candidate_threshold,
+                active_threshold=active_threshold,
+            )
+
+            # 矛盾優勢の node を uncertain に
+            km.mark_uncertain_nodes(repo=repo, node_ids=uncertain_ids, run_id=run_id)
+
+            repo.update_run_counters(
+                run_id,
+                reviewed_card_count=len(review_cards),
+                created_node_count=created,
+                linked_source_count=linked,
+                superseded_node_count=superseded,
+            )
+
+            # 6. promotion proposal (§11)
+            try:
+                proposals = km.collect_promotion_proposals(
+                    repo=repo,
+                    confidence_threshold=promotion_threshold,
+                    min_sources=promotion_min_sources,
+                )
+                km.write_promotion_proposals_file(instance_path, proposals)
+                print(f"[Stage3] Promotion proposals: {len(proposals)}")
+            except Exception as pe:
+                print(f"[Stage3] proposal generation skipped: {pe}")
+
+            repo.complete_run(run_id, status="completed")
+            print(
+                f"[Stage3] Run completed: linked={linked} created={created} "
+                f"superseded={superseded} uncertain={len(uncertain_ids)}"
+            )
+
+        except Exception as exc:
+            print(f"[Stage3] Run failed: {exc}")
+            try:
+                repo.fail_run(run_id, error=str(exc))
+            except Exception:
+                pass
+
+    def _reinforce_linked_nodes(
+        self,
+        *,
+        repo,
+        run_id: str,
+        link_entries: list,
+        valid_node_ids: set,
+    ) -> None:
+        """supports relation で link された node の confidence をわずかに引き上げ、
+        contradicts であれば下げる。リインフォース日時も更新する。"""
+        from butly_core.core.knowledge_maturation import _coerce_confidence
+
+        deltas: dict[str, float] = {}
+        for e in link_entries:
+            if not isinstance(e, dict):
+                continue
+            nid = e.get("node_id")
+            if nid not in valid_node_ids:
+                continue
+            relation = e.get("relation", "supports")
+            base = _coerce_confidence(e.get("confidence"), 0.5)
+            if relation == "supports":
+                deltas[nid] = deltas.get(nid, 0.0) + 0.05 + 0.05 * base
+            elif relation == "contradicts":
+                deltas[nid] = deltas.get(nid, 0.0) - 0.10 - 0.05 * base
+            # context は confidence に影響を与えない
+
+        for nid, delta in deltas.items():
+            node = repo.get_node(nid)
+            if not node:
+                continue
+            new_conf = float(node.get("confidence") or 0.0) + delta
+            new_conf = max(0.0, min(1.0, new_conf))
+            reinforce = delta > 0
+            repo.update_node(
+                nid,
+                confidence=new_conf,
+                updated_by_run_id=run_id,
+                reinforce=reinforce,
+            )
+            # confidence の昇降で status を遷移させる
+            mem_cfg = SYSTEM_CONFIG.get("memory", {})
+            active_th = float(mem_cfg.get("memory_node_active_threshold", 0.75))
+            candidate_th = float(mem_cfg.get("memory_node_candidate_threshold", 0.65))
+            current_status = node.get("status")
+            if current_status not in ("superseded", "uncertain"):
+                if new_conf >= active_th and current_status != "active":
+                    repo.update_node(nid, status="active", updated_by_run_id=run_id)
+                elif new_conf < candidate_th and current_status == "active":
+                    repo.update_node(nid, status="candidate", updated_by_run_id=run_id)
+
     # --- Backup Logic ---
     def backup_database(self, instance_name):
         """
@@ -869,19 +1113,24 @@ class ButlySleeptime:
         処理完了後、JSONファイルは 2_knowledgeized フォルダへ移動する。
         """
         print(f"--- Stage 2: Knowledgeize (RAW) for {target_instance} ({db_type}) ---")
-        
+
         instance_dir = INSTANCES_DIR / target_instance
         integrated_dir = instance_dir / "memory_archive" / "1_integrated"
         # 修正: 情報純度維持のため RAW JSON を保管する先
         knowledgeized_root = instance_dir / "memory_archive" / "2_knowledgeized"
         knowledgeized_root.mkdir(parents=True, exist_ok=True)
-        
+
+        # DB migration 保証: 直接 sqlite3.connect する前に ButlyDatabase で初期化する
+        instance_db_path = str(INSTANCES_DIR / target_instance / "butly_memory.db")
+        from butly_core.core.database import ButlyDatabase as _ButlyDB
+        _ButlyDB(db_path=instance_db_path)
+
         if not integrated_dir.exists():
             print(f"[{db_type}] No integrated directory.")
             return
 
-        # 処理対象ファイル収集 (JSON)
-        json_files = sorted(list(integrated_dir.glob("*.json")))
+        # 処理対象ファイル収集 (JSON) — ドットファイル (.mid_term_processed.json 等) を除外
+        json_files = sorted(f for f in integrated_dir.glob("*.json") if not f.name.startswith("."))
         if not json_files:
             print(f"[{db_type}] No JSON files to process in 1_integrated.")
             return
@@ -1053,7 +1302,7 @@ class ButlySleeptime:
         if not integrated_dir.exists():
             return {"group_count": 0, "estimated_seconds": 0}
 
-        json_files = list(integrated_dir.glob("*.json"))
+        json_files = [f for f in integrated_dir.glob("*.json") if not f.name.startswith(".")]
         if not json_files:
              return {"group_count": 0, "estimated_seconds": 0}
 

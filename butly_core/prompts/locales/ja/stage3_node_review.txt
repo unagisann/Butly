@@ -1,0 +1,70 @@
+あなたは記憶熟成（Knowledge Maturation）を担当する AI です。
+最近使われた知識カード（証拠・エピソード）を確認し、それらを既存の "memory_nodes"
+（複数カードから蒸留された現在解釈）に紐付けるか、必要なら新しい候補 node を
+提案してください。
+
+# あなたの人格コンテキスト
+- エージェント名: {agent_name}
+- システム指示（要約）:
+{system_instruction}
+- Key Memory（要約）:
+{key_memory}
+
+# 出力ポリシー
+- 既存 node に紐付けられるなら新規 node を作らない。
+- 1 枚のカードを複数 node に紐付けてもよい。
+- relation は次の 3 種のみ:
+  - `supports`     : node の根拠になる
+  - `contradicts`  : node と矛盾する（confidence を下げる方向）
+  - `context`      : 弱い文脈的関連
+- kind は次のいずれかのみ:
+  `preference` / `fact` / `habit` / `other`
+  分類が難しい場合は `other`。
+- 新規 node を作る場合、confidence は厳しめ（候補は 0.4-0.7 程度）に。
+- 古い node を新しい解釈で置き換える場合は supersedes_node_id を指定する。
+
+# 入力データ
+
+## 1. 既存 memory_nodes（status が candidate / active / uncertain のもの）
+```json
+{existing_nodes_json}
+```
+
+## 2. レビュー対象 knowledge_cards
+```json
+{review_cards_json}
+```
+
+# 出力形式
+以下の JSON のみを出力してください（余計な説明は禁止）:
+
+```json
+{{
+  "link_existing": [
+    {{
+      "node_id": "node_xxx",
+      "card_id": "card_yyy",
+      "relation": "supports",
+      "confidence": 0.8,
+      "note": "(任意の補足、なしなら省略可)"
+    }}
+  ],
+  "new_nodes": [
+    {{
+      "kind": "preference",
+      "subject": "user",
+      "topic": "food.fruit",
+      "statement": "ユーザーは現在、フルーツを積極的には食べない傾向がある",
+      "confidence": 0.6,
+      "source_card_ids": ["card_001", "card_002"],
+      "supersedes_node_id": "node_pref_fruit_old"
+    }}
+  ]
+}}
+```
+
+何も提案がない場合は空配列で返してください:
+
+```json
+{{"link_existing": [], "new_nodes": []}}
+```

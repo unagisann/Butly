@@ -84,6 +84,16 @@ SYSTEM_CONFIG = {
         "relationship_update_interval_days": 7,
         "use_summarized_mid_term": True,
         "count_dedup_hours": 6,
+        # --- Stage 3: Knowledge Maturation (§13) ---
+        "knowledge_maturation_enabled": False,
+        "knowledge_maturation_interval_days": 1,
+        "knowledge_maturation_window_days": 7,
+        "knowledge_maturation_max_cards": 30,
+        "knowledge_maturation_min_usage_count": 1,
+        "memory_node_candidate_threshold": 0.65,
+        "memory_node_active_threshold": 0.75,
+        "memory_node_promotion_threshold": 0.85,
+        "memory_node_promotion_min_sources": 2,
     },
     "brain": {
         "search_limit": 3,

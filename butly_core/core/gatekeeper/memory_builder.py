@@ -288,6 +288,24 @@ class MemoryBlockBuilder:
             blocks["rag_context"] = "\n".join(rag_lines)
             blocks["rag_card_ids"] = [c["id"] for c in candidates]  # usage_count 用
             blocks["rag_results_raw"] = candidates  # debug_info 用
+
+            # --- Stage 3 opt-in: ヒットしたカードに紐づく active node を併走 ---
+            _inst_mem = override_config.get("memory", {}) if override_config else {}
+            _km_enabled = _inst_mem.get(
+                "knowledge_maturation_enabled",
+                SYSTEM_CONFIG.get("memory", {}).get(
+                    "knowledge_maturation_enabled", False
+                ),
+            )
+            if _km_enabled and brain is not None:
+                active_nodes = _lookup_active_nodes_for_candidates(
+                    brain=brain,
+                    instance_name=instance_name,
+                    candidates=candidates,
+                )
+                if active_nodes:
+                    blocks["active_nodes"] = active_nodes
+
             print(
                 f"[Gatekeeper] MemoryBlock: {tier}（RAG probe hits={len(candidates)}）"
             )
@@ -692,7 +710,71 @@ def _build_rag(blocks: dict, level: str, tier: str, h) -> str | None:
         truncated = lines[:3] if len(lines) > 3 else lines
         return "[関連記憶]\n" + "\n".join(truncated)
     # high / mid
-    return f"{h('long_term_memory')}\n{h('note_rag')}\n{rag_context}"
+    body = f"{h('long_term_memory')}\n{h('note_rag')}\n{rag_context}"
+
+    # Stage 3: active node の小量併記 (opt-in)
+    active_nodes = blocks.get("active_nodes") or []
+    if active_nodes:
+        node_lines = ["", "【関連する熟成記憶（active nodes）】"]
+        for n in active_nodes[:5]:
+            statement = (n.get("statement") or "").strip().replace("\n", " ")
+            if not statement:
+                continue
+            confidence = n.get("confidence")
+            conf_str = f" (conf={confidence:.2f})" if isinstance(confidence, (int, float)) else ""
+            node_lines.append(f"・{statement}{conf_str}")
+        if len(node_lines) > 2:
+            body += "\n" + "\n".join(node_lines[1:])
+    return body
+
+
+def _lookup_active_nodes_for_candidates(
+    *, brain, instance_name: str, candidates: list
+) -> list[dict]:
+    """RAG candidates に紐づく status='active' node を集めて重複除去して返す。"""
+    import sqlite3
+    try:
+        from butly_core.core.memory_nodes import MemoryNodeRepository
+    except Exception:
+        return []
+
+    if not candidates:
+        return []
+
+    out: dict[str, dict] = {}
+    # source_instance ごとに DB を切り替えて検索する
+    by_inst: dict[str, list[str]] = {}
+    for c in candidates:
+        cid = c.get("id")
+        if not cid:
+            continue
+        src = c.get("source_instance") or instance_name
+        by_inst.setdefault(src, []).append(cid)
+
+    for src, card_ids in by_inst.items():
+        try:
+            db_path = brain._get_db_path(src)
+        except Exception:
+            continue
+        if not db_path.exists():
+            continue
+        try:
+            repo = MemoryNodeRepository(str(db_path))
+            for cid in card_ids:
+                for node in repo.find_active_nodes_for_card(cid):
+                    nid = node.get("id")
+                    if nid and nid not in out:
+                        out[nid] = node
+        except sqlite3.OperationalError:
+            # memory_nodes テーブル未作成 (Stage 3 未実行) — 静かにスキップ
+            continue
+        except Exception as e:
+            print(f"[Gatekeeper] active_nodes lookup skipped ({src}): {e}")
+
+    # confidence 降順で並べ替えて返す
+    nodes = list(out.values())
+    nodes.sort(key=lambda n: float(n.get("confidence") or 0.0), reverse=True)
+    return nodes
 
 
 def _build_floating(blocks: dict, level: str, h) -> str | None:

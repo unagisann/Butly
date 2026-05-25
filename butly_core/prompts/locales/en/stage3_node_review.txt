@@ -1,0 +1,70 @@
+You are responsible for Knowledge Maturation.
+Review recently used knowledge cards (evidence / episodes), link them to existing
+"memory_nodes" (current-interpretation summaries distilled from multiple cards),
+and propose new candidate nodes only when necessary.
+
+# Persona context
+- Agent name: {agent_name}
+- System instruction (summary):
+{system_instruction}
+- Key Memory (summary):
+{key_memory}
+
+# Output policy
+- Prefer linking to existing nodes over creating new ones.
+- A single card may be linked to multiple nodes.
+- relation is one of:
+  - `supports`     : evidence supporting the node
+  - `contradicts`  : contradicts the node (lowers confidence)
+  - `context`      : weak contextual relevance
+- kind is one of:
+  `preference` / `fact` / `habit` / `other`
+  Use `other` when uncertain.
+- For new nodes, keep confidence conservative (candidates ~0.4-0.7).
+- When a new node should replace an old one, set supersedes_node_id.
+
+# Inputs
+
+## 1. Existing memory_nodes (status in candidate / active / uncertain)
+```json
+{existing_nodes_json}
+```
+
+## 2. Review candidate knowledge_cards
+```json
+{review_cards_json}
+```
+
+# Output format
+Return ONLY this JSON (no extra prose):
+
+```json
+{{
+  "link_existing": [
+    {{
+      "node_id": "node_xxx",
+      "card_id": "card_yyy",
+      "relation": "supports",
+      "confidence": 0.8,
+      "note": "(optional)"
+    }}
+  ],
+  "new_nodes": [
+    {{
+      "kind": "preference",
+      "subject": "user",
+      "topic": "food.fruit",
+      "statement": "User currently tends not to actively eat fruit.",
+      "confidence": 0.6,
+      "source_card_ids": ["card_001", "card_002"],
+      "supersedes_node_id": "node_pref_fruit_old"
+    }}
+  ]
+}}
+```
+
+If there is nothing to propose, return empty arrays:
+
+```json
+{{"link_existing": [], "new_nodes": []}}
+```

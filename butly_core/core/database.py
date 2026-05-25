@@ -79,6 +79,88 @@ class ButlyDatabase:
             except sqlite3.OperationalError:
                 pass
 
+            # --- Stage 3: Knowledge Maturation tables ---
+            cursor.execute(
+                """
+            CREATE TABLE IF NOT EXISTS memory_maturation_runs (
+                id TEXT PRIMARY KEY,
+                instance_name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                reviewed_card_count INTEGER DEFAULT 0,
+                created_node_count INTEGER DEFAULT 0,
+                linked_source_count INTEGER DEFAULT 0,
+                superseded_node_count INTEGER DEFAULT 0,
+                started_at TEXT,
+                completed_at TEXT,
+                error TEXT,
+                metadata_json TEXT
+            )
+            """
+            )
+
+            cursor.execute(
+                """
+            CREATE TABLE IF NOT EXISTS memory_nodes (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                subject TEXT,
+                topic TEXT,
+                statement TEXT NOT NULL,
+                confidence REAL DEFAULT 0.0,
+                status TEXT DEFAULT 'candidate',
+                superseded_by_node_id TEXT,
+                metadata_json TEXT,
+                created_by_run_id TEXT,
+                updated_by_run_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                last_reinforced_at TEXT,
+                FOREIGN KEY (superseded_by_node_id) REFERENCES memory_nodes(id),
+                FOREIGN KEY (created_by_run_id) REFERENCES memory_maturation_runs(id),
+                FOREIGN KEY (updated_by_run_id) REFERENCES memory_maturation_runs(id)
+            )
+            """
+            )
+
+            cursor.execute(
+                """
+            CREATE TABLE IF NOT EXISTS memory_node_sources (
+                node_id TEXT NOT NULL,
+                card_id TEXT NOT NULL,
+                relation TEXT DEFAULT 'supports',
+                confidence REAL DEFAULT 0.0,
+                note TEXT,
+                created_by_run_id TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (node_id, card_id, relation),
+                FOREIGN KEY (node_id) REFERENCES memory_nodes(id),
+                FOREIGN KEY (card_id) REFERENCES knowledge_cards(id),
+                FOREIGN KEY (created_by_run_id) REFERENCES memory_maturation_runs(id)
+            )
+            """
+            )
+
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_nodes_status_kind_topic "
+                "ON memory_nodes(status, kind, topic)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_node_sources_card "
+                "ON memory_node_sources(card_id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_node_sources_node "
+                "ON memory_node_sources(node_id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_maturation_runs_instance_started "
+                "ON memory_maturation_runs(instance_name, started_at)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_knowledge_cards_last_counted_at "
+                "ON knowledge_cards(last_counted_at)"
+            )
+
             conn.commit()
 
     def register_knowledge(self, card_data):

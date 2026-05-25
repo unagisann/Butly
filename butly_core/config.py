@@ -93,6 +93,16 @@ SYSTEM_CONFIG = {
         "relationship_update_interval_days": 7,  # Phase 3: 関係性スナップショットの更新間隔（日数）
         "use_summarized_mid_term": True,  # ★NEW: True=要約注入 / False=RAW注入
         "count_dedup_hours": 6,  # usage_count dedup 窓（同一カードの再カウント抑制時間）
+        # --- Stage 3: Knowledge Maturation (§13) ---
+        "knowledge_maturation_enabled": False,
+        "knowledge_maturation_interval_days": 1,
+        "knowledge_maturation_window_days": 7,
+        "knowledge_maturation_max_cards": 30,
+        "knowledge_maturation_min_usage_count": 1,
+        "memory_node_candidate_threshold": 0.65,
+        "memory_node_active_threshold": 0.75,
+        "memory_node_promotion_threshold": 0.85,
+        "memory_node_promotion_min_sources": 2,
     },
     "brain": {
         "search_limit": 3,
