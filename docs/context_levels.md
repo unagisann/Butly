@@ -72,10 +72,10 @@
 
 > In `low`, lines are taken from the head to keep complete sentences.
 
-### `floating` (floating summary)
+### `session_digest` (session digest)
 | Level | Output |
 |---|---|
-| `high` | `=== FLOATING SUMMARY ===\n{full text with relative-time headers}` |
+| `high` | `=== SESSION DIGEST ===\n{full text with relative-time headers}` |
 | `low`  | Omitted (same as off). Recent dialog summary substitutes. |
 | `off`  | Omitted. |
 
@@ -154,7 +154,7 @@ Address form: Master
 === RELATIONSHIP SNAPSHOT ===
 (... full text ...)
 
-=== FLOATING SUMMARY ===
+=== SESSION DIGEST ===
 --- about 30 minutes ago ---
 We talked about the weather.
 
@@ -228,13 +228,13 @@ Using the `low` preset, Gatekeeper-OFF is recommended (a warning is shown in the
       "glossary": "off",
       "mid_term": "low",
       "rag": "low",
-      "floating": "off",
+      "session_digest": "off",
       "tier_info": "off",
       "web_search": "high"
     },
     "order": {
       "system_instruction": ["system_instruction", "key_memory"],
-      "context_prefix": ["label_notes", "current_time", "glossary", "mid_term", "rag", "floating", "tier_info", "web_search"]
+      "context_prefix": ["label_notes", "current_time", "glossary", "mid_term", "rag", "session_digest", "tier_info", "web_search"]
     },
     "system_instruction_position": "top"
   }

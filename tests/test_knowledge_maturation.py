@@ -659,7 +659,7 @@ class TestActiveNodesInRag:
     def _mm(self):
         mm = MagicMock()
         mm.load_recent_sessions.return_value = ([], None)
-        mm.get_floating_summary.return_value = ""
+        mm.get_session_digest.return_value = ""
         mm.get_mid_term_digest.return_value = ""
         mm.get_recent_snapshot.return_value = ""
         mm.get_raw_memory.return_value = ""

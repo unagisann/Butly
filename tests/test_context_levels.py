@@ -149,7 +149,7 @@ class TestPresets:
         low = CONTEXT_LEVEL_PRESETS["low"]
         assert low["label_notes"] == "off"
         assert low["glossary"] == "off"
-        assert low["floating"] == "off"
+        assert low["session_digest"] == "off"
         assert low["tier_info"] == "off"
 
     def test_low_preset_web_search_high(self):
@@ -253,7 +253,7 @@ class TestContextPrefixLevels:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "浮動要約テスト",
+            "session_digest": "会話圧縮ログテスト",
             "mid_term": "中期記憶テスト",
             "mid_term_mode": "raw",
             "rag_context": "RAGテスト",
@@ -267,7 +267,7 @@ class TestContextPrefixLevels:
 
     def test_label_notes_off(self, memory_manager):
         """label_notes off でラベル・注意文が消える"""
-        blocks = {"tier": "mid", "mid_term": "", "rag_context": "", "floating": ""}
+        blocks = {"tier": "mid", "mid_term": "", "rag_context": "", "session_digest": ""}
         result = build_context_prefix(
             blocks, memory_manager,
             context_levels=self._make_levels(label_notes="off"),
@@ -277,7 +277,7 @@ class TestContextPrefixLevels:
 
     def test_current_time_low(self, memory_manager):
         """current_time low は時刻のみ1行"""
-        blocks = {"tier": "mid", "mid_term": "", "rag_context": "", "floating": ""}
+        blocks = {"tier": "mid", "mid_term": "", "rag_context": "", "session_digest": ""}
         result = build_context_prefix(
             blocks, memory_manager,
             context_levels=self._make_levels(current_time="low"),
@@ -286,7 +286,7 @@ class TestContextPrefixLevels:
 
     def test_current_time_off(self, memory_manager):
         """current_time off で時刻セクションが消える"""
-        blocks = {"tier": "mid", "mid_term": "", "rag_context": "", "floating": ""}
+        blocks = {"tier": "mid", "mid_term": "", "rag_context": "", "session_digest": ""}
         result = build_context_prefix(
             blocks, memory_manager,
             context_levels=self._make_levels(current_time="off"),
@@ -296,7 +296,7 @@ class TestContextPrefixLevels:
 
     def test_glossary_low_excluded(self, memory_manager):
         """glossary low は off と同じ（将来拡張予定）"""
-        blocks = {"tier": "mid", "mid_term": "", "rag_context": "", "floating": ""}
+        blocks = {"tier": "mid", "mid_term": "", "rag_context": "", "session_digest": ""}
         result = build_context_prefix(
             blocks, memory_manager,
             context_levels=self._make_levels(glossary="low"),
@@ -310,7 +310,7 @@ class TestContextPrefixLevels:
             "mid_term": "行1\n行2\n行3\n行4\n行5\n行6",
             "mid_term_mode": "raw",
             "rag_context": "",
-            "floating": "",
+            "session_digest": "",
         }
         result = build_context_prefix(
             blocks, memory_manager,
@@ -329,7 +329,7 @@ class TestContextPrefixLevels:
             "mid_term": "",
             "mid_term_mode": "raw",
             "rag_context": "記憶1\n記憶2\n記憶3\n記憶4\n記憶5",
-            "floating": "",
+            "session_digest": "",
         }
         result = build_context_prefix(
             blocks, memory_manager,
@@ -341,24 +341,24 @@ class TestContextPrefixLevels:
         assert "記憶4" not in result
         assert "=== LONG-TERM MEMORY" not in result
 
-    def test_floating_low_excluded(self, memory_manager):
-        """floating low は off と同じ"""
+    def test_session_digest_low_excluded(self, memory_manager):
+        """session_digest low は off と同じ"""
         blocks = {
             "tier": "mid",
             "mid_term": "",
             "rag_context": "",
-            "floating": "浮動要約テスト",
+            "session_digest": "会話圧縮ログテスト",
         }
         result = build_context_prefix(
             blocks, memory_manager,
-            context_levels=self._make_levels(floating="low"),
+            context_levels=self._make_levels(session_digest="low"),
         )
-        assert "FLOATING SUMMARY" not in result
-        assert "浮動要約テスト" not in result
+        assert "SESSION DIGEST" not in result
+        assert "会話圧縮ログテスト" not in result
 
     def test_tier_info_low_excluded(self, memory_manager):
         """tier_info low は off と同じ"""
-        blocks = {"tier": "mid", "mid_term": "", "rag_context": "", "floating": ""}
+        blocks = {"tier": "mid", "mid_term": "", "rag_context": "", "session_digest": ""}
         result = build_context_prefix(
             blocks, memory_manager,
             context_levels=self._make_levels(tier_info="low"),
@@ -372,7 +372,7 @@ class TestContextPrefixLevels:
             "tier": "mid",
             "mid_term": "",
             "rag_context": "",
-            "floating": "",
+            "session_digest": "",
             "web_search_context": long_text,
         }
         result = build_context_prefix(
@@ -421,16 +421,16 @@ class TestLowPresetIntegration:
             "mid_term": "行1\n行2\n行3\n行4\n行5",
             "mid_term_mode": "raw",
             "rag_context": "",
-            "floating": "浮動要約",
+            "session_digest": "会話圧縮ログ",
         }
         result = build_context_prefix(
             blocks, memory_manager,
             context_levels=self._low_levels(),
         )
-        # label_notes, glossary, floating, tier_info は off
+        # label_notes, glossary, session_digest, tier_info は off
         assert "優先順位" not in result or True  # label_notes off
         assert "GLOSSARY" not in result
-        assert "FLOATING SUMMARY" not in result
+        assert "SESSION DIGEST" not in result
         assert "=== TIER INFO" not in result
         # mid_term low: 末尾4行
         assert "[直近の背景]" in result

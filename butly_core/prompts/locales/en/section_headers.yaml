@@ -5,7 +5,7 @@ mid_term_digest: "=== MID-TERM DIGEST ==="
 recent_snapshot: "=== RECENT SNAPSHOT ==="
 current_time: "=== CURRENT TIME ==="
 long_term_memory: "=== LONG-TERM MEMORY (RAG) ==="
-floating_summary: "=== FLOATING SUMMARY ==="
+session_digest: "=== SESSION DIGEST ==="
 tier_info: "=== TIER INFO ==="
 glossary: "=== GLOSSARY ==="
 glossary_short_label: "Terms:"
@@ -27,15 +27,15 @@ note_current_time: >-
 note_rag: >-
   The following is reference info from past records.
   If it conflicts with recent conversation, prioritize recent conversation.
-note_floating: >-
-  The following is a summary of recent conversation.
-  Refer to it together with the last 3 turns as the most recent context.
+note_session_digest: >-
+  The following is a compressed log of conversation that overflowed recent sessions.
+  Use it together with recent conversation history as supporting context for the conversation flow.
 tier_mode: "Current thinking mode: {tier}"
 tier_topic: "Current topic: {topic}"
 
 note_context_prefix: >-
   The following is background information to support the current conversation.
-  Priority order: recent conversation > floating summary > mid-term memory > past memory (RAG) > time info.
+  Priority order: recent conversation > session digest > mid-term memory > past memory (RAG) > time info.
   If any information below conflicts with recent conversation, always prioritize recent conversation.
 
 context_prefix_label: "[Background Info]"

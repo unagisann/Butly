@@ -14,7 +14,7 @@ Butly の記憶システムは、会話の鮮度と重要度に応じて複数�
   ↓
 [1] short_term_json/  ← 生ターンログ (JSON)
   ↓ short_term_limit 超過時
-[2] floating_summaries/  ← 会話単位の浮動要約 (txt)
+[2] session_digests/  ← 会話単位の会話圧縮ログ (txt)
   ↓
 [3] memory_archive/1_integrated/  ← 中間待機ゾーン
 
@@ -44,7 +44,7 @@ Butly の記憶システムは、会話の鮮度と重要度に応じて複数�
 | **書き込み** | 毎ターン返答後、`memory.save_single_turn()` が自動実行 |
 | **形式** | `{"timestamp": "...", "messages": [{"role": "user", "parts": [...]}, {"role": "model", "parts": [...]}]}` |
 | **上限** | `short_term_limit`（デフォルト 6 ファイル） |
-| **オーバーフロー処理** | `memory.maintain_memory()` が溢れた古いファイルをLLMで要約し、floating_summaries/ に保存後 1_integrated/ へ移動 |
+| **オーバーフロー処理** | `memory.maintain_memory()` が溢れた古いファイルをLLMで要約し、session_digests/ に保存後 1_integrated/ へ移動 |
 | **Gatekeeper注入** | Short Term ブロック（直近 6 ターン）として常時注入 |
 
 **設定パラメータ:**
@@ -54,19 +54,19 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # 保持ファイル数
 
 ---
 
-### 2. Floating Summaries（浮動要約）
+### 2. Session Digests（会話圧縮ログ）
 
 | 項目 | 内容 |
 |---|---|
-| **場所** | `instances/{name}/floating_summaries/*.txt`（旧: `floating_summary.txt`） |
+| **場所** | `instances/{name}/session_digests/*.txt`（単一ファイル互換: `session_digest.txt`。旧 `floating_*` パスも読み取り可能） |
 | **書き込み** | `memory.maintain_memory()` が short_term 溢れ時に `brain.summarize_conversation()` を呼び出し生成 |
 | **形式** | 1 会話 = 1 ファイル（本文は要約のみ）。旧形式（先頭行 `Time: {timestamp}`）は読み込み時に除去 |
-| **読み出し形式** | `ButlyMemory.get_floating_summary()` が **相対時刻ヘッダー**（例: `--- 約30分前 ---`）付きで結合する。ファイル名や絶対タイムスタンプは LLM が「別会話」と誤認しないよう意図的に出さない |
-| **Gatekeeper注入** | FLOATING SUMMARY ブロックとして全 tier に注入（最新の会話文脈として機能） |
+| **読み出し形式** | `ButlyMemory.get_session_digest()` が **相対時刻ヘッダー**（例: `--- 約30分前 ---`）付きで結合する。ファイル名や絶対タイムスタンプは LLM が「別会話」と誤認しないよう意図的に出さない |
+| **Gatekeeper注入** | SESSION DIGEST ブロックとして全 tier に注入（最新の会話文脈として機能） |
 | **ライフサイクル** | Sleeptime 実行時に全ファイルを削除（1_integrated の生JSONが存在するため二重書き込みにならない） |
 | **使用モデル** | `AI_CONFIG["summary"]["model_name"]`（低コスト・長文コンテキスト向け） |
 
-> **設計意図:** floating_summary は「今のセッションの流れ」を伝えるための一時的なコンテキストです。
+> **設計意図:** session_digest は、recent sessions から押し出された会話を圧縮し、直近履歴だけでは足りない流れを補うためのコンテキストです。
 > 恒久化は mid_term.txt と butly_memory.db が担います。
 
 ---
@@ -204,7 +204,7 @@ ButlySleeptime.run()
     ├── stage_1_cleanup(instance_path)
     │     ├── [Stage 0] short_term_json/* → 1_integrated/ へ全移動
     │     ├── [Step 1] 1_integrated JSON をテキスト整形
-    │     ├── [Step 2] floating_summaries/* を削除（一時コンテキストのクリア）
+    │     ├── [Step 2] session_digests/* を削除（一時コンテキストのクリア）
     │     ├── [Step 3] mid_term.txt に追記（オーバーフロー時は 3_log へアーカイブ）
     │     ├── [Step 4] _generate_daily_digest() → mid_term_digest.txt 差分追記
     │     │          └── ★ digest_max_input_chars 超過時は日付ヘッダ区切りでチャンク分割
@@ -237,13 +237,13 @@ Sleeptime とは独立して、チャット中にも以下の処理が行われ�
        MID-TERM MEMORY      ← mid_term.txt (RAWモード)
        CURRENT TIME         ← システム時刻
        LONG-TERM (RAG)      ← butly_memory.db (need 有時のみ・tier 非依存)
-       FLOATING SUMMARY     ← floating_summaries/*.txt
+       SESSION DIGEST     ← session_digests/*.txt
        TIER INFO            ← tier 文字列
        SHORT TERM           ← short_term_json/*.json (直近 6 ターン)
 4. Brain.generate() で応答生成
 5. memory.save_single_turn() → short_term_json/ に保存
 6. memory.maintain_memory() → short_term_limit 超過チェック
-       超過していれば: 古いファイルをLLMで要約 → floating_summaries/ + 1_integrated/ へ
+       超過していれば: 古いファイルをLLMで要約 → session_digests/ + 1_integrated/ へ
 ```
 
 ---
@@ -253,8 +253,8 @@ Sleeptime とは独立して、チャット中にも以下の処理が行われ�
 ```
 instances/{name}/
 ├── short_term_json/           # ① アクティブな生ターンログ
-├── floating_summaries/        # ② 短期溢れ時の浮動要約（一時）
-├── floating_summary.txt       # ② 旧方式（互換性維持）
+├── session_digests/        # ② 短期溢れ時の会話圧縮ログ（一時）
+├── session_digest.txt       # ② 旧方式（互換性維持）
 ├── mid_term.txt               # ④ 中期記憶 RAW（最新 30,000 文字）
 ├── mid_term_digest.txt        # ⑤ 事実ダイジェスト（最新 8,000 文字）
 ├── mid_term_relationship.txt  # ⑥ 関係性スナップショット（7日ごと更新）
@@ -283,7 +283,7 @@ instances/{name}/
 | 処理 | モデル設定キー | 用途 |
 |---|---|---|
 | チャット応答生成 | `AI_CONFIG["chat"]["model_name"]` | Brain の主応答 |
-| 会話要約 (floating) | `AI_CONFIG["summary"]["model_name"]` | 短期溢れ時の浮動要約 |
+| 会話要約 (session_digest) | `AI_CONFIG["summary"]["model_name"]` | 短期溢れ時の会話圧縮ログ |
 | 事実ダイジェスト生成 | `AI_CONFIG["summary"]["model_name"]` | mid_term_digest 生成 |
 | 関係性スナップショット | `AI_CONFIG["knowledge"]["model_name"]` | mid_term_relationship 生成 |
 | ヘッドライン抽出 | `AI_CONFIG["summary"]["model_name"]` | recent_digest_headlines.json 生成 |

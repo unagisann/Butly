@@ -27,7 +27,7 @@ DEFAULT_CONTEXT_ORDER = {
         "glossary",
         "mid_term",
         "rag",
-        "floating",
+        "session_digest",
         "tier_info",
         "google_search",
         "web_search",
@@ -48,7 +48,7 @@ CONTEXT_LEVEL_PRESETS = {
         "glossary": "high",
         "mid_term": "high",
         "rag": "high",
-        "floating": "high",
+        "session_digest": "high",
         "tier_info": "high",
         "web_search": "high",
     },
@@ -60,7 +60,7 @@ CONTEXT_LEVEL_PRESETS = {
         "glossary": "off",
         "mid_term": "mid",
         "rag": "high",
-        "floating": "high",
+        "session_digest": "high",
         "tier_info": "high",
         "web_search": "high",
     },
@@ -72,11 +72,30 @@ CONTEXT_LEVEL_PRESETS = {
         "glossary": "off",
         "mid_term": "low",
         "rag": "low",
-        "floating": "off",
+        "session_digest": "off",
         "tier_info": "off",
         "web_search": "high",
     },
 }
+
+
+def _normalize_context_key(key: str) -> str:
+    """旧 `floating` セクション名を `session_digest` に読み替える。"""
+    return "session_digest" if key == "floating" else key
+
+
+def _normalize_context_list(items: list | None) -> list:
+    normalized = [_normalize_context_key(i) for i in (items or [])]
+    return list(dict.fromkeys(normalized))
+
+
+def _normalize_context_levels(levels: dict | None) -> dict:
+    out = {}
+    for key, value in (levels or {}).items():
+        normalized_key = _normalize_context_key(key)
+        if normalized_key not in out:
+            out[normalized_key] = value
+    return out
 
 
 # ===================================================================
@@ -92,10 +111,12 @@ def migrate_context_order_to_levels(config: dict) -> dict:
     if "context_levels" in config:
         return config  # すでに新形式
 
-    si_order = old.get(
-        "system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"]
+    si_order = _normalize_context_list(
+        old.get("system_instruction", DEFAULT_CONTEXT_ORDER["system_instruction"])
     )
-    cp_order = old.get("context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"])
+    cp_order = _normalize_context_list(
+        old.get("context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"])
+    )
     position = old.get("system_instruction_position", "top")
 
     all_si = DEFAULT_CONTEXT_ORDER["system_instruction"]
@@ -127,14 +148,14 @@ def migrate_context_order_to_levels(config: dict) -> dict:
 def _resolve_levels(context_levels: dict | None, context_order: dict | None) -> dict:
     """context_levels または context_order からレベル辞書を解決する。"""
     if context_levels:
-        return context_levels.get("levels", {})
+        return _normalize_context_levels(context_levels.get("levels", {}))
     if context_order:
         all_sections = (
             DEFAULT_CONTEXT_ORDER["system_instruction"]
             + DEFAULT_CONTEXT_ORDER["context_prefix"]
         )
-        si_order = context_order.get("system_instruction", [])
-        cp_order = context_order.get("context_prefix", [])
+        si_order = _normalize_context_list(context_order.get("system_instruction", []))
+        cp_order = _normalize_context_list(context_order.get("context_prefix", []))
         active = set(si_order + cp_order)
         return {s: ("high" if s in active else "off") for s in all_sections}
     return {
@@ -149,9 +170,13 @@ def _resolve_order(
 ) -> list:
     """セクション順序を解決する。off要素も順序上は保持される。"""
     if context_levels and "order" in context_levels:
-        return context_levels["order"].get(key, DEFAULT_CONTEXT_ORDER[key])
+        return _normalize_context_list(
+            context_levels["order"].get(key, DEFAULT_CONTEXT_ORDER[key])
+        )
     if context_order:
-        return context_order.get(key, DEFAULT_CONTEXT_ORDER[key])
+        return _normalize_context_list(
+            context_order.get(key, DEFAULT_CONTEXT_ORDER[key])
+        )
     return DEFAULT_CONTEXT_ORDER[key]
 
 
@@ -161,7 +186,7 @@ class MemoryBlockBuilder:
 
     返却する辞書のキー:
         "short_term"  : 最近の会話履歴（list[dict]）
-        "floating"    : 浮動要約テキスト（str）
+        "session_digest" : recent sessions 超過分の圧縮ログ（str）
         "mid_term"    : 中期記憶テキスト（str、mid 以上）
         "rag_context" : RAG 検索結果テキスト（str、need 有時のみ）
         "tier"        : 使用した tier（str、デバッグ用）
@@ -203,7 +228,10 @@ class MemoryBlockBuilder:
         """
         # --- 全 tier 共通 ---
         short_term_msgs, _ = memory_manager.load_recent_sessions(limit=6)
-        floating = memory_manager.get_floating_summary()
+        if hasattr(memory_manager, "get_session_digest"):
+            session_digest = memory_manager.get_session_digest()
+        else:
+            session_digest = memory_manager.get_floating_summary()
 
         # topic を gatekeeper_output から取得
         topic = ""
@@ -213,7 +241,7 @@ class MemoryBlockBuilder:
         blocks = {
             "tier": tier,
             "short_term": short_term_msgs,
-            "floating": floating,
+            "session_digest": session_digest,
             "mid_term": "",
             "rag_context": "",
             "topic": topic,
@@ -224,8 +252,8 @@ class MemoryBlockBuilder:
         }
 
         if tier == "reflex":
-            # short_term + floating のみ
-            print("[Gatekeeper] MemoryBlock: reflex（short_term + floating）")
+            # short_term + session_digest のみ
+            print("[Gatekeeper] MemoryBlock: reflex（short_term + session_digest）")
             return blocks
 
         # --- mid 以上: mid_term を追加 ---
@@ -479,7 +507,12 @@ def build_context_prefix(
             blocks, levels.get("mid_term", "high"), tier, h
         ),
         "rag": lambda: _build_rag(blocks, levels.get("rag", "high"), tier, h),
-        "floating": lambda: _build_floating(blocks, levels.get("floating", "high"), h),
+        "session_digest": lambda: _build_session_digest(
+            blocks, levels.get("session_digest", "high"), h
+        ),
+        "floating": lambda: _build_session_digest(
+            blocks, levels.get("session_digest", levels.get("floating", "high")), h
+        ),
         "tier_info": lambda: _build_tier_info(
             blocks, levels.get("tier_info", "high"), h
         ),
@@ -777,13 +810,17 @@ def _lookup_active_nodes_for_candidates(
     return nodes
 
 
-def _build_floating(blocks: dict, level: str, h) -> str | None:
+def _build_session_digest(blocks: dict, level: str, h) -> str | None:
     if level in ("off", "low"):
         return None
-    floating = blocks.get("floating", "")
-    if not floating:
+    session_digest = blocks.get("session_digest") or blocks.get("floating", "")
+    if not session_digest:
         return None
-    return f"{h('floating_summary')}\n{h('note_floating')}\n{floating.strip()}"
+    return (
+        f"{h('session_digest')}\n"
+        f"{h('note_session_digest')}\n"
+        f"{session_digest.strip()}"
+    )
 
 
 def _build_tier_info(blocks: dict, level: str, h) -> str | None:

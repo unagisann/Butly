@@ -28,7 +28,7 @@
 - Debug / transient logs (e.g. `ChatService` `latest.json`) are exempt by judgment — they are rolling, redundant, and reconstructable.
 
 ### Atomic-required callsites (as of 2026-05)
-- `butly_core/core/memory.py` — glossary, session-turn JSON, floating summaries
+- `butly_core/core/memory.py` — glossary, session-turn JSON, session digests
 - `butly_core/core/key_memory.py` — `Key_Memory.yaml`, proposals JSON
 - `butly_core/core/gatekeeper/session_state.py` — `session_state.json` (written every turn)
 - `butly_core/core/instance_manager.py` — `config.json` updates, `system_instruction.txt` updates, rename-time fan-out

@@ -5,7 +5,7 @@ build_system_instruction_from_blocks() および build_context_prefix() のユ�
 
 変更後の設計:
   - build_system_instruction_from_blocks(): 不変セクションのみ（SYSTEM INSTRUCTION, KEY MEMORY）
-  - build_context_prefix(): 可変セクション（ラベル, 注意文, CURRENT TIME, MID-TERM, RAG, FLOATING SUMMARY, TIER INFO）
+  - build_context_prefix(): 可変セクション（ラベル, 注意文, CURRENT TIME, MID-TERM, RAG, SESSION DIGEST, TIER INFO）
 
 API キー不要。
 """
@@ -38,7 +38,7 @@ class TestAgentProfileInjection:
             "agent_profile": {"ai_name": "アドラス", "locale": "ja"},
             "user_profile": {"user_name": "悠希"},
         })
-        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        blocks = {"tier": "reflex", "short_term": [], "session_digest": "", "mid_term": "", "rag_context": ""}
         result = build_system_instruction_from_blocks(blocks, memory_manager)
         assert "アドラス" in result
         assert "# Agent Profile" in result
@@ -49,7 +49,7 @@ class TestAgentProfileInjection:
             "agent_profile": {"ai_name": "Atlas", "locale": "en"},
             "user_profile": {},
         })
-        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        blocks = {"tier": "reflex", "short_term": [], "session_digest": "", "mid_term": "", "rag_context": ""}
         result = build_system_instruction_from_blocks(blocks, memory_manager)
         idx_ap = result.index("# Agent Profile")
         idx_si = result.index("=== SYSTEM INSTRUCTION ===")
@@ -62,7 +62,7 @@ class TestAgentProfileInjection:
             "agent_profile": {"ai_name": "", "locale": "ja"},
             "user_profile": {},
         })
-        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        blocks = {"tier": "reflex", "short_term": [], "session_digest": "", "mid_term": "", "rag_context": ""}
         result = build_system_instruction_from_blocks(blocks, memory_manager)
         assert "# Agent Profile" not in result
 
@@ -80,7 +80,7 @@ class TestAgentProfileInjection:
                 "gender": "male",
             },
         })
-        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        blocks = {"tier": "reflex", "short_term": [], "session_digest": "", "mid_term": "", "rag_context": ""}
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
         # SI セクションだけを切り出す（KEY MEMORY 以降は KM ブロック）
@@ -98,7 +98,7 @@ class TestAgentProfileInjection:
             "agent_profile": {"ai_name": "Atlas", "ai_gender": "neutral", "locale": "en"},
             "user_profile": {},
         })
-        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        blocks = {"tier": "reflex", "short_term": [], "session_digest": "", "mid_term": "", "rag_context": ""}
         result = build_system_instruction_from_blocks(blocks, memory_manager)
         assert "Gender: neutral" in result
 
@@ -108,7 +108,7 @@ class TestAgentProfileInjection:
             "agent_profile": {"ai_name": "Atlas", "ai_gender": "", "locale": "en"},
             "user_profile": {},
         })
-        blocks = {"tier": "reflex", "short_term": [], "floating": "", "mid_term": "", "rag_context": ""}
+        blocks = {"tier": "reflex", "short_term": [], "session_digest": "", "mid_term": "", "rag_context": ""}
         result = build_system_instruction_from_blocks(blocks, memory_manager)
         assert "Gender:" not in result
 
@@ -260,7 +260,7 @@ class TestReflexInstruction:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -274,7 +274,7 @@ class TestReflexInstruction:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -288,7 +288,7 @@ class TestReflexInstruction:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -302,7 +302,7 @@ class TestReflexInstruction:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -316,7 +316,7 @@ class TestReflexInstruction:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -331,7 +331,7 @@ class TestReflexInstruction:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -340,19 +340,19 @@ class TestReflexInstruction:
 
         assert "=== LONG-TERM MEMORY" not in result
 
-    def test_no_floating_section(self, memory_manager):
-        """system_instruction に FLOATING SUMMARY が含まれない"""
+    def test_no_session_digest_section(self, memory_manager):
+        """system_instruction に SESSION DIGEST が含まれない"""
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "テスト要約",
+            "session_digest": "テスト要約",
             "mid_term": "",
             "rag_context": "",
         }
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "=== FLOATING SUMMARY" not in result
+        assert "=== SESSION DIGEST" not in result
 
 
 class TestMidInstruction:
@@ -363,7 +363,7 @@ class TestMidInstruction:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "昨日の会話ログ",
             "mid_term_mode": "raw",
             "rag_context": "",
@@ -379,7 +379,7 @@ class TestMidInstruction:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "テスト",
             "mid_term_mode": "raw",
             "rag_context": "",
@@ -398,7 +398,7 @@ class TestRAGInstruction:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "中期記憶のテキスト",
             "mid_term_mode": "raw",
             "rag_context": "【過去の記憶（RAG）】\n・テスト: テストデータ",
@@ -414,7 +414,7 @@ class TestRAGInstruction:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "mid_term_mode": "raw",
             "rag_context": "",
@@ -433,7 +433,7 @@ class TestSystemInstructionOrder:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "浮動要約テスト",
+            "session_digest": "会話圧縮ログテスト",
             "mid_term": "中期記憶テスト",
             "mid_term_mode": "raw",
             "rag_context": "RAGテスト",
@@ -463,7 +463,7 @@ class TestContextPrefixCurrentTime:
         blocks = {
             "tier": tier,
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "" if tier == "reflex" else "mid",
             "mid_term_mode": "raw",
             "rag_context": "",
@@ -482,7 +482,7 @@ class TestContextPrefixMidTerm:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "昨日の会話ログがここに入ります。",
             "mid_term_mode": "raw",
             "rag_context": "",
@@ -498,7 +498,7 @@ class TestContextPrefixMidTerm:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "mid_term_mode": "summary",
             "mid_term_digest": "[2026-03-21] テスト\n- pytest導入",
@@ -518,7 +518,7 @@ class TestContextPrefixMidTerm:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "このテキストは見えないはず",
             "mid_term_mode": "raw",
             "rag_context": "",
@@ -537,7 +537,7 @@ class TestContextPrefixRAG:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "中期記憶のテキスト",
             "mid_term_mode": "raw",
             "rag_context": "【過去の記憶（RAG）】\n・テスト: テストデータ",
@@ -553,7 +553,7 @@ class TestContextPrefixRAG:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "mid_term_mode": "raw",
             "rag_context": "テスト記憶",
@@ -569,7 +569,7 @@ class TestContextPrefixRAG:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "テスト",
             "mid_term_mode": "raw",
             "rag_context": "",
@@ -580,16 +580,16 @@ class TestContextPrefixRAG:
         assert "=== LONG-TERM MEMORY" not in result
 
 
-class TestContextPrefixFloating:
-    """context_prefix: FLOATING SUMMARY テスト"""
+class TestContextPrefixSessionDigest:
+    """context_prefix: SESSION DIGEST テスト"""
 
     @pytest.mark.parametrize("tier", ["reflex", "mid"])
-    def test_floating_included_when_present(self, tier, memory_manager):
-        """floating がある場合、全 tier で context_prefix に注入される"""
+    def test_session_digest_included_when_present(self, tier, memory_manager):
+        """session_digest がある場合、全 tier で context_prefix に注入される"""
         blocks = {
             "tier": tier,
             "short_term": [],
-            "floating": "直前の会話で天気の話をしました。",
+            "session_digest": "直前の会話で天気の話をしました。",
             "mid_term": "mid" if tier != "reflex" else "",
             "mid_term_mode": "raw",
             "rag_context": "",
@@ -597,16 +597,16 @@ class TestContextPrefixFloating:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== FLOATING SUMMARY" in result
+        assert "=== SESSION DIGEST" in result
         assert "天気の話" in result
 
     @pytest.mark.parametrize("tier", ["reflex", "mid"])
-    def test_floating_omitted_when_empty(self, tier, memory_manager):
-        """floating が空の場合、セクション自体が省略される"""
+    def test_session_digest_omitted_when_empty(self, tier, memory_manager):
+        """session_digest が空の場合、セクション自体が省略される"""
         blocks = {
             "tier": tier,
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "" if tier == "reflex" else "mid",
             "mid_term_mode": "raw",
             "rag_context": "",
@@ -614,7 +614,7 @@ class TestContextPrefixFloating:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== FLOATING SUMMARY" not in result
+        assert "=== SESSION DIGEST" not in result
 
 
 class TestContextPrefixSectionOrder:
@@ -625,7 +625,7 @@ class TestContextPrefixSectionOrder:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "浮動要約テスト",
+            "session_digest": "会話圧縮ログテスト",
             "mid_term": "中期記憶テスト",
             "mid_term_mode": "raw",
             "rag_context": "RAGテスト",
@@ -636,17 +636,17 @@ class TestContextPrefixSectionOrder:
         idx_time = result.index("=== CURRENT TIME")
         idx_mid = result.index("=== MID-TERM MEMORY")
         idx_rag = result.index("=== LONG-TERM MEMORY")
-        idx_float = result.index("=== FLOATING SUMMARY")
+        idx_session_digest = result.index("=== SESSION DIGEST")
         idx_tier = result.index("=== TIER INFO")
 
-        assert idx_time < idx_mid < idx_rag < idx_float < idx_tier
+        assert idx_time < idx_mid < idx_rag < idx_session_digest < idx_tier
 
     def test_starts_with_label(self, memory_manager):
         """context_prefix はラベル行で始まる"""
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -662,7 +662,7 @@ class TestContextPrefixSectionOrder:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -677,7 +677,7 @@ class TestContextPrefixSectionOrder:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -695,7 +695,7 @@ class TestContextPrefixReflex:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -709,7 +709,7 @@ class TestContextPrefixReflex:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "テスト",
             "mid_term_mode": "raw",
             "rag_context": "RAG",
@@ -749,7 +749,7 @@ class TestContextPrefixGlossary:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -762,7 +762,7 @@ class TestContextPrefixGlossary:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -774,7 +774,7 @@ class TestContextPrefixGlossary:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "中期記憶テスト",
             "mid_term_mode": "raw",
             "rag_context": "",
@@ -790,7 +790,7 @@ class TestContextPrefixGlossary:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "中期記憶テスト",
             "mid_term_mode": "raw",
             "rag_context": "",
@@ -813,7 +813,7 @@ class TestContextPrefixGlossary:
         blocks = {
             "tier": "reflex",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }
@@ -825,7 +825,7 @@ class TestContextPrefixGlossary:
         blocks = {
             "tier": "mid",
             "short_term": [],
-            "floating": "",
+            "session_digest": "",
             "mid_term": "",
             "rag_context": "",
         }

@@ -50,7 +50,7 @@ block-beta
     D["4. GLOSSARY — 共通言語辞書・意味記憶"]
     E["5. MID-TERM — 中期記憶 digest + relationship（低頻度更新）"]
     F["6. RAG — 長期記憶検索結果（※参考情報注釈付き）"]
-    G["7. FLOATING — 直近の会話要約（※直近文脈注釈付き）"]
+    G["7. SESSION DIGEST — 会話圧縮ログ（※直近文脈注釈付き）"]
     H["8. TIER INFO — 思考モード"]
     I["9. WEB SEARCH RESULTS — Web検索結果（非Gemini + 検索ON時のみ）"]
 
@@ -201,7 +201,7 @@ flowchart TD
     GL["glossary.yaml"]
     DB["butly_memory.db"]
     ST["short_term_json/"]
-    FS["floating_summaries/"]
+    FS["session_digests/"]
     DL["debug_logs/"]
     DLH["debug_logs/history/"]
     RH["recent_digest_headlines.json"]

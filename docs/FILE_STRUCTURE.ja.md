@@ -159,7 +159,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 8. state_delta があれば session_state.apply_delta で反映
 9. debug_info を統合し latest.json / history/ に保存
 10. memory.save_single_turn → 会話を short_term_json に保存
-11. memory.maintain_memory → 閾値超過時に short_term → floating_summary へ折りたたみ
+11. memory.maintain_memory → 閾値超過時に short_term → session_digest へ折りたたみ
 ```
 
 - `ChatService.execute(request, ...)` — 上記フローを実行する静的 async メソッド（バッファ応答 / `ChatResponse` 返却）
@@ -185,11 +185,11 @@ AIアシスタントのコアエンジン群。
   - `get_mid_term_text_content()` — mid_term.txt を上限文字数でカットして返す
   - `get_mid_term_digest()` — mid_term_digest.txt（エピソード付きダイジェスト）を返す
   - `get_mid_term_relationship()` — mid_term_relationship.txt（関係性グラフ）を返す
-  - `get_floating_summary()` — `floating_summaries/*.txt` を相対時刻ヘッダー（例: `--- 約30分前 ---`）付きで結合して返す。旧 `floating_summary.txt` も互換読み取り
+  - `get_session_digest()` — `session_digests/*.txt` を相対時刻ヘッダー（例: `--- 約30分前 ---`）付きで結合して返す。旧 `session_digest.txt` も互換読み取り
   - `load_recent_sessions(limit)` — short_term_json から直近 N 件の会話を返す
   - `save_single_turn(user_msg, ai_msg, ...)` — 会話を short_term_json に保存
   - `get_last_interaction_time()` — 最後のインタラクション日時を返す
-  - `maintain_memory(brain)` — short_term が閾値超えたら floating_summary に折りたたむ
+  - `maintain_memory(brain)` — short_term が閾値超えたら session_digest に折りたたむ
 - ヘルパー関数:
   - `_format_relative_time(dt, now)` — `datetime` から「約30分前」等の文字列を生成
   - `_parse_session_filename_timestamp(name)` — `session_YYYYMMDD_HHMMSS.txt` 形式のファイル名から日時を復元
@@ -415,7 +415,7 @@ tier に応じて、LLM プロバイダーに渡す「記憶ブロック辞書�
   - `build(tier, memory_manager, brain, user_input, instance_name, ...)` — 記憶ブロック辞書を構築して返す
 
 **tier 別の記憶ブロック構成:**
-| tier | short_term | floating | mid_term | rag_context |
+| tier | short_term | session_digest | mid_term | rag_context |
 |------|-----------|---------|---------|------------|
 | `reflex` | ✅ | ✅ | — | `need` 有時 ✅ |
 | `mid` | ✅ | ✅ | ✅ | `need` 有時 ✅ |
@@ -423,7 +423,7 @@ tier に応じて、LLM プロバイダーに渡す「記憶ブロック辞書�
 RAG (`rag_context`) は `need` に連動する独立判定で、tier ではなく `MemoryProbe` のヒットで注入される。
 
 - `build_system_instruction_from_blocks(blocks, memory_manager, use_google_search)` — **不変セクション**（system_instruction + Key_Memory）のみを結合して system_instruction 文字列を生成
-- `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / glossary / mid_term / RAG / floating / tier 情報 / Google 検索注意書き / Web 検索結果）を結合し、Provider が会話履歴の先頭に user メッセージとして注入する文字列を生成
+- `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / glossary / mid_term / RAG / session_digest / tier 情報 / Google 検索注意書き / Web 検索結果）を結合し、Provider が会話履歴の先頭に user メッセージとして注入する文字列を生成
 - `is_long_definition(definition)` — glossary エントリの definition が複数行（= 長文 / 「関連設定」扱い）かを判定。`strip()` 後の `\n` 有無で判定
 - `_build_glossary(blocks, memory_manager, level, h)` — Lorebook 統合: probe ヒットを短文/長文に振り分け、`(priority, _yaml_index)` で安定ソート、`max_entries` 件数制限、`max_chars` greedy skip を適用。「用語説明」セクションを先に、「関連設定」セクションを後に出力
 
@@ -662,7 +662,7 @@ user_prompts.json (ユーザーオーバーライド)
    - raw モード: mid_term.txt をそのまま
    - summary モード: mid_term_digest.txt + mid_term_relationship.txt
 ⑥ [need 有り時のみ・tier 非依存] RAG 検索結果  ← MemoryProbe の candidates から構築
-⑦ floating_summary.txt        ← 直近の会話の浮動要約
+⑦ session_digest.txt        ← 直近の会話の会話圧縮ログ
 ⑧ tier 情報 + topic
 ⑨ [該当時] Google 検索注意書き
 

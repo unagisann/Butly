@@ -23,7 +23,7 @@ Butly maintains several layers of memory that work together:
 | Layer | Description |
 |-------|-------------|
 | **Short-term** | Recent conversation turns (JSON) |
-| **Floating Summary** | Rolling per-conversation summaries with relative-time headers |
+| **Session Digest** | Rolling per-conversation summaries with relative-time headers |
 | **Mid-term Digest** | Episode-tagged fact digest, updated daily |
 | **Relationship Snapshot** | How the AI perceives its relationship with the user, updated weekly |
 | **Knowledge Cards** | Distilled knowledge stored in SQLite with vector embeddings for RAG search |
@@ -244,7 +244,7 @@ flowchart TD
 | Summary | gemini-3.1-flash-lite-preview | Digest / relationship | Daily batch |
 | Knowledge | gemini-3.1-pro-preview | Knowledge card generation | Daily batch |
 | Embedding | gemini-embedding-001 | Vector search | On card generation |
-| Floating | gemini-3.1-flash-lite-preview | Overflow compression | Real-time |
+| Session Digest | gemini-3.1-flash-lite-preview | Overflow compression | Real-time |
 
 All configurable via `user_config.json`.
 

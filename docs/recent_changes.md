@@ -36,14 +36,14 @@ Follow-up to Phase 1–3 LLM refactor. Fixes a stream-path turn counter regressi
 - `AI_CONFIG` Gemini model names refreshed to the current stable IDs.
 - New `usage_count` field on `knowledge_cards` — tracks RAG-driven card hits separately from `last_accessed_at` so the actual reach of each card is visible.
 
-## Relative-time Floating Summary header (2026-05-17)
+## Relative-time Session Digest header (2026-05-17)
 
-`ButlyMemory.get_floating_summary()` no longer emits filenames or absolute timestamps; each entry is now headed by a relative-time label (e.g., `--- about 30 minutes ago ---`). This stops the LLM from misreading two timestamps as separate conversations.
+`ButlyMemory.get_session_digest()` no longer emits filenames or absolute timestamps; each entry is now headed by a relative-time label (e.g., `--- about 30 minutes ago ---`). This stops the LLM from misreading two timestamps as separate conversations.
 
 - New helpers: `_format_relative_time(dt, now)`, `_parse_session_filename_timestamp(name)`, `_strip_legacy_time_line(text)`.
 - Legacy files whose first line is `Time: 2026-...` are stripped on read.
 - Spans are assumed to be sub-half-day (Sleeptime clears the directory daily).
-- The legacy `floating_summary.txt` is still read for backward compatibility.
+- The legacy `session_digest.txt` is still read for backward compatibility.
 
 ## Looser RAG vector threshold / decay + per-layer diagnostics (2026-05-17)
 

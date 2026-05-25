@@ -185,7 +185,7 @@ This preserves the "reduce unnecessary probes" goal while keeping a safety net f
 | 4 | **GLOSSARY** | Shared vocabulary (semantic memory from active glossary.yaml entries) |
 | 5 | **MID-TERM (conditional)** | mid only (see below) |
 | 6 | **RAG (conditional)** | When `need` is set (any tier — see below) |
-| 7 | **FLOATING SUMMARY** | Floating summary of the latest dialogue flow |
+| 7 | **SESSION DIGEST** | Compressed conversation log overflowed from recent sessions |
 | 8 | **TIER INFO** | Current thinking mode (reflex / mid) |
 | 9 | **WEB SEARCH RESULTS** (conditional) | Non-Gemini + use_web_search=True only. Web search results via Tavily API |
 | 10 | **Short Term** | Last 6 turns of conversation history |

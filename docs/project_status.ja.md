@@ -5,7 +5,7 @@
 > 最終更新: 2026-05-24
 
 ## 概要
-Butly は、多層的な記憶管理（短期 / 浮動要約 / 中期ダイジェスト・関係性 / 長期ベクトル DB / Glossary / 根幹記憶）を備えたパーソナル AI アシスタント基盤です。FastAPI バックエンド + Streamlit UI で動作し、SSE ストリーミング応答、マルチプロバイダー LLM (Gemini / OpenAI / xAI / Ollama)、Gatekeeper による tier・RAG 制御、Sleeptime バッチによる記憶整理を備えます。
+Butly は、多層的な記憶管理（短期 / 会話圧縮ログ / 中期ダイジェスト・関係性 / 長期ベクトル DB / Glossary / 根幹記憶）を備えたパーソナル AI アシスタント基盤です。FastAPI バックエンド + Streamlit UI で動作し、SSE ストリーミング応答、マルチプロバイダー LLM (Gemini / OpenAI / xAI / Ollama)、Gatekeeper による tier・RAG 制御、Sleeptime バッチによる記憶整理を備えます。
 
 ## アーキテクチャ構成
 - **フロントエンド:** Streamlit (`app.py`) — Web UI、チャット、データベースブラウザ、Sleeptime 管理、Streaming トグル
@@ -22,7 +22,7 @@ Butly は、多層的な記憶管理（短期 / 浮動要約 / 中期ダイジ�
 - **コアモジュール:** `butly_core/`
   - `chat/service.py`: チャットオーケストレーター。`execute()`（バッファ応答）と `execute_stream()`（SSE）の 2 系統
   - `core/gatekeeper/`: ContextClassifier（tier + need_intent）/ MemoryProbe（事実裏付け）/ StateUpdater（並列実行）/ MemoryBlockBuilder（記憶ブロック構築）
-  - `core/memory.py`: ファイルベース多層記憶 I/O。Floating Summary は相対時刻ヘッダー表示
+  - `core/memory.py`: ファイルベース多層記憶 I/O。Session Digest は相対時刻ヘッダー表示
   - `core/brain.py`: RAG エンジン (`quick_vector_search_diag` / `search_knowledge` / 時間減衰)
   - `core/key_memory.py`: Key_Memory の構造化・正規化
   - `sleeptime.py`: 日次・週次バッチによる記憶蒸留
@@ -40,7 +40,7 @@ Butly は、多層的な記憶管理（短期 / 浮動要約 / 中期ダイジ�
 
 - **Knowledge カード `usage_count` 追加 (2026-05)**: `knowledge_cards` テーブルに `usage_count` フィールドを新設し、RAG 経由でのカード参照実績を `last_accessed_at` と独立して追跡。
 
-- **Floating Summary 表示の相対時刻化 (2026-05-17)**: `ButlyMemory.get_floating_summary()` がファイル名・絶対タイムスタンプを排除し、「約30分前」「約2時間前」などの相対時刻ヘッダーに置換。Sleeptime が日次で整理する前提のため、半日以内のスパンに最適化。旧形式 `Time: 2026-...` を含むファイルは後方互換ロジックで除去。
+- **Session Digest 表示の相対時刻化 (2026-05-17)**: `ButlyMemory.get_session_digest()` がファイル名・絶対タイムスタンプを排除し、「約30分前」「約2時間前」などの相対時刻ヘッダーに置換。Sleeptime が日次で整理する前提のため、半日以内のスパンに最適化。旧形式 `Time: 2026-...` を含むファイルは後方互換ロジックで除去。
 
 - **RAG ベクトル検索の閾値緩和 + Layer 別診断 (2026-05-17)**: `vector_search_threshold` を 0.6 → 0.4 に緩和（時間減衰込みの実効値で判定するため）、`time_decay_rate` のデフォルトをさらに小さくして古いカードも候補に残るよう調整。MemoryProbe は Layer ごとの診断情報（実行可否、ヒット数、reason）を返却するようになり、`debug_info.gatekeeper.memory_probe_layers` に含まれる。
 

@@ -5,7 +5,7 @@ mid_term_digest: "=== MID-TERM DIGEST (中期記憶・事実ダイジェスト) 
 recent_snapshot: "=== RECENT SNAPSHOT (近況スナップショット) ==="
 current_time: "=== CURRENT TIME (現在時刻) ==="
 long_term_memory: "=== LONG-TERM MEMORY (RAG) ==="
-floating_summary: "=== FLOATING SUMMARY (未整理記憶) ==="
+session_digest: "=== SESSION DIGEST (会話圧縮ログ) ==="
 tier_info: "=== TIER INFO ==="
 glossary: "=== GLOSSARY ==="
 glossary_short_label: "用語説明:"
@@ -27,15 +27,15 @@ note_current_time: >-
 note_rag: >-
   ※以下は過去の記録からの参考情報です。
   直近の会話と矛盾する場合は、直近の会話を優先してください。
-note_floating: >-
-  ※以下は直近の会話の要約です。
-  直前の3ターンと併用して最も新しい文脈として優先的に参照してください。
+note_session_digest: >-
+  ※以下は recent sessions から溢れた会話の圧縮ログです。
+  直近の会話履歴と併用し、会話の流れを補う文脈として参照してください。
 tier_mode: "現在の思考モード: {tier}"
 tier_topic: "現在の話題: {topic}"
 
 note_context_prefix: >-
   ※ 以下は現在の会話を補助する背景情報です。
-  ※ 情報の優先順位: 直近の会話履歴 > 浮動要約 > 中期記憶 > 過去の記憶(RAG) > 時刻情報
+  ※ 情報の優先順位: 直近の会話履歴 > Session Digest > 中期記憶 > 過去の記憶(RAG) > 時刻情報
   ※ 直近の会話と矛盾する場合は、常に直近の会話を優先してください。
 
 context_prefix_label: "[背景情報]"

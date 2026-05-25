@@ -14,7 +14,7 @@ During chat (every turn)
   ↓
 [1] short_term_json/  ← raw turn logs (JSON)
   ↓ when short_term_limit is exceeded
-[2] floating_summaries/  ← per-conversation floating summaries (txt)
+[2] session_digests/  ← per-conversation session digests (txt)
   ↓
 [3] memory_archive/1_integrated/  ← transit staging zone
 
@@ -45,7 +45,7 @@ During chat (every turn)
 | **Written by** | `memory.save_single_turn()` called automatically after every response |
 | **Format** | `{"timestamp": "...", "messages": [{"role": "user", "parts": [...]}, {"role": "model", "parts": [...]}]}` |
 | **Limit** | `short_term_limit` (default: 6 files) |
-| **Overflow handling** | `memory.maintain_memory()` summarizes older files via LLM, saves to floating_summaries/, then moves to 1_integrated/ |
+| **Overflow handling** | `memory.maintain_memory()` summarizes older files via LLM, saves to session_digests/, then moves to 1_integrated/ |
 | **Injected by Gatekeeper** | Short Term block (last 6 turns) — injected at all tiers |
 
 **Config parameters:**
@@ -55,19 +55,19 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # number of files to retain
 
 ---
 
-### 2. Floating Summaries (Floating Summary)
+### 2. Session Digests
 
 | Item | Content |
 |---|---|
-| **Location** | `instances/{name}/floating_summaries/*.txt` (legacy: `floating_summary.txt`) |
+| **Location** | `instances/{name}/session_digests/*.txt` (single-file fallback: `session_digest.txt`; legacy `floating_*` paths are still read) |
 | **Written by** | `memory.maintain_memory()` calls `brain.summarize_conversation()` on overflow |
 | **Format** | One txt file per conversation. Body is summary text; legacy first line `Time: {timestamp}` is stripped on read. |
-| **Read format** | `ButlyMemory.get_floating_summary()` concatenates files with **relative-time headers** (e.g. `--- about 30 minutes ago ---`) — file names and absolute timestamps are intentionally omitted to keep the LLM from treating each timestamp as a separate conversation. |
-| **Injected by Gatekeeper** | FLOATING SUMMARY block — injected at all tiers (serves as recent conversation context) |
+| **Read format** | `ButlyMemory.get_session_digest()` concatenates files with **relative-time headers** (e.g. `--- about 30 minutes ago ---`) — file names and absolute timestamps are intentionally omitted to keep the LLM from treating each timestamp as a separate conversation. |
+| **Injected by Gatekeeper** | SESSION DIGEST block — injected at all tiers (serves as recent conversation context) |
 | **Lifecycle** | All files deleted at Sleeptime run (no data loss since raw JSON exists in 1_integrated) |
 | **Model used** | `AI_CONFIG["summary"]["model_name"]` (cost-effective, long-context) |
 
-> **Design intent:** floating_summaries provide temporary context for "the current conversation flow."
+> **Design intent:** session digests compress conversation that overflowed recent sessions, preserving flow that would otherwise fall out of the live context window.
 > Permanent storage is handled by mid_term.txt and butly_memory.db.
 
 ---
@@ -205,7 +205,7 @@ ButlySleeptime.run()
     ├── stage_1_cleanup(instance_path)
     │     ├── [Stage 0] Flush: short_term_json/* → 1_integrated/
     │     ├── [Step 1] Format 1_integrated JSONs to text
-    │     ├── [Step 2] Delete floating_summaries/* (clear temporary context)
+    │     ├── [Step 2] Delete session_digests/* (clear temporary context)
     │     ├── [Step 3] Append to mid_term.txt (archive overflow to 3_log/)
     │     ├── [Step 4] _generate_daily_digest() → incremental update mid_term_digest.txt
     │     │          └── ★ Chunks by date headers when digest_max_input_chars is exceeded
@@ -238,13 +238,13 @@ Independent of the Sleeptime, the following processing occurs during every chat 
        MID-TERM MEMORY      ← mid_term.txt         (RAW mode)
        CURRENT TIME         ← system clock
        LONG-TERM (RAG)      ← butly_memory.db      (when need is set, tier-independent)
-       FLOATING SUMMARY     ← floating_summaries/*.txt
+       SESSION DIGEST     ← session_digests/*.txt
        TIER INFO            ← tier string
        SHORT TERM           ← short_term_json/*.json (last 6 turns)
 4. Brain.generate() produces response
 5. memory.save_single_turn() → saves JSON to short_term_json/
 6. memory.maintain_memory() → checks short_term_limit
-       If exceeded: summarize old files via LLM → floating_summaries/ + 1_integrated/
+       If exceeded: summarize old files via LLM → session_digests/ + 1_integrated/
 ```
 
 ---
@@ -254,8 +254,8 @@ Independent of the Sleeptime, the following processing occurs during every chat 
 ```
 instances/{name}/
 ├── short_term_json/           # ① active raw turn logs
-├── floating_summaries/        # ② temporary floating summaries (from short-term overflow)
-├── floating_summary.txt       # ② legacy file (backward compatibility)
+├── session_digests/        # ② compressed overflow session digests (from short-term overflow)
+├── session_digest.txt       # ② legacy file (backward compatibility)
 ├── mid_term.txt               # ④ mid-term RAW log (latest 30,000 chars)
 ├── mid_term_digest.txt        # ⑤ fact digest (latest 8,000 chars)
 ├── mid_term_relationship.txt  # ⑥ relationship snapshot (updated every 7 days)
@@ -284,7 +284,7 @@ instances/{name}/
 | Process | Config key | Purpose |
 |---|---|---|
 | Chat response generation | `AI_CONFIG["chat"]["model_name"]` | Brain main response |
-| Conversation summarization (floating) | `AI_CONFIG["summary"]["model_name"]` | Floating summary on short-term overflow |
+| Conversation summarization (session_digest) | `AI_CONFIG["summary"]["model_name"]` | Session digest on short-term overflow |
 | Fact digest generation | `AI_CONFIG["summary"]["model_name"]` | Generate mid_term_digest |
 | Relationship snapshot | `AI_CONFIG["knowledge"]["model_name"]` | Generate mid_term_relationship |
 | Recent headlines extraction | `AI_CONFIG["summary"]["model_name"]` | Generate recent_digest_headlines.json |

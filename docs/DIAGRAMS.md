@@ -50,7 +50,7 @@ block-beta
     D["4. GLOSSARY — Shared vocabulary / Semantic memory"]
     E["5. MID-TERM — Mid-term memory digest + relationship (low-frequency update)"]
     F["6. RAG — Long-term memory search results (※ annotated as reference)"]
-    G["7. FLOATING — Recent conversation summary (※ annotated as recent context)"]
+    G["7. SESSION DIGEST — Compressed overflow conversation log (※ annotated as recent context)"]
     H["8. TIER INFO — Thinking mode"]
     I["9. WEB SEARCH RESULTS — Web search results (non-Gemini + search ON only)"]
 
@@ -201,7 +201,7 @@ flowchart TD
     GL["glossary.yaml"]
     DB["butly_memory.db"]
     ST["short_term_json/"]
-    FS["floating_summaries/"]
+    FS["session_digests/"]
     DL["debug_logs/"]
     DLH["debug_logs/history/"]
     RH["recent_digest_headlines.json"]

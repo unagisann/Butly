@@ -1,7 +1,7 @@
 """
-test_floating_summary_format.py
+test_session_digest_format.py
 -------------------------------
-FLOATING SUMMARY のヘッダー形式 (相対時間化) のテスト。
+SESSION DIGEST のヘッダー形式 (相対時間化) のテスト。
 ファイル名や絶対タイムスタンプは LLM ノイズになるため除去し、
 代わりに「約N時間前」のような相対表現に置き換える。
 """
@@ -78,8 +78,8 @@ class TestFormatRelativeTime:
         assert _format_relative_time(now - timedelta(days=2, hours=5), now) == "約2日前"
 
 
-class TestGetFloatingSummaryIntegration:
-    """ButlyMemory.get_floating_summary() の出力フォーマットを検証"""
+class TestGetSessionDigestIntegration:
+    """ButlyMemory.get_session_digest() の出力フォーマットを検証"""
 
     @pytest.fixture
     def memory(self, tmp_path, monkeypatch):
@@ -90,13 +90,13 @@ class TestGetFloatingSummaryIntegration:
     def test_outputs_relative_time_header(self, memory, tmp_path):
         """新形式ファイルから相対時間ヘッダーで出力される"""
         # 30 分前に書かれたファイルとして作成
-        f = memory.floating_summary_dir / "session_20260517_213000.txt"
+        f = memory.session_digest_dir / "session_20260517_213000.txt"
         f.write_text("これは要約です", encoding="utf-8")
         # mtime も合わせる
         ts = datetime(2026, 5, 17, 21, 30, 0).timestamp()
         os.utime(f, (ts, ts))
 
-        result = memory.get_floating_summary()
+        result = memory.get_session_digest()
         # ファイル名 / Time: の絶対表記は出ない
         assert "session_20260517" not in result
         assert "Time:" not in result
@@ -106,22 +106,22 @@ class TestGetFloatingSummaryIntegration:
 
     def test_strips_legacy_time_prefix(self, memory, tmp_path):
         """旧形式 (Time: ... を含む) ファイルでも Time: 行は出力されない"""
-        f = memory.floating_summary_dir / "session_20260517_180000.txt"
+        f = memory.session_digest_dir / "session_20260517_180000.txt"
         f.write_text("Time: 2026-05-17T18:00:00.123\n本文ここから", encoding="utf-8")
 
-        result = memory.get_floating_summary()
+        result = memory.get_session_digest()
         assert "Time: 2026-05-17" not in result
         assert "本文ここから" in result
 
     def test_multiple_files_ordered_chronologically(self, memory):
         """複数ファイル: 古い → 新しい順に出力 (mtime 昇順)"""
-        f1 = memory.floating_summary_dir / "session_20260517_100000.txt"
+        f1 = memory.session_digest_dir / "session_20260517_100000.txt"
         f1.write_text("古い要約", encoding="utf-8")
         os.utime(f1, (datetime(2026, 5, 17, 10).timestamp(),) * 2)
 
-        f2 = memory.floating_summary_dir / "session_20260517_200000.txt"
+        f2 = memory.session_digest_dir / "session_20260517_200000.txt"
         f2.write_text("新しい要約", encoding="utf-8")
         os.utime(f2, (datetime(2026, 5, 17, 20).timestamp(),) * 2)
 
-        result = memory.get_floating_summary()
+        result = memory.get_session_digest()
         assert result.index("古い要約") < result.index("新しい要約")

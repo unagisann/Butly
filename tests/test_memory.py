@@ -2,7 +2,7 @@
 test_memory.py
 --------------
 ButlyMemory のユニットテスト。
-ファイル I/O、短期記憶の保存・読み込み、浮動要約のテスト。
+ファイル I/O、短期記憶の保存・読み込み、会話圧縮ログのテスト。
 API キー不要。
 """
 
@@ -24,7 +24,7 @@ class TestMemoryInit:
         mem = ButlyMemory(base_dir, instance_name="99_test_instance")
 
         assert mem.short_term_json_dir.exists()
-        assert mem.floating_summary_dir.exists()
+        assert mem.session_digest_dir.exists()
         assert mem.archive_integrated.exists()
 
     def test_default_files_created(self, base_dir, test_instance_dir):
@@ -167,33 +167,33 @@ class TestShortTermSaveLoad:
         assert len(messages) <= 4
 
 
-class TestFloatingSummary:
-    """浮動要約のテスト"""
+class TestSessionDigest:
+    """会話圧縮ログのテスト"""
 
-    def test_empty_floating(self, memory_manager):
-        """浮動要約が空の場合、空文字列が返る"""
-        text = memory_manager.get_floating_summary()
+    def test_empty_session_digest(self, memory_manager):
+        """会話圧縮ログが空の場合、空文字列が返る"""
+        text = memory_manager.get_session_digest()
 
         assert text == ""
 
-    def test_legacy_floating(self, memory_manager, test_instance_dir):
-        """旧形式の floating_summary.txt が読み込まれる"""
-        (test_instance_dir / "floating_summary.txt").write_text(
+    def test_legacy_session_digest(self, memory_manager, test_instance_dir):
+        """旧形式の session_digest.txt が読み込まれる"""
+        (test_instance_dir / "session_digest.txt").write_text(
             "レガシー要約テスト", encoding="utf-8"
         )
 
-        text = memory_manager.get_floating_summary()
+        text = memory_manager.get_session_digest()
 
         assert "レガシー要約テスト" in text
 
-    def test_new_floating_dir(self, memory_manager, test_instance_dir):
-        """新形式の floating_summaries/ 内ファイルが読み込まれる"""
-        summary_dir = test_instance_dir / "floating_summaries"
+    def test_new_session_digest_dir(self, memory_manager, test_instance_dir):
+        """新形式の session_digests/ 内ファイルが読み込まれる"""
+        summary_dir = test_instance_dir / "session_digests"
         (summary_dir / "summary_001.txt").write_text(
             "新形式要約テスト", encoding="utf-8"
         )
 
-        text = memory_manager.get_floating_summary()
+        text = memory_manager.get_session_digest()
 
         assert "新形式要約テスト" in text
 

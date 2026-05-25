@@ -647,7 +647,7 @@ class ChatService:
                 user_input=provider_debug.get("user_input", ""),
             )
 
-        # --- 7. 会話保存 (debug log 保存より先に行い、floating_summary の最新状態を反映) ---
+        # --- 7. 会話保存 (debug log 保存より先に行い、session_digest の最新状態を反映) ---
         memory.save_single_turn(request.text, result.text)
         memory.maintain_memory(brain)
 
@@ -1015,7 +1015,7 @@ class ChatService:
                 user_input=provider_debug.get("user_input", ""),
             )
 
-        # 会話保存 (debug log より先に行い、floating_summary の最新状態を反映)
+        # 会話保存 (debug log より先に行い、session_digest の最新状態を反映)
         memory.save_single_turn(request.text, full_text)
         memory.maintain_memory(brain)
 

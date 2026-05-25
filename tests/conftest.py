@@ -83,7 +83,7 @@ def test_instance_dir(base_dir: Path) -> Path:
 
     inst_dir.mkdir(parents=True, exist_ok=True)
     (inst_dir / "short_term_json").mkdir(exist_ok=True)
-    (inst_dir / "floating_summaries").mkdir(exist_ok=True)
+    (inst_dir / "session_digests").mkdir(exist_ok=True)
 
     archive_root = inst_dir / "memory_archive"
     (archive_root / "1_integrated").mkdir(parents=True, exist_ok=True)
@@ -101,7 +101,7 @@ def test_instance_dir(base_dir: Path) -> Path:
     )
     (inst_dir / "mid_term_digest.txt").write_text("", encoding="utf-8")
     (inst_dir / "mid_term_relationship.txt").write_text("", encoding="utf-8")
-    (inst_dir / "floating_summary.txt").write_text("", encoding="utf-8")
+    (inst_dir / "session_digest.txt").write_text("", encoding="utf-8")
     (inst_dir / "session_state.json").write_text(
         json.dumps({
             "topic": "",

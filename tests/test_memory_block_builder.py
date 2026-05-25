@@ -18,8 +18,8 @@ from butly_core.core.gatekeeper import MemoryBlockBuilder
 class TestReflexTier:
     """reflex tier のブロック構築テスト"""
 
-    def test_reflex_has_short_term_and_floating(self, memory_manager, mock_brain):
-        """reflex: short_term + floating のみ"""
+    def test_reflex_has_short_term_and_session_digest(self, memory_manager, mock_brain):
+        """reflex: short_term + session_digest のみ"""
         builder = MemoryBlockBuilder()
 
         blocks = builder.build(
@@ -31,7 +31,7 @@ class TestReflexTier:
 
         assert blocks["tier"] == "reflex"
         assert "short_term" in blocks
-        assert "floating" in blocks
+        assert "session_digest" in blocks
 
     def test_reflex_has_no_mid_term(self, memory_manager, mock_brain):
         """reflex: mid_term は空"""
@@ -234,7 +234,7 @@ class TestBlockStructure:
             user_input="テスト",
         )
 
-        required_keys = {"tier", "short_term", "floating", "mid_term", "rag_context"}
+        required_keys = {"tier", "short_term", "session_digest", "mid_term", "rag_context"}
         assert required_keys.issubset(blocks.keys())
 
     @pytest.mark.parametrize("tier", ["reflex", "mid"])
@@ -339,7 +339,7 @@ class TestContextOrder:
         """context_prefix のセクション順序を変更できる"""
         from butly_core.core.gatekeeper import build_context_prefix
 
-        (test_instance_dir / "floating_summary.txt").write_text(
+        (test_instance_dir / "session_digest.txt").write_text(
             "前回はPythonの話をしました。", encoding="utf-8",
         )
 
@@ -351,14 +351,14 @@ class TestContextOrder:
             user_input="テスト",
         )
 
-        # floating を current_time より前に配置
+        # session_digest を current_time より前に配置
         result = build_context_prefix(
             blocks, memory_manager,
-            context_order={"context_prefix": ["floating", "current_time", "tier_info"]},
+            context_order={"context_prefix": ["session_digest", "current_time", "tier_info"]},
         )
 
         floating_pos = result.find("Pythonの話")
-        # floating が存在する
+        # session_digest が存在する
         assert floating_pos >= 0
 
     def test_unknown_section_id_ignored(self, memory_manager, mock_brain, test_instance_dir):

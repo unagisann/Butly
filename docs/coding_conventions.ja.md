@@ -28,7 +28,7 @@
 - デバッグ・一時ログ（`ChatService` の `latest.json` など）は判断で対象外。ローテーション付きで冗長・再構築可能なため。
 
 ### アトミック書き込み必須箇所（2026-05 時点）
-- `butly_core/core/memory.py` — glossary、セッションターン JSON、floating summary
+- `butly_core/core/memory.py` — glossary、セッションターン JSON、session digest
 - `butly_core/core/key_memory.py` — `Key_Memory.yaml`、提案 JSON
 - `butly_core/core/gatekeeper/session_state.py` — `session_state.json`（毎ターン書き込み）
 - `butly_core/core/instance_manager.py` — `config.json` の更新、`system_instruction.txt` の更新、rename 時の波及更新

@@ -95,9 +95,9 @@ File-based layered memory.
 - `ButlyMemory(base_dir, instance_name)`
   - `get_system_instruction()` / `get_key_memory()` / `get_glossary()` / `get_glossary_raw()` / `save_glossary(data)`
   - `get_mid_term_text_content()` / `get_mid_term_digest()` / `get_mid_term_relationship()`
-  - `get_floating_summary()` — concatenates `floating_summaries/*.txt` with relative-time headers (e.g. `--- about 30 minutes ago ---`). Reads the legacy `floating_summary.txt` for backward compatibility.
+  - `get_session_digest()` — concatenates `session_digests/*.txt` with relative-time headers (e.g. `--- about 30 minutes ago ---`). Reads the legacy `session_digest.txt` for backward compatibility.
   - `load_recent_sessions(limit)`, `save_single_turn(user_msg, ai_msg, ...)`, `get_last_interaction_time()`
-  - `maintain_memory(brain)` — when `short_term` overflows, summarizes overflow files into `floating_summaries/` and moves originals into `memory_archive/1_integrated/`.
+  - `maintain_memory(brain)` — when `short_term` overflows, summarizes overflow files into `session_digests/` and moves originals into `memory_archive/1_integrated/`.
 - Helpers: `_format_relative_time(dt, now)`, `_parse_session_filename_timestamp(name)`, `_strip_legacy_time_line(text)`.
 
 #### `brain.py`
@@ -190,12 +190,12 @@ Returned dict includes `status` (`hit` / `no_hit` / `deep_search` / `skipped`), 
 #### `memory_builder.py`
 - `MemoryBlockBuilder.build(tier, memory_manager, brain, user_input, instance_name, override_config, gatekeeper_output)` — builds the memory-block dict.
 - `build_system_instruction_from_blocks(blocks, memory_manager, use_google_search)` — assembles the **immutable** half (system_instruction + Key_Memory).
-- `build_context_prefix(blocks, memory_manager, use_google_search)` — assembles the **variable** half (current time / glossary / mid-term / RAG / floating / tier info / web search). Provider injects this at the head of the user turn.
+- `build_context_prefix(blocks, memory_manager, use_google_search)` — assembles the **variable** half (current time / glossary / mid-term / RAG / session_digest / tier info / web search). Provider injects this at the head of the user turn.
 - `_build_glossary(blocks, memory_manager, level, h)` — partitions hits into "term explanation" vs "related setting", stable-sorted by `(priority, _yaml_index)`, capped by `max_entries` + greedy `max_chars`.
 - `is_long_definition(definition)` — multi-line check used by `_build_glossary`.
 
 **Tier × memory-block matrix:**
-| tier | short_term | floating | mid_term | rag_context |
+| tier | short_term | session_digest | mid_term | rag_context |
 |---|---|---|---|---|
 | `reflex` | ✅ | ✅ | — | ✅ (when `need` set) |
 | `mid` | ✅ | ✅ | ✅ | ✅ (when `need` set) |
@@ -268,7 +268,7 @@ Prompt loading package.
 | `state_updater` | `control/` | session_state delta |
 | `brain_extract_keywords` | `control/` | RAG keyword extraction |
 | `sleeptime_summarize` | `locales/` | conversation summarization |
-| `brain_summarize_conversation` | `locales/` | floating-summary generation |
+| `brain_summarize_conversation` | `locales/` | session-digest generation |
 | `midterm_digest` | `locales/` | mid-term digest generation |
 | `midterm_relationship` | `locales/` | relationship snapshot generation |
 | `web_ui_default_template` | `locales/` | default system_instruction template |
@@ -289,7 +289,7 @@ For each turn, the LLM receives a prompt assembled in two halves.
   ④ GLOSSARY
   ⑤ [mid only] MID-TERM (RAW mode: mid_term.txt | summary mode: digest + relationship)
   ⑥ [need set | tier-independent] RAG block — from MemoryProbe candidates
-  ⑦ FLOATING SUMMARY (relative-time headers)
+  ⑦ SESSION DIGEST (relative-time headers)
   ⑧ TIER INFO (current tier + topic)
   ⑨ [when used] Google Search note
   ⑩ [non-Gemini + use_web_search] WEB SEARCH RESULTS

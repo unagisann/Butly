@@ -5,7 +5,7 @@
 > Last updated: 2026-05-24
 
 ## Overview
-Butly is a personal AI assistant platform with a layered memory system (short-term / floating summary / mid-term digest + relationship / long-term vector DB / glossary / key memory). It runs on FastAPI backend + Streamlit UI, supports SSE streaming responses, multi-provider LLMs (Gemini / OpenAI / xAI / Ollama), tier + RAG control via Gatekeeper, and Sleeptime batch memory consolidation.
+Butly is a personal AI assistant platform with a layered memory system (short-term / session digest / mid-term digest + relationship / long-term vector DB / glossary / key memory). It runs on FastAPI backend + Streamlit UI, supports SSE streaming responses, multi-provider LLMs (Gemini / OpenAI / xAI / Ollama), tier + RAG control via Gatekeeper, and Sleeptime batch memory consolidation.
 
 ## Architecture
 - **Frontend:** Streamlit (`app.py`) — web UI, chat, DB browser, Sleeptime management, streaming toggle.
@@ -22,7 +22,7 @@ Butly is a personal AI assistant platform with a layered memory system (short-te
 - **Core package:** `butly_core/`
   - `chat/service.py`: chat orchestrator with two paths — `execute()` (buffered) and `execute_stream()` (SSE).
   - `core/gatekeeper/`: ContextClassifier (tier + need_intent) / MemoryProbe (fact-check) / StateUpdater (parallel) / MemoryBlockBuilder.
-  - `core/memory.py`: file-based layered memory I/O; floating summary uses relative-time headers.
+  - `core/memory.py`: file-based layered memory I/O; session digest uses relative-time headers.
   - `core/brain.py`: RAG engine (`quick_vector_search_diag` / `search_knowledge` / time-decay).
   - `core/key_memory.py`: structured Key_Memory utilities.
   - `sleeptime.py`: daily / weekly batch memory consolidation.
@@ -40,7 +40,7 @@ Butly is a personal AI assistant platform with a layered memory system (short-te
 
 - **Knowledge-card `usage_count` (2026-05)**: New field on `knowledge_cards` to track real RAG hit counts (separate from `last_accessed_at`). Surfaces actual reach of each card.
 
-- **Relative-time floating summary (2026-05-17)**: `ButlyMemory.get_floating_summary()` strips filenames and absolute timestamps in favor of relative headers like "about 30 minutes ago". Sleeptime cleans the directory daily, so the in-flight span stays sub-half-day. Legacy `Time: 2026-...` lines are removed for backward compatibility.
+- **Relative-time session digest (2026-05-17)**: `ButlyMemory.get_session_digest()` strips filenames and absolute timestamps in favor of relative headers like "about 30 minutes ago". Sleeptime cleans the directory daily, so the in-flight span stays sub-half-day. Legacy `Time: 2026-...` lines are removed for backward compatibility.
 
 - **Looser RAG vector threshold + per-layer diagnostics (2026-05-17)**: `vector_search_threshold` relaxed from 0.6 → 0.4 (the effective post-decay value is what we want to gate on); `time_decay_rate` lowered so older cards remain reachable. MemoryProbe now returns per-layer diagnostics (executed flag, hit count, reason) surfaced via `debug_info.gatekeeper.memory_probe_layers`.
 

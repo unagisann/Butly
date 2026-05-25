@@ -186,7 +186,7 @@ LLM 出力が 4 値以外だった場合や JSON 構造が崩れた場合のフ�
 | 4 | **GLOSSARY** | 共通言語辞書（意味記憶。glossary.yaml のアクティブエントリ） |
 | 5 | **MID-TERM（条件付）** | mid のみ（下記参照） |
 | 6 | **RAG（条件付）** | `need` 有時のみ（tier 非依存。下記参照） |
-| 7 | **FLOATING SUMMARY** | 最新の対話の浮動要約 |
+| 7 | **SESSION DIGEST** | 最新の対話の会話圧縮ログ |
 | 8 | **TIER INFO** | 現在の思考モード（reflex/mid） |
 | 9 | **WEB SEARCH RESULTS**（条件付） | 非Gemini + use_web_search=True 時のみ。Tavily API 経由のWeb検索結果 |
 | 10 | **Short Term** | 直近 6 ターンの会話履歴 |

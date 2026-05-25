@@ -36,14 +36,14 @@ Phase 1–3 LLM リファクタの追従修正。stream 経路のターンカウ
 - `AI_CONFIG` の Gemini モデル名を現行 stable へ差し替え。
 - `knowledge_cards` テーブルに `usage_count` フィールドを新設し、RAG 経由でのカード参照実績を `last_accessed_at` と独立して追跡。
 
-## Floating Summary 表示の相対時刻化 (2026-05-17)
+## Session Digest 表示の相対時刻化 (2026-05-17)
 
-`ButlyMemory.get_floating_summary()` がファイル名・絶対タイムスタンプを排除し、相対時刻ヘッダー（例: `--- 約30分前 ---`）に統一。LLM が「2 つの別タイムスタンプ = 別会話」と誤認識する問題を解消。
+`ButlyMemory.get_session_digest()` がファイル名・絶対タイムスタンプを排除し、相対時刻ヘッダー（例: `--- 約30分前 ---`）に統一。LLM が「2 つの別タイムスタンプ = 別会話」と誤認識する問題を解消。
 
 - 新ヘルパー: `_format_relative_time(dt, now)` / `_parse_session_filename_timestamp(name)` / `_strip_legacy_time_line(text)`
 - 旧形式（先頭行に `Time: 2026-...` を含むファイル）は読み取り時に除去
 - Sleeptime が日次でクリアする想定で、最大半日以内のスパンを前提
-- 旧 `floating_summary.txt` も互換読み取り
+- 旧 `session_digest.txt` も互換読み取り
 
 ## RAG ベクトル検索の閾値/減衰を緩和 + Layer 別診断 (2026-05-17)
 

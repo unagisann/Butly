@@ -20,7 +20,7 @@ def _parse_session_filename_timestamp(name: str):
 
 
 def _strip_legacy_time_line(text: str) -> str:
-    """旧形式 floating summary の冒頭 `Time: ...` 行を除去 (後方互換)。"""
+    """旧形式 session digest の冒頭 `Time: ...` 行を除去 (後方互換)。"""
     lines = text.split("\n", 1)
     if lines and lines[0].startswith("Time: "):
         return lines[1] if len(lines) > 1 else ""
@@ -90,7 +90,8 @@ class ButlyMemory:
             self.instance_dir / SYSTEM_CONFIG["paths"]["system_instruction"]
         )
         self.short_term_json_dir = self.instance_dir / "short_term_json"
-        self.floating_summary_dir = self.instance_dir / "floating_summaries"
+        self.session_digest_dir = self.instance_dir / "session_digests"
+        self.legacy_floating_summary_dir = self.instance_dir / "floating_summaries"
 
         # アーカイブ階層（読み込み対象）
         self.archive_root = self.instance_dir / "memory_archive"
@@ -104,7 +105,7 @@ class ButlyMemory:
             self.archive_integrated,
             self.archive_knowledgeized,
             self.archive_log,
-            self.floating_summary_dir,
+            self.session_digest_dir,
         ]:
             p.mkdir(parents=True, exist_ok=True)
 
@@ -113,9 +114,13 @@ class ButlyMemory:
                 "あなたは有能なAIアシスタントです。", encoding="utf-8"
             )
 
+        self.session_digest_file = self.instance_dir / "session_digest.txt"
+        if not self.session_digest_file.exists():
+            self.session_digest_file.write_text("", encoding="utf-8")
+
+        # Backward-compatible attribute names for old callers/tests.
+        self.floating_summary_dir = self.session_digest_dir
         self.floating_summary_file = self.instance_dir / "floating_summary.txt"
-        if not self.floating_summary_file.exists():
-            self.floating_summary_file.write_text("", encoding="utf-8")
 
     def _load_config(self):
         """インスタンス固有のconfig.jsonを読み込む"""
@@ -539,9 +544,9 @@ class ButlyMemory:
 
         return file_name
 
-    def get_floating_summary(self):
+    def get_session_digest(self):
         """
-        現在保持している浮動要約(floating summary)のテキストをすべて結合して返す。
+        recent sessions から溢れた会話の圧縮ログ(session digest)を結合して返す。
 
         Format (現行):
             --- 約N時間前 ---
@@ -551,44 +556,53 @@ class ButlyMemory:
         相対時間ヘッダー (例: 「約30分前」「約2時間前」) で代替する。
         Sleeptime が日次で整理する前提なので、半日以内のスパンしか出ない想定。
 
-        旧形式 (`Time: 2026-...` を 1 行目に含むファイル) との後方互換あり。
+        旧形式 (`floating_summary.txt` / `floating_summaries/` および
+        `Time: 2026-...` を 1 行目に含むファイル) との後方互換あり。
         """
         from datetime import datetime
 
         now = datetime.now()
         combined = ""
 
-        # 1. 従来 floating_summary.txt (互換性のため。中身はそのまま)
-        try:
-            if self.floating_summary_file.exists():
-                legacy_text = self.floating_summary_file.read_text(
-                    encoding="utf-8"
-                ).strip()
-                if legacy_text:
-                    combined += legacy_text + "\n\n"
-        except Exception as e:
-            print(f"[Memory] Failed to read legacy floating summary: {e}")
+        for file_path, label in [
+            (self.session_digest_file, "session digest"),
+            (self.floating_summary_file, "legacy floating summary"),
+        ]:
+            try:
+                if file_path.exists():
+                    text = file_path.read_text(encoding="utf-8").strip()
+                    if text:
+                        combined += _strip_legacy_time_line(text) + "\n\n"
+            except Exception as e:
+                print(f"[Memory] Failed to read {label}: {e}")
 
-        # 2. 新フォルダ内のファイル
-        try:
-            if self.floating_summary_dir.exists():
-                for summary_file in sorted(
-                    self.floating_summary_dir.glob("*.txt"), key=os.path.getmtime
-                ):
-                    raw = summary_file.read_text(encoding="utf-8").strip()
-                    if not raw:
-                        continue
+        for summary_dir, label in [
+            (self.session_digest_dir, "session digests dir"),
+            (self.legacy_floating_summary_dir, "legacy floating summaries dir"),
+        ]:
+            try:
+                if summary_dir.exists():
+                    for summary_file in sorted(
+                        summary_dir.glob("*.txt"), key=os.path.getmtime
+                    ):
+                        raw = summary_file.read_text(encoding="utf-8").strip()
+                        if not raw:
+                            continue
 
-                    cleaned = _strip_legacy_time_line(raw)
-                    file_dt = _parse_session_filename_timestamp(
-                        summary_file.name
-                    ) or datetime.fromtimestamp(summary_file.stat().st_mtime)
-                    rel = _format_relative_time(file_dt, now)
-                    combined += f"--- {rel} ---\n{cleaned}\n\n"
-        except Exception as e:
-            print(f"[Memory] Failed to read floating summaries dir: {e}")
+                        cleaned = _strip_legacy_time_line(raw)
+                        file_dt = _parse_session_filename_timestamp(
+                            summary_file.name
+                        ) or datetime.fromtimestamp(summary_file.stat().st_mtime)
+                        rel = _format_relative_time(file_dt, now)
+                        combined += f"--- {rel} ---\n{cleaned}\n\n"
+            except Exception as e:
+                print(f"[Memory] Failed to read {label}: {e}")
 
         return combined.strip()
+
+    def get_floating_summary(self):
+        """Backward-compatible alias for get_session_digest()."""
+        return self.get_session_digest()
 
     def maintain_memory(self, brain):
         """
@@ -640,7 +654,7 @@ class ButlyMemory:
                 # ★修正: 個別ファイルとして保存 (Race Condition回避)
                 # JSONファイル名に対応する .txt を作成
                 summary_filename = json_file.stem + ".txt"
-                summary_path = self.floating_summary_dir / summary_filename
+                summary_path = self.session_digest_dir / summary_filename
 
                 from butly_core.io_utils import atomic_write_text
 

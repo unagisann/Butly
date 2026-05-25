@@ -80,11 +80,11 @@
 
 > `low` では完全な文を維持するよう、行単位で先頭から取得します。
 
-### `floating`（浮動要約）
+### `session_digest`（会話圧縮ログ）
 
 | レベル | 出力 |
 |---|---|
-| `high` | `=== FLOATING SUMMARY ===\n{全文}` |
+| `high` | `=== SESSION DIGEST ===\n{全文}` |
 | `low` | なし（off と同じ。直近会話要約で代替） |
 | `off` | なし |
 
@@ -166,7 +166,7 @@ AI名: ルナ
 === RELATIONSHIP SNAPSHOT (関係性スナップショット) ===
 （...全文...）
 
-=== FLOATING SUMMARY ===
+=== SESSION DIGEST ===
 直前の会話で天気の話をしました。
 
 === TIER INFO ===
@@ -240,13 +240,13 @@ Gatekeeper OFF 時の動作は以下の通りです。
       "glossary": "off",
       "mid_term": "low",
       "rag": "low",
-      "floating": "off",
+      "session_digest": "off",
       "tier_info": "off",
       "web_search": "high"
     },
     "order": {
       "system_instruction": ["system_instruction", "key_memory"],
-      "context_prefix": ["label_notes", "current_time", "glossary", "mid_term", "rag", "floating", "tier_info", "web_search"]
+      "context_prefix": ["label_notes", "current_time", "glossary", "mid_term", "rag", "session_digest", "tier_info", "web_search"]
     },
     "system_instruction_position": "top"
   }

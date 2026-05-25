@@ -23,7 +23,7 @@ Butly は複数の記憶レイヤーを連携させて動作します：
 | レイヤー | 説明 |
 |---------|------|
 | **短期記憶** | 直近の会話ターン（JSON） |
-| **浮動要約** | 会話単位のローリング要約（相対時刻ヘッダー付き） |
+| **会話圧縮ログ** | 会話単位のローリング要約（相対時刻ヘッダー付き） |
 | **中期ダイジェスト** | エピソード付き事実ダイジェスト（日次更新） |
 | **関係性スナップショット** | AIとユーザーの関係性認識（週次更新） |
 | **ナレッジカード** | ベクトル埋め込み付きでSQLiteに保存された蒸留知識（RAG検索用） |
@@ -243,7 +243,7 @@ flowchart TD
 | Summary | gemini-3.1-flash-lite-preview | ダイジェスト・関係性 | 日次バッチ |
 | Knowledge | gemini-3.1-pro-preview | ナレッジカード生成 | 日次バッチ |
 | Embedding | gemini-embedding-001 | ベクトル検索 | カード生成時 |
-| Floating | gemini-3.1-flash-lite-preview | 溢れ圧縮 | リアルタイム |
+| Session Digest | gemini-3.1-flash-lite-preview | 溢れ圧縮 | リアルタイム |
 
 すべて `user_config.json` で変更可能。
 

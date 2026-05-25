@@ -258,7 +258,7 @@ class TestMemoryBlockBuilderRagCardIds:
     def _make_memory_manager(self):
         mm = MagicMock()
         mm.load_recent_sessions.return_value = ([], None)
-        mm.get_floating_summary.return_value = ""
+        mm.get_session_digest.return_value = ""
         mm.get_mid_term_digest.return_value = ""
         mm.get_recent_snapshot.return_value = ""
         mm.get_raw_memory.return_value = ""
@@ -530,7 +530,7 @@ class TestChatServiceExecuteUsageCount:
     def test_increment_for_brain_delivered_cards(self, chat_request, chatservice_env):
         """mid tier + RAG 候補あり → 該当カードの usage_count が +1。"""
         blocks = {
-            "tier": "mid", "topic": "", "short_term": [], "floating": "",
+            "tier": "mid", "topic": "", "short_term": [], "session_digest": "",
             "rag_context": "...",
             "rag_card_ids": ["self_c1", "self_c2"],
             "rag_results_raw": [
@@ -550,7 +550,7 @@ class TestChatServiceExecuteUsageCount:
     def test_no_increment_for_reflex_tier(self, chat_request, chatservice_env):
         """Reflex tier (rag_card_ids 未設定) では DB は変化しない。"""
         chatservice_env["gatekeeper"].classify.return_value["tier"] = "reflex"
-        blocks = {"tier": "reflex", "topic": "", "short_term": [], "floating": ""}
+        blocks = {"tier": "reflex", "topic": "", "short_term": [], "session_digest": ""}
         chatservice_env["mem_builder"] = _mem_builder_returning(blocks)
 
         with patch("butly_core.chat.service.ProviderFactory") as PF:
@@ -562,7 +562,7 @@ class TestChatServiceExecuteUsageCount:
     def test_no_increment_for_probe_only_candidates(self, chat_request, chatservice_env):
         """candidates が MemoryProbe にあっても rag_results_raw が空ならカウントしない。"""
         blocks = {
-            "tier": "mid", "topic": "", "short_term": [], "floating": "",
+            "tier": "mid", "topic": "", "short_term": [], "session_digest": "",
             # rag_results_raw を入れない (RAG block には入らなかった想定)
         }
         chatservice_env["mem_builder"] = _mem_builder_returning(blocks)
@@ -590,7 +590,7 @@ class TestChatServiceExecuteUsageCount:
             },
         }
         blocks = {
-            "tier": "mid", "topic": "", "short_term": [], "floating": "",
+            "tier": "mid", "topic": "", "short_term": [], "session_digest": "",
             "rag_context": "...",
             "rag_card_ids": ["self_c1"],
             "rag_results_raw": [{"id": "self_c1", "title": "T1", "summary": "S1"}],
@@ -607,7 +607,7 @@ class TestChatServiceExecuteUsageCount:
     def test_no_increment_on_brain_failure(self, chat_request, chatservice_env):
         """Brain (provider.generate) が失敗した場合は usage_count が増えない。"""
         blocks = {
-            "tier": "mid", "topic": "", "short_term": [], "floating": "",
+            "tier": "mid", "topic": "", "short_term": [], "session_digest": "",
             "rag_context": "...",
             "rag_card_ids": ["self_c1"],
             "rag_results_raw": [{"id": "self_c1", "title": "T1", "summary": "S1"}],
@@ -625,7 +625,7 @@ class TestChatServiceExecuteUsageCount:
     def test_routes_to_source_instance_db_in_multi_instance(self, chat_request, chatservice_env):
         """readable_instances 横断時、source_instance の DB に振り分けて記録される。"""
         blocks = {
-            "tier": "mid", "topic": "", "short_term": [], "floating": "",
+            "tier": "mid", "topic": "", "short_term": [], "session_digest": "",
             "rag_context": "...",
             "rag_card_ids": ["self_c1", "other_c1"],
             "rag_results_raw": [
@@ -666,7 +666,7 @@ class TestChatServiceExecuteStreamUsageCount:
 
     def test_increment_on_stream_success(self, chat_request, chatservice_env):
         blocks = {
-            "tier": "mid", "topic": "", "short_term": [], "floating": "",
+            "tier": "mid", "topic": "", "short_term": [], "session_digest": "",
             "rag_context": "...",
             "rag_card_ids": ["self_c1"],
             "rag_results_raw": [{"id": "self_c1", "title": "T1", "summary": "S1"}],
@@ -687,7 +687,7 @@ class TestChatServiceExecuteStreamUsageCount:
     def test_no_increment_on_stream_error(self, chat_request, chatservice_env):
         """stream 途中で error イベントが出た場合は usage_count を更新しない。"""
         blocks = {
-            "tier": "mid", "topic": "", "short_term": [], "floating": "",
+            "tier": "mid", "topic": "", "short_term": [], "session_digest": "",
             "rag_context": "...",
             "rag_card_ids": ["self_c1"],
             "rag_results_raw": [{"id": "self_c1", "title": "T1", "summary": "S1"}],
@@ -721,7 +721,7 @@ class TestChatServiceExecuteStreamUsageCount:
             },
         }
         blocks = {
-            "tier": "mid", "topic": "", "short_term": [], "floating": "",
+            "tier": "mid", "topic": "", "short_term": [], "session_digest": "",
             "rag_context": "...",
             "rag_card_ids": ["self_c1"],
             "rag_results_raw": [{"id": "self_c1", "title": "T1", "summary": "S1"}],
@@ -742,7 +742,7 @@ class TestChatServiceExecuteStreamUsageCount:
     def test_routes_to_source_instance_db_stream(self, chat_request, chatservice_env):
         """stream 経由でも source_instance ごとに DB が振り分けられる。"""
         blocks = {
-            "tier": "mid", "topic": "", "short_term": [], "floating": "",
+            "tier": "mid", "topic": "", "short_term": [], "session_digest": "",
             "rag_context": "...",
             "rag_card_ids": ["self_c1", "other_c1"],
             "rag_results_raw": [

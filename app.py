@@ -2175,6 +2175,12 @@ def render_instance_settings_screen():
                 "context_prefix", DEFAULT_CONTEXT_ORDER["context_prefix"]
             )
         )
+        _cp_order = [
+            "session_digest" if sid == "floating" else sid for sid in _cp_order
+        ]
+        _cp_order = list(dict.fromkeys(_cp_order))
+        if "session_digest" not in _cp_order:
+            _cp_order = list(DEFAULT_CONTEXT_ORDER["context_prefix"])
         _si_position = ctx_cfg.get(
             "system_instruction_position",
             DEFAULT_CONTEXT_ORDER.get("system_instruction_position", "top"),
@@ -2189,7 +2195,7 @@ def render_instance_settings_screen():
             "glossary": "共通言語辞書 (glossary)",
             "mid_term": "中期記憶 (mid_term)",
             "rag": "長期記憶 RAG (rag)",
-            "floating": "浮動要約 (floating)",
+            "session_digest": "会話圧縮ログ (session_digest)",
             "tier_info": "Tier情報 (tier_info)",
             "web_search": "Web検索 (web_search)",
         }
@@ -2220,6 +2226,11 @@ def render_instance_settings_screen():
             preset_levels = CONTEXT_LEVEL_PRESETS[preset]
         else:
             preset_levels = ctx_cfg.get("levels", CONTEXT_LEVEL_PRESETS["normal"])
+            if "floating" in preset_levels and "session_digest" not in preset_levels:
+                preset_levels = {
+                    **preset_levels,
+                    "session_digest": preset_levels.get("floating", "high"),
+                }
 
         # --- 個別レベル設定 ---
         _LEVEL_OPTIONS = ["high", "mid", "low", "off"]
