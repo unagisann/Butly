@@ -9,7 +9,7 @@ import base64
 import re
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 # ===================================================================
 # 定数
@@ -62,6 +62,14 @@ class ChatRequest(BaseModel):
     use_google_search: bool = False
     use_web_search: bool = False
     metadata: Optional[Dict[str, Any]] = None
+
+    # 外部チャット入口（Discord / LINE 等）用の任意フィールド。
+    # Web UI からは未指定（None）。ChatService の生成・記憶処理には影響しない
+    # メタ情報であり、会話記憶に保存する本文（request.text）には混ぜない。
+    # debug log / ルーティングのために source 情報を保持する用途で使う。
+    source: Literal["web", "discord", "line", "cli", "api"] = "web"
+    external_user_id: Optional[str] = None
+    external_channel_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):

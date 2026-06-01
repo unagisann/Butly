@@ -11,8 +11,9 @@ import datetime
 import json
 import re
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from butly_core.chat.types import (
     ChatRequest,
@@ -240,6 +241,280 @@ def _save_debug_log(
         print(f"[ChatService] debug_log 保存エラー (応答には影響なし): {e}")
 
 
+def _build_history_fmt(history: list) -> list:
+    """memory.load_recent_sessions() の生履歴を Gatekeeper / Provider 用に整形する。
+
+    parts[0] が dict ({"text": ...}) の場合は text を取り出して平坦化する。
+    """
+    history_fmt = []
+    for m in history:
+        content = m.get("parts", [""])[0]
+        if isinstance(content, dict):
+            content = content.get("text", "")
+        history_fmt.append({"role": m.get("role"), "parts": [content]})
+    return history_fmt
+
+
+@dataclass
+class _PreparedChat:
+    """execute() / execute_stream() が共有するチャット前処理の結果。
+
+    ``error`` が None でない場合は前処理段階でエラーが発生している:
+      - ``session_state is None`` → 添付バリデーションエラー (Gatekeeper 未実行)
+      - ``session_state`` 設定済み → vision 非対応エラー (tier / gk_result も有効)
+    呼び出し側はこの区別に従い、各々の形式 (ChatResponse or error event) で返す。
+    """
+
+    error: Optional[str] = None
+
+    memory: Any = None
+    brain: Any = None
+    full_prompt: str = ""
+    instance_config: Optional[dict] = None
+    history_fmt: Optional[list] = None
+    instance_dir: Optional[Path] = None
+    session_state: Any = None
+    gk_enabled: bool = True
+    gk_result: Optional[dict] = None
+    tier: str = "mid"
+    memory_blocks: Optional[dict] = None
+    provider: Any = None
+    model_name: str = ""
+    connection_id: str = ""
+    has_attachments: bool = False
+    web_sources: List[Dict[str, Any]] = field(default_factory=list)
+    context: Optional[dict] = None
+    context_levels_cfg: Any = None
+
+    # タイミング計測マーカー (debug_info.timing 用)
+    t_gk_start: float = 0.0
+    t_gk_end: float = 0.0
+    t_mem_start: float = 0.0
+    t_mem_end: float = 0.0
+
+
+async def _prepare_chat_context(
+    *,
+    request: ChatRequest,
+    get_instance_components,
+    instance_manager,
+    instances_dir: Path,
+    gatekeeper,
+    mem_block_builder,
+    ai_config_chat: dict,
+    log_prefix: str = "ChatService",
+) -> _PreparedChat:
+    """execute() / execute_stream() 共通の前処理。
+
+    添付バリデーション → コンポーネント取得 → 時刻コンテキスト → Gatekeeper 分類
+    → 記憶ブロック構築 → Provider 選択 / vision チェック → Web 検索 → context 構築
+    までを行い、生成直前の状態をまとめた ``_PreparedChat`` を返す。
+
+    振る舞いは execute() / execute_stream() の従来処理と等価。生成・状態更新・
+    保存・debug_info 構築は各メソッド側に残す。
+    """
+    from butly_core.core.gatekeeper import SessionState
+
+    instance_name = request.instance_name
+
+    # --- 添付バリデーション ---
+    if request.attachments:
+        error = validate_attachments(request.attachments)
+        if error:
+            return _PreparedChat(error=f"[エラー] {error}")
+
+    # --- 1. コンポーネント取得 ---
+    components = get_instance_components(instance_name)
+    memory = components["memory"]
+    brain = components["brain"]
+    chronos = components["chronos"]
+
+    # --- 2. 時刻コンテキスト ---
+    last_ts = memory.get_last_interaction_time()
+    sys_note = chronos.get_system_note(is_holiday=False, last_interaction_time=last_ts)
+    full_prompt = f"{sys_note}\n\n{request.text}"
+
+    # --- 3. インスタンス設定 ---
+    instance_config = instance_manager.get_instance_config(instance_name)
+
+    # --- 4. Gatekeeper 分類 ---
+    history, _ = memory.load_recent_sessions(limit=6)
+    history_fmt = _build_history_fmt(history)
+
+    instance_dir = instances_dir / instance_name
+    session_state = SessionState(instance_dir)
+
+    gk_enabled = instance_config.get("gatekeeper", {}).get("enabled", True)
+
+    t_gk_start = time.time()
+
+    if gk_enabled:
+        try:
+            gk_result = gatekeeper.classify(
+                user_input=request.text,
+                history_msgs=history_fmt,
+                session_state=session_state.to_dict(),
+                override_config=instance_config,
+                instance_dir=instance_dir,
+                brain=brain,
+                memory_manager=memory,
+            )
+            tier = gk_result.get("tier", "mid")
+        except Exception as e:
+            print(f"[{log_prefix}] Gatekeeper エラー、フォールバック: {e}")
+            gk_result = {
+                "tier": "mid",
+                "topic": "",
+                "need": None,
+                "need_intent": None,
+                "search_targets": None,
+                "state_delta": {},
+            }
+            tier = "mid"
+        # 注: StateUpdater は post-response で動かす (各メソッド側)
+    else:
+        # Gatekeeper 無効時: RAG ON なら need を設定、OFF なら mid
+        use_rag = instance_config.get("brain", {}).get("use_rag", True)
+        tier = "mid"
+        gk_result = {
+            "tier": tier,
+            "topic": "",
+            "need": "rag_search" if use_rag else None,
+            "need_intent": "past_fact" if use_rag else None,
+            "search_targets": None,
+            "state_delta": {},
+        }
+        print(
+            f"[{log_prefix}] Gatekeeper disabled — defaulting to {tier} tier "
+            f"(rag={'on' if use_rag else 'off'})"
+        )
+
+    t_gk_end = time.time()
+
+    # --- 5. 記憶ブロック構築 ---
+    use_rag = instance_config.get("brain", {}).get("use_rag", True)
+
+    t_mem_start = time.time()
+    memory_blocks = mem_block_builder.build(
+        tier=tier,
+        memory_manager=memory,
+        brain=brain if (gk_result.get("need") and use_rag) else None,
+        user_input=request.text,
+        instance_name=instance_name,
+        override_config=instance_config,
+        gatekeeper_output=gk_result,
+    )
+    t_mem_end = time.time()
+
+    # --- 6. Provider 選択 (ModelRef: connection + model_name) ---
+    model_ref = _resolve_chat_model_ref(instance_config, request, ai_config_chat)
+    provider = ProviderFactory.create(model_ref)
+    model_name = model_ref.model_name
+    connection_id = model_ref.connection_id
+    has_attachments = bool(request.attachments)
+
+    # vision 非対応チェック
+    if has_attachments and not provider.supports_vision(model_name):
+        return _PreparedChat(
+            error="[エラー] 選択中のモデルは画像入力に対応していません",
+            tier=tier,
+            gk_result=gk_result,
+            session_state=session_state,
+        )
+
+    # RAG は Gatekeeper → MemoryBlockBuilder で一元管理
+    if memory_blocks and memory_blocks.get("rag_context"):
+        print(f"[{log_prefix}] RAG: Gatekeeper 経由の RAG コンテキストを使用")
+    else:
+        print(f"[{log_prefix}] RAG: なし（Gatekeeper 判断によりスキップ）")
+
+    # --- Web 検索 (非 Google connection + 検索 ON 時) ---
+    web_search_context = ""
+    web_sources: List[Dict[str, Any]] = []
+    if request.use_web_search and not _uses_google_connection(connection_id):
+        from butly_core.search import create_search_provider
+
+        search_provider = create_search_provider(chat_model=model_name)
+        if search_provider.is_available():
+            print(f"[{log_prefix}] Web Search: 汎用検索モジュールで検索実行")
+            search_results = await run_in_threadpool(
+                search_provider.search,
+                query=request.text,
+                max_results=3,
+            )
+            if search_results:
+                lines = []
+                for i, r in enumerate(search_results, 1):
+                    lines.append(f"[{i}] {r.title}")
+                    lines.append(f"    URL: {r.url}")
+                    lines.append(f"    {r.content}")
+                    lines.append("")
+                web_search_context = "\n".join(lines)
+                web_sources = [
+                    {"title": r.title, "url": r.url} for r in search_results
+                ]
+                print(f"[{log_prefix}] Web Search: {len(search_results)} 件取得")
+            else:
+                print(f"[{log_prefix}] Web Search: 結果なし")
+        else:
+            print(f"[{log_prefix}] Web Search: API キー未設定のためスキップ")
+
+    if web_search_context:
+        memory_blocks["web_search_context"] = web_search_context
+
+    # --- context_levels 取得 (後方互換: 旧 context_order のみの場合は変換) ---
+    context_levels_cfg = instance_config.get("context_levels")
+    if context_levels_cfg is None and "context_order" in instance_config:
+        from butly_core.core.gatekeeper import migrate_context_order_to_levels
+
+        instance_config = migrate_context_order_to_levels(instance_config)
+        context_levels_cfg = instance_config.get("context_levels")
+
+    if has_attachments:
+        print(
+            f"[{log_prefix}] Provider: {type(provider).__name__}, "
+            f"attachments={len(request.attachments)}"
+        )
+
+    context = {
+        "brain": brain,
+        "memory_manager": memory,
+        "history": history_fmt,
+        "override_config": instance_config,
+        "memory_blocks": memory_blocks,
+        "use_google_search": request.use_google_search,
+        "rag_results": [],
+        "use_rag": request.use_rag,
+        "context_order": instance_config.get("context_order"),
+        "context_levels": context_levels_cfg,
+    }
+
+    return _PreparedChat(
+        memory=memory,
+        brain=brain,
+        full_prompt=full_prompt,
+        instance_config=instance_config,
+        history_fmt=history_fmt,
+        instance_dir=instance_dir,
+        session_state=session_state,
+        gk_enabled=gk_enabled,
+        gk_result=gk_result,
+        tier=tier,
+        memory_blocks=memory_blocks,
+        provider=provider,
+        model_name=model_name,
+        connection_id=connection_id,
+        has_attachments=has_attachments,
+        web_sources=web_sources,
+        context=context,
+        context_levels_cfg=context_levels_cfg,
+        t_gk_start=t_gk_start,
+        t_gk_end=t_gk_end,
+        t_mem_start=t_mem_start,
+        t_mem_end=t_mem_end,
+    )
+
+
 class ChatService:
     """
     チャット実行のステートレスオーケストレーター。
@@ -252,6 +527,10 @@ class ChatService:
       5. Provider 選択と vision 対応チェック
       6. Provider / brain 経由で応答生成
       7. 会話保存
+
+    前処理 (1〜5 + Provider 選択 + Web 検索 + context 構築) は
+    ``_prepare_chat_context`` に共通化されており、execute() / execute_stream()
+    はそこから生成・保存・debug_info 構築のみを担う。
     """
 
     @staticmethod
@@ -284,204 +563,56 @@ class ChatService:
         -------
         ChatResponse
         """
-        from butly_core.core.gatekeeper import SessionState
         from butly_core.config import AI_CONFIG
 
         _t_start = time.time()
 
         instance_name = request.instance_name
 
-        # --- 添付バリデーション ---
-        if request.attachments:
-            error = validate_attachments(request.attachments)
-            if error:
-                return ChatResponse(text=f"[エラー] {error}")
-
-        # --- 1. コンポーネント取得 ---
-        components = get_instance_components(instance_name)
-        memory = components["memory"]
-        brain = components["brain"]
-        chronos = components["chronos"]
-
-        # --- 2. 時刻コンテキスト ---
-        last_ts = memory.get_last_interaction_time()
-        sys_note = chronos.get_system_note(
-            is_holiday=False, last_interaction_time=last_ts
-        )
-        full_prompt = f"{sys_note}\n\n{request.text}"
-
-        # --- 3. インスタンス設定 ---
-        instance_config = instance_manager.get_instance_config(instance_name)
-
-        # --- 4. Gatekeeper 分類 ---
-        history, _ = memory.load_recent_sessions(limit=6)
-        history_fmt = []
-        for m in history:
-            content = m.get("parts", [""])[0]
-            if isinstance(content, dict):
-                content = content.get("text", "")
-            history_fmt.append({"role": m.get("role"), "parts": [content]})
-
-        instance_dir = instances_dir / instance_name
-        session_state = SessionState(instance_dir)
-
-        gk_enabled = instance_config.get("gatekeeper", {}).get("enabled", True)
-
-        _t_gk_start = time.time()
-
-        if gk_enabled:
-            try:
-                gk_result = gatekeeper.classify(
-                    user_input=request.text,
-                    history_msgs=history_fmt,
-                    session_state=session_state.to_dict(),
-                    override_config=instance_config,
-                    instance_dir=instance_dir,
-                    brain=brain,
-                    memory_manager=memory,
-                )
-                tier = gk_result.get("tier", "mid")
-            except Exception as e:
-                print(f"[ChatService] Gatekeeper エラー、フォールバック: {e}")
-                gk_result = {
-                    "tier": "mid",
-                    "topic": "",
-                    "need": None,
-                    "need_intent": None,
-                    "search_targets": None,
-                    "state_delta": {},
-                }
-                tier = "mid"
-
-            # 注: StateUpdater は post-response (Step 6 で generate と並列実行) で動かす
-        else:
-            # Gatekeeper 無効時: RAG ON なら need を設定、OFF なら mid
-            use_rag = instance_config.get("brain", {}).get("use_rag", True)
-            tier = "mid"
-            gk_result = {
-                "tier": tier,
-                "topic": "",
-                "need": "rag_search" if use_rag else None,
-                "need_intent": "past_fact" if use_rag else None,
-                "search_targets": None,
-                "state_delta": {},
-            }
-            print(
-                f"[ChatService] Gatekeeper disabled — defaulting to {tier} tier (rag={'on' if use_rag else 'off'})"
-            )
-
-        _t_gk_end = time.time()
-
-        # --- 5. 記憶ブロック構築 ---
-        use_rag = instance_config.get("brain", {}).get("use_rag", True)
-
-        _t_mem_start = time.time()
-
-        memory_blocks = mem_block_builder.build(
-            tier=tier,
-            memory_manager=memory,
-            brain=brain if (gk_result.get("need") and use_rag) else None,
-            user_input=request.text,
-            instance_name=instance_name,
-            override_config=instance_config,
-            gatekeeper_output=gk_result,
+        # --- 前処理 (共通) ---
+        prepared = await _prepare_chat_context(
+            request=request,
+            get_instance_components=get_instance_components,
+            instance_manager=instance_manager,
+            instances_dir=instances_dir,
+            gatekeeper=gatekeeper,
+            mem_block_builder=mem_block_builder,
+            ai_config_chat=AI_CONFIG["chat"],
+            log_prefix="ChatService",
         )
 
-        _t_mem_end = time.time()
-
-        # --- 6. Provider 選択と応答生成 ---
-        # ModelRef (connection + model_name) で Provider を決定
-        model_ref = _resolve_chat_model_ref(
-            instance_config,
-            request,
-            AI_CONFIG["chat"],
-        )
-        provider = ProviderFactory.create(model_ref)
-        model_name = model_ref.model_name
-        connection_id = model_ref.connection_id
-        has_attachments = bool(request.attachments)
-
-        # vision 非対応チェック
-        if has_attachments and not provider.supports_vision(model_name):
+        # 前処理エラー (添付バリデーション / vision 非対応)
+        if prepared.error is not None:
+            if prepared.session_state is None:
+                # 添付バリデーションエラー (Gatekeeper 未実行)
+                return ChatResponse(text=prepared.error)
+            # vision 非対応エラー (gatekeeper 情報あり)
             return ChatResponse(
-                text="[エラー] 選択中のモデルは画像入力に対応していません",
-                tier=tier,
-                need=gk_result.get("need"),
-                search_targets=gk_result.get("search_targets"),
-                session_state=session_state.to_dict(),
+                text=prepared.error,
+                tier=prepared.tier,
+                need=prepared.gk_result.get("need"),
+                search_targets=prepared.gk_result.get("search_targets"),
+                session_state=prepared.session_state.to_dict(),
             )
 
-        # RAG は Gatekeeper → MemoryBlockBuilder で一元管理
-        # memory_blocks["rag_context"] に結果が格納済み（need有効時のみ）
-        rag_results = []
-        if memory_blocks and memory_blocks.get("rag_context"):
-            print("[ChatService] RAG: Gatekeeper 経由の RAG コンテキストを使用")
-        else:
-            print("[ChatService] RAG: なし（Gatekeeper 判断によりスキップ）")
-
-        # --- 5.5 Web検索（非 Google + 検索ON時） ---
-        # Google (Gemini) は SDK 側の grounding tool を使うのでここはスキップ。
-        # それ以外の connection は汎用検索モジュールで Web 検索を行う。
-        web_search_context = ""
-        web_sources = []
-        if request.use_web_search and not _uses_google_connection(connection_id):
-            from butly_core.search import create_search_provider
-
-            search_provider = create_search_provider(chat_model=model_name)
-            if search_provider.is_available():
-                print("[ChatService] Web Search: 汎用検索モジュールで検索実行")
-                search_results = await run_in_threadpool(
-                    search_provider.search,
-                    query=request.text,
-                    max_results=3,
-                )
-                if search_results:
-                    lines = []
-                    for i, r in enumerate(search_results, 1):
-                        lines.append(f"[{i}] {r.title}")
-                        lines.append(f"    URL: {r.url}")
-                        lines.append(f"    {r.content}")
-                        lines.append("")
-                    web_search_context = "\n".join(lines)
-                    web_sources = [
-                        {"title": r.title, "url": r.url} for r in search_results
-                    ]
-                    print(f"[ChatService] Web Search: {len(search_results)} 件取得")
-                else:
-                    print("[ChatService] Web Search: 結果なし")
-            else:
-                print("[ChatService] Web Search: API キー未設定のためスキップ")
-
-        if web_search_context:
-            memory_blocks["web_search_context"] = web_search_context
-
-        # --- context_levels 取得（後方互換: 旧 context_order のみの場合は変換） ---
-        context_levels_cfg = instance_config.get("context_levels")
-        if context_levels_cfg is None and "context_order" in instance_config:
-            from butly_core.core.gatekeeper import migrate_context_order_to_levels
-
-            instance_config = migrate_context_order_to_levels(instance_config)
-            context_levels_cfg = instance_config.get("context_levels")
-
-        context = {
-            "brain": brain,
-            "memory_manager": memory,
-            "history": history_fmt,
-            "override_config": instance_config,
-            "memory_blocks": memory_blocks,
-            "use_google_search": request.use_google_search,
-            "rag_results": rag_results,
-            "use_rag": request.use_rag,
-            "context_order": instance_config.get("context_order"),
-            "context_levels": context_levels_cfg,
-        }
-
-        if has_attachments:
-            print(
-                f"[ChatService] Provider: {type(provider).__name__}, attachments={len(request.attachments)}"
-            )
-
-        _t_gen_start = time.time()
+        memory = prepared.memory
+        brain = prepared.brain
+        full_prompt = prepared.full_prompt
+        instance_config = prepared.instance_config
+        history_fmt = prepared.history_fmt
+        instance_dir = prepared.instance_dir
+        session_state = prepared.session_state
+        gk_enabled = prepared.gk_enabled
+        gk_result = prepared.gk_result
+        tier = prepared.tier
+        memory_blocks = prepared.memory_blocks
+        provider = prepared.provider
+        model_name = prepared.model_name
+        connection_id = prepared.connection_id
+        has_attachments = prepared.has_attachments
+        web_sources = prepared.web_sources
+        context = prepared.context
+        context_levels_cfg = prepared.context_levels_cfg
 
         # Generate と StateUpdater を並列実行 (post-response の StateUpdater を
         # クリティカルパスから外す)
@@ -540,7 +671,6 @@ class ChatService:
             log_prefix="ChatService",
         )
 
-        _t_gen_end = time.time()
         _t_total = time.time() - _t_start
 
         # tier / gatekeeper 情報を付与
@@ -595,8 +725,10 @@ class ChatService:
 
         result.debug_info = {
             "timing": {
-                "gatekeeper_ms": int((_t_gk_end - _t_gk_start) * 1000),
-                "memory_build_ms": int((_t_mem_end - _t_mem_start) * 1000),
+                "gatekeeper_ms": int((prepared.t_gk_end - prepared.t_gk_start) * 1000),
+                "memory_build_ms": int(
+                    (prepared.t_mem_end - prepared.t_mem_start) * 1000
+                ),
                 "rag_search_ms": 0,
                 "generation_ms": gen_elapsed_ms["value"],
                 "state_update_ms": state_elapsed_ms["value"],
@@ -655,6 +787,7 @@ class ChatService:
         debug_log_payload = {
             "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
             "instance": instance_name,
+            "source": getattr(request, "source", "web"),
             "user_input": request.text,
             "assistant_response": result.text,
             "debug_info": result.debug_info,
@@ -686,169 +819,50 @@ class ChatService:
           - {"type": "done", "data": {timing, debug, session_state, sources, ...}}
           - {"type": "error", "message": str, "recoverable": bool}
         """
-        from butly_core.core.gatekeeper import SessionState
         from butly_core.config import AI_CONFIG
 
         _t_start = time.time()
         instance_name = request.instance_name
 
-        # 添付バリデーション
-        if request.attachments:
-            error = validate_attachments(request.attachments)
-            if error:
-                yield {
-                    "type": "error",
-                    "message": f"[エラー] {error}",
-                    "recoverable": False,
-                }
-                return
-
-        # 1. コンポーネント取得
-        components = get_instance_components(instance_name)
-        memory = components["memory"]
-        brain = components["brain"]
-        chronos = components["chronos"]
-
-        # 2. 時刻コンテキスト
-        last_ts = memory.get_last_interaction_time()
-        sys_note = chronos.get_system_note(
-            is_holiday=False, last_interaction_time=last_ts
+        # --- 前処理 (共通) ---
+        prepared = await _prepare_chat_context(
+            request=request,
+            get_instance_components=get_instance_components,
+            instance_manager=instance_manager,
+            instances_dir=instances_dir,
+            gatekeeper=gatekeeper,
+            mem_block_builder=mem_block_builder,
+            ai_config_chat=AI_CONFIG["chat"],
+            log_prefix="ChatService.stream",
         )
-        full_prompt = f"{sys_note}\n\n{request.text}"
 
-        # 3. インスタンス設定
-        instance_config = instance_manager.get_instance_config(instance_name)
-
-        # 4. Gatekeeper
-        history, _ = memory.load_recent_sessions(limit=6)
-        history_fmt = []
-        for m in history:
-            content = m.get("parts", [""])[0]
-            if isinstance(content, dict):
-                content = content.get("text", "")
-            history_fmt.append({"role": m.get("role"), "parts": [content]})
-
-        instance_dir = instances_dir / instance_name
-        session_state = SessionState(instance_dir)
-        gk_enabled = instance_config.get("gatekeeper", {}).get("enabled", True)
-        _t_gk_start = time.time()
-
-        if gk_enabled:
-            try:
-                gk_result = gatekeeper.classify(
-                    user_input=request.text,
-                    history_msgs=history_fmt,
-                    session_state=session_state.to_dict(),
-                    override_config=instance_config,
-                    instance_dir=instance_dir,
-                    brain=brain,
-                    memory_manager=memory,
-                )
-                tier = gk_result.get("tier", "mid")
-            except Exception as e:
-                print(f"[ChatService.stream] Gatekeeper エラー、フォールバック: {e}")
-                gk_result = {
-                    "tier": "mid",
-                    "topic": "",
-                    "need": None,
-                    "need_intent": None,
-                    "search_targets": None,
-                    "state_delta": {},
-                }
-                tier = "mid"
-        else:
-            use_rag = instance_config.get("brain", {}).get("use_rag", True)
-            tier = "mid"
-            gk_result = {
-                "tier": tier,
-                "topic": "",
-                "need": "rag_search" if use_rag else None,
-                "need_intent": "past_fact" if use_rag else None,
-                "search_targets": None,
-                "state_delta": {},
-            }
-
-        _t_gk_end = time.time()
-
-        # 5. 記憶ブロック
-        use_rag = instance_config.get("brain", {}).get("use_rag", True)
-        _t_mem_start = time.time()
-        memory_blocks = mem_block_builder.build(
-            tier=tier,
-            memory_manager=memory,
-            brain=brain if (gk_result.get("need") and use_rag) else None,
-            user_input=request.text,
-            instance_name=instance_name,
-            override_config=instance_config,
-            gatekeeper_output=gk_result,
-        )
-        _t_mem_end = time.time()
-
-        # Provider (ModelRef ルート: connection + model_name)
-        model_ref = _resolve_chat_model_ref(
-            instance_config,
-            request,
-            AI_CONFIG["chat"],
-        )
-        provider = ProviderFactory.create(model_ref)
-        model_name = model_ref.model_name
-        connection_id = model_ref.connection_id
-        has_attachments = bool(request.attachments)
-
-        if has_attachments and not provider.supports_vision(model_name):
+        # 前処理エラー (添付バリデーション / vision 非対応) は error イベントで返す
+        if prepared.error is not None:
             yield {
                 "type": "error",
-                "message": "[エラー] 選択中のモデルは画像入力に対応していません",
+                "message": prepared.error,
                 "recoverable": False,
             }
             return
 
-        # Web search (非 Google connection のとき汎用検索を実行)
-        web_search_context = ""
-        web_sources = []
-        if request.use_web_search and not _uses_google_connection(connection_id):
-            from butly_core.search import create_search_provider
-
-            search_provider = create_search_provider(chat_model=model_name)
-            if search_provider.is_available():
-                search_results = await run_in_threadpool(
-                    search_provider.search,
-                    query=request.text,
-                    max_results=3,
-                )
-                if search_results:
-                    lines = []
-                    for i, r in enumerate(search_results, 1):
-                        lines.append(f"[{i}] {r.title}")
-                        lines.append(f"    URL: {r.url}")
-                        lines.append(f"    {r.content}")
-                        lines.append("")
-                    web_search_context = "\n".join(lines)
-                    web_sources = [
-                        {"title": r.title, "url": r.url} for r in search_results
-                    ]
-        if web_search_context:
-            memory_blocks["web_search_context"] = web_search_context
-
-        context_levels_cfg = instance_config.get("context_levels")
-        if context_levels_cfg is None and "context_order" in instance_config:
-            from butly_core.core.gatekeeper import migrate_context_order_to_levels
-
-            instance_config = migrate_context_order_to_levels(instance_config)
-            context_levels_cfg = instance_config.get("context_levels")
-
-        context = {
-            "brain": brain,
-            "memory_manager": memory,
-            "history": history_fmt,
-            "override_config": instance_config,
-            "memory_blocks": memory_blocks,
-            "use_google_search": request.use_google_search,
-            "rag_results": [],
-            "use_rag": request.use_rag,
-            "context_order": instance_config.get("context_order"),
-            "context_levels": context_levels_cfg,
-        }
+        memory = prepared.memory
+        brain = prepared.brain
+        full_prompt = prepared.full_prompt
+        instance_config = prepared.instance_config
+        history_fmt = prepared.history_fmt
+        instance_dir = prepared.instance_dir
+        session_state = prepared.session_state
+        gk_enabled = prepared.gk_enabled
+        gk_result = prepared.gk_result
+        tier = prepared.tier
+        memory_blocks = prepared.memory_blocks
+        provider = prepared.provider
+        model_name = prepared.model_name
+        connection_id = prepared.connection_id
+        has_attachments = prepared.has_attachments
+        web_sources = prepared.web_sources
+        context = prepared.context
+        context_levels_cfg = prepared.context_levels_cfg
 
         # metadata イベント (stream 開始前に Gatekeeper 情報を即送信)
         yield {
@@ -970,8 +984,10 @@ class ChatService:
         # debug_info 構築
         debug_info = {
             "timing": {
-                "gatekeeper_ms": int((_t_gk_end - _t_gk_start) * 1000),
-                "memory_build_ms": int((_t_mem_end - _t_mem_start) * 1000),
+                "gatekeeper_ms": int((prepared.t_gk_end - prepared.t_gk_start) * 1000),
+                "memory_build_ms": int(
+                    (prepared.t_mem_end - prepared.t_mem_start) * 1000
+                ),
                 "rag_search_ms": 0,
                 "generation_ms": gen_elapsed_ms,
                 "ttfb_ms": ttfb_ms["value"] or 0,
@@ -1023,6 +1039,7 @@ class ChatService:
         debug_log_payload = {
             "timestamp": datetime.datetime.now().isoformat(timespec="seconds"),
             "instance": instance_name,
+            "source": getattr(request, "source", "web"),
             "user_input": request.text,
             "assistant_response": full_text,
             "debug_info": debug_info,

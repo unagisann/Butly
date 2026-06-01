@@ -23,7 +23,6 @@ from butly_core.chat.types import (
     normalize_ws_payload,
     Attachment,
 )
-from butly_core.chat.service import ChatService
 
 import dependencies as deps
 
@@ -94,40 +93,46 @@ class ChatResponse(BaseModel):
 
 
 # =====================================================================
-# REST Endpoint
+# REST → 内部 DTO 変換ヘルパー（REST / SSE で共有）
 # =====================================================================
-@router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
-    """チャットメッセージを送信し、応答を取得する（ChatService に委譲）。"""
-    attachments = []
-    for att_data in request.attachments:
+def _parse_attachments(raw_attachments: List[Dict[str, Any]]) -> List[Attachment]:
+    """REST 受信の添付 dict リストを Attachment に変換する。形式不正は 400。"""
+    attachments: List[Attachment] = []
+    for att_data in raw_attachments:
         try:
             attachments.append(Attachment(**att_data))
         except Exception as e:
             raise HTTPException(
                 status_code=400, detail=f"添付データの形式が不正です: {e}"
             )
+    return attachments
 
-    internal_request = _InternalChatRequest(
+
+def _to_internal_request(request: "ChatRequest") -> _InternalChatRequest:
+    """REST /chat DTO を内部 ChatRequest に変換する（HTTP の都合をここで吸収）。"""
+    return _InternalChatRequest(
         text=request.message,
-        attachments=attachments,
+        attachments=_parse_attachments(request.attachments),
         instance_name=request.instance_name,
         use_rag=request.use_rag,
         use_google_search=request.use_google_search,
         use_web_search=request.use_web_search,
         model_name=request.model_name,
         connection=request.connection,
+        source="web",
     )
 
+
+# =====================================================================
+# REST Endpoint
+# =====================================================================
+@router.post("/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
+    """チャットメッセージを送信し、応答を取得する（Runtime に委譲）。"""
+    internal_request = _to_internal_request(request)
+
     try:
-        result = await ChatService.execute(
-            request=internal_request,
-            get_instance_components=deps.get_instance_components,
-            instance_manager=deps.instance_manager,
-            instances_dir=deps.INSTANCES_DIR,
-            gatekeeper=deps.gatekeeper,
-            mem_block_builder=deps.mem_block_builder,
-        )
+        result = await deps.runtime.chat(internal_request)
 
         return ChatResponse(
             response=result.text,
@@ -169,36 +174,11 @@ async def chat_stream(request: ChatRequest):
       - done:     最終 metadata + debug_info
       - error:    例外発生時の通知
     """
-    attachments = []
-    for att_data in request.attachments:
-        try:
-            attachments.append(Attachment(**att_data))
-        except Exception as e:
-            raise HTTPException(
-                status_code=400, detail=f"添付データの形式が不正です: {e}"
-            )
-
-    internal_request = _InternalChatRequest(
-        text=request.message,
-        attachments=attachments,
-        instance_name=request.instance_name,
-        use_rag=request.use_rag,
-        use_google_search=request.use_google_search,
-        use_web_search=request.use_web_search,
-        model_name=request.model_name,
-        connection=request.connection,
-    )
+    internal_request = _to_internal_request(request)
 
     async def event_stream():
         try:
-            async for event in ChatService.execute_stream(
-                request=internal_request,
-                get_instance_components=deps.get_instance_components,
-                instance_manager=deps.instance_manager,
-                instances_dir=deps.INSTANCES_DIR,
-                gatekeeper=deps.gatekeeper,
-                mem_block_builder=deps.mem_block_builder,
-            ):
+            async for event in deps.runtime.chat_stream(internal_request):
                 ev_type = event.get("type")
                 if ev_type == "chunk":
                     yield _sse_event("chunk", {"text": event["text"]})
@@ -278,13 +258,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 await ws_manager.broadcast({"type": "ai_status", "payload": "thinking"})
 
                 try:
-                    result = await ChatService.execute(
-                        request=chat_request,
-                        get_instance_components=deps.get_instance_components,
-                        instance_manager=deps.instance_manager,
-                        instances_dir=deps.INSTANCES_DIR,
-                        gatekeeper=deps.gatekeeper,
-                        mem_block_builder=deps.mem_block_builder,
+                    result = await deps.runtime.chat(
+                        chat_request,
                         ws_manager=ws_manager,
                     )
 

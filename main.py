@@ -112,15 +112,23 @@ sys.path.append(str(Path(__file__).resolve().parent))
 # 共有依存の初期化
 # =====================================================================
 import dependencies as deps
-from butly_core.core.instance_manager import InstanceManager
-from butly_core.core.gatekeeper import Gatekeeper, MemoryBlockBuilder
+from butly_core.runtime import ButlyRuntime
 
 deps.DATA_DIR = DATA_DIR
 deps.BASE_DIR = DATA_DIR
 deps.INSTANCES_DIR = DATA_DIR / "butly_core" / "instances"
-deps.instance_manager = InstanceManager(DATA_DIR)
-deps.gatekeeper = Gatekeeper(base_dir=DATA_DIR)
-deps.mem_block_builder = MemoryBlockBuilder()
+
+# 中核 Runtime を生成。FastAPI ルータ以外（Discord / LINE 等）からも
+# runtime.chat() を呼べる。deps の別名は Runtime と同一オブジェクトを指す。
+deps.runtime = ButlyRuntime(
+    data_dir=DATA_DIR,
+    base_dir=DATA_DIR,
+    instances_dir=deps.INSTANCES_DIR,
+)
+deps.instance_manager = deps.runtime.instance_manager
+deps.gatekeeper = deps.runtime.gatekeeper
+deps.mem_block_builder = deps.runtime.mem_block_builder
+deps.instance_store = deps.runtime.instance_store
 
 
 # =====================================================================

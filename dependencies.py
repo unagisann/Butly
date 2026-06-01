@@ -3,18 +3,18 @@ dependencies.py
 ───────────────
 ルーター間で共有するグローバル状態・ヘルパー。
 main.py の lifespan で初期化し、各ルーターから import する。
+
+中核状態は ``butly_core.runtime.ButlyRuntime`` が保持する。ここで公開する
+``instance_manager`` / ``gatekeeper`` / ``mem_block_builder`` / ``instance_store``
+は Runtime と同一オブジェクトを指す薄い別名であり、既存ルーターの import を
+壊さないための後方互換レイヤーである。
 """
 from pathlib import Path
 from typing import Dict, Any
 
-from fastapi import HTTPException
-
-from butly_core.config import SYSTEM_CONFIG
-from butly_core.core.memory import ButlyMemory
-from butly_core.core.brain import ButlyBrain
-from butly_core.core.chronos import ButlyChronos
 from butly_core.core.instance_manager import InstanceManager
-from butly_core.core.gatekeeper import Gatekeeper, MemoryBlockBuilder, SessionState
+from butly_core.core.gatekeeper import Gatekeeper, MemoryBlockBuilder
+from butly_core.runtime import ButlyRuntime
 
 # =====================================================================
 # パス定義  —  main.py で確定後に設定される
@@ -24,8 +24,12 @@ BASE_DIR: Path = None   # type: ignore[assignment]
 INSTANCES_DIR: Path = None  # type: ignore[assignment]
 
 # =====================================================================
-# シングルトンインスタンス  —  main.py の lifespan で初期化
+# 中核 Runtime  —  main.py の lifespan で初期化
 # =====================================================================
+runtime: ButlyRuntime = None  # type: ignore[assignment]
+
+# 以下は Runtime と同一オブジェクトを指す後方互換の別名。
+# main.py が runtime 初期化後に各属性を割り当てる。
 instance_manager: InstanceManager = None  # type: ignore[assignment]
 instance_store: Dict[str, Any] = {}
 
@@ -56,22 +60,11 @@ except Exception as _e:
 # 共通ヘルパー
 # =====================================================================
 def get_instance_components(instance_name: str) -> dict:
-    """インスタンスのコンポーネントを取得（遅延初期化）。"""
-    if instance_name in instance_store:
-        return instance_store[instance_name]
+    """インスタンスのコンポーネントを取得（遅延初期化）。
 
-    if not (INSTANCES_DIR / instance_name).exists():
-        raise HTTPException(status_code=404, detail=f"Instance '{instance_name}' not found.")
-
-    print(f"[System] Initializing instance: {instance_name}")
-    memory = ButlyMemory(BASE_DIR, instance_name=instance_name)
-    brain = ButlyBrain(BASE_DIR)
-    chronos = ButlyChronos()
-
-    components = {
-        "memory": memory,
-        "brain": brain,
-        "chronos": chronos,
-    }
-    instance_store[instance_name] = components
-    return components
+    実体は ``runtime.get_instance_components`` に委譲する。Runtime 未初期化時
+    （想定外）は明示的に例外を送出する。
+    """
+    if runtime is None:
+        raise RuntimeError("ButlyRuntime is not initialized.")
+    return runtime.get_instance_components(instance_name)
