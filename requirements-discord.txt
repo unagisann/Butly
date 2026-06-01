@@ -1,0 +1,8 @@
+# Butly - Discord 連携 (optional integration)
+#
+# Discord adapter を使う場合のみインストールする:
+#   pip install -r requirements-discord.txt
+#
+# これらは Butly 本体（requirements.txt）には含めない。未インストールでも
+# FastAPI / Streamlit 本体と単体テストは動作する。
+discord.py>=2.3,<3

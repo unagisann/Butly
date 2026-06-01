@@ -38,6 +38,7 @@ APIkey.env
 user_config.json
 user_prompts.json
 system_config.json
+external_accounts.json
 
 #Dashbord用
 discovery_agent.py

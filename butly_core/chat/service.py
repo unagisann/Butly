@@ -334,6 +334,19 @@ async def _prepare_chat_context(
     sys_note = chronos.get_system_note(is_holiday=False, last_interaction_time=last_ts)
     full_prompt = f"{sys_note}\n\n{request.text}"
 
+    # 外部入口（Discord 等）の reply profile による生成時 style hint。
+    # request.metadata に "style_hint" がある場合のみ full_prompt 先頭に注入する。
+    # - 記憶本文（request.text）には混ぜないため、save_single_turn の保存内容は不変。
+    # - Web 経路は metadata=None なので従来どおり（no-op）。
+    request_metadata = getattr(request, "metadata", None)
+    style_hint = (
+        request_metadata.get("style_hint")
+        if isinstance(request_metadata, dict)
+        else None
+    )
+    if style_hint:
+        full_prompt = f"{sys_note}\n\n[応答スタイル指示: {style_hint}]\n\n{request.text}"
+
     # --- 3. インスタンス設定 ---
     instance_config = instance_manager.get_instance_config(instance_name)
 
