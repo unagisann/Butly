@@ -209,6 +209,22 @@ class ExternalAccountStore:
             exists=self.instance_exists(instance_name),
         )
 
+    def has_channel_binding(
+        self, *, guild_id: Optional[str], channel_id: Optional[str]
+    ) -> bool:
+        """このチャンネルに **channel scope の明示 bind** があるか。
+
+        案B（bound channel での mention なし反応）の判定に使う。guild scope の
+        bind はサーバー全体のデフォルト指定であり、ここでは True にしない
+        （専用チャンネルだけを自動反応にするため）。DM（guild_id=None）は常に False。
+        """
+        if not (guild_id and channel_id):
+            return False
+        data = self._load()
+        raw_mapping = data.get("discord")
+        mapping = raw_mapping if isinstance(raw_mapping, dict) else {}
+        return self._channel_key(str(guild_id), str(channel_id)) in mapping
+
     # ------------------------------------------------------------------
     # bind / unbind
     # ------------------------------------------------------------------

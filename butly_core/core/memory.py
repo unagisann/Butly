@@ -626,6 +626,18 @@ class ButlyMemory:
 
         print(f"[Memory] Compressing {len(overflow_files)} old conversations...")
 
+        # 要約モデルにアシスタント名を捏造させないため、実名ロールラベルを用意する。
+        # 匿名ラベル ([model] / [user]) のまま渡すと、summary モデルが物語化の際に
+        # "ルナ" のような架空のアシスタント名を補完してしまう (session digest 汚染の原因)。
+        agent_profile = self.get_agent_profile()
+        user_profile = self.get_user_profile()
+        agent_name = (agent_profile.get("ai_name") or "").strip() or SYSTEM_CONFIG[
+            "agent"
+        ].get("agent_name", "AI")
+        user_name = (
+            user_profile.get("preferred_call") or user_profile.get("user_name") or ""
+        ).strip() or SYSTEM_CONFIG["agent"].get("user_name", "User")
+
         for json_file in overflow_files:
             try:
                 # 中身を読み込む
@@ -636,13 +648,19 @@ class ButlyMemory:
                 if not messages:
                     continue
 
-                # テキスト化（Brainに読ませるため）
+                # テキスト化（Brainに読ませるため）。役割は実名でラベリングする。
                 conv_text = ""
                 timestamp = data.get("timestamp", "")
                 for m in messages:
                     role = m.get("role", "unknown")
                     text = m.get("parts", [""])[0]
-                    conv_text += f"[{role}]: {text}\n"
+                    if role == "user":
+                        label = user_name
+                    elif role in ("model", "assistant"):
+                        label = agent_name
+                    else:
+                        label = role
+                    conv_text += f"[{label}]: {text}\n"
 
                 # Brainで要約
                 # インスタンス設定を読み込んで渡す

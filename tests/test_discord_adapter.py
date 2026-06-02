@@ -10,8 +10,15 @@ discord.py 未インストールでも import・実行できることが前提�
 
 from butly_core.external.discord_adapter import (
     strip_bot_mention,
+    is_bot_mentioned,
+    discord_image_mime,
+    discord_attachment_is_image,
     build_discord_chat_request,
+    should_respond,
+    _env_flag,
+    create_bot,
 )
+from butly_core.chat.types import Attachment
 from butly_core.external.reply_profiles import DISCORD_PROFILE
 
 
@@ -40,6 +47,86 @@ class TestStripBotMention:
 
     def test_only_mention_becomes_empty(self):
         assert strip_bot_mention("<@123>", 123) == ""
+
+
+class TestIsBotMentioned:
+    def test_detects_parsed_mention_object(self):
+        class Mention:
+            id = 123
+
+        assert is_bot_mentioned("hi", [Mention()], 123)
+
+    def test_detects_raw_mention_when_mentions_empty(self):
+        assert is_bot_mentioned("<@123> hi", [], 123)
+
+    def test_detects_raw_nickname_mention(self):
+        assert is_bot_mentioned("<@!123> hi", [], "123")
+
+    def test_rejects_other_mentions(self):
+        assert not is_bot_mentioned("<@999> hi", [], 123)
+
+
+class TestDiscordImageMime:
+    def test_accepts_allowed_content_type(self):
+        assert discord_image_mime("image/png", "x.bin") == "image/png"
+
+    def test_normalizes_jpg(self):
+        assert discord_image_mime("image/jpg", "x.jpg") == "image/jpeg"
+
+    def test_guesses_from_filename(self):
+        assert discord_image_mime(None, "screen.webp") == "image/webp"
+
+    def test_rejects_unsupported_image(self):
+        assert discord_image_mime("image/gif", "x.gif") is None
+
+    def test_attachment_is_image(self):
+        class Source:
+            content_type = None
+            filename = "photo.jpeg"
+
+        assert discord_attachment_is_image(Source())
+
+
+class TestShouldRespond:
+    def test_mention_always_responds(self):
+        assert should_respond(
+            is_mentioned=True, respond_in_bound_channels=False, channel_is_bound=False
+        )
+
+    def test_bound_channel_responds_when_optin(self):
+        assert should_respond(
+            is_mentioned=False, respond_in_bound_channels=True, channel_is_bound=True
+        )
+
+    def test_bound_channel_ignored_when_optout(self):
+        assert not should_respond(
+            is_mentioned=False, respond_in_bound_channels=False, channel_is_bound=True
+        )
+
+    def test_unbound_channel_ignored_even_with_optin(self):
+        assert not should_respond(
+            is_mentioned=False, respond_in_bound_channels=True, channel_is_bound=False
+        )
+
+    def test_no_mention_no_optin_ignored(self):
+        assert not should_respond(
+            is_mentioned=False, respond_in_bound_channels=False, channel_is_bound=False
+        )
+
+
+class TestEnvFlag:
+    def test_truthy(self):
+        assert _env_flag("1")
+        assert _env_flag("true")
+        assert _env_flag("YES")
+        assert _env_flag("on")
+
+    def test_falsy(self):
+        assert not _env_flag(None)
+        assert not _env_flag("")
+        assert not _env_flag("0")
+        assert not _env_flag("false")
+        assert not _env_flag(" off ")
 
 
 class TestBuildChatRequest:
@@ -85,3 +172,34 @@ class TestBuildChatRequest:
         )
         assert req.external_user_id == "100"
         assert req.external_channel_id == "300"
+
+    def test_attachments_are_carried(self):
+        attachment = Attachment(
+            mime_type="image/png",
+            data_base64="aGVsbG8=",
+            name="screen.png",
+            size=5,
+        )
+        req = build_discord_chat_request(
+            text="見て",
+            instance_name="Butly",
+            user_id="100",
+            channel_id="300",
+            attachments=[attachment],
+        )
+        assert len(req.attachments) == 1
+        assert req.attachments[0].name == "screen.png"
+
+
+def test_create_bot_registers_choice_commands_when_discord_installed():
+    """discord.py が注釈評価で app_commands を見失わないことの回帰テスト。"""
+    import pytest
+
+    pytest.importorskip("discord")
+
+    class DummyStore:
+        pass
+
+    bot = create_bot(runtime=object(), store=DummyStore())
+
+    assert bot is not None

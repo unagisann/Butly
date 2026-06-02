@@ -22,10 +22,19 @@ Discord（discord.py）と Butly の接続を担う薄い adapter。
 
 from __future__ import annotations
 
+import base64
+import mimetypes
+import os
 import re
 from typing import Optional
 
-from butly_core.chat.types import ChatRequest
+from butly_core.chat.types import (
+    ALLOWED_IMAGE_MIMES,
+    MAX_ATTACHMENTS,
+    MAX_ATTACHMENT_SIZE,
+    Attachment,
+    ChatRequest,
+)
 from butly_core.external.account_mapping import ExternalAccountStore
 from butly_core.external.message_splitter import split_message
 from butly_core.external.reply_profiles import DISCORD_PROFILE, ReplyProfile
@@ -62,12 +71,73 @@ def strip_bot_mention(content: str, bot_user_id) -> str:
     return cleaned.strip()
 
 
+def is_bot_mentioned(content: str, mentions, bot_user_id) -> bool:
+    """Discord message が bot 自身への mention を含むか判定する。"""
+    bot_id = str(bot_user_id)
+    for mention in mentions or []:
+        mention_id = getattr(mention, "id", mention)
+        if str(mention_id) == bot_id:
+            return True
+    if not content:
+        return False
+    return re.search(rf"<@!?{re.escape(bot_id)}>", content) is not None
+
+
+def _env_flag(value: Optional[str]) -> bool:
+    """環境変数文字列を真偽に変換する（未設定/0/false/no/off/空 → False）。"""
+    if value is None:
+        return False
+    return value.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def should_respond(
+    *,
+    is_mentioned: bool,
+    respond_in_bound_channels: bool,
+    channel_is_bound: bool,
+) -> bool:
+    """このメッセージに反応すべきか判定する（discord 非依存・テスト対象）。
+
+    - mention されていれば常に反応（案A）。
+    - opt-in 有効かつ channel scope で bind 済みのチャンネルなら mention 無しでも反応（案B）。
+    - それ以外は無視。
+    """
+    if is_mentioned:
+        return True
+    if respond_in_bound_channels and channel_is_bound:
+        return True
+    return False
+
+
+def discord_image_mime(content_type: Optional[str], filename: Optional[str]) -> Optional[str]:
+    """Discord 添付から Butly が受け取れる画像 MIME を推定する。"""
+    mime = (content_type or "").split(";", 1)[0].strip().lower()
+    if not mime and filename:
+        guessed, _ = mimetypes.guess_type(filename)
+        mime = (guessed or "").lower()
+    if mime == "image/jpg":
+        mime = "image/jpeg"
+    return mime if mime in ALLOWED_IMAGE_MIMES else None
+
+
+def discord_attachment_is_image(attachment) -> bool:
+    """Discord 添付が Butly 対応画像か判定する。"""
+    return (
+        discord_image_mime(
+            getattr(attachment, "content_type", None),
+            getattr(attachment, "filename", None),
+        )
+        is not None
+    )
+
+
 def build_discord_chat_request(
     *,
     text: str,
     instance_name: str,
     user_id: Optional[str],
     channel_id: Optional[str],
+    attachments: Optional[list[Attachment]] = None,
     profile: ReplyProfile = DISCORD_PROFILE,
 ) -> ChatRequest:
     """Discord 受信内容から内部 ``ChatRequest`` を組み立てる。
@@ -78,6 +148,7 @@ def build_discord_chat_request(
     """
     return ChatRequest(
         text=text,
+        attachments=attachments or [],
         instance_name=instance_name,
         source="discord",
         external_user_id=str(user_id) if user_id is not None else None,
@@ -132,9 +203,15 @@ def create_bot(
         ) from e
 
     intents = discord.Intents.default()
+    intents.messages = True
     # メッセージ本文を読むには privileged intent が必要。
     # Discord Developer Portal の Bot 設定で "Message Content Intent" を有効にすること。
     intents.message_content = True
+    debug_messages = _env_flag(os.environ.get("DISCORD_DEBUG_MESSAGES"))
+    # 案B (opt-in): channel scope で bind したチャンネルでは mention 無しでも反応する。
+    respond_in_bound_channels = _env_flag(
+        os.environ.get("DISCORD_RESPOND_IN_BOUND_CHANNELS")
+    )
 
     _scope_choices = [
         app_commands.Choice(name="user（自分だけ）", value="user"),
@@ -147,6 +224,56 @@ def create_bot(
         guild_id = str(interaction.guild_id) if interaction.guild_id else None
         channel_id = str(interaction.channel_id) if interaction.channel_id else None
         return user_id, guild_id, channel_id
+
+    async def _send_channel_message(channel, content: str) -> bool:
+        try:
+            await channel.send(content)
+            return True
+        except discord.Forbidden as e:
+            print(f"[discord] send forbidden: {e}")
+        except discord.HTTPException as e:
+            print(f"[discord] send failed: {e}")
+        return False
+
+    async def _collect_image_attachments(message) -> tuple[list[Attachment], list[str]]:
+        collected: list[Attachment] = []
+        warnings: list[str] = []
+        image_count = 0
+        for source in message.attachments or []:
+            mime_type = discord_image_mime(source.content_type, source.filename)
+            if mime_type is None:
+                continue
+            image_count += 1
+            if image_count > MAX_ATTACHMENTS:
+                continue
+            if source.size and source.size > MAX_ATTACHMENT_SIZE:
+                size_mb = source.size / (1024 * 1024)
+                warnings.append(
+                    f"`{source.filename}` は大きすぎるため読み込みませんでした"
+                    f"（{size_mb:.1f}MB / 上限 {MAX_ATTACHMENT_SIZE // (1024 * 1024)}MB）。"
+                )
+                continue
+            try:
+                raw = await source.read()
+            except discord.HTTPException as e:
+                print(f"[discord] attachment read failed: {e}")
+                warnings.append(f"`{source.filename}` の読み込みに失敗しました。")
+                continue
+            collected.append(
+                Attachment(
+                    kind="image",
+                    mime_type=mime_type,
+                    data_base64=base64.b64encode(raw).decode("ascii"),
+                    name=source.filename,
+                    size=len(raw),
+                )
+            )
+        if image_count > MAX_ATTACHMENTS:
+            warnings.append(
+                f"画像は最大{MAX_ATTACHMENTS}枚まで読み込みます"
+                f"（{image_count}枚中 {len(collected)}枚を使用）。"
+            )
+        return collected, warnings
 
     # ---- slash command group: /butly ----
     butly_group = app_commands.Group(
@@ -189,12 +316,12 @@ def create_bot(
     async def cmd_bind(
         interaction: "discord.Interaction",
         instance: str,
-        scope: "app_commands.Choice[str]",
+        scope: str,
     ):
         user_id, guild_id, channel_id = _ids_from_interaction(interaction)
         try:
             key = store.bind_discord(
-                scope=scope.value,
+                scope=scope,
                 instance_name=instance,
                 user_id=user_id,
                 guild_id=guild_id,
@@ -212,12 +339,12 @@ def create_bot(
     @app_commands.choices(scope=_scope_choices)
     async def cmd_unbind(
         interaction: "discord.Interaction",
-        scope: "app_commands.Choice[str]",
+        scope: str,
     ):
         user_id, guild_id, channel_id = _ids_from_interaction(interaction)
         try:
             removed = store.unbind_discord(
-                scope=scope.value,
+                scope=scope,
                 user_id=user_id,
                 guild_id=guild_id,
                 channel_id=channel_id,
@@ -226,9 +353,9 @@ def create_bot(
             await interaction.response.send_message(f"⚠ {e}", ephemeral=True)
             return
         if removed:
-            msg = f"✅ scope `{scope.value}` の紐づけを削除しました。"
+            msg = f"✅ scope `{scope}` の紐づけを削除しました。"
         else:
-            msg = f"scope `{scope.value}` には紐づけがありませんでした。"
+            msg = f"scope `{scope}` には紐づけがありませんでした。"
         await interaction.response.send_message(msg, ephemeral=True)
 
     # ---- client 本体 ----
@@ -263,42 +390,87 @@ def create_bot(
                 return
             if message.author.bot:
                 return
-            # 案 A: bot mention された時だけ反応
-            if self.user not in message.mentions:
-                return
-
-            text = strip_bot_mention(message.content, self.user.id)
+            if debug_messages:
+                mention_ids = [str(getattr(m, "id", m)) for m in message.mentions]
+                print(
+                    "[discord] message received "
+                    f"guild={message.guild.id if message.guild else None} "
+                    f"channel={message.channel.id} author={message.author.id} "
+                    f"content_len={len(message.content or '')} "
+                    f"mentions={mention_ids}"
+                )
             user_id, guild_id, channel_id = (
                 str(message.author.id),
                 str(message.guild.id) if message.guild else None,
                 str(message.channel.id),
             )
 
+            # 反応判定: mention（案A）or bound channel での opt-in 全反応（案B）
+            is_mentioned = is_bot_mentioned(
+                message.content, message.mentions, self.user.id
+            )
+            channel_is_bound = store.has_channel_binding(
+                guild_id=guild_id, channel_id=channel_id
+            )
+            if not should_respond(
+                is_mentioned=is_mentioned,
+                respond_in_bound_channels=respond_in_bound_channels,
+                channel_is_bound=channel_is_bound,
+            ):
+                if debug_messages:
+                    print(
+                        "[discord] ignored: not mentioned and channel not auto-respond "
+                        f"(bound={channel_is_bound}, optin={respond_in_bound_channels})"
+                    )
+                return
+
+            text = strip_bot_mention(message.content, self.user.id)
+
             resolved = store.resolve_discord(
                 user_id=user_id, guild_id=guild_id, channel_id=channel_id
             )
             if resolved is None:
-                await message.channel.send(
+                await _send_channel_message(
+                    message.channel,
                     "このアカウントには Butly instance が割り当てられていません。"
                 )
                 return
             if not resolved.exists:
-                await message.channel.send(
+                await _send_channel_message(
+                    message.channel,
                     f"instance '{resolved.instance_name}' が見つかりません。"
                     "`/butly instances` で確認のうえ `/butly bind` してください。"
                 )
                 return
-            if not text:
-                await message.channel.send(
-                    "はい、ご用件をどうぞ。（メンションに続けて話しかけてください）"
-                )
+            attachments, attachment_warnings = await _collect_image_attachments(message)
+            if not text and attachments:
+                text = "添付画像を見てください。"
+            if not text and not attachments:
+                if attachment_warnings:
+                    for warning in attachment_warnings:
+                        await _send_channel_message(message.channel, warning)
+                    return
+                # mention のみ（本文なし）の時だけ促す。bound channel の自動反応では
+                # 画像のみ/空メッセージに毎回返さないよう黙ってスルーする。
+                if is_mentioned:
+                    await _send_channel_message(
+                        message.channel,
+                        "はい、ご用件をどうぞ。（メンションに続けて話しかけてください）"
+                    )
                 return
+            if debug_messages:
+                print(
+                    "[discord] handling mention "
+                    f"instance={resolved.instance_name} scope={resolved.scope} "
+                    f"text_len={len(text)} attachments={len(attachments)}"
+                )
 
             request = build_discord_chat_request(
                 text=text,
                 instance_name=resolved.instance_name,
                 user_id=user_id,
                 channel_id=channel_id,
+                attachments=attachments,
                 profile=profile,
             )
 
@@ -307,15 +479,19 @@ def create_bot(
                     result = await runtime.chat(request)
             except Exception as e:  # noqa: BLE001 - ユーザーには簡潔に通知
                 print(f"[discord] chat error: {e}")
-                await message.channel.send(
+                await _send_channel_message(
+                    message.channel,
                     f"応答の生成に失敗しました: {str(e)[:150]}"
                 )
                 return
 
             chunks = split_message(result.text or "", profile.hard_char_limit)
+            if attachment_warnings:
+                chunks = attachment_warnings + chunks
             if not chunks:
                 chunks = ["（応答が空でした）"]
             for chunk in chunks:
-                await message.channel.send(chunk)
+                if not await _send_channel_message(message.channel, chunk):
+                    break
 
     return ButlyDiscordClient()

@@ -223,3 +223,30 @@ class TestInstanceHelpers:
         _write_accounts(data_dir, {"default_instance": ["not", "a", "string"]})
         resolved = store.resolve_discord(user_id="1", guild_id=None, channel_id="1")
         assert resolved.instance_name == FALLBACK_DEFAULT_INSTANCE
+
+
+# ===================================================================
+# 案B: channel bind 検出 (has_channel_binding)
+# ===================================================================
+
+class TestHasChannelBinding:
+    def test_true_for_channel_bound(self, store):
+        store.bind_discord(
+            scope="channel", instance_name="Butly", guild_id="200", channel_id="300"
+        )
+        assert store.has_channel_binding(guild_id="200", channel_id="300") is True
+
+    def test_false_for_unbound_channel(self, store):
+        assert store.has_channel_binding(guild_id="200", channel_id="300") is False
+
+    def test_guild_binding_does_not_count(self, store):
+        # guild scope の bind は channel 自動反応の対象にしない
+        store.bind_discord(scope="guild", instance_name="Butly", guild_id="200")
+        assert store.has_channel_binding(guild_id="200", channel_id="300") is False
+
+    def test_user_binding_does_not_count(self, store):
+        store.bind_discord(scope="user", instance_name="Butly", user_id="100")
+        assert store.has_channel_binding(guild_id="200", channel_id="300") is False
+
+    def test_dm_is_false(self, store):
+        assert store.has_channel_binding(guild_id=None, channel_id="300") is False
