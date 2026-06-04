@@ -55,6 +55,7 @@ Thumbs.db
 
 # Misc
 housekeeper.log
+*.bak
 build_pyinstaller/
 old/
 old_migration_backup/
