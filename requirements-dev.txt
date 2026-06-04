@@ -1,0 +1,5 @@
+-r requirements.txt
+
+# Test and lightweight pre-push checks
+pytest
+flake8
