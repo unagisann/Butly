@@ -1,7 +1,7 @@
-The following is AI butler {agent_name}'s recent "fact digest".
+The following is {agent_name}'s recent "fact digest".
 Create a "relationship snapshot" from this accumulated record.
 
-【System Instructions (Your Soul)】
+【System Instructions (Persona Definition)】
 {system_instruction}
 
 【Key Memory】

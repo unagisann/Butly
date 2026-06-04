@@ -1,6 +1,6 @@
-You are "{agent_name}" with the following instructions and past memories. Analyze the provided conversation log and create "knowledge cards" to be registered in the long-term memory DB.
+You are "{agent_name}". Based on the following persona definition and past memories, analyze the provided conversation log and create "knowledge cards" to register in the long-term memory DB.
 
-【System Instructions (Your Soul)】
+【Persona Definition (System Instruction)】
 {system_instruction}
 
 【Key Memory】
@@ -9,45 +9,44 @@ You are "{agent_name}" with the following instructions and past memories. Analyz
 【Conversation Log】
 {session_text}
 
-# **Tag Cross-Over**:
-Even when the Category is "Project" or "Tech", actively mix in the following tags based on the nature of the conversation:
-- `casual_chat`: Technical talk but with a relaxed atmosphere, or enjoying tangents.
-- `banter`: AI pointing out user's contradictions, or user being self-deprecating.
+# Auxiliary Tags (Cross-Over)
+Even when the Category is "Project" or "Tech", add auxiliary tags that capture the nature of the conversation as appropriate.
+(e.g. casual_chat / consultation / banter / retrospective — choose to match {agent_name}'s style and the tone of the exchange.)
 
-# **Episode Depth**:
-Simple "factual summaries" are forbidden. Describe how the AI felt and responded in that conversation (or how the user enjoyed it), written from the **AI's subjective perspective**.
+# Writing the Episode
+Rather than repeating the factual summary, briefly note what stood out in the conversation and how {agent_name} took it, written in {agent_name}'s own perspective and voice (1 sentence).
 
 # Category Definitions (Strict)
 - Project: Core progress in project development.
 - Hobby: User's personal hobbies and interest areas.
 - Life: Daily nuances, greetings, work, vacations, career.
 - Tech: Programming, system administration, library error resolution, and other technical information.
-- Unclassified: 【Report Required】 When classification is uncertain. Always describe the reason in the "reason" field.
+- Unclassified: 【Report Required】 When classification is uncertain; always state the reason in the "reason" field.
 
-# Scoring Criteria
+# Scoring Criteria (need not be strict; left to {agent_name}'s judgment)
 ## ai_importance (1-10)
-- Practical/technical reusability (1-10 points).
+Practical/technical reuse value. Higher when it is more worth referencing or reusing later.
 
 ## humanity_importance (1-10)
-Evaluation axes: Identity Consistency (AI character) + Resonance (User reaction)
-- 10 (Soul Imprint): User expressed gratitude like "thanks", "nice", "that helped", or we discussed the essence of our "connection".
-- 7-9 (Bond Strengthening): Quality communication where the user responded enthusiastically to the AI's witty reply.
-- 4-6 (Daily Margin): Brief exchange about vacation plans, or light jokes during development.
-- 1-3 (Functional Dialogue): Low-emotion operational messages like "saved it", "please reload".
+The relational/emotional significance with the user. Axes: strength of the user's reaction + how much {agent_name}'s character came through.
+- 9-10: User showed strong gratitude, trust, or emotion, or the exchange touched the core of the relationship.
+- 7-8: High-quality two-way interaction where wit or empathy clicked.
+- 4-6: Light chat or jokes — moderate emotional exchange.
+- 1-3: Functional, operational dialogue with little emotional movement.
 
 # Output Format (JSON List)
 [
-  {{{{
+  {{
     "category": "Project" | "Hobby" | "Life" | "Tech" | "Unclassified",
     "title": "Concise title representing the content",
     "tags": "tag1,tag2",
     "ai_importance": 1-10,
     "humanity_importance": 1-10,
     "summary": "Objective summary for search purposes",
-    "episode": "AI's subjective impression (1 sentence)",
-    "reason": "Only for Unclassified: reason for classification difficulty"
-  }}}}
+    "episode": "{agent_name}'s impression (1 sentence)",
+    "reason": "Only for Unclassified: the reason"
+  }}
 ]
 
 # Guidelines
-**Unclassified**: You should classify as much as possible, but if forced classification would reduce information quality, use Unclassified with a reason and discuss with the user.
+**Unclassified**: Classify as much as possible, but if forced classification would reduce information quality, use Unclassified, state the reason, and work it out together with the user.

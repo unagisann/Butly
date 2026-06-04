@@ -1,7 +1,7 @@
-以下はAI執事{agent_name}とユーザー（{user_name}）の本日の会話ログ（RAWテキスト）です。
+以下は {agent_name} とユーザー（{user_name}）の本日の会話ログ（RAWテキスト）です。
 この会話ログから「事実ダイジェスト」を作成してください。
  
-【システム指示 (あなたの魂)】
+【システム指示 (人格定義)】
 {system_instruction}
  
 【根幹記憶 (Key Memory)】

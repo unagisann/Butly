@@ -1,7 +1,7 @@
-The following is today's conversation log (RAW text) between AI butler {agent_name} and the user ({user_name}).
+The following is today's conversation log (RAW text) between {agent_name} and the user ({user_name}).
 Create a "fact digest" from this conversation log.
 
-【System Instructions (Your Soul)】
+【System Instructions (Persona Definition)】
 {system_instruction}
 
 【Key Memory】
