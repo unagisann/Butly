@@ -211,7 +211,7 @@ flowchart TD
     B --> C{tier}
     C -->|reflex| D["⚡ Minimal context"]
     C -->|mid| E["◎ Memory injected"]
-    B --> N{need?<br/>(tier-independent)}
+    B --> N{"need?<br/>(tier-independent)"}
     N -->|set| R["⌕ RAG block<br/>from MemoryProbe candidates"]
     D --> F["◆ ChatService<br/>Provider.generate() / .async_generate_stream()"]
     E --> F
