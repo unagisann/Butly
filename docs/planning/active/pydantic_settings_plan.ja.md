@@ -2,6 +2,9 @@
 
 🌐 **日本語** | [English](pydantic_settings_plan.md)
 
+> **ステータス: 進行中。** Phase 1 の互換シムは実装済みです。Phase 2 以降の
+> 移行作業が残っているため、完了条件を満たすまでは `planning/active` で管理します。
+>
 > 起票: 2026-05-24 / 想定スパン: 段階的、急がない / 利用者: 自分のみ（破壊的変更可）
 
 ## 1. なぜやるか（モチベーション）
@@ -9,10 +12,10 @@
 現状の設定は 5 つのレイヤーが手作業で重なっており、以下の問題がある:
 
 1. **型安全性ゼロ**: `AI_CONFIG["chat"]["generation_config"]["temperature"]` のタイポは無音で `KeyError`、もしくは未定義キーが None を返すだけ。IDE 補完も効かない。
-2. **`AI_CONFIG` / `SYSTEM_CONFIG` が mutable な module global**: テストが `cfg_mod.AI_CONFIG["chat"] = ...` で直接書き換える（[tests/test_settings_model_candidates.py:62](../tests/test_settings_model_candidates.py#L62)）。テスト分離の事故源。実際に「単独実行で通る・スイートで落ちる」test (`test_embedding_role_excludes_chat_only`) を抱えている。
-3. **import 時の副作用**: [butly_core/config.py:268-289](../butly_core/config.py#L268-L289) が import 時に `user_config.json` を読みに行くため、テストごとの差し替えが困難。さらに循環 import 回避のため約 40 箇所で関数内 lazy import になっている。
+2. **`AI_CONFIG` / `SYSTEM_CONFIG` が mutable な module global**: テストが `cfg_mod.AI_CONFIG["chat"] = ...` で直接書き換える（[tests/test_settings_model_candidates.py:62](../../../tests/test_settings_model_candidates.py#L62)）。テスト分離の事故源。実際に「単独実行で通る・スイートで落ちる」test (`test_embedding_role_excludes_chat_only`) を抱えている。
+3. **import 時の副作用**: [butly_core/config.py:268-289](../../../butly_core/config.py#L268-L289) が import 時に `user_config.json` を読みに行くため、テストごとの差し替えが困難。さらに循環 import 回避のため約 40 箇所で関数内 lazy import になっている。
 4. **検証なし**: `user_config.json` に壊れた `safety_settings` を入れても、エラーが provider 呼び出し時まで遅延する。
-5. **`.env` パーサが脆い**: [main.py:86-99](../main.py#L86-L99) は `line.partition("=")` で自前パース。引用符、複数行、行内コメント等を扱えない。
+5. **`.env` パーサが脆い**: [main.py:86-99](../../../main.py#L86-L99) は `line.partition("=")` で自前パース。引用符、複数行、行内コメント等を扱えない。
 6. **インスタンス config の暗黙スキーマ**: `Jarvis/config.json` には `cache_ttl_hours`, `use_rag`, `use_context_cache` 等が出てくるが、これらは中央で定義されていない。誰がいつ追加したか、デフォルトは何かが追跡しづらい。
 7. **`_recursive_update` の沈黙**: ユーザーが `user_config.json` でタイポしても黙ってマージされる。
 
@@ -262,7 +265,7 @@ BUTLY_AI__CHAT__GENERATION_CONFIG__TEMPERATURE=0.9 # ai.chat.generation_config.t
 
 - [ ] 現在使われている設定キーを全件列挙し、`docs/config_inventory.md` にまとめる
 - [ ] `_AI_CONFIG_*_example` などの dead key を特定（4 種類確認済み）
-- [ ] `context_classifier` ロール（[config.py:79](../butly_core/config.py#L79) で `{}` のまま）の扱いを決める — 削除 or 正規化
+- [ ] `context_classifier` ロール（[config.py:79](../../../butly_core/config.py#L79) で `{}` のまま）の扱いを決める — 削除 or 正規化
 - [ ] インスタンス毎の `config.json` に出現するキーを全 instance スキャン
 
 ### Phase 1 — pydantic-settings の追加と互換シム（1〜2 日）
@@ -280,7 +283,7 @@ BUTLY_AI__CHAT__GENERATION_CONFIG__TEMPERATURE=0.9 # ai.chat.generation_config.t
 - [x] `AI_CONFIG` / `SYSTEM_CONFIG` と `get_settings()` の値一致を確認するゴールデンテスト追加
 - [x] テスト用の公式手段として `override_settings()` と `get_settings.cache_clear()` / `clear_settings_cache()` を追加
 - [x] 新規コードで `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG` を直接参照しない規約を追加
-- [ ] 既存のすべてのテストが通ることを確認（765 / 766 を維持）
+- [x] Phase 1 互換シム経由で既存のすべてのテストが通ることを確認
 - [x] `_normalize_ai_config` 相当の動作を settings 側で再現するテスト追加
 
 実装メモ: Phase 1 は全面移行ではなく互換シムまでに留める。既存コードの `butly_core.config` 参照は温存し、新規・改修コードだけ `get_settings()` へ寄せる。厳格な RoleConfig / SystemConfig 型付けは、既存 `user_config.json` 互換を壊さないよう Phase 2 以降で段階的に行う。
@@ -313,12 +316,12 @@ BUTLY_AI__CHAT__GENERATION_CONFIG__TEMPERATURE=0.9 # ai.chat.generation_config.t
 - [ ] `InstanceConfig` モデルを `butly_core/settings/instance.py` に定義（既存スキーマを全反映）
 - [ ] `InstanceManager.get_instance_config(name)` の返り値を `InstanceConfig` に変更（旧 dict 形式は `.model_dump()` で経由可能）
 - [ ] `_load_config()` / `_load_config_migrated()` を typed 版に置換
-- [ ] 既存のインスタンス config.json（[butly_core/instances/Jarvis/config.json](../butly_core/instances/Jarvis/config.json) 他）を読み込んでバリデーションエラーが出ないことを確認
+- [ ] 既存のインスタンス config.json（[butly_core/instances/Jarvis/config.json](../../../butly_core/instances/Jarvis/config.json) 他）を読み込んでバリデーションエラーが出ないことを確認
 - [ ] 未知のキー (`cache_ttl_hours` 等) は `extra="allow"` で受け入れ、警告ログを出す
 
 ### Phase 4 — LLM_CONNECTIONS の型付け（半日）
 
-- [ ] `LLMConnection` pydantic モデルを定義
+- [x] `LLMConnection` pydantic モデルを定義
 - [ ] `_register_user_connections` を pydantic 経由に書き換え
 - [ ] `user_config.json` の `LLM_CONNECTIONS` エントリ間違い (`id` 欠落等) を起動時に検出して明示エラー化
 
@@ -331,7 +334,7 @@ BUTLY_AI__CHAT__GENERATION_CONFIG__TEMPERATURE=0.9 # ai.chat.generation_config.t
 
 ### Phase 6 — `.env` ローダの cleanup（半日）
 
-- [ ] [main.py:86-99](../main.py#L86-L99) の自前 `.env` パーサを削除
+- [ ] [main.py:86-99](../../../main.py#L86-L99) の自前 `.env` パーサを削除
 - [ ] pydantic-settings の `env_file` 機能に集約
 - [ ] `frozen` 配布時の MEIPASS → LOCALAPPDATA ブートストラップロジックは残す（pydantic-settings に置き換えると複雑になるだけ）
 
@@ -378,7 +381,7 @@ BUTLY_AI__CHAT__GENERATION_CONFIG__TEMPERATURE=0.9 # ai.chat.generation_config.t
 
 ## 10. 着手前の確認事項（自分への TODO）
 
-- [ ] Phase 1 の互換シムが本当に既存テストを 1 件も壊さないことを `pytest --co` でドライランしてから着手
-- [ ] `pydantic-settings` のバージョンを pin する (`>=2.5,<3`)
+- [x] Phase 1 の互換シムが既存テストを壊さないことを確認
+- [x] `pydantic-settings` のバージョンを pin する (`>=2.5,<3`)
 - [ ] 既存の循環 import パターン (`from butly_core.config import AI_CONFIG` の関数内 import) を維持するか、root.py で循環を切れるか先に検証
 - [ ] `app.py` の更新は別 PR / 別計画とする旨を明文化（混入させない）

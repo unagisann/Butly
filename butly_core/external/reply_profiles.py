@@ -66,10 +66,24 @@ DISCORD_PROFILE = ReplyProfile(
     hard_char_limit=1900,
 )
 
+# LINE 用プロファイル。
+# - LINE の text 上限は 5000 UTF-16 code units。初期版は安全余白を取り 4500。
+# - reply は最大 5 メッセージ。超過分は adapter が push に回す。
+LINE_PROFILE = ReplyProfile(
+    name="line",
+    style_hint=(
+        "LINE向けに、読みやすく簡潔に返してください。"
+        "可能なら1600文字以内、長くても4500文字を超えないようにしてください。"
+    ),
+    soft_char_limit=1600,
+    hard_char_limit=4500,
+)
 
-# name -> ReplyProfile のレジストリ。将来 LINE 等を追加する。
+
+# name -> ReplyProfile のレジストリ。
 _PROFILES: Dict[str, ReplyProfile] = {
     DISCORD_PROFILE.name: DISCORD_PROFILE,
+    LINE_PROFILE.name: LINE_PROFILE,
 }
 
 

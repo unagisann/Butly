@@ -262,12 +262,15 @@ All configurable via `user_config.json`.
 
 ## Documentation
 
-- [Architecture Diagrams](docs/DIAGRAMS.md)
-- [Gatekeeper I/O Specification](docs/gatekeeper_io_summary.md)
-- [Memory Lifecycle](docs/memory_lifecycle.md)
-- [File Structure](docs/FILE_STRUCTURE.md)
-- [Context Levels](docs/context_levels.md)
-- [Project Status](docs/project_status.md) / [Recent Changes](docs/recent_changes.md)
+- [Documentation Index](docs/README.md)
+- [Discord Integration Setup](docs/guides/discord_integration_setup.md)
+- [LINE Integration Setup](docs/guides/line_integration_setup.md)
+- [Architecture Diagrams](docs/reference/DIAGRAMS.md)
+- [Gatekeeper I/O Specification](docs/reference/gatekeeper_io_summary.md)
+- [Memory Lifecycle](docs/reference/memory_lifecycle.md)
+- [File Structure](docs/reference/FILE_STRUCTURE.md)
+- [Context Levels](docs/reference/context_levels.md)
+- [Project Status](docs/history/project_status.md) / [Recent Changes](docs/history/recent_changes.md)
 
 ---
 

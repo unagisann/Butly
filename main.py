@@ -180,7 +180,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from routers import chat, instances, settings, sleeptime, database, devices, dashboard
+from routers import (
+    chat,
+    instances,
+    settings,
+    sleeptime,
+    database,
+    devices,
+    dashboard,
+    line as line_router,
+    pairing,
+)
 
 app.include_router(chat.router)
 app.include_router(instances.router)
@@ -189,6 +199,8 @@ app.include_router(sleeptime.router)
 app.include_router(database.router)
 app.include_router(devices.router)
 app.include_router(dashboard.router)
+app.include_router(line_router.router)
+app.include_router(pairing.router)
 
 # 起動時に永続化設定を適用
 settings.apply_startup_settings()

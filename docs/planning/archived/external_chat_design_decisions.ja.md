@@ -1,7 +1,14 @@
 # 外部チャット連携 設計決定メモ
 
+> **ステータス: 実装済み・アーカイブ（2026-06-14）**
+>
+> Discord / LINE adapter 実装前の設計判断を記録した資料です。一部の方針は
+> 後続の安全要件で変更されています。現在の挙動は現行コード、テスト、
+> [Discord セットアップ](../../guides/discord_integration_setup.ja.md)、
+> [LINE セットアップ](../../guides/line_integration_setup.ja.md)を優先してください。
+
 > 作成日: 2026-06-01
-> 対象: `docs/external_chat_preflight_plan.ja.md` の Phase 5 / Phase 6（方針決定フェーズ）
+> 対象: `external_chat_preflight_plan.ja.md` の Phase 5 / Phase 6（方針決定フェーズ）
 > 位置づけ: ここで決めた方針は Discord / LINE adapter を実装するときの前提とする。
 > この文書の Phase 5 / 6 は「決定の明文化」であり、実際の解決ロジックや push 送信機構は
 > adapter 実装時（外部連携本体）に作る。本文書ではコードを追加しない。

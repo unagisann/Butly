@@ -1,0 +1,7 @@
+# Butly - LINE Messaging API integration (optional)
+#
+# Install only when enabling /line/webhook:
+#   pip install -r requirements-line.txt
+#
+# The FastAPI / Streamlit application starts normally without this dependency.
+line-bot-sdk>=3,<4

@@ -2,6 +2,10 @@
 
 🌐 [日本語](pydantic_settings_plan.ja.md) | **English**
 
+> **Status: Active.** Phase 1 compatibility shim is implemented. Phase 2 and
+> later migration work remains. This plan lives under `planning/active` until
+> the Definition of Done is satisfied.
+>
 > Filed: 2026-05-24 / Cadence: incremental, no rush / Audience: solo dev (breaking changes OK)
 
 ## 1. Motivation
@@ -9,10 +13,10 @@
 The current config story stacks five layers by hand, with these specific pains:
 
 1. **No type safety** — `AI_CONFIG["chat"]["generation_config"]["temperature"]` typos either raise `KeyError` at runtime or silently return `None`. No editor completion.
-2. **`AI_CONFIG` / `SYSTEM_CONFIG` are mutable module globals** — tests rewrite them directly (`cfg_mod.AI_CONFIG["chat"] = ...` in [tests/test_settings_model_candidates.py:62](../tests/test_settings_model_candidates.py#L62)). This is an actual test-isolation hazard: `test_embedding_role_excludes_chat_only` already fails in full-suite runs but passes alone.
-3. **Import-time side effects** — [butly_core/config.py:268-289](../butly_core/config.py#L268-L289) loads `user_config.json` at import. Hard to stub per test. To dodge circular imports there are ~40 lazy `from butly_core.config import ...` calls inside functions.
+2. **`AI_CONFIG` / `SYSTEM_CONFIG` are mutable module globals** — tests rewrite them directly (`cfg_mod.AI_CONFIG["chat"] = ...` in [tests/test_settings_model_candidates.py:62](../../../tests/test_settings_model_candidates.py#L62)). This is an actual test-isolation hazard: `test_embedding_role_excludes_chat_only` already fails in full-suite runs but passes alone.
+3. **Import-time side effects** — [butly_core/config.py:268-289](../../../butly_core/config.py#L268-L289) loads `user_config.json` at import. Hard to stub per test. To dodge circular imports there are ~40 lazy `from butly_core.config import ...` calls inside functions.
 4. **No validation** — broken `safety_settings` in `user_config.json` only surface deep inside provider calls.
-5. **Fragile `.env` parser** — [main.py:86-99](../main.py#L86-L99) does `line.partition("=")` by hand; no support for quotes, multiline values, inline comments.
+5. **Fragile `.env` parser** — [main.py:86-99](../../../main.py#L86-L99) does `line.partition("=")` by hand; no support for quotes, multiline values, inline comments.
 6. **Implicit instance-config schema** — `Jarvis/config.json` carries keys like `cache_ttl_hours`, `use_rag`, `use_context_cache` that are not defined centrally. Hard to know what's authoritative.
 7. **`_recursive_update` is silent** — a typo in `user_config.json` gets merged with no warning.
 
@@ -172,7 +176,7 @@ API keys stay under their existing names (no `BUTLY_` prefix):
 
 - [ ] List every config key in use; write `docs/config_inventory.md`.
 - [ ] Identify dead keys (the `_AI_CONFIG_*_example` blocks — 4 known instances).
-- [ ] Decide what to do with `context_classifier` role ([config.py:79](../butly_core/config.py#L79) is `{}`) — remove or normalize.
+- [ ] Decide what to do with `context_classifier` role ([config.py:79](../../../butly_core/config.py#L79) is `{}`) — remove or normalize.
 - [ ] Scan every instance `config.json` for unknown keys.
 
 ### Phase 1 — Add pydantic-settings + compat shim (~1–2 days)
@@ -190,7 +194,7 @@ API keys stay under their existing names (no `BUTLY_` prefix):
 - [x] Add a golden test proving legacy `AI_CONFIG` / `SYSTEM_CONFIG` match `get_settings()`.
 - [x] Add official test hooks: `override_settings()` and `get_settings.cache_clear()` / `clear_settings_cache()`.
 - [x] Document the rule that new code must not directly import `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG`.
-- [ ] All existing tests pass (we should hold 765 / 766 — the one pre-existing flake stays a known flake).
+- [x] All existing tests pass through the Phase 1 compatibility shim.
 - [x] Add tests that the settings layer reproduces `_normalize_ai_config` behavior.
 
 Implementation note: Phase 1 is intentionally not a full migration. Existing
@@ -226,12 +230,12 @@ Per module:
 - [ ] Define `InstanceConfig` in `butly_core/settings/instance.py` mirroring observed schema.
 - [ ] Change `InstanceManager.get_instance_config(name)` return type to `InstanceConfig`. Provide `.model_dump()` for legacy callers.
 - [ ] Replace `_load_config()` / `_load_config_migrated()` with typed loaders.
-- [ ] Load every existing instance `config.json` (e.g. [butly_core/instances/Jarvis/config.json](../butly_core/instances/Jarvis/config.json)) and confirm validation passes.
+- [ ] Load every existing instance `config.json` (e.g. [butly_core/instances/Jarvis/config.json](../../../butly_core/instances/Jarvis/config.json)) and confirm validation passes.
 - [ ] Unknown keys (`cache_ttl_hours`, etc.) accepted via `extra="allow"` with a warning log so we can audit and tighten later.
 
 ### Phase 4 — Type LLM_CONNECTIONS (~½ day)
 
-- [ ] Define `LLMConnection` pydantic model.
+- [x] Define `LLMConnection` pydantic model.
 - [ ] Replace `_register_user_connections` body with pydantic validation.
 - [ ] Surface malformed entries at startup with explicit errors.
 
@@ -244,7 +248,7 @@ Per module:
 
 ### Phase 6 — Clean up `.env` loader (~½ day)
 
-- [ ] Delete the hand-rolled parser at [main.py:86-99](../main.py#L86-L99).
+- [ ] Delete the hand-rolled parser at [main.py:86-99](../../../main.py#L86-L99).
 - [ ] Let pydantic-settings' `env_file` handle it.
 - [ ] Keep the frozen-mode MEIPASS → LOCALAPPDATA bootstrap (cleanest as-is).
 
@@ -291,7 +295,7 @@ Per module:
 
 ## 10. Pre-flight checklist
 
-- [ ] Confirm the Phase 1 compat shim breaks zero tests via `pytest --co` dry-run before starting code changes.
-- [ ] Pin `pydantic-settings>=2.5,<3`.
+- [x] Confirm the Phase 1 compat shim breaks zero tests.
+- [x] Pin `pydantic-settings>=2.5,<3`.
 - [ ] Decide whether to keep existing lazy-import patterns (`from butly_core.config import AI_CONFIG` inside functions) or break the cycle at `root.py` — verify before Phase 2.
 - [ ] Make explicit that `app.py` updates are out of scope for this plan (avoid scope creep).
