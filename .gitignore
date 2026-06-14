@@ -34,6 +34,10 @@ APIkey.env
 *.db
 !butly_memory.db.example # 例として残す場合は除外
 
+# AI agent local rules (not published)
+AGENTS.md
+CLAUDE.md
+
 # Local config
 user_config.json
 user_prompts.json
