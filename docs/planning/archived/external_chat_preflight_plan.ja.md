@@ -1,5 +1,11 @@
 # Discord / LINE 連携前の土台整備計画
 
+> **ステータス: 実装済み・アーカイブ（2026-06-01）**
+>
+> `ButlyRuntime`、共通 `ChatRequest`、外部 account mapping などの土台整備に
+> 使用した計画書です。Discord / LINE adapter の実装完了後も、設計経緯を
+> 参照できるよう履歴資料として保管します。
+
 > 作成日: 2026-06-01
 > 対象: Discord / LINE など、FastAPI / Streamlit 以外のチャット入口を追加する前の準備
 

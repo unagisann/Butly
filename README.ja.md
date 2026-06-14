@@ -261,14 +261,15 @@ flowchart TD
 
 ## ドキュメント
 
-- [Discord 連携セットアップ](docs/discord_integration_setup.ja.md)
-- [LINE 連携セットアップ](docs/line_integration_setup.ja.md)
-- [アーキテクチャ図集](docs/DIAGRAMS.ja.md)
-- [Gatekeeper 入出力仕様](docs/gatekeeper_io_summary.ja.md)
-- [記憶ライフサイクル](docs/memory_lifecycle.ja.md)
-- [ファイル構成](docs/FILE_STRUCTURE.ja.md)
-- [context_levels](docs/context_levels.ja.md)
-- [プロジェクト状況](docs/project_status.ja.md) / [更新履歴](docs/recent_changes.ja.md)
+- [ドキュメント一覧](docs/README.ja.md)
+- [Discord 連携セットアップ](docs/guides/discord_integration_setup.ja.md)
+- [LINE 連携セットアップ](docs/guides/line_integration_setup.ja.md)
+- [アーキテクチャ図集](docs/reference/DIAGRAMS.ja.md)
+- [Gatekeeper 入出力仕様](docs/reference/gatekeeper_io_summary.ja.md)
+- [記憶ライフサイクル](docs/reference/memory_lifecycle.ja.md)
+- [ファイル構成](docs/reference/FILE_STRUCTURE.ja.md)
+- [context_levels](docs/reference/context_levels.ja.md)
+- [プロジェクト状況](docs/history/project_status.ja.md) / [更新履歴](docs/history/recent_changes.ja.md)
 
 ---
 

@@ -275,6 +275,22 @@ Prompt loading package.
 
 ---
 
+## `docs/`
+
+| Path | Purpose |
+|---|---|
+| `docs/README.md` / `README.ja.md` | Documentation index |
+| `docs/guides/` | Current setup and operating guides |
+| `docs/reference/` | Current architecture and feature specifications |
+| `docs/history/` | Project snapshots and change history |
+| `docs/planning/active/` | Plans with remaining implementation work |
+| `docs/planning/archived/` | Implemented plans retained for design history |
+
+Archived plans are not the source of truth for current behavior. Prefer current
+code, tests, and setup guides.
+
+---
+
 ## Chat context composition
 
 For each turn, the LLM receives a prompt assembled in two halves.

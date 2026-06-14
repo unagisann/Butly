@@ -1,8 +1,14 @@
 # LINE 連携実装計画
 
+> **ステータス: 実装済み・アーカイブ（2026-06-14）**
+>
+> LINE 初期連携の実装時に使用した計画書です。設計判断の履歴として保管します。
+> 現在の利用方法は [LINE 連携セットアップ](../../guides/line_integration_setup.ja.md)、
+> 正確な挙動は現行コードとテストを優先してください。
+
 > 作成日: 2026-06-14
 > 対象: Butly の LINE adapter 実装。Discord adapter（実装済）の分離思想を踏襲する。
-> 位置づけ: 設計段階ドキュメント（`_` プレフィックス）。実装は Claude Code に引き渡す。
+> 位置づけ: 実装前の設計段階ドキュメント。
 > 前提ドキュメント: `external_chat_design_decisions.ja.md` Phase 5/6、`discord_integration_plan.ja.md`
 
 ## 目的
