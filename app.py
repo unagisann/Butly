@@ -439,7 +439,7 @@ def get_active_chat_model(api_url: str, instance_name: str) -> str:
 # ==========================================
 def render_home_screen():
     # ヘッダー
-    col1, col2, col3, col4 = st.columns([6, 1, 1, 1])
+    col1, col2, col3, col4, col5 = st.columns([6, 1, 1, 1, 1])
     with col1:
         st.markdown('<h1 class="app-title">Butly</h1>', unsafe_allow_html=True)
     with col2:
@@ -447,9 +447,12 @@ def render_home_screen():
             st.session_state.db_browser_instance = st.session_state.current_instance
             navigate_to("database_browser")
     with col3:
+        if st.button("🔗", help="LINE連携"):
+            navigate_to("pairing")
+    with col4:
         if st.button("⚙️", help="設定"):
             navigate_to("settings")
-    with col4:
+    with col5:
         if st.button("🚪", help="終了 (セッションクリア)"):
             st.session_state.messages = []
             st.cache_resource.clear()
@@ -1217,6 +1220,91 @@ def render_settings_screen():
                     st.error(f"エラー: {resp.text}")
             except Exception as e:
                 st.error(f"サーバー接続エラー: {e}")
+
+
+# ==========================================
+# 🔗 LINE pairing 管理画面
+# ==========================================
+def render_pairing_screen():
+    import requests
+
+    api_url = st.session_state.api_base_url
+    col1, col2 = st.columns([1, 8])
+    with col1:
+        if st.button("＜ 戻る", key="pairing_back"):
+            navigate_to("home")
+    with col2:
+        st.markdown('<h1 class="app-title">🔗 LINE連携</h1>', unsafe_allow_html=True)
+
+    st.caption(
+        "LINEに表示された6桁コードを確認し、接続する Butly instance を選んで承認します。"
+    )
+    try:
+        response = requests.get(f"{api_url}/pairing/pending", timeout=5)
+        if not response.ok:
+            st.error(f"pairing 一覧の取得に失敗しました: {response.text}")
+            return
+        payload = response.json()
+    except Exception as exc:
+        st.error(f"FastAPIサーバーに接続できません: {exc}")
+        return
+
+    pending = payload.get("pending", [])
+    instances = payload.get("instances", [])
+    default_instance = payload.get("default_instance")
+    if not pending:
+        st.info("承認待ちの LINE アカウントはありません。")
+        return
+    if not instances:
+        st.warning("承認先にできる Butly instance がありません。")
+        return
+
+    default_index = (
+        instances.index(default_instance) if default_instance in instances else 0
+    )
+
+    def post_pairing_action(action, body):
+        try:
+            result = requests.post(
+                f"{api_url}/pairing/{action}", json=body, timeout=5
+            )
+        except Exception as exc:
+            st.error(f"操作に失敗しました: {exc}")
+            return False
+        if not result.ok:
+            st.error(f"操作に失敗しました: {result.text}")
+            return False
+        return True
+
+    for record in pending:
+        code = record.get("code", "")
+        user_id = record.get("external_user_id", "")
+        masked_user = f"…{user_id[-8:]}" if len(user_id) > 8 else user_id
+        with st.container(border=True):
+            st.subheader(f"連携コード: {code}")
+            st.caption(
+                f"source: {record.get('source', '?')} / user: {masked_user} / "
+                f"expires: {record.get('expires_at', '?')}"
+            )
+            selected = st.selectbox(
+                "接続先 instance",
+                instances,
+                index=default_index,
+                key=f"pairing_instance_{code}",
+            )
+            approve_col, reject_col = st.columns(2)
+            with approve_col:
+                if st.button("承認", type="primary", key=f"pairing_approve_{code}"):
+                    if post_pairing_action(
+                        "approve", {"code": code, "instance_name": selected}
+                    ):
+                        st.success("LINEアカウントを連携しました。")
+                        st.rerun()
+            with reject_col:
+                if st.button("却下", key=f"pairing_reject_{code}"):
+                    if post_pairing_action("reject", {"code": code}):
+                        st.success("pairing request を却下しました。")
+                        st.rerun()
 
 
 # ==========================================
@@ -3418,6 +3506,8 @@ def main():
         render_chat_screen()
     elif st.session_state.current_page == "settings":
         render_settings_screen()
+    elif st.session_state.current_page == "pairing":
+        render_pairing_screen()
     elif st.session_state.current_page == "instance_settings":
         render_instance_settings_screen()
     elif st.session_state.current_page == "sleeptime":

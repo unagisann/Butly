@@ -262,6 +262,8 @@ All configurable via `user_config.json`.
 
 ## Documentation
 
+- [Discord Integration Setup](docs/discord_integration_setup.md)
+- [LINE Integration Setup](docs/line_integration_setup.md)
 - [Architecture Diagrams](docs/DIAGRAMS.md)
 - [Gatekeeper I/O Specification](docs/gatekeeper_io_summary.md)
 - [Memory Lifecycle](docs/memory_lifecycle.md)

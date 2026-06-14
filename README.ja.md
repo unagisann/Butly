@@ -261,6 +261,8 @@ flowchart TD
 
 ## ドキュメント
 
+- [Discord 連携セットアップ](docs/discord_integration_setup.ja.md)
+- [LINE 連携セットアップ](docs/line_integration_setup.ja.md)
 - [アーキテクチャ図集](docs/DIAGRAMS.ja.md)
 - [Gatekeeper 入出力仕様](docs/gatekeeper_io_summary.ja.md)
 - [記憶ライフサイクル](docs/memory_lifecycle.ja.md)

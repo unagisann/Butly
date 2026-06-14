@@ -1,7 +1,7 @@
 """
 account_mapping.py
 ------------------
-外部プラットフォーム（Discord 等）のアカウント／チャンネル／サーバーと、
+外部プラットフォーム（Discord / LINE 等）のアカウント／チャンネル／サーバーと、
 Butly instance の対応を解決・永続化する。
 
 保存先: ``DATA_DIR/external_accounts.json``
@@ -148,6 +148,10 @@ class ExternalAccountStore:
     def _guild_key(guild_id: str) -> str:
         return f"guild:{guild_id}"
 
+    @staticmethod
+    def _group_user_key(group_id: str, user_id: str) -> str:
+        return f"group:{group_id}:{user_id}"
+
     def resolve_discord(
         self,
         *,
@@ -201,6 +205,33 @@ class ExternalAccountStore:
         if not isinstance(default, str) or not default:
             default = FALLBACK_DEFAULT_INSTANCE
         return self._as_resolved(default, "default")
+
+    def resolve_line(
+        self,
+        *,
+        user_id: Optional[str],
+        group_id: Optional[str] = None,
+    ) -> Optional[ResolvedInstance]:
+        """LINE の発話文脈から、明示的に承認済みの instance を解決する。
+
+        LINE は pairing 必須のため ``default_instance`` にはフォールバックしない。
+        グループ固有の割り当てがあれば user 割り当てより優先する。
+        """
+        if not user_id:
+            return None
+        data = self._load()
+        raw_mapping = data.get("line")
+        mapping: Dict[str, str] = raw_mapping if isinstance(raw_mapping, dict) else {}
+
+        if group_id:
+            inst = mapping.get(self._group_user_key(str(group_id), str(user_id)))
+            if inst:
+                return self._as_resolved(inst, "group")
+
+        inst = mapping.get(self._user_key(str(user_id)))
+        if inst:
+            return self._as_resolved(inst, "user")
+        return None
 
     def _as_resolved(self, instance_name: str, scope: str) -> ResolvedInstance:
         return ResolvedInstance(
@@ -321,3 +352,27 @@ class ExternalAccountStore:
         data["discord"] = discord_map
         self._save(data)
         return True
+
+    def bind_external_user(
+        self, *, source: str, user_id: str, instance_name: str
+    ) -> str:
+        """外部サービスの user scope を instance に紐づける。"""
+        source = str(source).strip().lower()
+        user_id = str(user_id).strip()
+        if not source or not user_id:
+            raise ValueError("source と user_id は必須です")
+        if not self.instance_exists(instance_name):
+            avail = ", ".join(self.available_instances()) or "(なし)"
+            raise ValueError(
+                f"instance '{instance_name}' は存在しません。利用可能: {avail}"
+            )
+
+        key = self._user_key(user_id)
+        data = self._load()
+        mapping = data.get(source)
+        if not isinstance(mapping, dict):
+            mapping = {}
+        mapping[key] = instance_name
+        data[source] = mapping
+        self._save(data)
+        return key
