@@ -4,6 +4,11 @@
 
 ## 進行中
 
+- [正式フロントエンド移行計画](active/frontend_migration_plan.ja.md)
+  - Windows-first の Tauri + React/TypeScript desktop app へ段階移行します。
+  - FastAPI / OpenAPI を正式な frontend contract とし、Streamlit は parity 完了まで残します。
+- [記憶ストア正規化計画](active/memory_store_normalization_plan.ja.md)
+  - 記憶レイヤを役割別に正規化し、ファイル構成とアクセス層を整理します。
 - [pydantic-settings 設定統合計画](active/pydantic_settings_plan.ja.md)
   - Phase 1 の互換シムは実装済みです。
   - Phase 2 以降の移行作業が残っています。
