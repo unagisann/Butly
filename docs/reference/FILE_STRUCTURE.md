@@ -78,12 +78,26 @@ Stateless orchestrator with two entry points:
   6. `ProviderFactory.create(model_name)` (priority: instance > request > global); vision check.
   7. Run `provider.generate(...)` and `gatekeeper.update_state(...)` via `asyncio.gather()` (parallel).
   8. Apply `state_delta` and save `debug_info` (`debug_logs/latest.json` + `history/{ts}.json`).
-  9. `memory.save_single_turn()` + `memory.maintain_memory()`.
+  9. `memory.save_single_turn()` + `memory.maintain_memory()`, then save a Trace Graph (`trace.json`) under `traces/` (issue #51).
 
 - `ChatService.execute_stream(request, ...)` — SSE streaming. Same flow, but step 6 invokes `provider.async_generate_stream()` and yields `{"type": "metadata"|"chunk"|"done"|"error", ...}` events. `StateUpdater` runs via `asyncio.create_task` and is awaited just before `done`.
 
 - `_is_gemini_model(model_name)` — Gemini detection helper used for the web-search branch.
-- `_save_debug_log(instance_dir, payload, max_history=20)` — writes `latest.json` and rotates `history/{ts}.json`.
+- `_write_rotating_json(target_dir, payload, max_history, *, log_label)` — shared `latest.json` + `history/{ts}.json` rotation writer.
+- `_save_debug_log(...)` / `_save_trace(...)` — write debug info to `debug_logs/` and the Trace Graph to `traces/`.
+- `_build_and_save_trace(...)` — reconstruct a `TraceGraph` from execution facts via `build_chat_trace()` and persist it (issue #51; build/save failures never affect the response).
+
+---
+
+### `butly_core/trace/`
+
+Trace Graph (issue #51): records and visualizes the answer-generation flow as a node + edge graph. Frontend-independent — covers `trace.json` persistence and Mermaid generation only.
+
+- `types.py` — Pydantic DTOs: `TraceNode`, `TraceEdge` (serialized with `from`/`to` keys), `TraceGraph`; `NodeType`, `TraceStatus` (`active`/`skipped`/`fallback`/`error`/`warning`), `summarize_text()`.
+- `builder.py` — `build_chat_trace(...)`: pure function reconstructing the graph (`user_message → gatekeeper → memory_probe/rag/web_search → context_assembly → provider → llm_call → memory_write → state_update/response`) from collected facts, without instrumenting the parallel generation path.
+- `mermaid.py` — `render_mermaid(trace, *, direction="TD")`: lightweight renderer; colors nodes by status and distinguishes skipped/fallback/error edges by line style.
+
+Saved to `butly_core/instances/{instance}/traces/latest.json` + `traces/history/{ts}.json` (same rotation as `debug_logs`; reconstructible telemetry, so not atomic-write).
 
 ---
 

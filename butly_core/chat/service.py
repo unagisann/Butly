@@ -207,28 +207,30 @@ def _record_usage_count(
         print(f"[{log_prefix}] usage_count 更新エラー（応答には影響なし）: {_uce}")
 
 
-def _save_debug_log(
-    instance_dir: Path,
+def _write_rotating_json(
+    target_dir: Path,
     payload: dict,
-    max_history: int = 20,
+    max_history: int,
+    *,
+    log_label: str,
 ) -> None:
     """
-    instance_dir/debug_logs/ 以下にデバッグ情報を保存する。
+    target_dir 以下に latest.json + history/ ローテーションで JSON を書き出す。
 
     - latest.json: 毎ターン上書き (常に最新)
     - history/{YYYYMMDD_HHMMSS_uuid}.json: ローテーション (max_history 件保持)
 
-    保存失敗は応答に影響させない (warning ログのみ)。
+    保存失敗は応答に影響させない (warning ログのみ)。デバッグ/トレース telemetry は
+    ローテーション付きで再構築可能なため atomic write 対象外 (coding_conventions)。
     """
     try:
-        debug_dir = instance_dir / "debug_logs"
-        debug_dir.mkdir(exist_ok=True)
-        history_dir = debug_dir / "history"
+        target_dir.mkdir(exist_ok=True)
+        history_dir = target_dir / "history"
         history_dir.mkdir(exist_ok=True)
 
         text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
 
-        (debug_dir / "latest.json").write_text(text, encoding="utf-8")
+        (target_dir / "latest.json").write_text(text, encoding="utf-8")
 
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         (history_dir / f"{ts}.json").write_text(text, encoding="utf-8")
@@ -238,7 +240,83 @@ def _save_debug_log(
         for old in files[:-max_history]:
             old.unlink(missing_ok=True)
     except Exception as e:
-        print(f"[ChatService] debug_log 保存エラー (応答には影響なし): {e}")
+        print(f"[ChatService] {log_label} 保存エラー (応答には影響なし): {e}")
+
+
+def _save_debug_log(
+    instance_dir: Path,
+    payload: dict,
+    max_history: int = 20,
+) -> None:
+    """instance_dir/debug_logs/ 以下にデバッグ情報を保存する (latest + history ローテーション)。"""
+    _write_rotating_json(
+        instance_dir / "debug_logs", payload, max_history, log_label="debug_log"
+    )
+
+
+def _save_trace(
+    instance_dir: Path,
+    trace_payload: dict,
+    max_history: int = 20,
+) -> None:
+    """instance_dir/traces/ 以下に trace.json を保存する (latest + history ローテーション)。"""
+    _write_rotating_json(
+        instance_dir / "traces", trace_payload, max_history, log_label="trace"
+    )
+
+
+def _build_and_save_trace(
+    *,
+    instance_dir: Path,
+    instance_name: str,
+    request,
+    prepared: "_PreparedChat",
+    tier: str,
+    gk_result: dict,
+    assistant_response: str,
+    debug_info: dict,
+    session_state,
+    provider,
+    connection_id: str,
+    model_name: str,
+    generation_error: Optional[str] = None,
+) -> None:
+    """1 ターン分の Trace Graph を組み立て trace.json として保存する (issue #51)。
+
+    実行事実 (gatekeeper 出力・記憶ブロック・timing 等) から再構成する best-effort
+    処理。``generation_error`` が指定された場合は LLM 生成失敗として保存する
+    （失敗時こそ「どこで止まったか」を残すのが目的）。trace の構築/保存失敗は
+    応答に影響させない。
+    """
+    try:
+        from butly_core.trace import build_chat_trace
+
+        session_dict = session_state.to_dict() if session_state else {}
+        trace = build_chat_trace(
+            instance_name=instance_name,
+            user_input=request.text,
+            assistant_response=assistant_response,
+            gk_result=gk_result,
+            tier=tier,
+            memory_blocks=prepared.memory_blocks,
+            gk_enabled=prepared.gk_enabled,
+            gk_error=prepared.gk_error,
+            web_search_status=prepared.web_search_status,
+            web_search_count=prepared.web_search_count,
+            connection_id=connection_id,
+            model_name=model_name,
+            provider_name=type(provider).__name__,
+            has_attachments=prepared.has_attachments,
+            timing=debug_info.get("timing"),
+            token_estimate=debug_info.get("token_estimate"),
+            generation_error=generation_error,
+            turn_id=session_dict.get("turn_count"),
+            source=getattr(request, "source", "web"),
+            created_at=datetime.datetime.now().isoformat(timespec="seconds"),
+        )
+        _save_trace(instance_dir, trace.to_json_dict())
+    except Exception as e:
+        print(f"[ChatService] trace 構築/保存エラー (応答には影響なし): {e}")
 
 
 def _build_history_fmt(history: list) -> list:
@@ -285,6 +363,13 @@ class _PreparedChat:
     web_sources: List[Dict[str, Any]] = field(default_factory=list)
     context: Optional[dict] = None
     context_levels_cfg: Any = None
+
+    # Trace Graph (issue #51) 用の状態マーカー。
+    # gk_error: Gatekeeper が例外でフォールバックした場合の理由。
+    # web_search_status: disabled / native_google / active / no_results / unavailable。
+    gk_error: Optional[str] = None
+    web_search_status: str = ""
+    web_search_count: int = 0
 
     # タイミング計測マーカー (debug_info.timing 用)
     t_gk_start: float = 0.0
@@ -360,6 +445,7 @@ async def _prepare_chat_context(
     gk_enabled = instance_config.get("gatekeeper", {}).get("enabled", True)
 
     t_gk_start = time.time()
+    gk_error: Optional[str] = None
 
     if gk_enabled:
         try:
@@ -375,6 +461,7 @@ async def _prepare_chat_context(
             tier = gk_result.get("tier", "mid")
         except Exception as e:
             print(f"[{log_prefix}] Gatekeeper エラー、フォールバック: {e}")
+            gk_error = str(e)
             gk_result = {
                 "tier": "mid",
                 "topic": "",
@@ -444,7 +531,13 @@ async def _prepare_chat_context(
     # --- Web 検索 (非 Google connection + 検索 ON 時) ---
     web_search_context = ""
     web_sources: List[Dict[str, Any]] = []
-    if request.use_web_search and not _uses_google_connection(connection_id):
+    web_search_count = 0
+    web_search_status = ""
+    if not request.use_web_search:
+        web_search_status = "disabled"
+    elif _uses_google_connection(connection_id):
+        web_search_status = "native_google"
+    else:
         from butly_core.search import create_search_provider
 
         search_provider = create_search_provider(chat_model=model_name)
@@ -466,10 +559,14 @@ async def _prepare_chat_context(
                 web_sources = [
                     {"title": r.title, "url": r.url} for r in search_results
                 ]
+                web_search_count = len(search_results)
+                web_search_status = "active"
                 print(f"[{log_prefix}] Web Search: {len(search_results)} 件取得")
             else:
+                web_search_status = "no_results"
                 print(f"[{log_prefix}] Web Search: 結果なし")
         else:
+            web_search_status = "unavailable"
             print(f"[{log_prefix}] Web Search: API キー未設定のためスキップ")
 
     if web_search_context:
@@ -521,6 +618,9 @@ async def _prepare_chat_context(
         web_sources=web_sources,
         context=context,
         context_levels_cfg=context_levels_cfg,
+        gk_error=gk_error,
+        web_search_status=web_search_status,
+        web_search_count=web_search_count,
         t_gk_start=t_gk_start,
         t_gk_end=t_gk_end,
         t_mem_start=t_mem_start,
@@ -662,10 +762,42 @@ class ChatService:
             state_elapsed_ms["value"] = int((time.time() - t0) * 1000)
             return res
 
-        result, state_delta = await asyncio.gather(
-            _run_generate(),
-            _run_state_update(),
-        )
+        try:
+            result, state_delta = await asyncio.gather(
+                _run_generate(),
+                _run_state_update(),
+            )
+        except Exception as gen_err:
+            # LLM 生成失敗: error trace を残してから従来どおり例外を伝播する
+            # (issue #51: 失敗時こそ「どこで止まったか」を残す)
+            _build_and_save_trace(
+                instance_dir=instance_dir,
+                instance_name=instance_name,
+                request=request,
+                prepared=prepared,
+                tier=tier,
+                gk_result=gk_result,
+                assistant_response="",
+                debug_info={
+                    "timing": {
+                        "gatekeeper_ms": int(
+                            (prepared.t_gk_end - prepared.t_gk_start) * 1000
+                        ),
+                        "memory_build_ms": int(
+                            (prepared.t_mem_end - prepared.t_mem_start) * 1000
+                        ),
+                        "generation_ms": gen_elapsed_ms["value"],
+                        "total_ms": int((time.time() - _t_start) * 1000),
+                    },
+                    "token_estimate": {},
+                },
+                session_state=session_state,
+                provider=provider,
+                connection_id=connection_id,
+                model_name=model_name,
+                generation_error=str(gen_err),
+            )
+            raise
 
         session_state.increment_turn(tier, history_msgs=history_fmt)
 
@@ -806,6 +938,22 @@ class ChatService:
             "debug_info": result.debug_info,
         }
         _save_debug_log(instance_dir, debug_log_payload)
+
+        # --- 9. Trace Graph 保存 (issue #51) ---
+        _build_and_save_trace(
+            instance_dir=instance_dir,
+            instance_name=instance_name,
+            request=request,
+            prepared=prepared,
+            tier=tier,
+            gk_result=gk_result,
+            assistant_response=result.text,
+            debug_info=result.debug_info,
+            session_state=session_state,
+            provider=provider,
+            connection_id=connection_id,
+            model_name=model_name,
+        )
 
         return result
 
@@ -953,6 +1101,35 @@ class ChatService:
                 await state_task
             except (asyncio.CancelledError, Exception):
                 pass
+            # error trace を残す (issue #51: どこで失敗したか追えるように)
+            _build_and_save_trace(
+                instance_dir=instance_dir,
+                instance_name=instance_name,
+                request=request,
+                prepared=prepared,
+                tier=tier,
+                gk_result=gk_result,
+                assistant_response="",
+                debug_info={
+                    "timing": {
+                        "gatekeeper_ms": int(
+                            (prepared.t_gk_end - prepared.t_gk_start) * 1000
+                        ),
+                        "memory_build_ms": int(
+                            (prepared.t_mem_end - prepared.t_mem_start) * 1000
+                        ),
+                        "generation_ms": gen_elapsed_ms,
+                        "ttfb_ms": ttfb_ms["value"] or 0,
+                        "total_ms": int((time.time() - _t_start) * 1000),
+                    },
+                    "token_estimate": {},
+                },
+                session_state=session_state,
+                provider=provider,
+                connection_id=connection_id,
+                model_name=model_name,
+                generation_error=stream_err,
+            )
             yield {"type": "error", "message": stream_err, "recoverable": False}
             return
 
@@ -1059,6 +1236,22 @@ class ChatService:
             "streaming": True,
         }
         _save_debug_log(instance_dir, debug_log_payload)
+
+        # Trace Graph 保存 (issue #51)
+        _build_and_save_trace(
+            instance_dir=instance_dir,
+            instance_name=instance_name,
+            request=request,
+            prepared=prepared,
+            tier=tier,
+            gk_result=gk_result,
+            assistant_response=full_text,
+            debug_info=debug_info,
+            session_state=session_state,
+            provider=provider,
+            connection_id=connection_id,
+            model_name=model_name,
+        )
 
         # done イベント
         yield {

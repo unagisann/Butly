@@ -157,7 +157,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 6. ProviderFactory.create → Provider 選択（インスタンス config > リクエスト > グローバル）、vision チェック
 7. provider.generate(full_prompt, attachments, context) と gatekeeper.update_state(...) を `asyncio.gather()` で並列実行
 8. state_delta があれば session_state.apply_delta で反映
-9. debug_info を統合し latest.json / history/ に保存
+9. debug_info を統合し debug_logs/ に保存。Trace Graph (trace.json) を traces/ に保存（issue #51）
 10. memory.save_single_turn → 会話を short_term_json に保存
 11. memory.maintain_memory → 閾値超過時に short_term → session_digest へ折りたたみ
 ```
@@ -165,7 +165,43 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 - `ChatService.execute(request, ...)` — 上記フローを実行する静的 async メソッド（バッファ応答 / `ChatResponse` 返却）
 - `ChatService.execute_stream(request, ...)` — SSE 用のストリーミング版。Provider の `async_generate_stream()` を呼び、`metadata` / `chunk` / `done` / `error` イベントを順次 `yield` する。StateUpdater は `asyncio.create_task` で並列実行され、`done` 直前に await される
 - `_is_gemini_model(model_name)` — モデル名から Gemini かを判定するヘルパー（Web 検索分岐用）
-- `_save_debug_log(instance_dir, payload, max_history=20)` — `debug_logs/latest.json` + `history/{ts}.json` を書き出すヘルパー
+- `_write_rotating_json(target_dir, payload, max_history, *, log_label)` — `latest.json` + `history/{ts}.json` ローテーション書き出しの共通ヘルパー
+- `_save_debug_log(instance_dir, payload, max_history=20)` — `debug_logs/` へデバッグ情報を保存
+- `_save_trace(instance_dir, trace_payload, max_history=20)` — `traces/` へ Trace Graph (trace.json) を保存
+- `_build_and_save_trace(...)` — 実行事実から `build_chat_trace()` で TraceGraph を構築し `_save_trace` で保存（issue #51。構築/保存失敗は応答に影響させない）
+
+---
+
+## butly_core/trace/
+
+Trace Graph (issue #51): 1 回答の生成フローを「ノード + エッジ」のグラフとして記録・
+可視化するデバッグ機能。フロントエンド非依存で、`trace.json` 保存と Mermaid 生成までを担う。
+
+### `butly_core/trace/types.py`
+Trace Graph の DTO（Pydantic モデル）と定数・ヘルパー。
+
+- `TraceNode` — 処理フロー上の 1 ノード（id / label / type / status / summary / metadata）
+- `TraceEdge` — 有向エッジ。JSON では `from` / `to` キーで出力（フィールド名は source/target + alias）
+- `TraceGraph` — 1 ターン分のフロー全体。`to_json_dict()` で `from`/`to` 形式の dict を返す
+- `NodeType` — `input` / `loader` / `decision` / `retrieval` / `tool` / `context` / `provider` / `llm` / `formatter` / `memory` / `housekeeper` / `end`
+- `TraceStatus` — `active`（通った） / `skipped`（候補だが未使用） / `fallback` / `error` / `warning`
+- `TRACE_SCHEMA_VERSION` — trace.json スキーマのバージョン
+- `summarize_text(text, limit=80)` — summary 用にテキストを 1 行へ切り詰める（長文をそのまま残さないための長さ切り詰め。PII 除去・匿名化ではない）
+
+### `butly_core/trace/builder.py`
+ChatService の実行事実（gatekeeper 出力・記憶ブロック・Provider 情報・timing 等）から
+`TraceGraph` を再構成する純粋関数。並列実行される生成フローへ span logger を差し込まず、
+確定済みの状態から組み立てることで P0 のチャット経路を変更しない。
+
+- `build_chat_trace(...)` — `user_message → gatekeeper → (memory_probe / rag / web_search) → context_assembly → provider → llm_call → memory_write → state_update / response` のノードとエッジを構築。RAG 未注入・Web 検索 OFF・Gatekeeper フォールバック等を status で表現する
+
+### `butly_core/trace/mermaid.py`
+`TraceGraph` を Mermaid flowchart 文字列へ変換する軽量レンダラー。
+
+- `render_mermaid(trace, *, direction="TD")` — ノード宣言 + エッジ + classDef を出力。active/skipped/fallback/error/warning を色分けし、skipped/fallback/error のエッジは線種で区別する
+- `_sanitize(text)` — Mermaid ラベル構文を壊す文字（`"` `[` `]` 等）を置換
+
+**保存先:** `butly_core/instances/{instance}/traces/latest.json` + `traces/history/{ts}.json`（debug_logs と同じローテーション方式。再構築可能な telemetry のため atomic write 対象外）。
 
 ---
 

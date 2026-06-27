@@ -11,6 +11,7 @@ usage_count / last_counted_at フィールドの実装テスト。
 """
 
 import asyncio
+import json
 import sqlite3
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -621,6 +622,19 @@ class TestChatServiceExecuteUsageCount:
 
         # 例外で離脱したのでカウントされない
         assert _read_usage(chatservice_env["self_db"], "self_c1")[0] == 0
+
+        # issue #51: 非ストリーム生成失敗でも error trace が残る
+        trace_path = (
+            chatservice_env["instances_dir"]
+            / chatservice_env["self_inst"]
+            / "traces"
+            / "latest.json"
+        )
+        assert trace_path.exists()
+        trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        statuses = {n["id"]: n["status"] for n in trace["nodes"]}
+        assert statuses["llm_call"] == "error"
+        assert statuses["response"] == "skipped"
 
     def test_routes_to_source_instance_db_in_multi_instance(self, chat_request, chatservice_env):
         """readable_instances 横断時、source_instance の DB に振り分けて記録される。"""

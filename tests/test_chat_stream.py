@@ -7,6 +7,7 @@ debug_info の生成を検証する。
 """
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock, patch
 
@@ -183,6 +184,15 @@ class TestExecuteStream:
         # save_single_turn は呼ばれない (途中失敗のため)
         mock_components["memory"].save_single_turn.assert_not_called()
         session_state_mock.increment_turn.assert_not_called()
+
+        # issue #51: 失敗時も error trace が残る (llm_call=error, 以降 skipped)
+        trace_path = tmp_instance_dir / "traces" / "latest.json"
+        assert trace_path.exists()
+        trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        statuses = {n["id"]: n["status"] for n in trace["nodes"]}
+        assert statuses["llm_call"] == "error"
+        assert statuses["memory_write"] == "skipped"
+        assert statuses["response"] == "skipped"
 
     def test_attachment_vision_error(
         self, tmp_instance_dir, request_obj, mock_components,
