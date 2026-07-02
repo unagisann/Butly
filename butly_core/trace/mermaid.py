@@ -73,8 +73,22 @@ def _edge_line(edge: TraceEdge) -> str:
     return f"    {edge.source} {connector} {edge.target}"
 
 
-def render_mermaid(trace: TraceGraph, *, direction: str = "TD") -> str:
-    """TraceGraph を Mermaid flowchart 文字列へ変換する。"""
+def render_mermaid(
+    trace: TraceGraph,
+    *,
+    direction: str = "TD",
+    detail: str = "full",
+    hidden_nodes=(),
+) -> str:
+    """TraceGraph を Mermaid flowchart 文字列へ変換する。
+
+    ``detail`` / ``hidden_nodes`` は ``filter_trace()`` に委譲する表示フィルタ。
+    SYSTEM_CONFIG["trace"] の同名設定を呼び出し側 (Debug UI 等) が渡す想定。
+    """
+    from butly_core.trace.filters import filter_trace
+
+    trace = filter_trace(trace, detail=detail, hidden_nodes=hidden_nodes)
+
     lines: List[str] = [f"flowchart {direction}"]
 
     for node in trace.nodes:

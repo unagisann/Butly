@@ -12,6 +12,7 @@ from pathlib import Path
 from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
 from butly_core.prompts import PromptLoader
 from butly_core.core.gatekeeper.memory_probe import asks_for_specific_past_detail
+from butly_core.trace.collector import record_llm_call
 
 VALID_NEED_INTENTS = ("past_fact", "glossary", "relationship")
 
@@ -128,11 +129,26 @@ class ContextClassifier:
                 gk_config if gk_config.get("model_name") else model_name
             )
             raw_text = provider.classify(prompt, gk_config)
+            record_llm_call(
+                purpose="context_classifier",
+                model=model_name,
+                connection_id=gk_config.get("connection", ""),
+                duration_ms=int((time.time() - t0) * 1000),
+                prompt_chars=len(prompt),
+            )
             result = self._parse_response(
                 raw_text, user_input, override_config=override_config
             )
         except Exception as e:
             print(f"[ContextClassifier] API呼び出しエラー: {e}")
+            record_llm_call(
+                purpose="context_classifier",
+                model=model_name,
+                connection_id=gk_config.get("connection", ""),
+                duration_ms=int((time.time() - t0) * 1000),
+                prompt_chars=len(prompt),
+                error=str(e),
+            )
             result = self._default_output(user_input)
 
         t1 = time.time()

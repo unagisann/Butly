@@ -34,3 +34,4 @@ class SystemConfig(BaseModel):
     )
     chat: dict[str, Any] = Field(default_factory=lambda: _section_default("chat"))
     glossary: dict[str, Any] = Field(default_factory=lambda: _section_default("glossary"))
+    trace: dict[str, Any] = Field(default_factory=lambda: _section_default("trace"))

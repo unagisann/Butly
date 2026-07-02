@@ -152,6 +152,13 @@ class TestExecuteStream:
             "mid", history_msgs=[]
         )
 
+        # issue #51: collector 経由の chat_generate 記録が trace.json に反映される
+        trace = json.loads(
+            (tmp_instance_dir / "traces" / "latest.json").read_text(encoding="utf-8")
+        )
+        llm_node = next(n for n in trace["nodes"] if n["id"] == "llm_call")
+        assert llm_node["metadata"]["prompt_chars"] > 0
+
     def test_provider_error_yields_error_event(
         self, tmp_instance_dir, request_obj, mock_components,
         mock_instance_manager, mock_gatekeeper, mock_mem_builder,

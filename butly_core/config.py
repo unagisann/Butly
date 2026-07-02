@@ -148,6 +148,13 @@ SYSTEM_CONFIG = {
         # 注入合計文字数の上限（greedy skip）
         "max_chars": 4000,
     },
+    # Trace Graph (issue #51)。enabled は trace.json 保存の ON/OFF、
+    # detail / hidden_nodes は表示フィルタ (保存は常に full)。
+    "trace": {
+        "enabled": True,
+        "detail": "full",
+        "hidden_nodes": [],
+    },
 }
 
 # --- User Config Override ---

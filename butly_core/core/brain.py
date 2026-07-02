@@ -3,10 +3,13 @@ import json
 import re
 import sqlite3
 import math
+import time
 import numpy as np
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
+
+from butly_core.trace.collector import record_llm_call
 
 # ★設定ファイルのインポート
 try:
@@ -78,14 +81,31 @@ class ButlyBrain:
             return 0.0
 
     def get_embedding(self, text):
+        # Phase 2: connection + model_name の dict 全体を Provider に渡す。
+        # Provider 側 (OpenAICompatAdapter) は config["model_name"] を最優先で使う。
+        embedding_cfg = AI_CONFIG.get("embedding", {})
+        t0 = time.time()
         try:
-            # Phase 2: connection + model_name の dict 全体を Provider に渡す。
-            # Provider 側 (OpenAICompatAdapter) は config["model_name"] を最優先で使う。
-            embedding_cfg = AI_CONFIG["embedding"]
             provider = self._get_provider(embedding_cfg)
-            return provider.embed(text, config=embedding_cfg)
+            result = provider.embed(text, config=embedding_cfg)
+            record_llm_call(
+                purpose="embedding",
+                model=embedding_cfg.get("model_name", ""),
+                connection_id=embedding_cfg.get("connection", ""),
+                duration_ms=int((time.time() - t0) * 1000),
+                prompt_chars=len(text) if text else 0,
+            )
+            return result
         except Exception as e:
             print(f"[Brain] Embedding Error: {e}")
+            record_llm_call(
+                purpose="embedding",
+                model=embedding_cfg.get("model_name", ""),
+                connection_id=embedding_cfg.get("connection", ""),
+                duration_ms=int((time.time() - t0) * 1000),
+                prompt_chars=len(text) if text else 0,
+                error=str(e),
+            )
             return None
 
     def _merge_config(self, base_conf, override_conf):
@@ -151,7 +171,24 @@ class ButlyBrain:
 
             # Phase 2: chat_conf (connection + model_name) を Provider Factory に渡す
             provider = self._get_provider(chat_conf)
-            text = provider.classify(prompt, chat_conf)
+            t0 = time.time()
+            call_error = None
+            try:
+                text = provider.classify(prompt, chat_conf)
+            except Exception as call_e:
+                call_error = str(call_e)
+                raise
+            finally:
+                # LLM 呼び出し自体の成否だけを記録する (後続の JSON パース失敗は
+                # 呼び出し失敗ではないため、ここで finally 記録する)
+                record_llm_call(
+                    purpose="keyword_extract",
+                    model=chat_conf.get("model_name", ""),
+                    connection_id=chat_conf.get("connection", ""),
+                    duration_ms=int((time.time() - t0) * 1000),
+                    prompt_chars=len(prompt),
+                    error=call_error,
+                )
             text = text.strip() if text else ""
             print(f"[Brain] Raw Keyword Response: {text}")
 
