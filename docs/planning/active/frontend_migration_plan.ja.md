@@ -1,7 +1,15 @@
 # 正式フロントエンド移行計画: Streamlit から Windows デスクトップアプリへ
 
-> **ステータス: 未着手（方針確定・実装待ち）。** 段階移行を前提に
+> **ステータス: Phase 0 着手済み（2026-07-06〜）。** 段階移行を前提に
 > `docs/planning/active/` で管理し、§18 の完了条件を満たしたら archived へ移す。
+>
+> Phase 0 実装済み: `butly_api/` app factory（`create_app()`）、
+> `/api/v1/health` `/ready` `/app-info` `/capabilities`、`ApiError` envelope +
+> request ID、OpenAPI 3.1 snapshot（`openapi/butly.openapi.json` +
+> `scripts/generate_openapi.py`）、chat / history / instances / SSE の contract
+> schema（`butly_api/schemas/`、endpoint 実装は後続）。
+> 未了: desktop token auth、typed instance list / history / chat endpoint 実装、
+> SSE parser fixture、Streamlit の新 API 利用。
 >
 > 起票: 2026-06-23 / 最初の対象 OS: **Windows 10 / 11 (x64)** /
 > 想定スパン: 段階的、Streamlit と並行稼働しながら移行

@@ -10,22 +10,24 @@
 
 | ファイル | 役割 |
 |---|---|
-| `main.py` | FastAPI アプリの起動エントリポイント |
+| `main.py` | FastAPI アプリの互換 entrypoint（app 構築は `butly_api.create_app()` に委譲） |
 | `app.py` | Streamlit Web UI（FastAPI バックエンド経由で動作） |
 | `dependencies.py` | ルーター間共有のグローバル状態・ヘルパー |
 | `sleeptime.py` | 記憶自動整理スクリプト（単体実行 & APIから呼び出し可） |
 | `migrate_embeddings.py` | プロバイダー切り替え時の embedding 再生成ユーティリティ |
+| `butly_api/` | 正式フロントエンド向け `/api/v1` transport 層（app factory / schemas / error contract） |
+| `openapi/butly.openapi.json` | `/api/v1` の OpenAPI 3.1 snapshot（`scripts/generate_openapi.py` で生成） |
 
 ---
 
 ### `main.py`
-FastAPI アプリの生成・起動引数のパース・各ルーターの `include_router`。  
-ビジネスロジックは持たない。モジュール直下で `dependencies.py` のシングルトン（InstanceManager / Gatekeeper / MemoryBlockBuilder 等）を初期化し、lifespan ではバンドル環境向けの設定ファイルコピーのみ行う。
+互換 entrypoint。起動引数のパース・データディレクトリ解決・`.env` ロード・`ButlyRuntime` 初期化を行い、app 本体の構築は `butly_api.create_app()` に委譲する。legacy routers（Streamlit 互換）と wildcard CORS はここで注入する。
 
-- `_watch_parent(parent_pid)` — 親プロセス（Flutter）の死亡監視スレッド
+- `_watch_parent(parent_pid)` — 親プロセス（デスクトップ shell）の死亡監視スレッド
 - `_load_env_from_data_dir()` — `.env` からAPIキーを環境変数へロード
 - `lifespan(app)` — バンドル時の設定ファイルコピー・起動メッセージ
-- `app` — FastAPI インスタンス。全 routers/ を include
+- `_api_context` — `/api/v1/ready` 等が参照する `ApiContext`
+- `app` — `create_app()` の戻り値。`/api/v1` + 全 routers/ を include
 
 ---
 
@@ -112,6 +114,28 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 - `POST /chat/stream` — SSE ストリーミングエンドポイント。`metadata` → `chunk` → `done` の順にイベントを送出
 - `_sse_event(event_name, data)` — SSE メッセージのフォーマッタ
 - `WebSocket /ws` — 双方向 WebSocket（チャット + AI ステータス通知）
+
+---
+
+## butly_api/
+
+正式フロントエンド移行（`docs/planning/active/frontend_migration_plan.ja.md`）Phase 0 で導入した versioned API（`/api/v1`）の transport 層。HTTP の変換だけを担い、業務ロジックは Runtime / service へ委譲する。legacy routers は import しない。
+
+| ファイル | 役割 |
+|---|---|
+| `app.py` | `create_app(context, lifespan, extra_routers)` — side effect の少ない app factory。OpenAPI 生成は context なしで行う |
+| `context.py` | `ApiContext` — readiness 判定に使う実行時状態（data_dir / runtime supplier 等） |
+| `errors.py` | `ApiException` と `/api/v1` 共通 error envelope（`ApiError`）への正規化 handler。legacy route は FastAPI default（`{"detail": ...}`）を維持 |
+| `middleware.py` | `RequestIDMiddleware` — `X-Request-ID` の採番・伝播（pure ASGI） |
+| `version.py` | `BACKEND_VERSION` / `API_VERSION` / `API_V1_PREFIX` |
+| `routers/system.py` | `GET /api/v1/health` / `/ready` / `/app-info` / `/capabilities` |
+| `routers/instances.py` | `GET /api/v1/instances`（typed 一覧） / `GET /api/v1/instances/{name}/messages`（typed 履歴 + `last_interaction_at`。cursor pagination は記憶ストア正規化後） |
+| `schemas/common.py` | `ApiError` envelope |
+| `schemas/system.py` | health / readiness / app-info / capabilities の DTO |
+| `schemas/chat.py` | chat / message history / SSE event（discriminated union）の contract schema（Phase 0 設計版、endpoint 実装は後続） |
+| `schemas/instances.py` | `InstanceSummary` / `InstanceListResponse`（同上） |
+
+OpenAPI snapshot は `scripts/generate_openapi.py`（または `scripts/generate_openapi.sh`）で `openapi/butly.openapi.json` に deterministic に出力し、`tests/test_openapi_snapshot.py` が差分を検出する。
 
 ---
 
