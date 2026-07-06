@@ -168,7 +168,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 - `_write_rotating_json(target_dir, payload, max_history, *, log_label)` — `latest.json` + `history/{ts}.json` ローテーション書き出しの共通ヘルパー
 - `_save_debug_log(instance_dir, payload, max_history=20)` — `debug_logs/` へデバッグ情報を保存
 - `_save_trace(instance_dir, trace_payload, max_history=20)` — `traces/` へ Trace Graph (trace.json) を保存
-- `_build_and_save_trace(...)` — 実行事実から `build_chat_trace()` で TraceGraph を構築し `_save_trace` で保存（issue #51。構築/保存失敗は応答に影響させない）
+- `_build_and_save_trace(...)` — 実行事実 + collector の `llm_calls` から `build_chat_trace()` で TraceGraph を構築し `_save_trace` で保存（issue #51。`SYSTEM_CONFIG["trace"].enabled=false` で保存スキップ。構築/保存失敗は応答に影響させない）。`execute()` / `execute_stream()` は本体全体を `start_collection()` / `reset_collection()`（try/finally）で包む
 
 ---
 
@@ -188,20 +188,45 @@ Trace Graph の DTO（Pydantic モデル）と定数・ヘルパー。
 - `TRACE_SCHEMA_VERSION` — trace.json スキーマのバージョン
 - `summarize_text(text, limit=80)` — summary 用にテキストを 1 行へ切り詰める（長文をそのまま残さないための長さ切り詰め。PII 除去・匿名化ではない）
 
-### `butly_core/trace/builder.py`
-ChatService の実行事実（gatekeeper 出力・記憶ブロック・Provider 情報・timing 等）から
-`TraceGraph` を再構成する純粋関数。並列実行される生成フローへ span logger を差し込まず、
-確定済みの状態から組み立てることで P0 のチャット経路を変更しない。
+### `butly_core/trace/collector.py`
+1 ターン中の **全 LLM 呼び出し**を ContextVar 経由で収集する軽量コレクター。
+ContextVar に可変 list を入れることで、`run_in_threadpool` / `asyncio.create_task` へ
+コピーされた context からも同じ list に append が届く（並列生成 + StateUpdater 対応）。
 
-- `build_chat_trace(...)` — `user_message → gatekeeper → (memory_probe / rag / web_search) → context_assembly → provider → llm_call → memory_write → state_update / response` のノードとエッジを構築。RAG 未注入・Web 検索 OFF・Gatekeeper フォールバック等を status で表現する
+- `start_collection()` — 収集開始。reset 用 Token を返す（ChatService が try/finally で使用）
+- `reset_collection(token)` — 収集終了。context 不一致時はログのみで無害
+- `record_llm_call(*, purpose, model, connection_id, duration_ms, prompt_chars, error, metadata)` — 1 呼び出しを記録。**収集未開始なら no-op**（sleeptime 等には副作用なし）
+- `get_collected()` / `is_collecting()`
+
+**記録ポイント（purpose）:** `context_classifier`（ContextClassifier.classify）/ `state_updater`（StateUpdater.update）/ `embedding`（ButlyBrain.get_embedding）/ `keyword_extract`（ButlyBrain.extract_keywords）/ `chat_generate`（ChatService の main 生成・stream 両方）
+
+### `butly_core/trace/builder.py`
+ChatService の実行事実（gatekeeper 出力・記憶ブロック・Provider 情報・timing・collector の
+`llm_calls`）から `TraceGraph` を再構成する純粋関数。
+
+- `build_chat_trace(..., llm_calls=None)` — `user_message → gatekeeper → (memory_probe / rag / web_search) → context_assembly → provider → llm_call → memory_write → state_update / response` のノードとエッジを構築。RAG 未注入・Web 検索 OFF・Gatekeeper フォールバック・LLM 生成失敗（`generation_error`）等を status で表現する
+- 補助 LLM ノード: `llm_calls` の記録から `llm_context_classifier` / `llm_embedding`（複数回は連番）/ `llm_keyword_extract` / `llm_state_updater` を親ノード（gatekeeper / memory_probe / state_update）にぶら下げて生成。`metadata.aux=True` + `metadata.purpose` を持つ。**main 生成（chat_generate）は新ノードにせず既存 `llm_call` の metadata（prompt_chars 等）を拡充する**
+
+### `butly_core/trace/filters.py`
+表示フィルタ。**trace.json には常に全ノードを保存**し、表示側でこのフィルタを適用する。
+
+- `filter_trace(trace, *, detail="full", hidden_nodes=())` — `detail="summary"` で補助 LLM ノード（`metadata.aux`）を除外。`hidden_nodes` は **purpose**（例: `"embedding"` で全 embedding ノード）または node id（例: `"web_search"`）で指定
 
 ### `butly_core/trace/mermaid.py`
 `TraceGraph` を Mermaid flowchart 文字列へ変換する軽量レンダラー。
 
-- `render_mermaid(trace, *, direction="TD")` — ノード宣言 + エッジ + classDef を出力。active/skipped/fallback/error/warning を色分けし、skipped/fallback/error のエッジは線種で区別する
+- `render_mermaid(trace, *, direction="TD", detail="full", hidden_nodes=())` — `filter_trace` を適用後、ノード宣言 + エッジ + classDef を出力。active/skipped/fallback/error/warning を色分けし、skipped/fallback/error のエッジは線種で区別する
 - `_sanitize(text)` — Mermaid ラベル構文を壊す文字（`"` `[` `]` 等）を置換
 
 **保存先:** `butly_core/instances/{instance}/traces/latest.json` + `traces/history/{ts}.json`（debug_logs と同じローテーション方式。再構築可能な telemetry のため atomic write 対象外）。
+
+**設定（`SYSTEM_CONFIG["trace"]` / `get_settings().system.trace`）:**
+
+| キー | デフォルト | 説明 |
+|---|---|---|
+| `enabled` | `true` | trace.json の**保存** ON/OFF |
+| `detail` | `"full"` | 表示フィルタ。`"summary"` で補助 LLM ノードを非表示（保存は常に full） |
+| `hidden_nodes` | `[]` | 表示フィルタ。purpose / node id で個別非表示 |
 
 ---
 

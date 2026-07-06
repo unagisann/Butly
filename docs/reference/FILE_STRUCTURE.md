@@ -91,13 +91,17 @@ Stateless orchestrator with two entry points:
 
 ### `butly_core/trace/`
 
-Trace Graph (issue #51): records and visualizes the answer-generation flow as a node + edge graph. Frontend-independent — covers `trace.json` persistence and Mermaid generation only.
+Trace Graph (issue #51): records and visualizes the answer-generation flow as a node + edge graph. Frontend-independent — covers LLM-call collection, `trace.json` persistence, and Mermaid generation.
 
 - `types.py` — Pydantic DTOs: `TraceNode`, `TraceEdge` (serialized with `from`/`to` keys), `TraceGraph`; `NodeType`, `TraceStatus` (`active`/`skipped`/`fallback`/`error`/`warning`), `summarize_text()`.
-- `builder.py` — `build_chat_trace(...)`: pure function reconstructing the graph (`user_message → gatekeeper → memory_probe/rag/web_search → context_assembly → provider → llm_call → memory_write → state_update/response`) from collected facts, without instrumenting the parallel generation path.
-- `mermaid.py` — `render_mermaid(trace, *, direction="TD")`: lightweight renderer; colors nodes by status and distinguishes skipped/fallback/error edges by line style.
+- `collector.py` — ContextVar-based per-turn LLM call collector. A mutable list in the ContextVar is shared across `run_in_threadpool` / `asyncio.create_task` context copies, so parallel generation + StateUpdater both record into it. `record_llm_call()` is a no-op when collection is not started. Record points (purpose): `context_classifier`, `state_updater`, `embedding`, `keyword_extract`, `chat_generate`.
+- `builder.py` — `build_chat_trace(..., llm_calls=None)`: pure function reconstructing the graph (`user_message → gatekeeper → memory_probe/rag/web_search → context_assembly → provider → llm_call → memory_write → state_update/response`) from collected facts. Auxiliary LLM nodes (`llm_context_classifier`, `llm_embedding` (numbered when repeated), `llm_keyword_extract`, `llm_state_updater`) hang off their parent stage with `metadata.aux=True` + `metadata.purpose`; the main generation enriches the existing `llm_call` node instead of adding a new one.
+- `filters.py` — `filter_trace(trace, *, detail, hidden_nodes)`: display filter. `trace.json` always stores the full graph; `detail="summary"` hides aux LLM nodes, `hidden_nodes` matches by purpose (e.g. `"embedding"`) or node id.
+- `mermaid.py` — `render_mermaid(trace, *, direction="TD", detail="full", hidden_nodes=())`: applies `filter_trace`, then renders; colors nodes by status and distinguishes skipped/fallback/error edges by line style.
 
 Saved to `butly_core/instances/{instance}/traces/latest.json` + `traces/history/{ts}.json` (same rotation as `debug_logs`; reconstructible telemetry, so not atomic-write).
+
+Settings (`SYSTEM_CONFIG["trace"]` / `get_settings().system.trace`): `enabled` (save on/off, default `true`), `detail` / `hidden_nodes` (display filters; storage is always full).
 
 ---
 

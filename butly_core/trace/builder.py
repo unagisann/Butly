@@ -55,6 +55,74 @@ def _web_search_reason(web_search_status: str, count: int) -> str:
     return reasons.get(web_search_status, "対象外")
 
 
+# 補助 LLM ノード (collector 由来) の purpose → 表示ラベル
+_AUX_LABELS: Dict[str, str] = {
+    "context_classifier": "Context Classifier (LLM)",
+    "state_updater": "State Updater (LLM)",
+    "embedding": "Embedding",
+    "keyword_extract": "Keyword Extract (LLM)",
+}
+
+# 補助 LLM ノードをぶら下げる親ノード (メインフロー上の位置)
+_AUX_PARENTS: Dict[str, str] = {
+    "context_classifier": "gatekeeper",
+    "embedding": "memory_probe",
+    "keyword_extract": "memory_probe",
+    "state_updater": "state_update",
+}
+
+
+def _append_aux_llm_nodes(
+    nodes: List[TraceNode],
+    edges: List[TraceEdge],
+    llm_calls: List[Dict[str, Any]],
+) -> None:
+    """collector が収集した補助 LLM 呼び出しをノード化して追加する。
+
+    main 生成 (purpose="chat_generate") は既存の ``llm_call`` ノードが担うため
+    ここでは追加しない (metadata 拡充は呼び出し元で行う)。同一 purpose が複数回
+    ある場合 (embedding 等) は ``llm_embedding`` / ``llm_embedding_2`` と連番にする。
+    """
+    counts: Dict[str, int] = {}
+    for call in llm_calls:
+        purpose = call.get("purpose") or "llm"
+        if purpose == "chat_generate":
+            continue
+        counts[purpose] = counts.get(purpose, 0) + 1
+        idx = counts[purpose]
+        node_id = f"llm_{purpose}" if idx == 1 else f"llm_{purpose}_{idx}"
+
+        error = call.get("error")
+        status: TraceStatus = "error" if error else "active"
+        model = call.get("model") or ""
+        duration = call.get("duration_ms")
+        if error:
+            summary = summarize_text(error)
+        else:
+            summary = model + (f" ({duration}ms)" if duration is not None else "")
+
+        nodes.append(
+            TraceNode(
+                id=node_id,
+                label=_AUX_LABELS.get(purpose, purpose),
+                type="llm",
+                status=status,
+                summary=summary or None,
+                metadata={
+                    "aux": True,
+                    "purpose": purpose,
+                    "model": model,
+                    "connection_id": call.get("connection_id", ""),
+                    "duration_ms": duration,
+                    "prompt_chars": call.get("prompt_chars"),
+                    **({"error": error} if error else {}),
+                },
+            )
+        )
+        parent = _AUX_PARENTS.get(purpose, "llm_call")
+        edges.append(TraceEdge(source=parent, target=node_id, status=status))
+
+
 def build_chat_trace(
     *,
     instance_name: str,
@@ -74,15 +142,26 @@ def build_chat_trace(
     timing: Optional[Dict[str, Any]] = None,
     token_estimate: Optional[Dict[str, Any]] = None,
     generation_error: Optional[str] = None,
+    llm_calls: Optional[List[Dict[str, Any]]] = None,
     turn_id: Optional[int] = None,
     source: str = "web",
     created_at: Optional[str] = None,
 ) -> TraceGraph:
-    """1 ターン分の回答生成フローを TraceGraph として組み立てる。"""
+    """1 ターン分の回答生成フローを TraceGraph として組み立てる。
+
+    ``llm_calls`` は collector が収集した LLM 呼び出し記録。補助 LLM
+    (context_classifier / embedding / keyword_extract / state_updater) は
+    個別ノードとして追加され、main 生成 (chat_generate) は既存 ``llm_call``
+    ノードの metadata を拡充する。
+    """
     gk_result = gk_result or {}
     memory_blocks = memory_blocks or {}
     timing = timing or {}
     token_estimate = token_estimate or {}
+    llm_calls = list(llm_calls or [])
+    chat_gen_rec = next(
+        (c for c in llm_calls if c.get("purpose") == "chat_generate"), None
+    )
 
     nodes: List[TraceNode] = []
     edges: List[TraceEdge] = []
@@ -301,6 +380,11 @@ def build_chat_trace(
                 "generation_ms": timing.get("generation_ms"),
                 "ttfb_ms": timing.get("ttfb_ms"),
                 "token_estimate": token_estimate,
+                **(
+                    {"prompt_chars": chat_gen_rec.get("prompt_chars")}
+                    if chat_gen_rec
+                    else {}
+                ),
                 **({"error": generation_error} if llm_failed else {}),
             },
         )
@@ -385,6 +469,9 @@ def build_chat_trace(
             status=_edge_status(downstream_status),
         )
     )
+
+    # --- 補助 LLM ノード (collector 由来) ---
+    _append_aux_llm_nodes(nodes, edges, llm_calls)
 
     trace_id = f"turn_{turn_id}" if turn_id is not None else "turn_unknown"
     return TraceGraph(

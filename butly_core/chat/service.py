@@ -289,7 +289,17 @@ def _build_and_save_trace(
     応答に影響させない。
     """
     try:
+        from butly_core.settings import get_settings
+
+        trace_cfg = get_settings().system.trace or {}
+        if not trace_cfg.get("enabled", True):
+            return
+    except Exception as e:
+        print(f"[ChatService] trace 設定読み込みエラー、既定 (enabled) で継続: {e}")
+
+    try:
         from butly_core.trace import build_chat_trace
+        from butly_core.trace.collector import get_collected
 
         session_dict = session_state.to_dict() if session_state else {}
         trace = build_chat_trace(
@@ -310,6 +320,7 @@ def _build_and_save_trace(
             timing=debug_info.get("timing"),
             token_estimate=debug_info.get("token_estimate"),
             generation_error=generation_error,
+            llm_calls=get_collected(),
             turn_id=session_dict.get("turn_count"),
             source=getattr(request, "source", "web"),
             created_at=datetime.datetime.now().isoformat(timespec="seconds"),
@@ -676,6 +687,35 @@ class ChatService:
         -------
         ChatResponse
         """
+        from butly_core.trace.collector import reset_collection, start_collection
+
+        # Trace Graph (issue #51): ターン全体の LLM 呼び出しを収集する。
+        # token reset を finally に置くことで、例外経路でも収集が残留しない。
+        _trace_token = start_collection()
+        try:
+            return await ChatService._execute_impl(
+                request=request,
+                get_instance_components=get_instance_components,
+                instance_manager=instance_manager,
+                instances_dir=instances_dir,
+                gatekeeper=gatekeeper,
+                mem_block_builder=mem_block_builder,
+                ws_manager=ws_manager,
+            )
+        finally:
+            reset_collection(_trace_token)
+
+    @staticmethod
+    async def _execute_impl(
+        request: ChatRequest,
+        get_instance_components,
+        instance_manager,
+        instances_dir: Path,
+        gatekeeper,
+        mem_block_builder,
+        ws_manager=None,
+    ) -> ChatResponse:
+        """execute() の本体 (LLM 呼び出し収集の内側で実行される)。"""
         from butly_core.config import AI_CONFIG
 
         _t_start = time.time()
@@ -733,14 +773,30 @@ class ChatService:
         state_elapsed_ms = {"value": 0}
 
         async def _run_generate():
+            from butly_core.trace.collector import record_llm_call
+
             t0 = time.time()
-            res = await run_in_threadpool(
-                provider.generate,
-                text=full_prompt,
-                attachments=request.attachments if has_attachments else [],
-                context=context,
-            )
-            gen_elapsed_ms["value"] = int((time.time() - t0) * 1000)
+            gen_error = None
+            try:
+                res = await run_in_threadpool(
+                    provider.generate,
+                    text=full_prompt,
+                    attachments=request.attachments if has_attachments else [],
+                    context=context,
+                )
+            except Exception as e:
+                gen_error = str(e)
+                raise
+            finally:
+                gen_elapsed_ms["value"] = int((time.time() - t0) * 1000)
+                record_llm_call(
+                    purpose="chat_generate",
+                    model=model_name,
+                    connection_id=connection_id,
+                    duration_ms=gen_elapsed_ms["value"],
+                    prompt_chars=len(full_prompt),
+                    error=gen_error,
+                )
             return res
 
         async def _run_state_update():
@@ -980,6 +1036,34 @@ class ChatService:
           - {"type": "done", "data": {timing, debug, session_state, sources, ...}}
           - {"type": "error", "message": str, "recoverable": bool}
         """
+        from butly_core.trace.collector import reset_collection, start_collection
+
+        # Trace Graph (issue #51): generator 全体を包む位置で収集を開始し、
+        # yield をまたいでも finally で必ず reset する。
+        _trace_token = start_collection()
+        try:
+            async for event in ChatService._execute_stream_impl(
+                request=request,
+                get_instance_components=get_instance_components,
+                instance_manager=instance_manager,
+                instances_dir=instances_dir,
+                gatekeeper=gatekeeper,
+                mem_block_builder=mem_block_builder,
+            ):
+                yield event
+        finally:
+            reset_collection(_trace_token)
+
+    @staticmethod
+    async def _execute_stream_impl(
+        request: ChatRequest,
+        get_instance_components,
+        instance_manager,
+        instances_dir: Path,
+        gatekeeper,
+        mem_block_builder,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """execute_stream() の本体 (LLM 呼び出し収集の内側で実行される)。"""
         from butly_core.config import AI_CONFIG
 
         _t_start = time.time()
@@ -1093,6 +1177,18 @@ class ChatService:
 
         _t_gen_end = time.time()
         gen_elapsed_ms = int((_t_gen_end - _t_gen_start) * 1000)
+
+        # Trace Graph 用: main 生成の呼び出し記録 (成功/失敗どちらも)
+        from butly_core.trace.collector import record_llm_call
+
+        record_llm_call(
+            purpose="chat_generate",
+            model=model_name,
+            connection_id=connection_id,
+            duration_ms=gen_elapsed_ms,
+            prompt_chars=len(full_prompt),
+            error=stream_err,
+        )
 
         if stream_err:
             # cancel state_task to free resources

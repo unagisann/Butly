@@ -129,4 +129,14 @@ SYSTEM_CONFIG = {
         "max_entries": 20,
         "max_chars": 4000,
     },
+    # Trace Graph (issue #51)
+    # enabled: trace.json の保存 ON/OFF。
+    # detail / hidden_nodes: 表示フィルタ (保存は常に full)。
+    #   detail: "full" | "summary" (summary は補助 LLM ノードを非表示)
+    #   hidden_nodes: purpose または node id のリスト (例: ["embedding"])
+    "trace": {
+        "enabled": True,
+        "detail": "full",
+        "hidden_nodes": [],
+    },
 }
