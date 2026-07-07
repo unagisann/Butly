@@ -11,10 +11,15 @@ import re
 from pathlib import Path
 
 from butly_core.core.tokenizer import count_tokens
+from butly_core.core.turn_meta import has_multiple_speakers, user_label
 
 # ファイル名からタイムスタンプを抽出する正規表現
-_TS_PATTERN_8 = re.compile(r"session_(\d{8}_\d{6})")  # session_YYYYMMDD_HHMMSS
-_TS_PATTERN_6D = re.compile(r"session_(\d{6}_\d{6})")  # session_YYMMDD_HHMMSS
+_TS_PATTERN_8 = re.compile(
+    r"session_(\d{8}_\d{6}(?:_\d{6})?)"
+)  # session_YYYYMMDD_HHMMSS[_ffffff]
+_TS_PATTERN_6D = re.compile(
+    r"session_(\d{6}_\d{6}(?:_\d{6})?)"
+)  # session_YYMMDD_HHMMSS[_ffffff]
 _TS_PATTERN_TIME = re.compile(r"session_(\d{6})\.json$")  # session_HHMMSS.json
 _DIR_DATE_PATTERN = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")  # YYYY-MM-DD
 
@@ -25,8 +30,8 @@ def _extract_sort_key(filepath: Path) -> str:
     """ファイルパスから YYYYMMDD_HHMMSS 形式のソートキーを生成。
 
     3 つのファイル名形式に対応:
-      - session_YYYYMMDD_HHMMSS.json  → そのまま
-      - session_YYMMDD_HHMMSS.json    → 20 を前置
+      - session_YYYYMMDD_HHMMSS[_ffffff].json  → そのまま
+      - session_YYMMDD_HHMMSS[_ffffff].json    → 20 を前置
       - session_HHMMSS.json           → 親ディレクトリ名から日付を補完
     """
     m = _TS_PATTERN_8.search(filepath.name)
@@ -145,6 +150,15 @@ def format_sessions(
     if not sessions:
         return ""
 
+    # キャッシュ全体で複数話者かを判定し、複数話者のときだけ user 発言を
+    # meta の 「display_name」 でラベリングする (1:1 は従来どおり)。
+    multi_speaker = has_multiple_speakers(
+        [m for s in sessions for m in s.get("messages", [])]
+    )
+
+    def _user_role(msg: dict) -> str:
+        return user_label(msg, user_name, multi_speaker=multi_speaker)
+
     lines: list[str] = []
 
     for session in sessions:
@@ -156,20 +170,23 @@ def format_sessions(
                 lines.append(f"### {ts}")
                 lines.append("")
             for msg in messages:
-                role = user_name if msg.get("role") == "user" else agent_name
+                role = _user_role(msg) if msg.get("role") == "user" else agent_name
                 content = _extract_content(msg)
                 lines.append(f"**{role}**: {content}")
                 lines.append("")
 
         elif format == "compact":
             for msg in messages:
-                prefix = "U" if msg.get("role") == "user" else "A"
+                if msg.get("role") == "user":
+                    prefix = _user_role(msg) if multi_speaker else "U"
+                else:
+                    prefix = "A"
                 content = _extract_content(msg)
                 lines.append(f"{prefix}: {content}")
 
         else:  # plaintext (default)
             for msg in messages:
-                role = user_name if msg.get("role") == "user" else agent_name
+                role = _user_role(msg) if msg.get("role") == "user" else agent_name
                 content = _extract_content(msg)
                 lines.append(f"[{ts}] {role}: {content}")
 

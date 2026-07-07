@@ -363,24 +363,55 @@ class ButlySleeptime:
         print(f"[Sleeptime] Phase 1: Appending {len(json_files)} logs to mid_term...")
 
         # 2. JSONを読み込み、テキスト形式に整形
-        new_text = ""
+        # 先に全ファイルを読み、バッチ全体で複数話者かを判定する
+        # (1 ファイル = 1 ターンなので、ファイル単体では複数話者になり得ない)。
+        # 複数話者のときだけ user 発言を 「display_name」 でラベリングし、
+        # 1:1 (オーナーのみ) は従来どおり呼称のまま (group_context_lanes_plan §4.3)。
+        from butly_core.core import turn_meta
+
+        loaded_files = []
         newly_processed = []
         for jf in json_files:
             try:
                 with open(jf, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    ts_raw = data.get('timestamp', 'Unknown')
-                    ts = ts_raw.split('.')[0].replace('T', ' ')
-                    _agent_name = self.get_instance_agent_name(instance_name)
-                    _user_name = self.get_instance_user_name(instance_name)
-                    for msg in data.get("messages", []):
-                        role_label = _user_name if msg["role"] == "user" else _agent_name
-                        content = msg.get("parts", [""])[0]
-                        if isinstance(content, dict): content = content.get("text", "")
-                        new_text += f"[{ts}] {role_label}: {content}\n"
-                newly_processed.append(jf.name)
+                if not isinstance(data, dict):
+                    print(f"[Sleeptime] Skipping non-dict JSON: {jf.name}")
+                    continue
+                loaded_files.append((jf, data))
             except Exception as e:
                 print(f"[Sleeptime] Error reading {jf.name}: {e}")
+
+        multi_speaker = turn_meta.has_multiple_speakers(
+            [m for _, d in loaded_files for m in d.get("messages", [])]
+        )
+        _agent_name = self.get_instance_agent_name(instance_name)
+        _user_name = self.get_instance_user_name(instance_name)
+
+        new_text = ""
+        appearances = {}
+        for jf, data in loaded_files:
+            try:
+                ts_raw = data.get('timestamp', 'Unknown')
+                ts = ts_raw.split('.')[0].replace('T', ' ')
+                for msg in data.get("messages", []):
+                    if msg["role"] == "user":
+                        role_label = turn_meta.user_label(
+                            msg, _user_name, multi_speaker=multi_speaker
+                        )
+                        self._tally_appearance(appearances, msg, ts_raw)
+                    else:
+                        role_label = _agent_name
+                    content = msg.get("parts", [""])[0]
+                    if isinstance(content, dict): content = content.get("text", "")
+                    new_text += f"[{ts}] {role_label}: {content}\n"
+                newly_processed.append(jf.name)
+            except Exception as e:
+                print(f"[Sleeptime] Error formatting {jf.name}: {e}")
+
+        # 登場回数の集計を persons.json (stats) へ反映 (adoption gate 用。
+        # 昇格閾値 N/M の判断は実データが溜まるまで保留)
+        self._record_person_appearances(appearances)
 
         # 2b. トラッキング更新（mid_term追記前に記録し、追記済みとマーク）
         if newly_processed:
@@ -443,6 +474,38 @@ class ButlySleeptime:
             self._propose_key_memory_updates_if_due(instance_path)
         else:
             print(f"[Sleeptime] Key Memory proposal skipped (key_memory disabled)")
+
+    # --- Person Appearance Helpers (group_context_lanes_plan §4.5) ---
+    @staticmethod
+    def _tally_appearance(appearances: dict, msg: dict, ts_iso: str) -> None:
+        """meta 付き user メッセージの登場を集計 dict に加算する。
+
+        meta の無い message (owner の Web チャット等) は数えない。
+        adoption gate が対象とするのは外部帰属付きの登場のみ。
+        """
+        meta = msg.get("meta")
+        pid = meta.get("person_id") if isinstance(meta, dict) else None
+        if not pid:
+            return
+        ts = ts_iso if isinstance(ts_iso, str) and ts_iso and ts_iso != "Unknown" else None
+        row = appearances.setdefault(pid, {"count": 0, "first_seen": ts, "last_seen": ts})
+        row["count"] += 1
+        if ts:
+            if not row["first_seen"] or ts < row["first_seen"]:
+                row["first_seen"] = ts
+            if not row["last_seen"] or ts > row["last_seen"]:
+                row["last_seen"] = ts
+
+    def _record_person_appearances(self, appearances: dict) -> None:
+        """person 登場集計を persons.json (stats) に反映する。失敗しても処理は継続。"""
+        if not appearances:
+            return
+        try:
+            from butly_core.external.person_registry import PersonRegistry
+            PersonRegistry(BASE_DIR).record_appearances(appearances)
+            print(f"[Sleeptime] Person appearances recorded: {len(appearances)} person(s)")
+        except Exception as e:
+            print(f"[Sleeptime] Person appearance recording error: {e}")
 
     # --- Chunk Splitting Helpers ---
     @staticmethod
@@ -1172,13 +1235,24 @@ class ButlySleeptime:
             _agent_name = self.get_instance_agent_name(db_type)
             _user_name = self.get_instance_user_name(db_type)
 
+            # 日付グループ全体で複数話者かを判定 (stage_1 と同じ規則)
+            from butly_core.core import turn_meta
+            multi_speaker = turn_meta.has_multiple_speakers(
+                [m for _, d in items for m in d.get("messages", [])]
+            )
+
             # ファイル単位でテキストを事前生成
             file_texts = []  # [(f_path, text_for_this_file)]
             for f_path, data in items:
                 ts = data.get('timestamp', 'Unknown').replace('T', ' ').split('.')[0]
                 file_text = f"\n--- Source: {f_path.name} ({ts}) ---\n"
                 for msg in data.get("messages", []):
-                    role_label = _user_name if msg["role"] == "user" else _agent_name
+                    if msg["role"] == "user":
+                        role_label = turn_meta.user_label(
+                            msg, _user_name, multi_speaker=multi_speaker
+                        )
+                    else:
+                        role_label = _agent_name
                     content = msg.get("parts", [""])[0]
                     if isinstance(content, dict): content = content.get("text", "")
                     file_text += f"[{ts}] {role_label}: {content}\n"

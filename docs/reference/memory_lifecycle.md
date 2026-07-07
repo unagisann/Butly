@@ -41,9 +41,10 @@ During chat (every turn)
 
 | Item | Content |
 |---|---|
-| **Location** | `instances/{name}/short_term_json/session_YYYYMMDD_HHMMSS.json` |
+| **Location** | `instances/{name}/short_term_json/session_YYYYMMDD_HHMMSS_ffffff.json` |
 | **Written by** | `memory.save_single_turn()` called automatically after every response |
 | **Format** | `{"timestamp": "...", "messages": [{"role": "user", "parts": [...]}, {"role": "model", "parts": [...]}]}` |
+| **Speaker attribution meta** | Turns from external entrances (Discord / LINE) carry a `meta` on the user message: `{"person_id": "...", "display_name": "...", "lane": "direct", "source": "discord", "channel_key": "guild:channel"}`. **Missing meta is interpreted as owner / direct / web** (backward compatible, no migration needed) |
 | **Limit** | `short_term_limit` (default: 6 files) |
 | **Overflow handling** | `memory.maintain_memory()` summarizes older files via LLM, saves to session_digests/, then moves to 1_integrated/ |
 | **Injected by Gatekeeper** | Short Term block (last 6 turns) — injected at all tiers |
@@ -52,6 +53,15 @@ During chat (every turn)
 ```python
 SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # number of files to retain
 ```
+
+> **Speaker attribution (person_id):** external accounts are resolved to a person_id
+> by `ButlyRuntime` via `PersonRegistry` (`DATA_DIR/persons.json`,
+> `butly_core/external/person_registry.py`). Unregistered users get a deterministic
+> provisional ID `p_{source}_{hash}` without exposing the external ID directly in
+> RAW logs. When Sleeptime, maintain_memory, or raw_memory_cache format a batch
+> that contains multiple speakers, user utterances are labeled with
+> `「display_name」:` (1:1 conversations keep the legacy format).
+> See `docs/planning/active/group_context_lanes_plan.ja.md` Phase 1.
 
 ---
 

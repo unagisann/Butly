@@ -132,9 +132,14 @@ File-based layered memory.
   - `get_system_instruction()` / `get_key_memory()` / `get_glossary()` / `get_glossary_raw()` / `save_glossary(data)`
   - `get_mid_term_text_content()` / `get_mid_term_digest()` / `get_mid_term_relationship()`
   - `get_session_digest()` — concatenates `session_digests/*.txt` with relative-time headers (e.g. `--- about 30 minutes ago ---`). Reads the legacy `session_digest.txt` for backward compatibility.
-  - `load_recent_sessions(limit)`, `save_single_turn(user_msg, ai_msg, ...)`, `get_last_interaction_time()`
-  - `maintain_memory(brain)` — when `short_term` overflows, summarizes overflow files into `session_digests/` and moves originals into `memory_archive/1_integrated/`.
+  - `load_recent_sessions(limit)`, `save_single_turn(user_msg, ai_msg, meta=None)` (with `meta`, speaker attribution — person_id / display_name / lane / source / channel_key — is stamped on the user message), `get_last_interaction_time()`
+  - `maintain_memory(brain)` — when `short_term` overflows, summarizes overflow files into `session_digests/` and moves originals into `memory_archive/1_integrated/`. When the overflow batch contains multiple speakers, user utterances are labeled with `「display_name」`.
 - Helpers: `_format_relative_time(dt, now)`, `_parse_session_filename_timestamp(name)`, `_strip_legacy_time_line(text)`.
+
+#### `turn_meta.py`
+Read-side helpers for per-message speaker attribution meta (person_id / lane etc.).
+Implements the backward-compat rule: **missing meta = owner / direct / web** (no migration needed).
+`effective_meta`, `normalize_lane` (missing → `direct`, unknown → `other`), `has_multiple_speakers`, `speaker_label` / `user_label` (multi-speaker only: `「display_name」`), `message_text`.
 
 #### `brain.py`
 - `ButlyBrain(base_dir)`
@@ -245,6 +250,29 @@ RAG is tier-independent and decided by `need` only.
 | `scan_target` | `"both"` | `"user"` / `"assistant"` / `"both"` |
 | `max_entries` | 20 | max number of injected entries |
 | `max_chars` | 4000 | max total chars (greedy skip per entry) |
+
+---
+
+### `butly_core/external/`
+
+Connection layer for external platforms (Discord / LINE). SDK dependencies stay inside
+each adapter; resolution logic (account_mapping / person_registry / pairing) is pure logic.
+
+#### `person_registry.py`
+Person registry: resolves external accounts `(source, external_user_id)` to an internal
+person_id. Stored at `DATA_DIR/persons.json` (contains external IDs, so gitignored;
+template: `persons.json.example`).
+
+- `provisional_person_id(source, external_user_id)` — deterministic provisional ID `p_{source}_{hash}` (no write needed; external IDs are not exposed directly in RAW logs)
+- `PersonRegistry(data_dir)`
+  - `resolve(source, external_user_id)` — exact alias match → provisional ID. `merged_into` is resolved at read time
+  - `resolve_person_id(person_id)` / `display_name(person_id)` / `owner_person_id()`
+  - `merge_person(from_id, to_id)` — records `merged_into` in the registry (RAW logs are never rewritten)
+  - `record_appearances({person_id: {count, first_seen, last_seen}})` — appearance tally for the adoption gate (called from Sleeptime Stage 1)
+
+Also contains `account_mapping.py` (instance resolution), `discord_adapter.py` /
+`line_adapter.py` (inbound message → `ChatRequest`), `pairing.py` (LINE pairing),
+`message_splitter.py` / `reply_profiles.py` (reply formatting).
 
 ---
 
