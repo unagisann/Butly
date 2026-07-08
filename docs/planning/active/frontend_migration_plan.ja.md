@@ -1,15 +1,23 @@
 # 正式フロントエンド移行計画: Streamlit から Windows デスクトップアプリへ
 
-> **ステータス: Phase 0 着手済み（2026-07-06〜）。** 段階移行を前提に
-> `docs/planning/active/` で管理し、§18 の完了条件を満たしたら archived へ移す。
+> **ステータス: Phase 0 完了（2026-07-09）。次は Phase 1（Windows sidecar spike）。**
+> 段階移行を前提に `docs/planning/active/` で管理し、§18 の完了条件を満たしたら
+> archived へ移す。
 >
 > Phase 0 実装済み: `butly_api/` app factory（`create_app()`）、
 > `/api/v1/health` `/ready` `/app-info` `/capabilities`、`ApiError` envelope +
 > request ID、OpenAPI 3.1 snapshot（`openapi/butly.openapi.json` +
-> `scripts/generate_openapi.py`）、chat / history / instances / SSE の contract
-> schema（`butly_api/schemas/`、endpoint 実装は後続）。
-> 未了: desktop token auth、typed instance list / history / chat endpoint 実装、
-> SSE parser fixture、Streamlit の新 API 利用。
+> `scripts/generate_openapi.py`）、typed instance list（`GET /api/v1/instances`）、
+> typed history（`GET /api/v1/instances/{name}/messages`）、typed chat
+> （`POST /api/v1/chat` / `/api/v1/chat/stream`、SSE discriminated union）、
+> desktop token auth（`butly_api/auth.py`、`BUTLY_DESKTOP_TOKEN` 設定時のみ強制）、
+> SSE parser contract fixture（`openapi/sse_fixtures/` +
+> `scripts/generate_sse_fixture.py`）、Streamlit の instance 一覧 / 履歴の
+> 新 API 利用（`app.py` の `INSTANCES_DIR.iterdir()` /
+> `load_recent_sessions()` 直読みを撤去）。
+> Phase 0 の残置（後続 Phase で対応）: instance-templates API（Phase 3）、
+> Streamlit chat 送信の legacy route 利用（新 UI が primary になるため移行対象外）、
+> `os.environ` の Web 検索 key 判定（capabilities 拡張時）。
 >
 > 起票: 2026-06-23 / 最初の対象 OS: **Windows 10 / 11 (x64)** /
 > 想定スパン: 段階的、Streamlit と並行稼働しながら移行

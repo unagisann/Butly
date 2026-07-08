@@ -35,7 +35,7 @@
 Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ログ表示・設定画面・DB ブラウザ等を提供する。
 
 チャット送信・インスタンス CRUD・設定変更等の書き込み操作はすべて **FastAPI バックエンド（`POST /chat` 等）に `requests.post()` で委譲** しており、Gatekeeper・記憶ブロック構築・会話保存は app.py では行わない。  
-`ButlyMemory` 等を直接 import しているが、用途は **過去ログの読み取り表示**（`load_recent_sessions`）と **Chronos によるデバッグ用日時テキスト生成** に限定される。
+インスタンス一覧と会話履歴の読み取りも **新 API（`GET /api/v1/instances` / `GET /api/v1/instances/{name}/messages`）経由**で、`INSTANCES_DIR` / `ButlyMemory` の直読みは撤去済み（backend 到達不能時は明示的なエラー表示になり、直読みへはフォールバックしない）。`ButlyMemory` 等の import は Chronos の日時テキスト生成など残存用途に限られ、正式 UI 移行完了時に撤去する。
 
 **画面構成:**
 - `render_home_screen()` — ホーム。インスタンス一覧・新規作成
@@ -123,19 +123,25 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 
 | ファイル | 役割 |
 |---|---|
-| `app.py` | `create_app(context, lifespan, extra_routers)` — side effect の少ない app factory。OpenAPI 生成は context なしで行う |
-| `context.py` | `ApiContext` — readiness 判定に使う実行時状態（data_dir / runtime supplier 等） |
+| `app.py` | `create_app(context, lifespan, extra_routers)` — side effect の少ない app factory。OpenAPI 生成は context なしで行う。OpenAPI に `DesktopToken`（HTTP Bearer）security scheme を付与 |
+| `auth.py` | `DesktopTokenAuthMiddleware` — `/api/v1/*`（health 除く）への Bearer token 認証（pure ASGI）。`BUTLY_DESKTOP_TOKEN` 未設定なら無効（開発 / Streamlit 併用モード） |
+| `context.py` | `ApiContext` — readiness 判定に使う実行時状態（data_dir / runtime supplier / auth_token 等） |
 | `errors.py` | `ApiException` と `/api/v1` 共通 error envelope（`ApiError`）への正規化 handler。legacy route は FastAPI default（`{"detail": ...}`）を維持 |
 | `middleware.py` | `RequestIDMiddleware` — `X-Request-ID` の採番・伝播（pure ASGI） |
 | `version.py` | `BACKEND_VERSION` / `API_VERSION` / `API_V1_PREFIX` |
 | `routers/system.py` | `GET /api/v1/health` / `/ready` / `/app-info` / `/capabilities` |
 | `routers/instances.py` | `GET /api/v1/instances`（typed 一覧） / `GET /api/v1/instances/{name}/messages`（typed 履歴 + `last_interaction_at`。cursor pagination は記憶ストア正規化後） |
+| `routers/chat.py` | `POST /api/v1/chat`（non-stream fallback） / `POST /api/v1/chat/stream`（typed SSE: metadata → chunk* → done、失敗時 error 終端）。`ButlyRuntime` へ委譲する transport adapter |
 | `schemas/common.py` | `ApiError` envelope |
 | `schemas/system.py` | health / readiness / app-info / capabilities の DTO |
-| `schemas/chat.py` | chat / message history / SSE event（discriminated union）の contract schema（Phase 0 設計版、endpoint 実装は後続） |
-| `schemas/instances.py` | `InstanceSummary` / `InstanceListResponse`（同上） |
+| `schemas/chat.py` | chat / message history / SSE event（discriminated union）の contract schema |
+| `schemas/instances.py` | `InstanceSummary` / `InstanceListResponse` |
 
-OpenAPI snapshot は `scripts/generate_openapi.py`（または `scripts/generate_openapi.sh`）で `openapi/butly.openapi.json` に deterministic に出力し、`tests/test_openapi_snapshot.py` が差分を検出する。
+契約 artifact は `scripts/generate_openapi.sh` で再生成する: OpenAPI snapshot
+（`openapi/butly.openapi.json`、`tests/test_openapi_snapshot.py` が差分検出）と
+SSE parser contract fixture（`openapi/sse_fixtures/*.sse`、
+`scripts/generate_sse_fixture.py` で生成、`tests/test_sse_fixture.py` が差分検出。
+frontend の手書き SSE parser と契約を共有するための正本）。
 
 ---
 

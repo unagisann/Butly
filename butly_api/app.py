@@ -21,9 +21,11 @@ from fastapi.routing import APIRouter
 from pydantic import TypeAdapter
 from pydantic.json_schema import models_json_schema
 
+from butly_api.auth import DesktopTokenAuthMiddleware, requires_desktop_token
 from butly_api.context import ApiContext
 from butly_api.errors import register_error_handlers
 from butly_api.middleware import RequestIDMiddleware
+from butly_api.routers import chat as chat_router
 from butly_api.routers import instances, system
 from butly_api.schemas import chat as chat_schemas
 from butly_api.schemas import instances as instance_schemas
@@ -83,11 +85,16 @@ def create_app(
     )
     app.state.api_context = context
 
+    # middleware は後に add したものが外側になる。RequestIDMiddleware を
+    # 最後に add し、auth の 401 応答にも request ID が付くようにする。
+    if context is not None and context.auth_token:
+        app.add_middleware(DesktopTokenAuthMiddleware, token=context.auth_token)
     app.add_middleware(RequestIDMiddleware)
     register_error_handlers(app)
 
     app.include_router(system.router)
     app.include_router(instances.router)
+    app.include_router(chat_router.router)
     for router in extra_routers:
         app.include_router(router)
 
@@ -110,6 +117,27 @@ def create_app(
         components = schema.setdefault("components", {}).setdefault("schemas", {})
         for name, model_schema in _contract_component_schemas().items():
             components.setdefault(name, model_schema)
+
+        # desktop token（HTTP Bearer）を security scheme として公開する（§9.3）。
+        # 実際の強制は token 設定時のみ（DesktopTokenAuthMiddleware）だが、
+        # contract 上は health 以外の全 /api/v1 operation を認証対象と宣言する。
+        schema["components"].setdefault("securitySchemes", {})["DesktopToken"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "description": (
+                "Per-launch desktop token (BUTLY_DESKTOP_TOKEN). "
+                "Not enforced when the backend runs without a token (dev mode)."
+            ),
+        }
+        for path, operations in schema.get("paths", {}).items():
+            for method, operation in operations.items():
+                if not isinstance(operation, dict):
+                    continue
+                if requires_desktop_token(path, method):
+                    operation["security"] = [{"DesktopToken": []}]
+                else:
+                    operation["security"] = []
+
         app.openapi_schema = schema
         return app.openapi_schema
 

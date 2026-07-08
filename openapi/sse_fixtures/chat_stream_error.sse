@@ -1,0 +1,9 @@
+event: metadata
+data: {"event":"metadata","request_id":"req_fixture_error_001","data":{"tier":"mid","need":null,"keywords":[],"search_targets":null}}
+
+event: chunk
+data: {"event":"chunk","request_id":"req_fixture_error_001","sequence":0,"data":{"text":"途中まで"}}
+
+event: error
+data: {"event":"error","request_id":"req_fixture_error_001","data":{"code":"generation_failed","message":"LLM generation failed.","details":{},"request_id":"req_fixture_error_001"},"recoverable":false}
+

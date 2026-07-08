@@ -114,7 +114,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Name"
           }
         },
@@ -465,7 +464,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "description": "double submit 識別用に client が採番する ID",
             "title": "Client Request Id"
           },
@@ -478,7 +476,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Connection"
           },
           "instance_name": {
@@ -495,7 +492,6 @@
                 "type": "null"
               }
             ],
-            "default": null,
             "title": "Model Name"
           },
           "text": {
@@ -894,6 +890,13 @@
         "title": "StreamingCapability",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "DesktopToken": {
+        "description": "Per-launch desktop token (BUTLY_DESKTOP_TOKEN). Not enforced when the backend runs without a token (dev mode).",
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
@@ -919,6 +922,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
         "summary": "Application info",
         "tags": [
           "system"
@@ -941,9 +949,151 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
         "summary": "Feature availability",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/api/v1/chat": {
+      "post": {
+        "description": "チャットメッセージを送信し、完成した応答を返す。primary transport は `POST /api/v1/chat/stream`（SSE）で、この endpoint は non-stream fallback / test 用。legacy `POST /chat` の versioned 置換。",
+        "operationId": "send_chat",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Instance not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Validation error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Backend is not ready"
+          }
+        },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
+        "summary": "Send a chat message (non-streaming)",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/v1/chat/stream": {
+      "post": {
+        "description": "チャットメッセージを送信し、`text/event-stream` で metadata → chunk* → done（失敗時は error 終端）を返す。event payload は components の `ChatStreamEvent`（oneOf + discriminator）。legacy `POST /chat/stream` の versioned 置換。",
+        "operationId": "stream_chat",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatStreamEvent"
+                }
+              }
+            },
+            "description": "SSE stream of ChatStreamEvent frames"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Instance not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Validation error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Backend is not ready"
+          }
+        },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
+        "summary": "Send a chat message (SSE streaming)",
+        "tags": [
+          "chat"
         ]
       }
     },
@@ -963,6 +1113,7 @@
             "description": "Successful Response"
           }
         },
+        "security": [],
         "summary": "Liveness check",
         "tags": [
           "system"
@@ -995,6 +1146,11 @@
             "description": "Backend is not ready"
           }
         },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
         "summary": "List AI instances",
         "tags": [
           "instances"
@@ -1090,6 +1246,11 @@
             "description": "Backend is not ready"
           }
         },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
         "summary": "Get chat message history",
         "tags": [
           "instances"
@@ -1112,6 +1273,11 @@
             "description": "Successful Response"
           }
         },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
         "summary": "Readiness check",
         "tags": [
           "system"
