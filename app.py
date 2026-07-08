@@ -4,6 +4,7 @@ import base64
 from datetime import datetime
 from pathlib import Path
 import asyncio
+import os
 
 # 自作モジュールのインポート
 from butly_core.core.memory import ButlyMemory
@@ -324,8 +325,14 @@ def initialize_system(base_dir, instance_name):
 if not INSTANCES_DIR.exists():
     INSTANCES_DIR.mkdir(parents=True, exist_ok=True)
 
+def normalize_api_url(api_url: str) -> str:
+    return api_url.strip().rstrip("/") or "http://127.0.0.1:8000"
+
+
 # デフォルトAPI接続先（session_state 初期化前のモジュールレベルでも使う）
-DEFAULT_API_URL = "http://127.0.0.1:8000"
+DEFAULT_API_URL = normalize_api_url(
+    os.environ.get("BUTLY_API_URL", "http://127.0.0.1:8000")
+)
 
 
 def fetch_instance_names(api_url: str) -> list:
@@ -337,6 +344,7 @@ def fetch_instance_names(api_url: str) -> list:
     """
     import requests as _req_inst
 
+    api_url = normalize_api_url(api_url)
     resp = _req_inst.get(f"{api_url}/api/v1/instances", timeout=5)
     resp.raise_for_status()
     items = resp.json().get("items", [])
@@ -347,18 +355,22 @@ def fetch_instance_names(api_url: str) -> list:
     )
 
 
-try:
-    available_instances = fetch_instance_names(DEFAULT_API_URL)
-except Exception as _e_inst:
-    st.error(
-        f"Butly API（{DEFAULT_API_URL}）に接続できません: {_e_inst}\n\n"
-        "FastAPI サーバー（main.py）が起動しているか確認してください。"
-    )
-    st.stop()
-
 # --- セッションステートの初期化 ---
 if "current_page" not in st.session_state:
     st.session_state.current_page = "home"
+# API接続先（DEFAULT_API_URL はモジュール先頭で定義済み）
+if "api_base_url" not in st.session_state:
+    st.session_state.api_base_url = DEFAULT_API_URL
+if "api_connection_error" not in st.session_state:
+    st.session_state.api_connection_error = None
+
+try:
+    available_instances = fetch_instance_names(st.session_state.api_base_url)
+    st.session_state.api_connection_error = None
+except Exception as _e_inst:
+    available_instances = []
+    st.session_state.api_connection_error = str(_e_inst)
+
 if "current_instance" not in st.session_state:
     st.session_state.current_instance = (
         available_instances[0] if available_instances else None
@@ -378,9 +390,6 @@ if "input_key_counter" not in st.session_state:
     st.session_state.input_key_counter = 0  # チャット入力欄クリア用
 if "pending_attachments" not in st.session_state:
     st.session_state.pending_attachments = []
-# API接続先（DEFAULT_API_URL はモジュール先頭で定義済み）
-if "api_base_url" not in st.session_state:
-    st.session_state.api_base_url = DEFAULT_API_URL
 # テーマカラー (Butlyアプリ対応)
 if "theme_color" not in st.session_state:
     st.session_state.theme_color = "teal"
@@ -485,7 +494,14 @@ def render_home_screen():
 
     # インスタンス一覧
     st.subheader("Your AI Instances")
-    if not available_instances:
+    api_error = st.session_state.get("api_connection_error")
+    if api_error:
+        st.error(
+            f"Butly API（{st.session_state.api_base_url}）に接続できません: "
+            f"{api_error}\n\n"
+            "FastAPI サーバー（main.py）が起動しているか、設定の API 接続先を確認してください。"
+        )
+    elif not available_instances:
         st.write("インスタンスがありません。")
     else:
         for name in available_instances:
@@ -721,8 +737,11 @@ def render_settings_screen():
             placeholder="http://127.0.0.1:8000",
         )
         if st.button("💾 接続先を保存", key="save_url"):
-            st.session_state.api_base_url = new_url
-            st.success(f"接続先を {new_url} に変更しました。")
+            normalized_url = normalize_api_url(new_url)
+            st.session_state.api_base_url = normalized_url
+            st.session_state.api_connection_error = None
+            st.success(f"接続先を {normalized_url} に変更しました。")
+            st.rerun()
 
         st.divider()
         st.subheader("🏖️ Holiday Mode (休暇設定)")
@@ -3530,19 +3549,23 @@ def main():
         available_instances = fetch_instance_names(
             st.session_state.get("api_base_url", DEFAULT_API_URL)
         )
+        st.session_state.api_connection_error = None
     except Exception as e:
-        st.error(
-            f"Butly API からインスタンス一覧を取得できません: {e}\n\n"
-            "FastAPI サーバー（main.py）が起動しているか確認してください。"
-        )
-        st.stop()
+        available_instances = []
+        st.session_state.api_connection_error = str(e)
 
     if not available_instances:
+        if st.session_state.current_page not in {"home", "settings"}:
+            st.session_state.current_page = "home"
+            st.session_state.current_instance = None
         # インスタンス未作成でもホーム画面を表示（新規作成UIがホーム画面にある）
+        if st.session_state.current_page == "settings":
+            render_settings_screen()
+            return
         render_home_screen()
         return
 
-    if st.session_state.current_instance is None:
+    if st.session_state.current_instance not in available_instances:
         st.session_state.current_instance = available_instances[0]
 
     if st.session_state.current_page == "home":

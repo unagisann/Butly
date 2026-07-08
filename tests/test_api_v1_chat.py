@@ -239,6 +239,27 @@ class TestStreamChat:
         # gatekeeper 内部 score は公開しない
         assert "scores" not in metadata
 
+    def test_done_full_text_is_router_chunk_concat(self, tmp_path):
+        runtime = FakeRuntime(
+            stream_events=[
+                {"type": "chunk", "text": "正"},
+                {"type": "chunk", "text": "解"},
+                {"type": "done", "data": {"full_text": "runtime mismatch"}},
+            ]
+        )
+        client = make_client(tmp_path, runtime)
+        resp = client.post(
+            "/api/v1/chat/stream", json={"instance_name": "t1", "text": "hi"}
+        )
+
+        events = parse_sse(resp.text)
+        chunks = [e for e in events if e["event"] == "chunk"]
+        joined = "".join(c["payload"]["data"]["text"] for c in chunks)
+        done = events[-1]["payload"]
+
+        assert joined == "正解"
+        assert done["data"]["full_text"] == joined
+
     def test_error_event_terminates_stream(self, tmp_path):
         runtime = FakeRuntime(
             stream_events=[

@@ -14,7 +14,7 @@ SSE contract（schemas/chat.py の discriminated union が正本）:
   - 成功時は metadata 1回 → chunk 0回以上 → done 1回。
   - 失敗時は error 1回で終端し、done は送らない。
   - `sequence` は chunk ごとに単調増加。
-  - `done.full_text` は全 chunk 連結と一致する（ChatService が保証）。
+  - `done.full_text` は全 chunk 連結と一致する（router が保証）。
 """
 
 import logging
@@ -196,6 +196,7 @@ async def _typed_event_stream(
     ここで保証する。
     """
     sequence = 0
+    full_text_parts: List[str] = []
     try:
         async for event in runtime.chat_stream(internal_request):
             ev_type = event.get("type")
@@ -206,21 +207,37 @@ async def _typed_event_stream(
                     )
                 )
             elif ev_type == "chunk":
+                text = event.get("text", "")
+                if not isinstance(text, str):
+                    text = str(text)
+                full_text_parts.append(text)
                 yield format_sse_event(
                     ChatChunkEvent(
                         request_id=request_id,
                         sequence=sequence,
-                        data=ChatChunkData(text=event.get("text", "")),
+                        data=ChatChunkData(text=text),
                     )
                 )
                 sequence += 1
             elif ev_type == "done":
                 data = event.get("data") or {}
+                raw_full_text = data.get("full_text")
+                if not full_text_parts and isinstance(raw_full_text, str):
+                    full_text_parts.append(raw_full_text)
+                    if raw_full_text:
+                        yield format_sse_event(
+                            ChatChunkEvent(
+                                request_id=request_id,
+                                sequence=sequence,
+                                data=ChatChunkData(text=raw_full_text),
+                            )
+                        )
+                        sequence += 1
                 yield format_sse_event(
                     ChatDoneEvent(
                         request_id=request_id,
                         data=ChatDone(
-                            full_text=data.get("full_text", ""),
+                            full_text="".join(full_text_parts),
                             sources=_normalize_sources(data.get("sources")),
                         ),
                     )
