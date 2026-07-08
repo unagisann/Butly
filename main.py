@@ -188,6 +188,10 @@ _api_context = ApiContext(
     data_dir=DATA_DIR,
     instances_dir=deps.INSTANCES_DIR,
     runtime_supplier=lambda: deps.runtime,
+    # desktop token（butly_api.auth）。環境変数未設定なら None = 認証無効
+    # （従来の開発 / Streamlit 併用モード）。Tauri shell が sidecar 起動時に
+    # per-launch token を BUTLY_DESKTOP_TOKEN で渡す（移行計画 §6.1）。
+    auth_token=os.environ.get("BUTLY_DESKTOP_TOKEN") or None,
 )
 
 app = create_app(

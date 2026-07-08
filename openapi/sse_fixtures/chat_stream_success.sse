@@ -1,0 +1,15 @@
+event: metadata
+data: {"event":"metadata","request_id":"req_fixture_success_001","data":{"tier":"mid","need":"今日の予定","keywords":["予定"],"search_targets":null}}
+
+event: chunk
+data: {"event":"chunk","request_id":"req_fixture_success_001","sequence":0,"data":{"text":"こんにちは、"}}
+
+event: chunk
+data: {"event":"chunk","request_id":"req_fixture_success_001","sequence":1,"data":{"text":"今日の予定は\n1. 散歩\n2. 買い物 です。"}}
+
+event: chunk
+data: {"event":"chunk","request_id":"req_fixture_success_001","sequence":2,"data":{"text":"🍵 どうぞ"}}
+
+event: done
+data: {"event":"done","request_id":"req_fixture_success_001","data":{"full_text":"こんにちは、今日の予定は\n1. 散歩\n2. 買い物 です。🍵 どうぞ","sources":[{"title":"天気予報","url":"https://example.com/weather"}]}}
+

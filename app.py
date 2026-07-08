@@ -324,13 +324,37 @@ def initialize_system(base_dir, instance_name):
 if not INSTANCES_DIR.exists():
     INSTANCES_DIR.mkdir(parents=True, exist_ok=True)
 
-available_instances = sorted(
-    [
-        p.name
-        for p in INSTANCES_DIR.iterdir()
-        if p.is_dir() and not p.name.startswith(".")
-    ]
-)
+# デフォルトAPI接続先（session_state 初期化前のモジュールレベルでも使う）
+DEFAULT_API_URL = "http://127.0.0.1:8000"
+
+
+def fetch_instance_names(api_url: str) -> list:
+    """新 API（GET /api/v1/instances）から instance 名一覧を取得する。
+
+    INSTANCES_DIR 直読みの置換（frontend_migration_plan.ja.md §3.3）。
+    backend 到達不能時は例外を投げる。API fallback で直読みに戻さず、
+    呼び出し側で明示的な error state にする（同計画 §7-12）。
+    """
+    import requests as _req_inst
+
+    resp = _req_inst.get(f"{api_url}/api/v1/instances", timeout=5)
+    resp.raise_for_status()
+    items = resp.json().get("items", [])
+    return sorted(
+        item["name"]
+        for item in items
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    )
+
+
+try:
+    available_instances = fetch_instance_names(DEFAULT_API_URL)
+except Exception as _e_inst:
+    st.error(
+        f"Butly API（{DEFAULT_API_URL}）に接続できません: {_e_inst}\n\n"
+        "FastAPI サーバー（main.py）が起動しているか確認してください。"
+    )
+    st.stop()
 
 # --- セッションステートの初期化 ---
 if "current_page" not in st.session_state:
@@ -354,8 +378,7 @@ if "input_key_counter" not in st.session_state:
     st.session_state.input_key_counter = 0  # チャット入力欄クリア用
 if "pending_attachments" not in st.session_state:
     st.session_state.pending_attachments = []
-# デフォルトAPI接続先
-DEFAULT_API_URL = "http://127.0.0.1:8000"
+# API接続先（DEFAULT_API_URL はモジュール先頭で定義済み）
 if "api_base_url" not in st.session_state:
     st.session_state.api_base_url = DEFAULT_API_URL
 # テーマカラー (Butlyアプリ対応)
@@ -2995,20 +3018,43 @@ def render_chat_screen():
     st.divider()
 
     # --- 履歴の読み込み処理 ---
+    # 新 API（GET /api/v1/instances/{name}/messages）経由。
+    # ButlyMemory.load_recent_sessions() 直読みの置換（移行計画 §3.3）。
     if not st.session_state.messages:
-        history_msgs, last_ts = memory.load_recent_sessions(limit=6)
-        if last_ts is None:
-            last_ts = memory.get_last_interaction_time()
+        import requests as _req_hist
 
+        try:
+            resp = _req_hist.get(
+                f"{api_url}/api/v1/instances/{instance_name}/messages",
+                params={"limit": 6},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            page = resp.json()
+        except Exception as e:
+            st.error(f"履歴の取得に失敗しました: {e}")
+            page = {"items": [], "last_interaction_at": None}
+
+        last_at = page.get("last_interaction_at")
+        last_ts = None
+        if last_at:
+            try:
+                # chronos は naive local datetime を前提とするため変換する
+                last_ts = (
+                    datetime.fromisoformat(last_at).astimezone().replace(tzinfo=None)
+                )
+            except ValueError:
+                pass
         st.session_state.last_interaction_time = last_ts
-        for msg in history_msgs:
-            role = msg.get("role")
-            content = msg.get("parts", [""])[0]
-            if isinstance(content, dict):
-                content = content.get("text", "")
-            msg_to_append = {"role": role, "parts": [content]}
-            if "timestamp" in msg:
-                msg_to_append["timestamp"] = msg["timestamp"]
+
+        for item in page.get("items", []):
+            if not isinstance(item, dict):
+                continue
+            # API の "assistant" はセッション内 message と同じ "model" に揃える
+            role = "user" if item.get("role") == "user" else "model"
+            msg_to_append = {"role": role, "parts": [item.get("text", "")]}
+            if item.get("created_at"):
+                msg_to_append["timestamp"] = item["created_at"]
             st.session_state.messages.append(msg_to_append)
 
     sys_note = chronos.get_system_note(
@@ -3480,17 +3526,16 @@ def render_onboarding_screen():
 def main():
     # Re-scan instances (may have changed since startup)
     global available_instances
-    available_instances = (
-        sorted(
-            [
-                p.name
-                for p in INSTANCES_DIR.iterdir()
-                if p.is_dir() and not p.name.startswith(".")
-            ]
+    try:
+        available_instances = fetch_instance_names(
+            st.session_state.get("api_base_url", DEFAULT_API_URL)
         )
-        if INSTANCES_DIR.exists()
-        else []
-    )
+    except Exception as e:
+        st.error(
+            f"Butly API からインスタンス一覧を取得できません: {e}\n\n"
+            "FastAPI サーバー（main.py）が起動しているか確認してください。"
+        )
+        st.stop()
 
     if not available_instances:
         # インスタンス未作成でもホーム画面を表示（新規作成UIがホーム画面にある）
