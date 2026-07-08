@@ -29,6 +29,10 @@ class TestParseSessionFilenameTimestamp:
         dt = _parse_session_filename_timestamp("session_20260101_000000")
         assert dt == datetime(2026, 1, 1, 0, 0, 0)
 
+    def test_with_microseconds(self):
+        dt = _parse_session_filename_timestamp("session_20260101_000000_123456.json")
+        assert dt == datetime(2026, 1, 1, 0, 0, 0)
+
     def test_invalid_format_returns_none(self):
         assert _parse_session_filename_timestamp("not_a_session.txt") is None
         assert _parse_session_filename_timestamp("session_bad.txt") is None

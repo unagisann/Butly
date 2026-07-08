@@ -330,6 +330,45 @@ def _build_and_save_trace(
         print(f"[ChatService] trace 構築/保存エラー (応答には影響なし): {e}")
 
 
+def _build_turn_meta(request: ChatRequest) -> Optional[Dict[str, Any]]:
+    """書き込み時の話者帰属メタを組み立てる (group_context_lanes_plan §2.5)。
+
+    person_id / lane / source / channel_key を構造化メタデータとして
+    ``save_single_turn`` まで貫通させる。外部帰属を持たないリクエスト
+    (Web UI 等) は None を返し、従来どおり meta なしで保存する
+    (meta 欠落 = owner / direct / web の後方互換規則)。
+    """
+    person_id = getattr(request, "person_id", None)
+    if not person_id and getattr(request, "external_user_id", None):
+        if getattr(request, "source", None) == "line":
+            # LINE は現行 1:1 スコープ。Runtime を経由しないテスト/呼び出しでも
+            # 未登録 LINE ユーザーを別人扱いせず owner として保存する。
+            from butly_core.external.person_registry import OWNER_FALLBACK_PERSON_ID
+
+            person_id = OWNER_FALLBACK_PERSON_ID
+        else:
+            # runtime での解決が無くても、決定的な仮 ID で帰属だけは確保する
+            from butly_core.external.person_registry import provisional_person_id
+
+            person_id = provisional_person_id(request.source, request.external_user_id)
+    if not person_id:
+        return None
+
+    meta: Dict[str, Any] = {
+        "person_id": person_id,
+        "lane": getattr(request, "lane", None) or "direct",
+        "source": request.source,
+    }
+    display_name = getattr(request, "external_display_name", None)
+    if display_name:
+        meta["display_name"] = display_name
+    channel_id = getattr(request, "external_channel_id", None)
+    if channel_id:
+        guild_id = getattr(request, "external_guild_id", None)
+        meta["channel_key"] = f"{guild_id}:{channel_id}" if guild_id else channel_id
+    return meta
+
+
 def _build_history_fmt(history: list) -> list:
     """memory.load_recent_sessions() の生履歴を Gatekeeper / Provider 用に整形する。
 
@@ -981,7 +1020,9 @@ class ChatService:
             )
 
         # --- 7. 会話保存 (debug log 保存より先に行い、session_digest の最新状態を反映) ---
-        memory.save_single_turn(request.text, result.text)
+        memory.save_single_turn(
+            request.text, result.text, meta=_build_turn_meta(request)
+        )
         memory.maintain_memory(brain)
 
         # --- 8. Debug log の自動保存 ---
@@ -1318,7 +1359,9 @@ class ChatService:
             )
 
         # 会話保存 (debug log より先に行い、session_digest の最新状態を反映)
-        memory.save_single_turn(request.text, full_text)
+        memory.save_single_turn(
+            request.text, full_text, meta=_build_turn_meta(request)
+        )
         memory.maintain_memory(brain)
 
         # debug log 保存

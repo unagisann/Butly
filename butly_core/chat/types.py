@@ -64,12 +64,22 @@ class ChatRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
     # 外部チャット入口（Discord / LINE 等）用の任意フィールド。
-    # Web UI からは未指定（None）。ChatService の生成・記憶処理には影響しない
-    # メタ情報であり、会話記憶に保存する本文（request.text）には混ぜない。
-    # debug log / ルーティングのために source 情報を保持する用途で使う。
+    # Web UI からは未指定（None）。会話記憶に保存する本文（request.text）には
+    # 混ぜない。外部 ID は person_id への解決と保存時 meta（話者帰属）の構築、
+    # debug log / ルーティングに使う（group_context_lanes_plan §6 の改訂方針）。
     source: Literal["web", "discord", "line", "cli", "api"] = "web"
     external_user_id: Optional[str] = None
     external_channel_id: Optional[str] = None
+
+    # 話者帰属（書き込み時に person_id / lane を meta として刻む）用フィールド。
+    # person_id は通常 runtime が person レジストリで解決して設定する（adapter
+    # からは未指定でよい）。external_display_name はその時点のスナップショット
+    # であり、同一性の判定には使わない。lane は direct / ambient / audience
+    # （audience は予約のみ）。未知値は読み手が other として direct 相当に倒す。
+    external_guild_id: Optional[str] = None
+    external_display_name: Optional[str] = None
+    person_id: Optional[str] = None
+    lane: str = "direct"
 
 
 class ChatResponse(BaseModel):

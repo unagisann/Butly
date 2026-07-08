@@ -6,7 +6,7 @@ from datetime import datetime
 
 
 def _parse_session_filename_timestamp(name: str):
-    """`session_YYYYMMDD_HHMMSS(.txt)` 形式のファイル名からタイムスタンプを抽出。
+    """`session_YYYYMMDD_HHMMSS[_ffffff](.txt)` 形式から日時を抽出。
 
     Returns datetime or None.
     """
@@ -516,21 +516,32 @@ class ButlyMemory:
             print(f"[Memory] Load Error: {e}")
             return [], None
 
-    def save_single_turn(self, user_text, model_text):
-        """ローカル記憶用に short_term_json へ保存"""
+    def save_single_turn(self, user_text, model_text, meta=None):
+        """ローカル記憶用に short_term_json へ保存。
+
+        meta: 話者帰属メタ (person_id / display_name / lane / source /
+        channel_key)。指定時は user メッセージに構造化メタデータとして載せる。
+        None なら従来形式のまま（meta 欠落は owner / direct / web と解釈される
+        後方互換規則があるため、Web チャットはこの経路で正しい）。
+        """
         if not user_text and not model_text:
             return None
 
         save_path = self.short_term_json_dir
         save_path.mkdir(parents=True, exist_ok=True)
 
-        file_name = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        created_at = datetime.now()
+        file_name = f"session_{created_at.strftime('%Y%m%d_%H%M%S_%f')}.json"
         full_path = save_path / file_name
 
+        user_msg = {"role": "user", "parts": [user_text]}
+        if meta:
+            user_msg["meta"] = meta
+
         turn_data = {
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": created_at.isoformat(),
             "messages": [
-                {"role": "user", "parts": [user_text]},
+                user_msg,
                 {"role": "model", "parts": [model_text]},
             ],
         }
@@ -638,24 +649,41 @@ class ButlyMemory:
             user_profile.get("preferred_call") or user_profile.get("user_name") or ""
         ).strip() or SYSTEM_CONFIG["agent"].get("user_name", "User")
 
+        # 先に全ファイルを読み、バッチ全体で複数話者かを判定する。
+        # 1 ファイル = 1 ターンのため、ファイル単体では複数話者になり得ない。
+        from butly_core.core.turn_meta import has_multiple_speakers, user_label
+
+        loaded_files = []
         for json_file in overflow_files:
             try:
-                # 中身を読み込む
                 with open(json_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                if not isinstance(data, dict):
+                    print(f"[Memory] Skipping non-dict JSON: {json_file.name}")
+                    continue
+                loaded_files.append((json_file, data))
+            except Exception as e:
+                print(f"[Memory] Error reading {json_file.name}: {e}")
 
+        multi_speaker = has_multiple_speakers(
+            [m for _, d in loaded_files for m in d.get("messages", [])]
+        )
+
+        for json_file, data in loaded_files:
+            try:
                 messages = data.get("messages", [])
                 if not messages:
                     continue
 
                 # テキスト化（Brainに読ませるため）。役割は実名でラベリングする。
+                # 複数話者バッチでは user を meta の display_name でラベリングする。
                 conv_text = ""
                 timestamp = data.get("timestamp", "")
                 for m in messages:
                     role = m.get("role", "unknown")
                     text = m.get("parts", [""])[0]
                     if role == "user":
-                        label = user_name
+                        label = user_label(m, user_name, multi_speaker=multi_speaker)
                     elif role in ("model", "assistant"):
                         label = agent_name
                     else:

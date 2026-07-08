@@ -16,11 +16,11 @@ echo "Using Python: $($PYTHON --version)"
 
 echo
 echo "1/4 compileall"
-"$PYTHON" -m compileall -q app.py main.py dependencies.py butly_core routers tests
+"$PYTHON" -m compileall -q app.py main.py dependencies.py butly_api butly_core routers tests
 
 echo
 echo "2/4 flake8 fatal checks"
-"$PYTHON" -m flake8 --select=E9,F63,F7,F82 app.py main.py dependencies.py butly_core routers tests
+"$PYTHON" -m flake8 --select=E9,F63,F7,F82 app.py main.py dependencies.py butly_api butly_core routers tests
 
 echo
 echo "3/4 pytest without integration tests"

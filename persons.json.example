@@ -1,0 +1,29 @@
+{
+  "persons": {
+    "p_yourname": {
+      "display_name": "あなたの表示名",
+      "is_owner": true,
+      "aliases": {
+        "discord": ["123456789012345678"],
+        "line": ["Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]
+      },
+      "name_variants": ["あなたの表示名", "your_handle"]
+    },
+    "p_friend": {
+      "display_name": "友人の表示名",
+      "aliases": {
+        "discord": ["876543210987654321"]
+      }
+    },
+    "p_discord_9d589f7b1b7c3a11": {
+      "merged_into": "p_friend"
+    }
+  },
+  "stats": {
+    "p_friend": {
+      "appearances": 12,
+      "first_seen": "2026-07-01T10:00:00",
+      "last_seen": "2026-07-07T21:30:00"
+    }
+  }
+}

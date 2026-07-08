@@ -1,0 +1,1122 @@
+{
+  "components": {
+    "schemas": {
+      "ApiError": {
+        "description": "`/api/v1` の共通 error envelope。\n\nHTTP response では常に 4 field すべてを含める（default 省略はしない）。",
+        "properties": {
+          "code": {
+            "description": "frontend 分岐用の安定した error code（snake_case）",
+            "title": "Code",
+            "type": "string"
+          },
+          "details": {
+            "additionalProperties": true,
+            "description": "error code ごとの補足情報（validation error の一覧など）",
+            "title": "Details",
+            "type": "object"
+          },
+          "message": {
+            "description": "人間可読なエラー説明。secret や内部 path を含めない",
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "server log と突合するための request ID（X-Request-ID と同値）",
+            "title": "Request Id"
+          }
+        },
+        "required": [
+          "code",
+          "details",
+          "message",
+          "request_id"
+        ],
+        "title": "ApiError",
+        "type": "object"
+      },
+      "AppInfoResponse": {
+        "description": "`GET /api/v1/app-info` の応答。frontend/backend version handshake 用。",
+        "properties": {
+          "api_version": {
+            "title": "Api Version",
+            "type": "string"
+          },
+          "backend_version": {
+            "title": "Backend Version",
+            "type": "string"
+          },
+          "feature_flags": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "description": "段階移行中の機能 flag。additive にのみ変更する",
+            "title": "Feature Flags",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "platform": {
+            "description": "sys.platform の値（win32 / linux / darwin 等）",
+            "title": "Platform",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "backend_version",
+          "api_version",
+          "platform"
+        ],
+        "title": "AppInfoResponse",
+        "type": "object"
+      },
+      "AttachmentInput": {
+        "additionalProperties": false,
+        "description": "chat request で送る添付（現在は画像のみ）。\n\n上限: 最大3枚 / 1枚 20MB（butly_core.chat.types の定数が正本）。",
+        "properties": {
+          "data_base64": {
+            "description": "base64 エンコード済み画像データ（data URL ヘッダ不要）。decoded で最大 20MB（maxLength は base64 換算値）",
+            "maxLength": 27962028,
+            "title": "Data Base64",
+            "type": "string"
+          },
+          "kind": {
+            "const": "image",
+            "default": "image",
+            "title": "Kind",
+            "type": "string"
+          },
+          "mime_type": {
+            "enum": [
+              "image/jpeg",
+              "image/png",
+              "image/webp"
+            ],
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          }
+        },
+        "required": [
+          "mime_type",
+          "data_base64"
+        ],
+        "title": "AttachmentInput",
+        "type": "object"
+      },
+      "AttachmentLimits": {
+        "description": "添付の制約。値は butly_core.chat.types の定数を正本とする。",
+        "properties": {
+          "allowed_mime_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Mime Types",
+            "type": "array"
+          },
+          "max_count": {
+            "title": "Max Count",
+            "type": "integer"
+          },
+          "max_size_bytes": {
+            "title": "Max Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_count",
+          "max_size_bytes",
+          "allowed_mime_types"
+        ],
+        "title": "AttachmentLimits",
+        "type": "object"
+      },
+      "AttachmentSummary": {
+        "description": "履歴表示用の添付メタ情報。データ本体は含めない。",
+        "properties": {
+          "kind": {
+            "const": "image",
+            "default": "image",
+            "title": "Kind",
+            "type": "string"
+          },
+          "mime_type": {
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          }
+        },
+        "required": [
+          "mime_type"
+        ],
+        "title": "AttachmentSummary",
+        "type": "object"
+      },
+      "CapabilitiesResponse": {
+        "description": "`GET /api/v1/capabilities` の応答。",
+        "properties": {
+          "attachments": {
+            "$ref": "#/components/schemas/AttachmentLimits"
+          },
+          "chat": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "generic_web_search": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "native_google_search": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "streaming": {
+            "$ref": "#/components/schemas/StreamingCapability"
+          },
+          "vision": {
+            "$ref": "#/components/schemas/Capability"
+          }
+        },
+        "required": [
+          "chat",
+          "streaming",
+          "vision",
+          "native_google_search",
+          "generic_web_search",
+          "attachments"
+        ],
+        "title": "CapabilitiesResponse",
+        "type": "object"
+      },
+      "Capability": {
+        "description": "単一機能の利用可否。unavailable の理由は安定 code で返す。",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "unavailable 時の理由 code（例: gemini_api_key_not_configured）",
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "Capability",
+        "type": "object"
+      },
+      "ChatChunkData": {
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "ChatChunkData",
+        "type": "object"
+      },
+      "ChatChunkEvent": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ChatChunkData"
+          },
+          "event": {
+            "const": "chunk",
+            "default": "chunk",
+            "title": "Event",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "sequence": {
+            "description": "chunk ごとに単調増加",
+            "minimum": 0,
+            "title": "Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "request_id",
+          "sequence",
+          "data"
+        ],
+        "title": "ChatChunkEvent",
+        "type": "object"
+      },
+      "ChatDone": {
+        "description": "done event の payload。full_text は全 chunk 連結と一致する。",
+        "properties": {
+          "full_text": {
+            "title": "Full Text",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/CitationSource"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "full_text"
+        ],
+        "title": "ChatDone",
+        "type": "object"
+      },
+      "ChatDoneEvent": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ChatDone"
+          },
+          "event": {
+            "const": "done",
+            "default": "done",
+            "title": "Event",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ChatDoneEvent",
+        "type": "object"
+      },
+      "ChatErrorEvent": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ApiError"
+          },
+          "event": {
+            "const": "error",
+            "default": "error",
+            "title": "Event",
+            "type": "string"
+          },
+          "recoverable": {
+            "default": false,
+            "title": "Recoverable",
+            "type": "boolean"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ChatErrorEvent",
+        "type": "object"
+      },
+      "ChatMetadata": {
+        "description": "metadata event の payload。Gatekeeper 判定の public な部分だけを写す。",
+        "properties": {
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Keywords",
+            "type": "array"
+          },
+          "need": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Need"
+          },
+          "search_targets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Search Targets"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tier"
+          }
+        },
+        "title": "ChatMetadata",
+        "type": "object"
+      },
+      "ChatMetadataEvent": {
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ChatMetadata"
+          },
+          "event": {
+            "const": "metadata",
+            "default": "metadata",
+            "title": "Event",
+            "type": "string"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "data"
+        ],
+        "title": "ChatMetadataEvent",
+        "type": "object"
+      },
+      "ChatRequest": {
+        "additionalProperties": false,
+        "description": "`POST /api/v1/chat` / `/api/v1/chat/stream` 共通 request。\n\n- `use_google_search` と `use_web_search` は相互排他（backend で validation）。\n- `model_name` / `connection` は developer override。通常 UI は\n  instance config に従い未指定にする。\n- unknown field は拒否し typo を早期検出する（legacy route のみ互換を緩める）。",
+        "properties": {
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/AttachmentInput"
+            },
+            "maxItems": 3,
+            "title": "Attachments",
+            "type": "array"
+          },
+          "client_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "double submit 識別用に client が採番する ID",
+            "title": "Client Request Id"
+          },
+          "connection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connection"
+          },
+          "instance_name": {
+            "minLength": 1,
+            "title": "Instance Name",
+            "type": "string"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model Name"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          },
+          "use_google_search": {
+            "default": false,
+            "title": "Use Google Search",
+            "type": "boolean"
+          },
+          "use_rag": {
+            "default": true,
+            "title": "Use Rag",
+            "type": "boolean"
+          },
+          "use_web_search": {
+            "default": false,
+            "title": "Use Web Search",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "instance_name"
+        ],
+        "title": "ChatRequest",
+        "type": "object"
+      },
+      "ChatResult": {
+        "description": "`POST /api/v1/chat`（non-stream fallback / test 用）の応答。",
+        "properties": {
+          "keywords": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Keywords",
+            "type": "array"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/CitationSource"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "status": {
+            "const": "completed",
+            "default": "completed",
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "text"
+        ],
+        "title": "ChatResult",
+        "type": "object"
+      },
+      "ChatStreamEvent": {
+        "discriminator": {
+          "mapping": {
+            "chunk": "#/components/schemas/ChatChunkEvent",
+            "done": "#/components/schemas/ChatDoneEvent",
+            "error": "#/components/schemas/ChatErrorEvent",
+            "metadata": "#/components/schemas/ChatMetadataEvent"
+          },
+          "propertyName": "event"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ChatMetadataEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ChatChunkEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ChatDoneEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ChatErrorEvent"
+          }
+        ]
+      },
+      "CitationSource": {
+        "description": "Web 検索 / grounding の引用元。provider raw object は正規化して返す。",
+        "properties": {
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "url": {
+            "default": "",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "title": "CitationSource",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "description": "`GET /api/v1/health` の応答。status と version 以外の情報を返さない。",
+        "properties": {
+          "api_version": {
+            "title": "Api Version",
+            "type": "string"
+          },
+          "backend_version": {
+            "title": "Backend Version",
+            "type": "string"
+          },
+          "status": {
+            "const": "ok",
+            "default": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "backend_version",
+          "api_version"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "InstanceListResponse": {
+        "description": "`GET /api/v1/instances` の応答。",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/InstanceSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "InstanceListResponse",
+        "type": "object"
+      },
+      "InstanceSummary": {
+        "description": "instance 一覧の1件分。",
+        "properties": {
+          "ai_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Name"
+          },
+          "has_database": {
+            "default": false,
+            "title": "Has Database",
+            "type": "boolean"
+          },
+          "locale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Locale"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "InstanceSummary",
+        "type": "object"
+      },
+      "Message": {
+        "description": "会話履歴の1メッセージ。",
+        "properties": {
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/AttachmentSummary"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "timezone 付き ISO 8601（UTC 保存）。旧データは None になり得る",
+            "title": "Created At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/CitationSource"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "status": {
+            "default": "completed",
+            "enum": [
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "text"
+        ],
+        "title": "Message",
+        "type": "object"
+      },
+      "MessagePage": {
+        "description": "`GET /api/v1/instances/{name}/messages` の応答。",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "last_interaction_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Interaction At"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "さらに古い履歴を取るための cursor。終端は None",
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "MessagePage",
+        "type": "object"
+      },
+      "ReadinessCheck": {
+        "description": "readiness を構成する個別チェックの結果。",
+        "properties": {
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "失敗時の補足。内部 path は含めない",
+            "title": "Message"
+          },
+          "name": {
+            "description": "チェック名（例: data_dir_writable）",
+            "title": "Name",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "ok"
+        ],
+        "title": "ReadinessCheck",
+        "type": "object"
+      },
+      "ReadinessResponse": {
+        "description": "`GET /api/v1/ready` の応答。",
+        "properties": {
+          "checks": {
+            "items": {
+              "$ref": "#/components/schemas/ReadinessCheck"
+            },
+            "title": "Checks",
+            "type": "array"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ready",
+          "checks"
+        ],
+        "title": "ReadinessResponse",
+        "type": "object"
+      },
+      "StreamingCapability": {
+        "description": "chat streaming の可否と挙動。\n\nGemini Google Search ON 時は provider が non-stream fallback するため、\nUI は chunk 数や到着間隔を成功条件にしてはならない。",
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "mode": {
+            "default": "incremental",
+            "enum": [
+              "incremental",
+              "buffered_fallback",
+              "unsupported"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "unavailable 時の理由 code（例: gemini_api_key_not_configured）",
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "StreamingCapability",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Butly backend API. Frontend-facing contract is under /api/v1.",
+    "title": "Butly API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/app-info": {
+      "get": {
+        "description": "frontend / backend の version handshake 用情報。",
+        "operationId": "get_app_info",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppInfoResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Application info",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/v1/capabilities": {
+      "get": {
+        "description": "UI 条件分岐の正本。frontend は環境変数や model 名 prefix で分岐せず、この応答に従う。",
+        "operationId": "get_capabilities",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilitiesResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Feature availability",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "description": "process 起動確認用の最小応答。外部 API / DB / user data を読まない。",
+        "operationId": "get_health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Liveness check",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/v1/instances": {
+      "get": {
+        "description": "instance の typed 一覧を返す。legacy `GET /instances`（文字列配列）のversioned 置換。破損した instance config があってもその instance はfallback 値で返し、一覧全体は失敗させない。",
+        "operationId": "list_instances",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Backend is not ready"
+          }
+        },
+        "summary": "List AI instances",
+        "tags": [
+          "instances"
+        ]
+      }
+    },
+    "/api/v1/instances/{name}/messages": {
+      "get": {
+        "description": "instance の会話履歴を時系列（古い順）で返す。legacy `GET /history/{name}` のversioned 置換で、timestamp と last_interaction_at を追加する。`before` cursor は予約のみで現時点では無視される（next_cursor も常に null）。",
+        "operationId": "list_instance_messages",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "返す最大 message 数",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "description": "返す最大 message 数",
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "pagination cursor（予約。現行 storage では未実装のため無視される）",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "pagination cursor（予約。現行 storage では未実装のため無視される）",
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Instance not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Validation error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Backend is not ready"
+          }
+        },
+        "summary": "Get chat message history",
+        "tags": [
+          "instances"
+        ]
+      }
+    },
+    "/api/v1/ready": {
+      "get": {
+        "description": "UI を開いてよいかを返す。provider API key の有無は readiness failure にしない（capabilities 側で表現する）。",
+        "operationId": "get_readiness",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness check",
+        "tags": [
+          "system"
+        ]
+      }
+    }
+  }
+}

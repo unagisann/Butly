@@ -137,6 +137,8 @@ def build_discord_chat_request(
     instance_name: str,
     user_id: Optional[str],
     channel_id: Optional[str],
+    guild_id: Optional[str] = None,
+    display_name: Optional[str] = None,
     attachments: Optional[list[Attachment]] = None,
     profile: ReplyProfile = DISCORD_PROFILE,
 ) -> ChatRequest:
@@ -144,7 +146,10 @@ def build_discord_chat_request(
 
     - ``text`` は mention 除去済みの本文。外部 ID は混ぜない。
     - ``source="discord"`` と reply profile metadata（style_hint 等）を付与する。
-    - 外部 ID は ``external_user_id`` / ``external_channel_id`` にメタとして保持する。
+    - 外部 ID は ``external_user_id`` / ``external_channel_id`` /
+      ``external_guild_id`` にメタとして保持する。person_id への解決は
+      runtime 側で行われ、保存時に話者帰属 meta として刻まれる。
+    - ``display_name`` はその時点の表示名スナップショット（同一性判定には不使用）。
     """
     return ChatRequest(
         text=text,
@@ -153,6 +158,8 @@ def build_discord_chat_request(
         source="discord",
         external_user_id=str(user_id) if user_id is not None else None,
         external_channel_id=str(channel_id) if channel_id is not None else None,
+        external_guild_id=str(guild_id) if guild_id is not None else None,
+        external_display_name=display_name or None,
         metadata=profile.to_metadata(),
     )
 
@@ -470,6 +477,11 @@ def create_bot(
                 instance_name=resolved.instance_name,
                 user_id=user_id,
                 channel_id=channel_id,
+                guild_id=guild_id,
+                display_name=str(
+                    getattr(message.author, "display_name", "") or ""
+                ).strip()
+                or None,
                 attachments=attachments,
                 profile=profile,
             )

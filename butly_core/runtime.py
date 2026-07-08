@@ -30,6 +30,7 @@ from butly_core.core.instance_manager import InstanceManager
 from butly_core.core.memory import ButlyMemory
 from butly_core.chat.service import ChatService
 from butly_core.chat.types import ChatRequest, ChatResponse
+from butly_core.external.person_registry import PersonRegistry
 
 
 class ButlyRuntime:
@@ -61,6 +62,8 @@ class ButlyRuntime:
         self.instance_manager: InstanceManager = InstanceManager(self.data_dir)
         self.gatekeeper: Gatekeeper = Gatekeeper(base_dir=self.base_dir)
         self.mem_block_builder: MemoryBlockBuilder = MemoryBlockBuilder()
+        # 話者帰属 (persons.json)。外部入口のリクエストに person_id を付与する。
+        self.person_registry: PersonRegistry = PersonRegistry(self.data_dir)
 
         # インスタンスごとのコンポーネント（memory / brain / chronos）の遅延初期化キャッシュ。
         # dependencies.py からも同一オブジェクトとして参照される。
@@ -97,6 +100,40 @@ class ButlyRuntime:
         return components
 
     # ------------------------------------------------------------------
+    # 話者帰属 (group_context_lanes_plan Phase 1)
+    # ------------------------------------------------------------------
+    def _attach_person(self, request: ChatRequest) -> None:
+        """外部入口のリクエストに person_id を解決して付与する。
+
+        - adapter が既に person_id を設定済み、または外部 ID が無い
+          (Web UI 等) 場合は何もしない。
+        - 解決失敗時も何もしない。保存時 (_build_turn_meta) に決定的な
+          仮 ID へフォールバックするため、帰属自体は失われない。
+        - LINE は現行 1:1 スコープのため、未登録 alias の場合は owner とみなす。
+        - display_name は adapter のスナップショットを優先し、無い場合のみ
+          レジストリの登録名で補完する。
+        """
+        if request.person_id or not request.external_user_id:
+            return
+        try:
+            resolved = self.person_registry.resolve(
+                request.source, request.external_user_id
+            )
+        except Exception as e:
+            print(f"[Runtime] person 解決に失敗 (保存時は仮 ID で継続): {e}")
+            return
+        if request.source == "line" and resolved.provisional:
+            request.person_id = self.person_registry.owner_person_id()
+            if not request.external_display_name:
+                display_name = self.person_registry.display_name(request.person_id)
+                if display_name:
+                    request.external_display_name = display_name
+            return
+        request.person_id = resolved.person_id
+        if not request.external_display_name and resolved.display_name:
+            request.external_display_name = resolved.display_name
+
+    # ------------------------------------------------------------------
     # チャット実行
     # ------------------------------------------------------------------
     async def chat(
@@ -108,6 +145,7 @@ class ButlyRuntime:
 
         外部入口（Discord / LINE 等）はこの 1 メソッドだけ呼べばよい。
         """
+        self._attach_person(request)
         return await ChatService.execute(
             request=request,
             get_instance_components=self.get_instance_components,
@@ -123,6 +161,7 @@ class ButlyRuntime:
         request: ChatRequest,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """チャットリクエストを処理して逐次 event を yield する（ストリーミング）。"""
+        self._attach_person(request)
         async for event in ChatService.execute_stream(
             request=request,
             get_instance_components=self.get_instance_components,

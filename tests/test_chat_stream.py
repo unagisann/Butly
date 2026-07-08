@@ -146,8 +146,10 @@ class TestExecuteStream:
         assert "timing" in done["data"]["debug_info"]
         assert done["data"]["debug_info"]["timing"]["ttfb_ms"] >= 0
 
-        # save_single_turn が呼ばれている
-        mock_components["memory"].save_single_turn.assert_called_once_with("hello", "こんにちは")
+        # save_single_turn が呼ばれている (Web 入口は外部帰属なし → meta=None)
+        mock_components["memory"].save_single_turn.assert_called_once_with(
+            "hello", "こんにちは", meta=None
+        )
         session_state_mock.increment_turn.assert_called_once_with(
             "mid", history_msgs=[]
         )

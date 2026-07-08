@@ -1,8 +1,9 @@
 """
 main.py
 -------
-FastAPI app 生成 + lifespan + include_router のみ。
-ビジネスロジックは各 routers/ に分離済み。
+互換 entrypoint。app 本体の構築は butly_api.create_app() に委譲し、
+ここでは起動引数・データディレクトリ・.env・Runtime 初期化・
+legacy routers / CORS の注入だけを行う。
 """
 
 from fastapi import FastAPI
@@ -166,19 +167,10 @@ async def lifespan(app: FastAPI):
 
 
 # =====================================================================
-# FastAPI App + CORS + Routers
+# FastAPI App (butly_api.create_app) + legacy routers + CORS
 # =====================================================================
-app = FastAPI(lifespan=lifespan, title="Butly API")
-
-from fastapi.middleware.cors import CORSMiddleware
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+from butly_api import create_app
+from butly_api.context import ApiContext
 
 from routers import (
     chat,
@@ -192,18 +184,42 @@ from routers import (
     pairing,
 )
 
-app.include_router(chat.router)
-app.include_router(instances.router)
-app.include_router(settings.router)
-app.include_router(sleeptime.router)
-app.include_router(database.router)
-app.include_router(devices.router)
-app.include_router(dashboard.router)
-app.include_router(line_router.router)
-app.include_router(pairing.router)
+_api_context = ApiContext(
+    data_dir=DATA_DIR,
+    instances_dir=deps.INSTANCES_DIR,
+    runtime_supplier=lambda: deps.runtime,
+)
+
+app = create_app(
+    context=_api_context,
+    lifespan=lifespan,
+    extra_routers=[
+        chat.router,
+        instances.router,
+        settings.router,
+        sleeptime.router,
+        database.router,
+        devices.router,
+        dashboard.router,
+        line_router.router,
+        pairing.router,
+    ],
+)
+
+# legacy 互換の wildcard CORS。正式配布時に allowlist へ絞る（移行計画 §6.3）
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 起動時に永続化設定を適用
 settings.apply_startup_settings()
+_api_context.settings_loaded = True
 
 # =====================================================================
 # __main__: uvicorn 起動

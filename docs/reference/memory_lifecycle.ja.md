@@ -40,9 +40,10 @@ Butly の記憶システムは、会話の鮮度と重要度に応じて複数�
 
 | 項目 | 内容 |
 |---|---|
-| **場所** | `instances/{name}/short_term_json/session_YYYYMMDD_HHMMSS.json` |
+| **場所** | `instances/{name}/short_term_json/session_YYYYMMDD_HHMMSS_ffffff.json` |
 | **書き込み** | 毎ターン返答後、`memory.save_single_turn()` が自動実行 |
 | **形式** | `{"timestamp": "...", "messages": [{"role": "user", "parts": [...]}, {"role": "model", "parts": [...]}]}` |
+| **話者帰属 meta** | 外部入口（Discord / LINE 等）のターンは user メッセージに `meta` を付与: `{"person_id": "...", "display_name": "...", "lane": "direct", "source": "discord", "channel_key": "guild:channel"}`。**meta 欠落時は owner / direct / web と解釈**（後方互換、マイグレーション不要） |
 | **上限** | `short_term_limit`（デフォルト 6 ファイル） |
 | **オーバーフロー処理** | `memory.maintain_memory()` が溢れた古いファイルをLLMで要約し、session_digests/ に保存後 1_integrated/ へ移動 |
 | **Gatekeeper注入** | Short Term ブロック（直近 6 ターン）として常時注入 |
@@ -51,6 +52,13 @@ Butly の記憶システムは、会話の鮮度と重要度に応じて複数�
 ```python
 SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # 保持ファイル数
 ```
+
+> **話者帰属（person_id）:** 外部アカウントは `ButlyRuntime` が `PersonRegistry`
+> （`DATA_DIR/persons.json`、`butly_core/external/person_registry.py`）で person_id に解決する。
+> 未登録ユーザーには決定的な仮 ID `p_{source}_{hash}` を発行（外部 ID は RAW ログに直接出さない）。
+> Sleeptime / maintain_memory / raw_memory_cache の整形時、バッチ内に複数話者が
+> いる場合のみ user 発言を `「display_name」:` でラベリングする（1:1 は従来どおり）。
+> 詳細は `docs/planning/active/group_context_lanes_plan.ja.md` Phase 1 を参照。
 
 ---
 

@@ -10,22 +10,24 @@
 
 | ファイル | 役割 |
 |---|---|
-| `main.py` | FastAPI アプリの起動エントリポイント |
+| `main.py` | FastAPI アプリの互換 entrypoint（app 構築は `butly_api.create_app()` に委譲） |
 | `app.py` | Streamlit Web UI（FastAPI バックエンド経由で動作） |
 | `dependencies.py` | ルーター間共有のグローバル状態・ヘルパー |
 | `sleeptime.py` | 記憶自動整理スクリプト（単体実行 & APIから呼び出し可） |
 | `migrate_embeddings.py` | プロバイダー切り替え時の embedding 再生成ユーティリティ |
+| `butly_api/` | 正式フロントエンド向け `/api/v1` transport 層（app factory / schemas / error contract） |
+| `openapi/butly.openapi.json` | `/api/v1` の OpenAPI 3.1 snapshot（`scripts/generate_openapi.py` で生成） |
 
 ---
 
 ### `main.py`
-FastAPI アプリの生成・起動引数のパース・各ルーターの `include_router`。  
-ビジネスロジックは持たない。モジュール直下で `dependencies.py` のシングルトン（InstanceManager / Gatekeeper / MemoryBlockBuilder 等）を初期化し、lifespan ではバンドル環境向けの設定ファイルコピーのみ行う。
+互換 entrypoint。起動引数のパース・データディレクトリ解決・`.env` ロード・`ButlyRuntime` 初期化を行い、app 本体の構築は `butly_api.create_app()` に委譲する。legacy routers（Streamlit 互換）と wildcard CORS はここで注入する。
 
-- `_watch_parent(parent_pid)` — 親プロセス（Flutter）の死亡監視スレッド
+- `_watch_parent(parent_pid)` — 親プロセス（デスクトップ shell）の死亡監視スレッド
 - `_load_env_from_data_dir()` — `.env` からAPIキーを環境変数へロード
 - `lifespan(app)` — バンドル時の設定ファイルコピー・起動メッセージ
-- `app` — FastAPI インスタンス。全 routers/ を include
+- `_api_context` — `/api/v1/ready` 等が参照する `ApiContext`
+- `app` — `create_app()` の戻り値。`/api/v1` + 全 routers/ を include
 
 ---
 
@@ -112,6 +114,28 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 - `POST /chat/stream` — SSE ストリーミングエンドポイント。`metadata` → `chunk` → `done` の順にイベントを送出
 - `_sse_event(event_name, data)` — SSE メッセージのフォーマッタ
 - `WebSocket /ws` — 双方向 WebSocket（チャット + AI ステータス通知）
+
+---
+
+## butly_api/
+
+正式フロントエンド移行（`docs/planning/active/frontend_migration_plan.ja.md`）Phase 0 で導入した versioned API（`/api/v1`）の transport 層。HTTP の変換だけを担い、業務ロジックは Runtime / service へ委譲する。legacy routers は import しない。
+
+| ファイル | 役割 |
+|---|---|
+| `app.py` | `create_app(context, lifespan, extra_routers)` — side effect の少ない app factory。OpenAPI 生成は context なしで行う |
+| `context.py` | `ApiContext` — readiness 判定に使う実行時状態（data_dir / runtime supplier 等） |
+| `errors.py` | `ApiException` と `/api/v1` 共通 error envelope（`ApiError`）への正規化 handler。legacy route は FastAPI default（`{"detail": ...}`）を維持 |
+| `middleware.py` | `RequestIDMiddleware` — `X-Request-ID` の採番・伝播（pure ASGI） |
+| `version.py` | `BACKEND_VERSION` / `API_VERSION` / `API_V1_PREFIX` |
+| `routers/system.py` | `GET /api/v1/health` / `/ready` / `/app-info` / `/capabilities` |
+| `routers/instances.py` | `GET /api/v1/instances`（typed 一覧） / `GET /api/v1/instances/{name}/messages`（typed 履歴 + `last_interaction_at`。cursor pagination は記憶ストア正規化後） |
+| `schemas/common.py` | `ApiError` envelope |
+| `schemas/system.py` | health / readiness / app-info / capabilities の DTO |
+| `schemas/chat.py` | chat / message history / SSE event（discriminated union）の contract schema（Phase 0 設計版、endpoint 実装は後続） |
+| `schemas/instances.py` | `InstanceSummary` / `InstanceListResponse`（同上） |
+
+OpenAPI snapshot は `scripts/generate_openapi.py`（または `scripts/generate_openapi.sh`）で `openapi/butly.openapi.json` に deterministic に出力し、`tests/test_openapi_snapshot.py` が差分を検出する。
 
 ---
 
@@ -248,13 +272,25 @@ AIアシスタントのコアエンジン群。
   - `get_mid_term_relationship()` — mid_term_relationship.txt（関係性グラフ）を返す
   - `get_session_digest()` — `session_digests/*.txt` を相対時刻ヘッダー（例: `--- 約30分前 ---`）付きで結合して返す。旧 `session_digest.txt` も互換読み取り
   - `load_recent_sessions(limit)` — short_term_json から直近 N 件の会話を返す
-  - `save_single_turn(user_msg, ai_msg, ...)` — 会話を short_term_json に保存
+  - `save_single_turn(user_msg, ai_msg, meta=None)` — 会話を short_term_json に保存。`meta`（話者帰属: person_id / display_name / lane / source / channel_key）指定時は user メッセージに構造化メタデータとして刻む
   - `get_last_interaction_time()` — 最後のインタラクション日時を返す
-  - `maintain_memory(brain)` — short_term が閾値超えたら session_digest に折りたたむ
+  - `maintain_memory(brain)` — short_term が閾値超えたら session_digest に折りたたむ。溢れバッチに複数話者がいる場合は user 発言を `「display_name」` でラベリング
 - ヘルパー関数:
   - `_format_relative_time(dt, now)` — `datetime` から「約30分前」等の文字列を生成
-  - `_parse_session_filename_timestamp(name)` — `session_YYYYMMDD_HHMMSS.txt` 形式のファイル名から日時を復元
+  - `_parse_session_filename_timestamp(name)` — `session_YYYYMMDD_HHMMSS[_ffffff].txt` 形式のファイル名から日時を復元
   - `_strip_legacy_time_line(text)` — 先頭行に `Time: 2026-...` を含む旧形式を除去
+
+---
+
+### `butly_core/core/turn_meta.py`
+会話ターン message の話者帰属メタ（person_id / lane 等）の読み出しヘルパ。
+**meta 欠落時は owner / direct / web と解釈する**後方互換規則の実装（マイグレーション不要）。
+
+- `effective_meta(msg, owner_person_id=...)` — 後方互換規則を適用した meta を返す
+- `normalize_lane(value)` — lane の正規化（欠落 → `direct`、未知値 → `other`）
+- `has_multiple_speakers(messages)` — user メッセージに複数の person_id がいるか
+- `speaker_label(msg, default_user_name)` / `user_label(msg, ..., multi_speaker=)` — 整形用ラベル。複数話者時のみ `「display_name」` 形式
+- `message_text(msg)` — parts[0]（str / dict 両対応）から本文を取り出す
 
 ---
 
@@ -496,6 +532,28 @@ RAG (`rag_context`) は `need` に連動する独立判定で、tier ではな�
 | `scan_target` | "both" | "user" / "assistant" / "both" |
 | `max_entries` | 20 | 注入する最大エントリ数 |
 | `max_chars` | 4000 | 注入合計文字数の上限。greedy skip で個別エントリをスキップ |
+
+---
+
+## butly_core/external/
+
+外部プラットフォーム（Discord / LINE 等）との接続層。SDK 依存は各 adapter に閉じ、
+解決ロジック（account_mapping / person_registry / pairing）は純粋ロジックとして分離。
+
+### `butly_core/external/person_registry.py`
+人物レジストリ。外部アカウント `(source, external_user_id)` を内部の person_id に解決する。
+保存先は `DATA_DIR/persons.json`（外部 ID を含むため gitignore 対象。雛形: `persons.json.example`）。
+
+- `provisional_person_id(source, external_user_id)` — 決定的な仮 ID `p_{source}_{hash}` を発行（書き込み不要、外部 ID は RAW ログに直接出さない）
+- `PersonRegistry(data_dir)`
+  - `resolve(source, external_user_id)` — aliases 完全一致 → 仮 ID 発行。`merged_into` は読み出し時に解決
+  - `resolve_person_id(person_id)` / `display_name(person_id)` / `owner_person_id()`
+  - `merge_person(from_id, to_id)` — レジストリに `merged_into` を記録（RAW ログは書き換えない）
+  - `record_appearances({person_id: {count, first_seen, last_seen}})` — adoption gate 用の登場集計（Sleeptime Stage 1 から呼ばれる）
+
+このほか `account_mapping.py`（instance 解決）、`discord_adapter.py` / `line_adapter.py`
+（受信 → `ChatRequest` 組み立て）、`pairing.py`（LINE ペアリング）、`message_splitter.py` /
+`reply_profiles.py`（返信整形）を含む。
 
 ---
 
