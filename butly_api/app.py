@@ -62,6 +62,24 @@ def _contract_component_schemas() -> Dict[str, Any]:
     return schemas
 
 
+def _public_contract_routes(app: FastAPI) -> list[Any]:
+    """FastAPI の include_router 構造を展開し、公開 v1 route だけを返す。"""
+    try:
+        from fastapi.routing import iter_route_contexts
+    except ImportError:
+        # FastAPI <= 0.136 は include_router 後の route が平坦化されている。
+        routes = app.routes
+    else:
+        # FastAPI >= 0.137 は include_router の階層を保持する。
+        routes = list(iter_route_contexts(app.routes))
+
+    return [
+        route
+        for route in routes
+        if is_api_v1_path(getattr(route, "path", "") or "")
+    ]
+
+
 def create_app(
     *,
     context: Optional[ApiContext] = None,
@@ -103,16 +121,11 @@ def create_app(
             return app.openapi_schema
         # legacy routers を同居させても、公開 contract（/openapi.json）は
         # /api/v1 だけにする。runtime の legacy route 挙動には影響しない。
-        v1_routes = [
-            route
-            for route in app.routes
-            if is_api_v1_path(getattr(route, "path", ""))
-        ]
         schema = get_openapi(
             title=app.title,
             version=app.version,
             description=app.description,
-            routes=v1_routes,
+            routes=_public_contract_routes(app),
         )
         components = schema.setdefault("components", {}).setdefault("schemas", {})
         for name, model_schema in _contract_component_schemas().items():
