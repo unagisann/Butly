@@ -19,6 +19,7 @@
 - [アーキテクチャ図集](reference/DIAGRAMS.ja.md)
 - [ファイル構成](reference/FILE_STRUCTURE.ja.md)
 - [コーディング規約](reference/coding_conventions.ja.md)
+- [Desktop sidecar 仕様](reference/desktop_sidecar.ja.md)
 - [context_levels 仕様](reference/context_levels.ja.md)
 - [Gatekeeper 入出力仕様](reference/gatekeeper_io_summary.ja.md)
 - [記憶ライフサイクル](reference/memory_lifecycle.ja.md)

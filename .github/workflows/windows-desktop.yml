@@ -1,0 +1,106 @@
+name: Windows Desktop
+
+# Phase 1: Windows x64 の NSIS installer を CI artifact として生成する。
+# release 作成・code signing はまだ行わない（移行計画 §6.5）。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - "butly_api/**"
+      - "butly_core/**"
+      - "packaging/**"
+      - "scripts/build_backend_sidecar.py"
+      - "scripts/smoke_test_sidecar.py"
+      - "requirements.txt"
+      - ".github/workflows/windows-desktop.yml"
+  pull_request:
+    paths:
+      - "frontend/**"
+      - "butly_api/**"
+      - "butly_core/**"
+      - "packaging/**"
+      - "scripts/build_backend_sidecar.py"
+      - "scripts/smoke_test_sidecar.py"
+      - "requirements.txt"
+      - ".github/workflows/windows-desktop.yml"
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10.12.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: frontend/src-tauri
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify generated API client is in sync
+        working-directory: frontend
+        run: |
+          pnpm generate:api
+          git diff --exit-code -- src/api/generated
+
+      - name: Frontend lint / typecheck / test
+        working-directory: frontend
+        run: |
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+
+      - name: Build PyInstaller sidecar (one-folder)
+        run: python scripts/build_backend_sidecar.py
+
+      - name: Sidecar smoke test
+        run: python scripts/smoke_test_sidecar.py
+
+      - name: Check Rust
+        run: |
+          cargo fmt --manifest-path frontend/src-tauri/Cargo.toml --all -- --check
+          cargo check --manifest-path frontend/src-tauri/Cargo.toml --locked
+
+      - name: Build Tauri app (NSIS installer)
+        working-directory: frontend
+        run: pnpm tauri build
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: butly-windows-x64-installer
+          path: frontend/src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error

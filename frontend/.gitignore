@@ -1,0 +1,8 @@
+node_modules
+dist
+src-tauri/target
+src-tauri/gen
+# build script が配置する backend sidecar 生成物
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
+src-tauri/resources/backend
