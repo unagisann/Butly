@@ -4,7 +4,8 @@ openai
 numpy
 python-dotenv
 streamlit
-fastapi
+# 0.137.2 adds iter_route_contexts(), required by the versioned OpenAPI filter.
+fastapi>=0.137.2,<0.140
 uvicorn
 pyyaml
 pydantic-settings>=2.5,<3
