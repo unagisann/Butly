@@ -17,6 +17,7 @@
 | `migrate_embeddings.py` | プロバイダー切り替え時の embedding 再生成ユーティリティ |
 | `butly_api/` | 正式フロントエンド向け `/api/v1` transport 層（app factory / schemas / error contract） |
 | `openapi/butly.openapi.json` | `/api/v1` の OpenAPI 3.1 snapshot（`scripts/generate_openapi.py` で生成） |
+| `evals/locomo/` | LoCoMo長期記憶評価CLI。正式APIへ混入せず、隔離Workspace上でReplay → Sleeptime → QA → 成果物保存を実行 |
 
 ---
 
@@ -87,6 +88,29 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 - `get_db_path(instance_name)` — インスタンスの DB パスを解決
 - `migrate_instance(instance_name, batch_size, dry_run)` — 全カードの embedding を再生成
 - CLI: `--instance` / `--batch-size` / `--dry-run` / `--all`
+
+---
+
+## evals/locomo/
+
+LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評価CLI。
+公式データは同梱せず、`tests/evals/fixtures/mini_locomo.json`には同じスキーマの
+合成データのみを置く。評価データはrun ID単位の`workspace/`へ隔離し、
+本番`butly_core/instances/`配下への出力を拒否する。
+
+| ファイル | 役割 |
+|---|---|
+| `dataset.py` | `LocomoTurn` / `LocomoSession` / `LocomoQuestion` / `LocomoConversation` DTOと公式JSON parser |
+| `workspace.py` | run ID単位の隔離ディレクトリ、`ButlyRuntime` / `ButlySleeptime`生成 |
+| `adapter.py` | `speaker_a=user` / `speaker_b=assistant`変換と元日時・evidence追跡用meta付き保存 |
+| `sleeptime_runner.py` | Stage 1/2の同期実行と`results/sleeptime_log.jsonl`記録 |
+| `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、QA結果とTraceを保存 |
+| `replay.py` | Fixture読込からセッションReplay、Sleeptime、最終QAまでのオーケストレーション |
+| `artifacts.py` | JSON/JSONL、Traceコピー、セッション前後スナップショットの保存 |
+| `config.py` | Phase 2 CLI設定DTO |
+| `cli.py` | `python -m evals.locomo.cli run ...` entrypoint |
+
+Phase 2では採点、checkpoint/resume、report、Colab Notebookは未実装。
 
 ---
 

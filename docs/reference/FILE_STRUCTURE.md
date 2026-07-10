@@ -19,7 +19,29 @@ This document gives an overview of every file and module in the repository. For 
 | `dependencies.py` | Cross-router singletons (`InstanceManager`, `Gatekeeper`, `MemoryBlockBuilder`, `instance_store`) and `get_instance_components()` lazy factory. |
 | `sleeptime.py` | Daily / weekly memory consolidation. Runnable standalone (`python sleeptime.py`) or via HTTP API. `ButlySleeptime(base_dir=None, instances_dir=None)` supports isolated storage for evaluation while preserving the existing default paths. |
 | `migrate_embeddings.py` | Regenerates `embedding_blob` after provider switch. CLI: `--instance` / `--batch-size` / `--dry-run` / `--all`. |
+| `evals/locomo/` | Environment-independent LoCoMo replay CLI. Runs Replay → synchronous Sleeptime → Runtime QA in an isolated workspace without adding production API routes. |
 | `dependencies.py` / `discovery_agent.py` / `news_agent.py` | Dashboard helpers (network discovery, news feed). |
+
+---
+
+## `evals/locomo/`
+
+The LoCoMo evaluation package parses user-supplied official JSON, maps
+`speaker_a` to user and `speaker_b` to assistant, and writes all memory data to a
+run-scoped workspace that is rejected if it resolves inside the production
+instances tree. The bundled mini fixture is synthetic.
+
+- `dataset.py` — typed DTOs and official-shape parser.
+- `workspace.py` — isolated run directories and injected Runtime/Sleeptime factories.
+- `adapter.py` — ordered speaker-role conversion with source timestamp/meta retention.
+- `sleeptime_runner.py` — synchronous Stage 1/2 execution and structured JSONL log.
+- `qa_runner.py` — Runtime QA with RAG on, external search off, plus Trace capture.
+- `replay.py` — Phase 2 orchestration.
+- `artifacts.py` — JSON/JSONL, Trace copies, and before/after snapshots.
+- `config.py`, `cli.py` — typed CLI configuration and `run` entry point.
+
+Scoring, checkpoint/resume, reporting, and Colab support remain deferred after
+Phase 2.
 
 ---
 

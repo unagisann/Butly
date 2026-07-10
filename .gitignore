@@ -67,3 +67,7 @@ old_migration_backup/
 server.spec
 analysis.txt
 flake8_critical.txt
+
+# Local evaluation artifacts
+eval_runs/
+/data/locomo*.json

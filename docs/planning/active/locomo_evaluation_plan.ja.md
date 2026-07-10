@@ -1,6 +1,6 @@
 # LoCoMoを用いたButly長期会話記憶評価基盤 実装計画書
 
-> **ステータス: 実装中（Phase 1 実装済み）**
+> **ステータス: 実装中（Phase 2 実装済み）**
 > **主な実行環境: Google Colab Pro**
 > **設計方針: 評価ロジックは環境非依存のCLIとして実装し、Colabは薄い実行フロントエンドとして扱う**
 > **対象リポジトリ: Butly**
@@ -400,6 +400,15 @@ LoCoMoの会話は、必ずしもuser→assistantの単純なペアとは限ら�
 
 評価メタデータが通常プロンプトへ不用意に注入されないよう注意する。
 
+### Phase 2で固定した変換規則（2026-07-10）
+
+`speaker_a`をButlyの`user`、`speaker_b`を`assistant`へ割り当てる。
+通常の交互発話は2発言を1ファイルへ保存する。同一話者の連続発言や
+`speaker_b`開始時は、反対側を空文字として保存し、元発言順と全dialog IDを保持する。
+必須metaに加えて、ペア内の`locomo_dialog_ids`、`speaker_roles`、各発言の
+role対応を`locomo_turns`へ保存する。評価用metaの未知フィールドは通常の
+プロンプト整形では参照されない。
+
 ## 8.4 `replay.py`
 
 指定された会話とセッションを順番に投入する。
@@ -534,9 +543,10 @@ errors.jsonl
 
 ```text
 snapshots/
-└─ session_001/
-   ├─ before_sleeptime/
-   └─ after_sleeptime/
+└─ locomo_sample_0/
+   └─ session_001/
+      ├─ before_sleeptime/
+      └─ after_sleeptime/
 ```
 
 対象:
@@ -776,12 +786,33 @@ Butly側から既存のOpenAI互換Connectionとして利用できる方式を�
 
 ## Phase 2: ミニReplay Runner
 
+**実装済み（2026-07-10）**
+
 * Fixture読込
 * 評価用Workspace作成
 * 会話リプレイ
 * セッション単位Sleeptime
 * 最終QA
 * JSONL出力
+
+### 実装状況
+
+* 公式スキーマ互換の合成Fixture（1会話・2セッション・5カテゴリQA）を追加
+* typed DTOとparserを追加。公式日時形式、数値/null answer、画像caption、
+  question ID補完、具体的な入力エラーへ対応
+* run ID単位のWorkspaceを追加。本番instances tree配下への出力を拒否し、
+  既存runは`clean=True`指定時のみ削除
+* `speaker_a=user` / `speaker_b=assistant`のReplayAdapterを追加し、元日時と
+  LoCoMo metaを`save_single_turn()`経由で保存
+* 2セッションそれぞれでStage 1/2を同期実行し、Knowledge Card、Digest、
+  前後スナップショットを保存
+* 最終QAを`ButlyRuntime.chat()`で実行。RAG有効、Google/Web検索無効、
+  Traceを質問単位で保存
+* `replay_log.jsonl` / `sleeptime_log.jsonl` / `qa_results.jsonl`、
+  `dataset_manifest.json` / `environment.json`を出力
+* Fake Providerによる外部API不要の縦断テストを含む21件を追加
+* `./scripts/check_before_push.sh`完了。1149件成功、integration 7件除外、
+  dependency check正常
 
 ### 完了条件
 
@@ -978,6 +1009,10 @@ QAへの回答自体が次のQA用記憶へ保存されると、後続質問へ�
 * QAを順番に実行するが、評価質問をSleeptimeへ含めない
 
 推奨は、最終Replay完了時点のWorkspaceをQAごとに複製し、各質問を独立評価する方式である。
+
+Phase 2では既定を1問とする。`question_limit > 1`の場合は順次実行し、
+QAターンをSleeptimeへ投入しないが、先行QAはshort-termに残る。
+QAごとのWorkspace複製はcheckpoint/resumeと合わせて後続Phaseで実装する。
 
 ### 15.9 データセットのライセンス
 
