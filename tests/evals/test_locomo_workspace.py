@@ -1,6 +1,5 @@
 """Isolation guarantees for LoCoMo evaluation workspaces."""
 
-from pathlib import Path
 
 import pytest
 

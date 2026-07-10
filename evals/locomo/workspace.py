@@ -103,6 +103,46 @@ class EvaluationWorkspace:
         )
         return workspace
 
+    @classmethod
+    def open(cls, run_dir: Path) -> "EvaluationWorkspace":
+        """Reattach to an existing run directory (used by resume/score)."""
+        run_path = Path(run_dir).resolve()
+        config_path = run_path / "run_config.json"
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            raise WorkspaceError(
+                f"Not an evaluation run directory (run_config.json missing or "
+                f"unreadable): {run_path}"
+            ) from exc
+        run_id = config.get("run_id") if isinstance(config, dict) else None
+        if not run_id:
+            raise WorkspaceError(f"run_config.json has no run_id: {config_path}")
+
+        data_dir = run_path / "workspace"
+        instances_dir = data_dir / "butly_core" / "instances"
+        _assert_isolated(instances_dir)
+        workspace = cls(
+            run_id=str(run_id),
+            run_dir=run_path,
+            data_dir=data_dir,
+            instances_dir=instances_dir,
+            results_dir=run_path / "results",
+            traces_dir=run_path / "traces",
+            snapshots_dir=run_path / "snapshots",
+            checkpoints_dir=run_path / "checkpoints",
+            run_config_path=config_path,
+        )
+        for directory in (
+            workspace.instances_dir,
+            workspace.results_dir,
+            workspace.traces_dir,
+            workspace.snapshots_dir,
+            workspace.checkpoints_dir,
+        ):
+            directory.mkdir(parents=True, exist_ok=True)
+        return workspace
+
     def create_runtime(self):
         """Build a ButlyRuntime wired only to this run's data directory."""
         from butly_core.runtime import ButlyRuntime

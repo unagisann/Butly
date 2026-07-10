@@ -1,10 +1,11 @@
-"""Orchestrate the Phase 2 LoCoMo replay, Sleeptime, and minimum QA flow."""
+"""Orchestrate the LoCoMo replay, Sleeptime, and QA flow with checkpoints."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import json
 import platform
 from pathlib import Path
 import re
@@ -12,7 +13,13 @@ from typing import Optional
 
 from .adapter import ReplayAdapter
 from .artifacts import append_jsonl, snapshot_instance, write_json
-from .config import ReplayConfig
+from .checkpoint import (
+    STATUS_COMPLETED,
+    STATUS_QA,
+    STATUS_REPLAYING,
+    Checkpoint,
+)
+from .config import ReplayConfig, load_profile
 from .dataset import LocomoConversation, load_dataset
 from .qa_runner import QARunner
 from .sleeptime_runner import SleeptimeRunner
@@ -29,7 +36,7 @@ class EvaluationRunResult:
 
 
 async def run_evaluation(config: ReplayConfig) -> EvaluationRunResult:
-    """Run the Phase 2 pipeline without importing any HTTP or UI layer."""
+    """Start a fresh run without importing any HTTP or UI layer."""
     conversations = _select_conversations(load_dataset(config.dataset_path), config)
     workspace = EvaluationWorkspace.create(
         config.output_dir,
@@ -38,7 +45,33 @@ async def run_evaluation(config: ReplayConfig) -> EvaluationRunResult:
     )
     workspace.assert_isolated()
     _write_run_metadata(workspace, config, conversations)
+    checkpoint = Checkpoint.create(workspace.run_id, workspace.checkpoints_dir)
+    return await _execute(workspace, config, conversations, checkpoint)
 
+
+async def resume_evaluation(run_dir: Path) -> EvaluationRunResult:
+    """Continue an interrupted run from its checkpoint without re-ingesting."""
+    workspace = EvaluationWorkspace.open(run_dir)
+    run_config = json.loads(
+        workspace.run_config_path.read_text(encoding="utf-8")
+    )
+    config = ReplayConfig.from_json_dict(run_config)
+    conversations = _select_conversations(load_dataset(config.dataset_path), config)
+    checkpoint = Checkpoint.load(workspace.run_id, workspace.checkpoints_dir)
+    return await _execute(workspace, config, conversations, checkpoint)
+
+
+async def _execute(
+    workspace: EvaluationWorkspace,
+    config: ReplayConfig,
+    conversations: list[LocomoConversation],
+    checkpoint: Checkpoint,
+) -> EvaluationRunResult:
+    profile = (
+        load_profile(config.profile_path)
+        if config.profile_path is not None
+        else None
+    )
     runtime = workspace.create_runtime()
     sleeptime_runner = SleeptimeRunner(
         workspace.create_sleeptime(),
@@ -58,48 +91,29 @@ async def run_evaluation(config: ReplayConfig) -> EvaluationRunResult:
     for conversation in conversations:
         instance_name = _instance_name(conversation.sample_id)
         instance_names.append(instance_name)
-        _create_instance(runtime, conversation, instance_name, config)
+        progress = checkpoint.progress_for(conversation.sample_id, instance_name)
+        if not (workspace.instances_dir / instance_name).exists():
+            _create_instance(runtime, conversation, instance_name, config, profile)
         components = runtime.get_instance_components(instance_name)
         adapter = ReplayAdapter(components["memory"], conversation)
 
         sessions = conversation.sessions[: config.session_limit]
         for session in sessions:
-            try:
-                saved_turns = adapter.replay_session(session)
-                replay_record = {
-                    "run_id": workspace.run_id,
-                    "sample_id": conversation.sample_id,
-                    "instance_name": instance_name,
-                    "session_id": session.session_id,
-                    "session_timestamp": session.timestamp.isoformat(),
-                    "source_turn_count": len(session.turns),
-                    "saved_turn_count": len(saved_turns),
-                    "saved_files": [item.file_name for item in saved_turns],
-                    "dialog_ids": [
-                        dialog_id
-                        for item in saved_turns
-                        for dialog_id in item.dialog_ids
-                    ],
-                    "speaker_roles": adapter.speaker_roles,
-                    "status": "succeeded",
-                    "error": None,
-                }
-                append_jsonl(
-                    workspace.results_dir / "replay_log.jsonl", replay_record
+            if session.session_id in progress.sleeptime_completed:
+                continue
+            checkpoint.status = STATUS_REPLAYING
+
+            if session.session_id not in progress.replayed_sessions:
+                _discard_partial_session(
+                    workspace.instances_dir / instance_name,
+                    conversation.sample_id,
+                    session.session_id,
                 )
-            except Exception as exc:
-                append_jsonl(
-                    workspace.results_dir / "replay_log.jsonl",
-                    {
-                        "run_id": workspace.run_id,
-                        "sample_id": conversation.sample_id,
-                        "instance_name": instance_name,
-                        "session_id": session.session_id,
-                        "status": "failed",
-                        "error": f"{type(exc).__name__}: {exc}",
-                    },
+                _replay_session_logged(
+                    workspace, conversation, instance_name, session, adapter
                 )
-                raise
+                progress.replayed_sessions.append(session.session_id)
+                checkpoint.save()
 
             snapshot_root = (
                 workspace.snapshots_dir / instance_name / session.session_id
@@ -117,16 +131,28 @@ async def run_evaluation(config: ReplayConfig) -> EvaluationRunResult:
                 workspace.instances_dir / instance_name,
                 snapshot_root / "after_sleeptime",
             )
+            progress.sleeptime_completed.append(session.session_id)
+            checkpoint.save()
             replayed_sessions += 1
 
-        for question in conversation.questions[: config.question_limit]:
+        questions = conversation.questions[: config.question_limit]
+        if len(questions) > progress.qa_completed:
+            checkpoint.status = STATUS_QA
+            checkpoint.save()
+        for index, question in enumerate(questions):
+            if index < progress.qa_completed:
+                continue
             await qa_runner.run(
                 sample_id=conversation.sample_id,
                 instance_name=instance_name,
                 question=question,
             )
+            progress.qa_completed = index + 1
+            checkpoint.save()
             answered_questions += 1
 
+    checkpoint.status = STATUS_COMPLETED
+    checkpoint.save()
     return EvaluationRunResult(
         workspace=workspace,
         sample_ids=[conversation.sample_id for conversation in conversations],
@@ -134,6 +160,79 @@ async def run_evaluation(config: ReplayConfig) -> EvaluationRunResult:
         replayed_sessions=replayed_sessions,
         answered_questions=answered_questions,
     )
+
+
+def _replay_session_logged(
+    workspace: EvaluationWorkspace,
+    conversation: LocomoConversation,
+    instance_name: str,
+    session,
+    adapter: ReplayAdapter,
+) -> None:
+    log_path = workspace.results_dir / "replay_log.jsonl"
+    try:
+        saved_turns = adapter.replay_session(session)
+        append_jsonl(
+            log_path,
+            {
+                "run_id": workspace.run_id,
+                "sample_id": conversation.sample_id,
+                "instance_name": instance_name,
+                "session_id": session.session_id,
+                "session_timestamp": session.timestamp.isoformat(),
+                "source_turn_count": len(session.turns),
+                "saved_turn_count": len(saved_turns),
+                "saved_files": [item.file_name for item in saved_turns],
+                "dialog_ids": [
+                    dialog_id
+                    for item in saved_turns
+                    for dialog_id in item.dialog_ids
+                ],
+                "speaker_roles": adapter.speaker_roles,
+                "status": "succeeded",
+                "error": None,
+            },
+        )
+    except Exception as exc:
+        append_jsonl(
+            log_path,
+            {
+                "run_id": workspace.run_id,
+                "sample_id": conversation.sample_id,
+                "instance_name": instance_name,
+                "session_id": session.session_id,
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+        raise
+
+
+def _discard_partial_session(
+    instance_dir: Path,
+    sample_id: str,
+    session_id: str,
+) -> None:
+    """Drop short-term turns left behind by an interrupted session replay.
+
+    Sessions are checkpointed only after every turn is saved, so any file
+    carrying this session's metadata belongs to an incomplete attempt and
+    would be double-ingested by the rerun.
+    """
+    short_term_dir = instance_dir / "short_term_json"
+    if not short_term_dir.is_dir():
+        return
+    for turn_file in short_term_dir.glob("session_*.json"):
+        try:
+            payload = json.loads(turn_file.read_text(encoding="utf-8"))
+            meta = payload.get("messages", [{}])[0].get("meta", {})
+        except (json.JSONDecodeError, OSError, IndexError, AttributeError):
+            continue
+        if (
+            meta.get("locomo_sample_id") == sample_id
+            and meta.get("locomo_session_id") == session_id
+        ):
+            turn_file.unlink()
 
 
 def _select_conversations(
@@ -155,7 +254,13 @@ def _select_conversations(
     return selected
 
 
-def _create_instance(runtime, conversation, instance_name, config) -> None:
+def _create_instance(
+    runtime,
+    conversation,
+    instance_name,
+    config,
+    profile: Optional[dict] = None,
+) -> None:
     template = (
         f"You are {conversation.speaker_b}, a conversational companion. "
         "Answer evaluation questions from the memories available to you. "
@@ -185,6 +290,9 @@ def _create_instance(runtime, conversation, instance_name, config) -> None:
             "knowledge_maturation": False,
         }
     )
+    if profile:
+        for section, overrides in profile.items():
+            instance_config.setdefault(section, {}).update(overrides)
     if config.model_name is not None:
         instance_config.setdefault("chat", {})["model_name"] = config.model_name
     if config.connection is not None:

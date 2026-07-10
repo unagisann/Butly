@@ -1,6 +1,6 @@
 # LoCoMoを用いたButly長期会話記憶評価基盤 実装計画書
 
-> **ステータス: 実装中（Phase 2 実装済み）**
+> **ステータス: 実装済み（Phase 1〜4 完了、Phase 5 実データ試験のみ未実施）**
 > **主な実行環境: Google Colab Pro**
 > **設計方針: 評価ロジックは環境非依存のCLIとして実装し、Colabは薄い実行フロントエンドとして扱う**
 > **対象リポジトリ: Butly**
@@ -823,11 +823,35 @@ Butly側から既存のOpenAI互換Connectionとして利用できる方式を�
 
 ## Phase 3: 採点とレポート
 
+**実装済み（2026-07-11）**
+
 * F1／EM／No-information採点
 * カテゴリ別集計
 * Butly固有指標
 * Markdownサマリー
 * エラー一覧
+
+### 実装状況
+
+* `scorer.py`: 公式評価と同じ正規化（カンマ除去・小文字化・句読点除去・
+  a/an/the/and除去）とPorter stemming後のToken F1。カテゴリ1はカンマ区切り
+  複数回答の平均max F1、カテゴリ3はセミコロン以前のみ採点、カテゴリ5は
+  「no information available」「not mentioned」の判定。EM／containmentは
+  補助指標として別フィールドに保存
+* `stemming.py`: nltk非依存のPorter (1980) 実装。nltk拡張との稀な差分は
+  docstringと`scores.json`の`stemming`フィールドに明記
+* Butly固有指標: RAG発火率（正解時／不正解時の内訳つき）、取得カード数、
+  レイテンシ mean/p50/p95、tier・need_intent分布、Sleeptime生成カード数・
+  失敗数、evidence取得率（データセット指定時のみのトークン重複
+  ヒューリスティック）
+* `report.py`: `scores.json`から`summary.md`を生成（カテゴリ別表、低スコア
+  質問一覧、ライセンス表記）。`errors.jsonl`はreplay/sleeptime/qaログの
+  失敗行を集約
+* CLI: `run`は採点・レポートまで一括実行（`--skip-scoring`で無効化）。
+  `score` / `report`で再実行可能
+* `sleeptime_runner.py`が参照していた`ButlySleeptime`のprivateメソッドは
+  `get_instance_config()` / `should_update()`としてpublic化し、本体・
+  既存テスト含め全呼び出し元を更新
 
 ### 完了条件
 
@@ -838,6 +862,8 @@ Butly側から既存のOpenAI互換Connectionとして利用できる方式を�
 
 ## Phase 4: Colab Notebook
 
+**実装済み（2026-07-11、Colab実機での手順確認は未実施）**
+
 * Driveマウント
 * セットアップ
 * モデルサーバー起動
@@ -845,9 +871,27 @@ Butly側から既存のOpenAI互換Connectionとして利用できる方式を�
 * 再開
 * 結果表示
 
+### 実装状況
+
+* `checkpoint.py`: セッション完了・Sleeptime完了・QA 1問ごとにatomic write
+  で保存。run ID照合と破損検出つき。途中中断されたセッションはmetaの
+  `locomo_sample_id` / `locomo_session_id`一致でshort-termから破棄して
+  全体を再投入するため、二重投入は発生しない
+* `replay.py`に`resume_evaluation(run_dir)`を追加。`run_config.json`から
+  `ReplayConfig`を復元し、checkpointの続きから実行（resume時は`clean`を
+  常に無効化）
+* CLI `resume --run-dir`を追加。QA書き込みとcheckpoint更新の間で落ちた
+  場合の重複レコードは採点時にquestion_id単位で最新を採用
+* `--profile <yaml>`対応: chat/gatekeeper/summary/knowledge/embeddingの
+  ロール別セクションを評価インスタンスconfigへ適用。
+  `profiles/full_local.example.yaml` / `fixed_memory_models.example.yaml`を同梱
+* `colab/butly_locomo_eval.ipynb`: Driveマウント→clone→依存インストール→
+  HFトークン→llama.cppサーバー起動→`colab_local` Connection登録→CLI実行→
+  resume→summary表示のみ。評価ロジックはNotebookに置かない
+
 ### 完了条件
 
-* 新規Colabランタイムから手順どおり実行できる
+* 新規Colabランタイムから手順どおり実行できる（※実機確認はPhase 5で実施）
 * ランタイム切断後にDrive上のチェックポイントから再開できる
 * Notebook固有コードが評価ロジックへ混入していない
 
@@ -1012,7 +1056,8 @@ QAへの回答自体が次のQA用記憶へ保存されると、後続質問へ�
 
 Phase 2では既定を1問とする。`question_limit > 1`の場合は順次実行し、
 QAターンをSleeptimeへ投入しないが、先行QAはshort-termに残る。
-QAごとのWorkspace複製はcheckpoint/resumeと合わせて後続Phaseで実装する。
+checkpoint/resumeはPhase 4で実装済み。QAごとのWorkspace複製のみ引き続き
+後続Phaseへ先送りする。
 
 ### 15.9 データセットのライセンス
 

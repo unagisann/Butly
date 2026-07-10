@@ -17,7 +17,7 @@
 | `migrate_embeddings.py` | プロバイダー切り替え時の embedding 再生成ユーティリティ |
 | `butly_api/` | 正式フロントエンド向け `/api/v1` transport 層（app factory / schemas / error contract） |
 | `openapi/butly.openapi.json` | `/api/v1` の OpenAPI 3.1 snapshot（`scripts/generate_openapi.py` で生成） |
-| `evals/locomo/` | LoCoMo長期記憶評価CLI。正式APIへ混入せず、隔離Workspace上でReplay → Sleeptime → QA → 成果物保存を実行 |
+| `evals/locomo/` | LoCoMo長期記憶評価CLI。正式APIへ混入せず、checkpoint付き隔離Workspace上でReplay → Sleeptime → QA → 公式互換採点・レポートまで実行 |
 
 ---
 
@@ -105,12 +105,16 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | `adapter.py` | `speaker_a=user` / `speaker_b=assistant`変換と元日時・evidence追跡用meta付き保存 |
 | `sleeptime_runner.py` | Stage 1/2の同期実行と`results/sleeptime_log.jsonl`記録 |
 | `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、QA結果とTraceを保存 |
-| `replay.py` | Fixture読込からセッションReplay、Sleeptime、最終QAまでのオーケストレーション |
+| `replay.py` | セッションReplay、Sleeptime、QA、checkpoint更新のオーケストレーション。`resume_evaluation()`で途中再開 |
 | `artifacts.py` | JSON/JSONL、Traceコピー、セッション前後スナップショットの保存 |
-| `config.py` | Phase 2 CLI設定DTO |
-| `cli.py` | `python -m evals.locomo.cli run ...` entrypoint |
-
-Phase 2では採点、checkpoint/resume、report、Colab Notebookは未実装。
+| `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。`scores.json` / `errors.jsonl`出力 |
+| `stemming.py` | 依存追加なしのPorter (1980) stemmer。公式のnltk stemmerと稀な語で差が出る旨をdocstringに明記 |
+| `report.py` | `scores.json`から`summary.md`を生成 |
+| `checkpoint.py` | セッション/Sleeptime/QA単位のatomicなcheckpoint。run ID照合と破損検出つき |
+| `config.py` | CLI設定DTO（`from_json_dict()`でresume時復元）とprofile YAML読込 |
+| `cli.py` | `run` / `resume` / `score` / `report` subcommands。`run`は採点・レポートまで実行 |
+| `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`） |
+| `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook（評価ロジック禁止） |
 
 ---
 

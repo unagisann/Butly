@@ -1,0 +1,25 @@
+# Full Local Profile — one local LLM serves every Butly role.
+# Copy to full_local.yaml, then point the connection at your local server
+# (define it in user_config.json LLM_CONNECTIONS, protocol: openai_compat).
+# Question answered by this profile: "can this model run all of Butly?"
+name: full_local
+
+chat:
+  connection: colab_local
+  model_name: qwen3-14b
+
+gatekeeper:
+  connection: colab_local
+  model_name: qwen3-14b
+
+summary:
+  connection: colab_local
+  model_name: qwen3-14b
+
+knowledge:
+  connection: colab_local
+  model_name: qwen3-14b
+
+embedding:
+  connection: colab_local
+  model_name: nomic-embed-text

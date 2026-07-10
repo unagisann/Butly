@@ -19,7 +19,7 @@ This document gives an overview of every file and module in the repository. For 
 | `dependencies.py` | Cross-router singletons (`InstanceManager`, `Gatekeeper`, `MemoryBlockBuilder`, `instance_store`) and `get_instance_components()` lazy factory. |
 | `sleeptime.py` | Daily / weekly memory consolidation. Runnable standalone (`python sleeptime.py`) or via HTTP API. `ButlySleeptime(base_dir=None, instances_dir=None)` supports isolated storage for evaluation while preserving the existing default paths. |
 | `migrate_embeddings.py` | Regenerates `embedding_blob` after provider switch. CLI: `--instance` / `--batch-size` / `--dry-run` / `--all`. |
-| `evals/locomo/` | Environment-independent LoCoMo replay CLI. Runs Replay → synchronous Sleeptime → Runtime QA in an isolated workspace without adding production API routes. |
+| `evals/locomo/` | Environment-independent LoCoMo evaluation CLI. Runs Replay → synchronous Sleeptime → Runtime QA → official-compatible scoring/reporting in an isolated, checkpointed workspace without adding production API routes. |
 | `dependencies.py` / `discovery_agent.py` / `news_agent.py` | Dashboard helpers (network discovery, news feed). |
 
 ---
@@ -36,12 +36,22 @@ instances tree. The bundled mini fixture is synthetic.
 - `adapter.py` — ordered speaker-role conversion with source timestamp/meta retention.
 - `sleeptime_runner.py` — synchronous Stage 1/2 execution and structured JSONL log.
 - `qa_runner.py` — Runtime QA with RAG on, external search off, plus Trace capture.
-- `replay.py` — Phase 2 orchestration.
+- `replay.py` — replay/Sleeptime/QA orchestration with checkpoint updates and
+  `resume_evaluation()`.
 - `artifacts.py` — JSON/JSONL, Trace copies, and before/after snapshots.
-- `config.py`, `cli.py` — typed CLI configuration and `run` entry point.
-
-Scoring, checkpoint/resume, reporting, and Colab support remain deferred after
-Phase 2.
+- `scorer.py` — official-compatible scoring (normalized + stemmed token F1,
+  per-category rules, no-information detection) plus Butly-specific metrics;
+  writes `scores.json` and `errors.jsonl`.
+- `stemming.py` — dependency-free Porter (1980) stemmer; rare words may differ
+  from the official nltk stemmer.
+- `report.py` — renders `summary.md` from `scores.json`.
+- `checkpoint.py` — atomic per-session/Sleeptime/QA checkpoints with run-id
+  validation and corruption detection.
+- `config.py`, `cli.py` — typed CLI configuration (rebuildable from
+  `run_config.json` for resume), profile YAML loading, and the `run` /
+  `resume` / `score` / `report` subcommands (`run` scores and reports too).
+- `profiles/` — Full Local and Fixed Memory Pipeline example profiles.
+- `colab/` — thin notebook limited to Drive, model-server, and CLI calls.
 
 ---
 

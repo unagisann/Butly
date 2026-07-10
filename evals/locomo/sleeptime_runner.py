@@ -92,8 +92,8 @@ class SleeptimeRunner:
         try:
             self.sleeptime.stage_1_cleanup(instance_name)
             stage_1_success = True
-            instance_config = self.sleeptime._get_instance_config(instance_name)
-            if self.sleeptime._should_update(instance_config, "knowledge_cards"):
+            instance_config = self.sleeptime.get_instance_config(instance_name)
+            if self.sleeptime.should_update(instance_config, "knowledge_cards"):
                 self.sleeptime.stage_2_knowledgeize(instance_name, instance_name)
                 stage_2_success = True
                 stage_2_status = "succeeded"
