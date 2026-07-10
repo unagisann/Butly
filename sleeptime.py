@@ -7,6 +7,7 @@ import re
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
+from typing import Optional
 from dotenv import load_dotenv
 import numpy as np
 
@@ -28,19 +29,27 @@ BASE_DIR = Path(__file__).resolve().parent
 INSTANCES_DIR = BASE_DIR / "butly_core" / "instances"
 
 class ButlySleeptime:
-    def __init__(self):
+    def __init__(
+        self,
+        base_dir: Optional[Path] = None,
+        instances_dir: Optional[Path] = None,
+    ):
+        self.base_dir = Path(base_dir) if base_dir is not None else BASE_DIR
+        self.instances_dir = (
+            Path(instances_dir)
+            if instances_dir is not None
+            else self.base_dir / "butly_core" / "instances"
+        )
+
         # Configからナレッジモデル設定を使用
         self.k_conf = AI_CONFIG["knowledge"]
         
         # 根幹情報の読み込み (グローバルデフォルト)
-        sys_inst_path = BASE_DIR / SYSTEM_CONFIG["paths"]["system_instruction"]
-        key_mem_path = BASE_DIR / SYSTEM_CONFIG["paths"]["key_memory"]
+        sys_inst_path = self.base_dir / SYSTEM_CONFIG["paths"]["system_instruction"]
+        key_mem_path = self.base_dir / SYSTEM_CONFIG["paths"]["key_memory"]
         
         self.instruction = sys_inst_path.read_text(encoding="utf-8") if sys_inst_path.exists() else "有能な執事"
         self.key_memory = key_mem_path.read_text(encoding="utf-8") if key_mem_path.exists() else "根幹記憶なし"
-        
-        # インスタンスディレクトリのベースパス
-        self.instances_dir = BASE_DIR / "butly_core" / "instances"
 
     def get_instance_key_memory(self, instance_name=None):
         """インスタンス別の Key_Memory を取得（YAML → TXT → グローバル フォールバック）"""
@@ -292,7 +301,7 @@ class ButlySleeptime:
             conn.close()
 
     def run(self):
-        for instance_path in sorted(INSTANCES_DIR.iterdir()):
+        for instance_path in sorted(self.instances_dir.iterdir()):
             if instance_path.is_dir():
                 self.process_instance(instance_path)
 
@@ -324,7 +333,7 @@ class ButlySleeptime:
         floating_summary をクリアする。
         mid_term.txt への追記は廃止（RAW は JSON 正本から直接読み込み）。
         """
-        instance_path = INSTANCES_DIR / instance_name
+        instance_path = self.instances_dir / instance_name
         integrated_dir = instance_path / "memory_archive" / "1_integrated"
         
         legacy_floating_file = instance_path / "floating_summary.txt"
@@ -502,7 +511,7 @@ class ButlySleeptime:
             return
         try:
             from butly_core.external.person_registry import PersonRegistry
-            PersonRegistry(BASE_DIR).record_appearances(appearances)
+            PersonRegistry(self.base_dir).record_appearances(appearances)
             print(f"[Sleeptime] Person appearances recorded: {len(appearances)} person(s)")
         except Exception as e:
             print(f"[Sleeptime] Person appearance recording error: {e}")
@@ -938,7 +947,7 @@ class ButlySleeptime:
         from butly_core.prompts import PromptLoader
 
         instance_name = instance_path.name
-        instance_db_path = str(INSTANCES_DIR / instance_name / "butly_memory.db")
+        instance_db_path = str(self.instances_dir / instance_name / "butly_memory.db")
         if not Path(instance_db_path).exists():
             print(f"[Stage3] DB not found, skipping: {instance_db_path}")
             return
@@ -1144,14 +1153,16 @@ class ButlySleeptime:
         保存先: butly_core/db_backups/
         世代数: Config参照
         """
-        backup_dir = BASE_DIR / "butly_core" / SYSTEM_CONFIG["backup"]["dir_name"]
+        backup_dir = (
+            self.base_dir / "butly_core" / SYSTEM_CONFIG["backup"]["dir_name"]
+        )
         backup_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_file = backup_dir / f"{instance_name}_butly_memory_{timestamp}.db"
         
         try:
-            instance_db_path = INSTANCES_DIR / instance_name / "butly_memory.db"
+            instance_db_path = self.instances_dir / instance_name / "butly_memory.db"
             # Copy DB file
             if instance_db_path.exists():
                 shutil.copy2(instance_db_path, backup_file)
@@ -1177,14 +1188,14 @@ class ButlySleeptime:
         """
         print(f"--- Stage 2: Knowledgeize (RAW) for {target_instance} ({db_type}) ---")
 
-        instance_dir = INSTANCES_DIR / target_instance
+        instance_dir = self.instances_dir / target_instance
         integrated_dir = instance_dir / "memory_archive" / "1_integrated"
         # 修正: 情報純度維持のため RAW JSON を保管する先
         knowledgeized_root = instance_dir / "memory_archive" / "2_knowledgeized"
         knowledgeized_root.mkdir(parents=True, exist_ok=True)
 
         # DB migration 保証: 直接 sqlite3.connect する前に ButlyDatabase で初期化する
-        instance_db_path = str(INSTANCES_DIR / target_instance / "butly_memory.db")
+        instance_db_path = str(self.instances_dir / target_instance / "butly_memory.db")
         from butly_core.core.database import ButlyDatabase as _ButlyDB
         _ButlyDB(db_path=instance_db_path)
 
@@ -1231,7 +1242,9 @@ class ButlySleeptime:
             # 時系列順にソート
             items.sort(key=lambda x: x[1].get("timestamp", ""))
             
-            instance_db_path = str(INSTANCES_DIR / target_instance / "butly_memory.db")
+            instance_db_path = str(
+                self.instances_dir / target_instance / "butly_memory.db"
+            )
             _agent_name = self.get_instance_agent_name(db_type)
             _user_name = self.get_instance_user_name(db_type)
 

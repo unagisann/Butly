@@ -65,6 +65,7 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 
 **主要クラス・関数**
 - `ButlySleeptime` — 整理処理の本体クラス
+  - `ButlySleeptime(base_dir=None, instances_dir=None)` — 既定は従来のプロジェクトパス。評価・テストでは全Stage、DBバックアップ、人物統計の保存先を隔離パスへ差し替え可能
   - `get_instance_key_memory(instance_name)` — インスタンス別 Key_Memory 取得
   - `get_instance_instruction(instance_name)` — インスタンス別 system_instruction 取得
   - `process_instance(instance_path)` — Stage 1 → Stage 2 の順に実行（`skip_knowledge_generation` による Stage 2 スキップ対応）
@@ -278,7 +279,7 @@ AIアシスタントのコアエンジン群。
   - `get_mid_term_relationship()` — mid_term_relationship.txt（関係性グラフ）を返す
   - `get_session_digest()` — `session_digests/*.txt` を相対時刻ヘッダー（例: `--- 約30分前 ---`）付きで結合して返す。旧 `session_digest.txt` も互換読み取り
   - `load_recent_sessions(limit)` — short_term_json から直近 N 件の会話を返す
-  - `save_single_turn(user_msg, ai_msg, meta=None)` — 会話を short_term_json に保存。`meta`（話者帰属: person_id / display_name / lane / source / channel_key）指定時は user メッセージに構造化メタデータとして刻む
+  - `save_single_turn(user_msg, ai_msg, meta=None, created_at=None)` — 会話を short_term_json に保存。`meta`（話者帰属: person_id / display_name / lane / source / channel_key）指定時は user メッセージに構造化メタデータとして刻む。`created_at` 指定時は元日時を保持し、同一日時の重複は連番ファイル名で上書きを防ぐ
   - `get_last_interaction_time()` — 最後のインタラクション日時を返す
   - `maintain_memory(brain)` — short_term が閾値超えたら session_digest に折りたたむ。溢れバッチに複数話者がいる場合は user 発言を `「display_name」` でラベリング
 - ヘルパー関数:

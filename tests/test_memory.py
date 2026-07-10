@@ -123,6 +123,48 @@ class TestShortTermSaveLoad:
         assert filename is not None
         assert filename.endswith(".json")
 
+    def test_save_single_turn_uses_injected_created_at(self, memory_manager):
+        """指定日時がファイル名と JSON timestamp の両方に反映される"""
+        created_at = datetime(2023, 5, 8, 13, 56, 0, 123456)
+
+        filename = memory_manager.save_single_turn(
+            "過去の質問",
+            "過去の回答",
+            created_at=created_at,
+        )
+
+        assert filename == "session_20230508_135600_123456.json"
+        saved = json.loads(
+            (memory_manager.short_term_json_dir / filename).read_text(encoding="utf-8")
+        )
+        assert saved["timestamp"] == "2023-05-08T13:56:00.123456"
+
+    def test_save_single_turn_avoids_injected_datetime_collision(
+        self, memory_manager
+    ):
+        """同じ指定日時を再利用しても既存ターンを上書きしない"""
+        created_at = datetime(2023, 5, 8, 13, 56, 0)
+
+        first = memory_manager.save_single_turn(
+            "最初の質問",
+            "最初の回答",
+            created_at=created_at,
+        )
+        second = memory_manager.save_single_turn(
+            "次の質問",
+            "次の回答",
+            created_at=created_at,
+        )
+
+        assert first == "session_20230508_135600_000000.json"
+        assert second == "session_20230508_135600_000000_001.json"
+        assert len(list(memory_manager.short_term_json_dir.glob("*.json"))) == 2
+
+        second_data = json.loads(
+            (memory_manager.short_term_json_dir / second).read_text(encoding="utf-8")
+        )
+        assert second_data["timestamp"] == "2023-05-08T13:56:00"
+
     def test_saved_turn_loadable(self, memory_manager):
         """保存したターンが load_recent_sessions で読み込める"""
         memory_manager.save_single_turn("質問1", "回答1")
@@ -196,6 +238,5 @@ class TestSessionDigest:
         text = memory_manager.get_session_digest()
 
         assert "新形式要約テスト" in text
-
 
 
