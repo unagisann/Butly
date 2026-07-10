@@ -1,0 +1,165 @@
+"""Render scores.json into a human-readable Markdown run summary."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Optional
+
+from butly_core.io_utils import atomic_write_text
+
+
+WORST_QUESTION_LIMIT = 10
+
+
+class ReportError(ValueError):
+    """Raised when the artifacts needed for a report are missing."""
+
+
+def write_report(run_dir: Path) -> Path:
+    """Write summary.md from a previously scored run and return its path."""
+    run_path = Path(run_dir)
+    scores = _read_json(run_path / "scores.json")
+    if scores is None:
+        raise ReportError(
+            f"scores.json not found under {run_path}; run the score command first"
+        )
+    run_config = _read_json(run_path / "run_config.json") or {}
+    error_count = _count_lines(run_path / "errors.jsonl")
+
+    summary_path = run_path / "summary.md"
+    atomic_write_text(summary_path, _render(scores, run_config, error_count))
+    return summary_path
+
+
+def _render(scores: dict, run_config: dict, error_count: int) -> str:
+    official = scores.get("official", {})
+    auxiliary = scores.get("auxiliary", {})
+    butly = scores.get("butly", {})
+    questions = scores.get("questions", [])
+
+    lines = [
+        f"# LoCoMo Evaluation Summary — {scores.get('run_id', 'unknown')}",
+        "",
+        f"- Generated: {scores.get('generated_at', 'unknown')}",
+        f"- Questions scored: {scores.get('question_count', 0)}",
+        f"- Dataset: {run_config.get('dataset_path', 'unknown')}",
+        f"- Chat model: {run_config.get('model_name') or 'default'}"
+        f" (connection: {run_config.get('connection') or 'default'})",
+        f"- Errors recorded: {error_count} (see errors.jsonl)",
+        "",
+        "## Official-compatible scores",
+        "",
+        f"- Overall score: {_fmt(official.get('overall'))}",
+        f"- No-information accuracy (category 5): "
+        f"{_fmt(official.get('no_information_accuracy'))}",
+        "",
+        "| Category | Score | Questions |",
+        "| --- | --- | --- |",
+    ]
+    category_labels = {
+        "1": "1 (multi-answer)",
+        "2": "2 (single-hop)",
+        "3": "3 (temporal)",
+        "4": "4 (open-domain)",
+        "5": "5 (adversarial)",
+    }
+    for category, entry in sorted(official.get("by_category", {}).items()):
+        label = category_labels.get(category, category)
+        lines.append(
+            f"| {label} | {_fmt(entry.get('score'))} | {entry.get('count', 0)} |"
+        )
+
+    lines += [
+        "",
+        "## Auxiliary metrics (not official)",
+        "",
+        f"- Token F1 (whole answer): {_fmt(auxiliary.get('token_f1_mean'))}",
+        f"- Exact match rate: {_fmt(auxiliary.get('exact_match_rate'))}",
+        f"- Answer containment rate: "
+        f"{_fmt(auxiliary.get('answer_containment_rate'))}",
+        "",
+        "## Butly metrics",
+        "",
+        f"- RAG trigger rate: {_fmt(butly.get('rag_trigger_rate'))}",
+        f"- RAG trigger rate when correct / incorrect: "
+        f"{_fmt(butly.get('rag_trigger_rate_when_correct'))} / "
+        f"{_fmt(butly.get('rag_trigger_rate_when_incorrect'))}",
+        f"- Evidence retrieval rate (heuristic): "
+        f"{_fmt(butly.get('evidence_retrieval_rate'))}",
+        f"- Retrieved cards per question (mean): "
+        f"{_fmt(butly.get('retrieved_cards_mean'), digits=2)}",
+        f"- Latency ms mean / p50 / p95: "
+        f"{_fmt(butly.get('latency_ms_mean'), digits=0)} / "
+        f"{_fmt(butly.get('latency_ms_p50'), digits=0)} / "
+        f"{_fmt(butly.get('latency_ms_p95'), digits=0)}",
+        f"- Gatekeeper tier distribution: "
+        f"{_fmt_distribution(butly.get('tier_distribution'))}",
+        f"- need_intent distribution: "
+        f"{_fmt_distribution(butly.get('need_intent_distribution'))}",
+        f"- Knowledge cards created by Sleeptime: "
+        f"{butly.get('knowledge_cards_created', 0)}",
+        f"- Sleeptime failures: {butly.get('sleeptime_failures', 0)}",
+    ]
+
+    worst = [
+        entry
+        for entry in sorted(questions, key=lambda item: item.get("official_score", 0))
+        if entry.get("official_score", 0) < 1.0
+    ][:WORST_QUESTION_LIMIT]
+    if worst:
+        lines += ["", "## Lowest-scoring questions", ""]
+        for entry in worst:
+            lines += [
+                f"### {entry.get('question_id')} "
+                f"(category {entry.get('category')}, "
+                f"score {_fmt(entry.get('official_score'))})",
+                "",
+                f"- Q: {entry.get('question')}",
+                f"- Expected: {entry.get('expected_answer')}",
+                f"- Predicted: {_truncate(entry.get('prediction'))}",
+                f"- RAG triggered: {entry.get('rag_triggered')}"
+                f" / retrieved cards: {entry.get('retrieved_card_count')}",
+                "",
+            ]
+
+    lines += [
+        "",
+        "---",
+        "",
+        "Scores follow the official LoCoMo evaluation "
+        "(https://github.com/snap-research/locomo, CC BY-NC 4.0); "
+        "stemming uses an original-Porter implementation, so rare words may "
+        "differ slightly from the official nltk stemmer.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _read_json(path: Path) -> Optional[dict]:
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _count_lines(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line)
+
+
+def _fmt(value: Any, digits: int = 3) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value:.{digits}f}" if digits else f"{value:.0f}"
+
+
+def _fmt_distribution(distribution: Optional[dict]) -> str:
+    if not distribution:
+        return "n/a"
+    return ", ".join(f"{key}={count}" for key, count in distribution.items())
+
+
+def _truncate(text: Any, limit: int = 300) -> str:
+    value = " ".join(str(text or "").split())
+    return value if len(value) <= limit else value[: limit - 1] + "…"

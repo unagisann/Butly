@@ -40,9 +40,10 @@ Butly の記憶システムは、会話の鮮度と重要度に応じて複数�
 
 | 項目 | 内容 |
 |---|---|
-| **場所** | `instances/{name}/short_term_json/session_YYYYMMDD_HHMMSS_ffffff.json` |
+| **場所** | `instances/{name}/short_term_json/session_YYYYMMDD_HHMMSS_ffffff[_NNN].json` |
 | **書き込み** | 毎ターン返答後、`memory.save_single_turn()` が自動実行 |
 | **形式** | `{"timestamp": "...", "messages": [{"role": "user", "parts": [...]}, {"role": "model", "parts": [...]}]}` |
+| **日時指定** | 通常チャットは現在日時。履歴インポートでは `save_single_turn(..., created_at=...)` で元日時をファイル名と `timestamp` の両方へ反映。同一日時が重複した場合は `_001` からの連番を付け、既存ファイルを上書きしない |
 | **話者帰属 meta** | 外部入口（Discord / LINE 等）のターンは user メッセージに `meta` を付与: `{"person_id": "...", "display_name": "...", "lane": "direct", "source": "discord", "channel_key": "guild:channel"}`。**meta 欠落時は owner / direct / web と解釈**（後方互換、マイグレーション不要） |
 | **上限** | `short_term_limit`（デフォルト 6 ファイル） |
 | **オーバーフロー処理** | `memory.maintain_memory()` が溢れた古いファイルをLLMで要約し、session_digests/ に保存後 1_integrated/ へ移動 |
@@ -204,6 +205,9 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 ## Sleeptime の実行フロー詳細
 
 Sleeptime は手動トリガーまたはスケジュール実行され、全インスタンスに対して以下の処理を順次実行します。
+通常運用では従来どおりプロジェクトルートを使用する。隔離実行では
+`ButlySleeptime(base_dir=..., instances_dir=...)` を指定でき、Stage 1〜3、
+DBバックアップ、人物登場集計の読み書き先が注入したパスへ統一される。
 
 ```
 ButlySleeptime.run()

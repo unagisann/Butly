@@ -17,6 +17,7 @@
 | `migrate_embeddings.py` | プロバイダー切り替え時の embedding 再生成ユーティリティ |
 | `butly_api/` | 正式フロントエンド向け `/api/v1` transport 層（app factory / schemas / error contract） |
 | `openapi/butly.openapi.json` | `/api/v1` の OpenAPI 3.1 snapshot（`scripts/generate_openapi.py` で生成） |
+| `evals/locomo/` | LoCoMo長期記憶評価CLI。正式APIへ混入せず、checkpoint付き隔離Workspace上でReplay → Sleeptime → QA → 公式互換採点・レポートまで実行 |
 
 ---
 
@@ -65,6 +66,7 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 
 **主要クラス・関数**
 - `ButlySleeptime` — 整理処理の本体クラス
+  - `ButlySleeptime(base_dir=None, instances_dir=None)` — 既定は従来のプロジェクトパス。評価・テストでは全Stage、DBバックアップ、人物統計の保存先を隔離パスへ差し替え可能
   - `get_instance_key_memory(instance_name)` — インスタンス別 Key_Memory 取得
   - `get_instance_instruction(instance_name)` — インスタンス別 system_instruction 取得
   - `process_instance(instance_path)` — Stage 1 → Stage 2 の順に実行（`skip_knowledge_generation` による Stage 2 スキップ対応）
@@ -86,6 +88,33 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 - `get_db_path(instance_name)` — インスタンスの DB パスを解決
 - `migrate_instance(instance_name, batch_size, dry_run)` — 全カードの embedding を再生成
 - CLI: `--instance` / `--batch-size` / `--dry-run` / `--all`
+
+---
+
+## evals/locomo/
+
+LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評価CLI。
+公式データは同梱せず、`tests/evals/fixtures/mini_locomo.json`には同じスキーマの
+合成データのみを置く。評価データはrun ID単位の`workspace/`へ隔離し、
+本番`butly_core/instances/`配下への出力を拒否する。
+
+| ファイル | 役割 |
+|---|---|
+| `dataset.py` | `LocomoTurn` / `LocomoSession` / `LocomoQuestion` / `LocomoConversation` DTOと公式JSON parser |
+| `workspace.py` | run ID単位の隔離ディレクトリ、`ButlyRuntime` / `ButlySleeptime`生成 |
+| `adapter.py` | `speaker_a=user` / `speaker_b=assistant`変換と元日時・evidence追跡用meta付き保存 |
+| `sleeptime_runner.py` | Stage 1/2の同期実行と`results/sleeptime_log.jsonl`記録 |
+| `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、QA結果とTraceを保存 |
+| `replay.py` | セッションReplay、Sleeptime、QA、checkpoint更新のオーケストレーション。`resume_evaluation()`で途中再開 |
+| `artifacts.py` | JSON/JSONL、Traceコピー、セッション前後スナップショットの保存 |
+| `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。`scores.json` / `errors.jsonl`出力 |
+| `stemming.py` | 依存追加なしのPorter (1980) stemmer。公式のnltk stemmerと稀な語で差が出る旨をdocstringに明記 |
+| `report.py` | `scores.json`から`summary.md`を生成 |
+| `checkpoint.py` | セッション/Sleeptime/QA単位のatomicなcheckpoint。run ID照合と破損検出つき |
+| `config.py` | CLI設定DTO（`from_json_dict()`でresume時復元）とprofile YAML読込 |
+| `cli.py` | `run` / `resume` / `score` / `report` subcommands。`run`は採点・レポートまで実行 |
+| `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`） |
+| `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook（評価ロジック禁止） |
 
 ---
 
@@ -278,7 +307,7 @@ AIアシスタントのコアエンジン群。
   - `get_mid_term_relationship()` — mid_term_relationship.txt（関係性グラフ）を返す
   - `get_session_digest()` — `session_digests/*.txt` を相対時刻ヘッダー（例: `--- 約30分前 ---`）付きで結合して返す。旧 `session_digest.txt` も互換読み取り
   - `load_recent_sessions(limit)` — short_term_json から直近 N 件の会話を返す
-  - `save_single_turn(user_msg, ai_msg, meta=None)` — 会話を short_term_json に保存。`meta`（話者帰属: person_id / display_name / lane / source / channel_key）指定時は user メッセージに構造化メタデータとして刻む
+  - `save_single_turn(user_msg, ai_msg, meta=None, created_at=None)` — 会話を short_term_json に保存。`meta`（話者帰属: person_id / display_name / lane / source / channel_key）指定時は user メッセージに構造化メタデータとして刻む。`created_at` 指定時は元日時を保持し、同一日時の重複は連番ファイル名で上書きを防ぐ
   - `get_last_interaction_time()` — 最後のインタラクション日時を返す
   - `maintain_memory(brain)` — short_term が閾値超えたら session_digest に折りたたむ。溢れバッチに複数話者がいる場合は user 発言を `「display_name」` でラベリング
 - ヘルパー関数:

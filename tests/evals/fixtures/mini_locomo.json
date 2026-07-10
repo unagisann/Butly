@@ -1,0 +1,103 @@
+[
+  {
+    "sample_id": "synthetic-conv-1",
+    "conversation": {
+      "speaker_a": "Maya",
+      "speaker_b": "Noah",
+      "session_2": [
+        {
+          "speaker": "Maya",
+          "dia_id": "D2:1",
+          "text": "My first pottery class was on April 13. I finished the blue mug and learned how to pull a handle without cracking it."
+        },
+        {
+          "speaker": "Noah",
+          "dia_id": "D2:2",
+          "text": "That is a strong start. Did you also make the herb planter you talked about?"
+        },
+        {
+          "speaker": "Maya",
+          "dia_id": "D2:3",
+          "text": "Yes. I glazed the herb planter green and gave it to my sister Lena for her kitchen window."
+        },
+        {
+          "speaker": "Noah",
+          "dia_id": "D2:4",
+          "text": "Lena will love it. The blue mug and green planter sound like a cheerful first pair of projects."
+        }
+      ],
+      "session_2_date_time": "6:45 pm on 20 May, 2024",
+      "session_1": [
+        {
+          "speaker": "Maya",
+          "dia_id": "D1:1",
+          "text": "I joined the Harbor Pottery Club last Saturday because I want a quiet hobby after work."
+        },
+        {
+          "speaker": "Noah",
+          "dia_id": "D1:2",
+          "text": "That sounds perfect for you. When does your first class begin?"
+        },
+        {
+          "speaker": "Maya",
+          "dia_id": "D1:3",
+          "text": "The first class is April 13. I plan to make a blue mug and an herb planter.",
+          "img_url": [
+            "https://example.invalid/synthetic-pottery.jpg"
+          ],
+          "blip_caption": "two unfinished clay pieces beside a small bowl of blue glaze",
+          "query": "synthetic pottery workbench"
+        },
+        {
+          "speaker": "Noah",
+          "dia_id": "D1:4",
+          "text": "A mug and planter are practical choices. Tell me how the class goes."
+        }
+      ],
+      "session_1_date_time": "10:30 am on 8 April, 2024"
+    },
+    "qa": [
+      {
+        "question": "What two pottery projects did Maya plan to make?",
+        "answer": "a blue mug, an herb planter",
+        "evidence": [
+          "D1:3"
+        ],
+        "category": 1
+      },
+      {
+        "question": "When was Maya's first pottery class?",
+        "answer": "13 April 2024",
+        "evidence": [
+          "D1:3",
+          "D2:1"
+        ],
+        "category": 2
+      },
+      {
+        "question": "Which club did Maya join, and who received her herb planter?",
+        "answer": "Harbor Pottery Club, her sister Lena",
+        "evidence": [
+          "D1:1",
+          "D2:3"
+        ],
+        "category": 3
+      },
+      {
+        "question": "What craft was Maya learning?",
+        "answer": "pottery",
+        "evidence": [
+          "D1:1",
+          "D2:1"
+        ],
+        "category": 4
+      },
+      {
+        "question": "What was the name of Maya's pottery instructor?",
+        "answer": null,
+        "evidence": [],
+        "category": 5
+      }
+    ]
+  }
+]

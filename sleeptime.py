@@ -7,6 +7,7 @@ import re
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
+from typing import Optional
 from dotenv import load_dotenv
 import numpy as np
 
@@ -28,19 +29,27 @@ BASE_DIR = Path(__file__).resolve().parent
 INSTANCES_DIR = BASE_DIR / "butly_core" / "instances"
 
 class ButlySleeptime:
-    def __init__(self):
+    def __init__(
+        self,
+        base_dir: Optional[Path] = None,
+        instances_dir: Optional[Path] = None,
+    ):
+        self.base_dir = Path(base_dir) if base_dir is not None else BASE_DIR
+        self.instances_dir = (
+            Path(instances_dir)
+            if instances_dir is not None
+            else self.base_dir / "butly_core" / "instances"
+        )
+
         # Configからナレッジモデル設定を使用
         self.k_conf = AI_CONFIG["knowledge"]
         
         # 根幹情報の読み込み (グローバルデフォルト)
-        sys_inst_path = BASE_DIR / SYSTEM_CONFIG["paths"]["system_instruction"]
-        key_mem_path = BASE_DIR / SYSTEM_CONFIG["paths"]["key_memory"]
+        sys_inst_path = self.base_dir / SYSTEM_CONFIG["paths"]["system_instruction"]
+        key_mem_path = self.base_dir / SYSTEM_CONFIG["paths"]["key_memory"]
         
         self.instruction = sys_inst_path.read_text(encoding="utf-8") if sys_inst_path.exists() else "有能な執事"
         self.key_memory = key_mem_path.read_text(encoding="utf-8") if key_mem_path.exists() else "根幹記憶なし"
-        
-        # インスタンスディレクトリのベースパス
-        self.instances_dir = BASE_DIR / "butly_core" / "instances"
 
     def get_instance_key_memory(self, instance_name=None):
         """インスタンス別の Key_Memory を取得（YAML → TXT → グローバル フォールバック）"""
@@ -101,7 +110,7 @@ class ButlySleeptime:
                     pass
         return SYSTEM_CONFIG["agent"].get("user_name", "User")
 
-    def _get_instance_config(self, instance_name: str) -> dict:
+    def get_instance_config(self, instance_name: str) -> dict:
         """インスタンスの config.json を読み込む（エラー時は空dict）"""
         if instance_name:
             config_path = self.instances_dir / instance_name / "config.json"
@@ -112,7 +121,7 @@ class ButlySleeptime:
                     pass
         return {}
 
-    def _should_update(self, inst_cfg: dict, target: str) -> bool:
+    def should_update(self, inst_cfg: dict, target: str) -> bool:
         """update_targets 設定に基づいて更新すべきかを判定する。"""
         targets = inst_cfg.get("sleeptime", {}).get("update_targets", {})
         defaults = {
@@ -179,7 +188,7 @@ class ButlySleeptime:
         try:
             from butly_core.llm.factory import ProviderFactory
             if instance_name:
-                inst_cfg = self._get_instance_config(instance_name)
+                inst_cfg = self.get_instance_config(instance_name)
                 emb_conf = self._resolve_conf(inst_cfg, "embedding")
             else:
                 emb_conf = AI_CONFIG["embedding"]
@@ -213,7 +222,7 @@ class ButlySleeptime:
         """
         
         # インスタンス設定 → グローバル knowledge のフォールバック
-        inst_cfg = self._get_instance_config(db_type)
+        inst_cfg = self.get_instance_config(db_type)
         k_conf = self._resolve_conf(inst_cfg, "knowledge")
         
         # ナレッジカード化は各インスタンス固有の人格・記憶で行う
@@ -292,7 +301,7 @@ class ButlySleeptime:
             conn.close()
 
     def run(self):
-        for instance_path in sorted(INSTANCES_DIR.iterdir()):
+        for instance_path in sorted(self.instances_dir.iterdir()):
             if instance_path.is_dir():
                 self.process_instance(instance_path)
 
@@ -305,8 +314,8 @@ class ButlySleeptime:
         self.stage_1_cleanup(instance_path)
 
         # Stage 2: ナレッジ化（update_targets で抑制可能）
-        inst_cfg = self._get_instance_config(instance_id)
-        if self._should_update(inst_cfg, "knowledge_cards"):
+        inst_cfg = self.get_instance_config(instance_id)
+        if self.should_update(inst_cfg, "knowledge_cards"):
             self.stage_2_knowledgeize(instance_path, db_type)
         else:
             print(f"[Sleeptime] Stage 2 skipped for {instance_id} (knowledge_cards disabled)")
@@ -324,7 +333,7 @@ class ButlySleeptime:
         floating_summary をクリアする。
         mid_term.txt への追記は廃止（RAW は JSON 正本から直接読み込み）。
         """
-        instance_path = INSTANCES_DIR / instance_name
+        instance_path = self.instances_dir / instance_name
         integrated_dir = instance_path / "memory_archive" / "1_integrated"
         
         legacy_floating_file = instance_path / "floating_summary.txt"
@@ -434,9 +443,9 @@ class ButlySleeptime:
 
         # 3. RAW メモリキャッシュの再生成（2_knowledgeized から）
         from butly_core.core.raw_memory_reader import build_raw_memory_cache
-        inst_cfg = self._get_instance_config(instance_name)
+        inst_cfg = self.get_instance_config(instance_name)
         mem_cfg = inst_cfg.get("memory", {})
-        if self._should_update(inst_cfg, "raw_memory_cache"):
+        if self.should_update(inst_cfg, "raw_memory_cache"):
             max_raw_tokens = mem_cfg.get("max_raw_tokens", SYSTEM_CONFIG["memory"].get("max_raw_tokens", 4096))
             raw_format = mem_cfg.get("raw_injection_format", SYSTEM_CONFIG["memory"].get("raw_injection_format", "plaintext"))
             _agent_name_cache = self.get_instance_agent_name(instance_name)
@@ -456,7 +465,7 @@ class ButlySleeptime:
         self.remove_empty_folders(short_term_dir)
 
         # --- 6. ★NEW: 二層要約の日次生成 ---
-        if new_text.strip() and self._should_update(inst_cfg, "digest"):
+        if new_text.strip() and self.should_update(inst_cfg, "digest"):
             self._generate_daily_digest(instance_path, new_text)
 
         # --- 7. recent_digest_headlines 生成 ---
@@ -464,13 +473,13 @@ class ButlySleeptime:
 
         # 近況スナップショット更新は新規ログの有無に関わらず常時チェック
         # （7日インターバルで制御されるため、毎日呼んでも問題ない）
-        if self._should_update(inst_cfg, "recent_snapshot"):
+        if self.should_update(inst_cfg, "recent_snapshot"):
             self._update_recent_snapshot_if_due(instance_path)
         else:
             print(f"[Sleeptime] Recent snapshot update skipped (recent_snapshot disabled)")
 
         # --- 8. Key Memory 提案生成（デフォルト OFF） ---
-        if self._should_update(inst_cfg, "key_memory"):
+        if self.should_update(inst_cfg, "key_memory"):
             self._propose_key_memory_updates_if_due(instance_path)
         else:
             print(f"[Sleeptime] Key Memory proposal skipped (key_memory disabled)")
@@ -502,7 +511,7 @@ class ButlySleeptime:
             return
         try:
             from butly_core.external.person_registry import PersonRegistry
-            PersonRegistry(BASE_DIR).record_appearances(appearances)
+            PersonRegistry(self.base_dir).record_appearances(appearances)
             print(f"[Sleeptime] Person appearances recorded: {len(appearances)} person(s)")
         except Exception as e:
             print(f"[Sleeptime] Person appearance recording error: {e}")
@@ -576,7 +585,7 @@ class ButlySleeptime:
         try:
             # インスタンス設定 → グローバル summary のフォールバック
             instance_name = instance_path.name
-            inst_cfg = self._get_instance_config(instance_name)
+            inst_cfg = self.get_instance_config(instance_name)
             summary_conf = self._resolve_conf(inst_cfg, "summary")
             model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite")
             
@@ -686,7 +695,7 @@ class ButlySleeptime:
         from butly_core.prompts import PromptLoader
         try:
             instance_name = instance_path.name
-            inst_cfg = self._get_instance_config(instance_name)
+            inst_cfg = self.get_instance_config(instance_name)
             summary_conf = self._resolve_conf(inst_cfg, "summary")
             model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite")
 
@@ -747,7 +756,7 @@ class ButlySleeptime:
         legacy_rel_file = instance_path / "mid_term_relationship.txt"
         digest_file = instance_path / "mid_term_digest.txt"
         instance_name = instance_path.name
-        inst_cfg = self._get_instance_config(instance_name)
+        inst_cfg = self.get_instance_config(instance_name)
         interval_days = inst_cfg.get("sleeptime", {}).get(
             "relationship_update_interval_days",
             SYSTEM_CONFIG.get("memory", {}).get("relationship_update_interval_days", 7)
@@ -825,7 +834,7 @@ class ButlySleeptime:
         )
 
         instance_name = instance_path.name
-        inst_cfg = self._get_instance_config(instance_name)
+        inst_cfg = self.get_instance_config(instance_name)
         interval_days = inst_cfg.get("sleeptime", {}).get(
             "key_memory_proposal_interval_days",
             SYSTEM_CONFIG.get("memory", {}).get("key_memory_proposal_interval_days", 180),
@@ -904,7 +913,7 @@ class ButlySleeptime:
     def _should_run_stage_3(self, inst_cfg: dict) -> bool:
         """update_targets の `knowledge_maturation`、設定の `knowledge_maturation_enabled`
         が両方有効な場合のみ Stage 3 を走らせる。"""
-        if not self._should_update(inst_cfg, "knowledge_maturation"):
+        if not self.should_update(inst_cfg, "knowledge_maturation"):
             return False
         mem_cfg = inst_cfg.get("memory", {})
         enabled = mem_cfg.get(
@@ -938,7 +947,7 @@ class ButlySleeptime:
         from butly_core.prompts import PromptLoader
 
         instance_name = instance_path.name
-        instance_db_path = str(INSTANCES_DIR / instance_name / "butly_memory.db")
+        instance_db_path = str(self.instances_dir / instance_name / "butly_memory.db")
         if not Path(instance_db_path).exists():
             print(f"[Stage3] DB not found, skipping: {instance_db_path}")
             return
@@ -947,7 +956,7 @@ class ButlySleeptime:
         ButlyDatabase(db_path=instance_db_path)
 
         repo = MemoryNodeRepository(instance_db_path)
-        inst_cfg = self._get_instance_config(instance_name)
+        inst_cfg = self.get_instance_config(instance_name)
 
         window_days = int(self._stage_3_param(inst_cfg, "knowledge_maturation_window_days", 7))
         max_cards = int(self._stage_3_param(inst_cfg, "knowledge_maturation_max_cards", 30))
@@ -1144,14 +1153,16 @@ class ButlySleeptime:
         保存先: butly_core/db_backups/
         世代数: Config参照
         """
-        backup_dir = BASE_DIR / "butly_core" / SYSTEM_CONFIG["backup"]["dir_name"]
+        backup_dir = (
+            self.base_dir / "butly_core" / SYSTEM_CONFIG["backup"]["dir_name"]
+        )
         backup_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_file = backup_dir / f"{instance_name}_butly_memory_{timestamp}.db"
         
         try:
-            instance_db_path = INSTANCES_DIR / instance_name / "butly_memory.db"
+            instance_db_path = self.instances_dir / instance_name / "butly_memory.db"
             # Copy DB file
             if instance_db_path.exists():
                 shutil.copy2(instance_db_path, backup_file)
@@ -1177,14 +1188,14 @@ class ButlySleeptime:
         """
         print(f"--- Stage 2: Knowledgeize (RAW) for {target_instance} ({db_type}) ---")
 
-        instance_dir = INSTANCES_DIR / target_instance
+        instance_dir = self.instances_dir / target_instance
         integrated_dir = instance_dir / "memory_archive" / "1_integrated"
         # 修正: 情報純度維持のため RAW JSON を保管する先
         knowledgeized_root = instance_dir / "memory_archive" / "2_knowledgeized"
         knowledgeized_root.mkdir(parents=True, exist_ok=True)
 
         # DB migration 保証: 直接 sqlite3.connect する前に ButlyDatabase で初期化する
-        instance_db_path = str(INSTANCES_DIR / target_instance / "butly_memory.db")
+        instance_db_path = str(self.instances_dir / target_instance / "butly_memory.db")
         from butly_core.core.database import ButlyDatabase as _ButlyDB
         _ButlyDB(db_path=instance_db_path)
 
@@ -1221,7 +1232,7 @@ class ButlySleeptime:
                 print(f"[Stage2] Error grouping file {f.name}: {e}")
         
         # チャンク分割の上限文字数を取得
-        inst_cfg = self._get_instance_config(db_type)
+        inst_cfg = self.get_instance_config(db_type)
         knowledge_max_chars = inst_cfg.get("sleeptime", {}).get("knowledge_max_input_chars", 0)
 
         # グループごとに処理
@@ -1231,7 +1242,9 @@ class ButlySleeptime:
             # 時系列順にソート
             items.sort(key=lambda x: x[1].get("timestamp", ""))
             
-            instance_db_path = str(INSTANCES_DIR / target_instance / "butly_memory.db")
+            instance_db_path = str(
+                self.instances_dir / target_instance / "butly_memory.db"
+            )
             _agent_name = self.get_instance_agent_name(db_type)
             _user_name = self.get_instance_user_name(db_type)
 
@@ -1437,8 +1450,8 @@ class ButlySleeptime:
             
             # "Master" への変換は廃止。インスタンス名をそのまま使用する
             db_type = instance_name
-            inst_cfg = self._get_instance_config(instance_name)
-            if not self._should_update(inst_cfg, "knowledge_cards"):
+            inst_cfg = self.get_instance_config(instance_name)
+            if not self.should_update(inst_cfg, "knowledge_cards"):
                 print(f"[Sleeptime] Stage 2 skipped for {instance_name} (knowledge_cards disabled)")
                 self.update_status(instance_name, "running", 85.0, "ナレッジ化をスキップしました")
             else:

@@ -3,6 +3,7 @@ import os
 import re
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 
 
 def _parse_session_filename_timestamp(name: str):
@@ -516,13 +517,22 @@ class ButlyMemory:
             print(f"[Memory] Load Error: {e}")
             return [], None
 
-    def save_single_turn(self, user_text, model_text, meta=None):
+    def save_single_turn(
+        self,
+        user_text: str,
+        model_text: str,
+        meta: Optional[dict] = None,
+        created_at: Optional[datetime] = None,
+    ) -> Optional[str]:
         """ローカル記憶用に short_term_json へ保存。
 
         meta: 話者帰属メタ (person_id / display_name / lane / source /
         channel_key)。指定時は user メッセージに構造化メタデータとして載せる。
         None なら従来形式のまま（meta 欠落は owner / direct / web と解釈される
         後方互換規則があるため、Web チャットはこの経路で正しい）。
+
+        created_at: 会話の発生日時。省略時は現在日時を使う。履歴インポート時に
+        元日時を保持するための引数で、既存呼び出し元は指定不要。
         """
         if not user_text and not model_text:
             return None
@@ -530,9 +540,15 @@ class ButlyMemory:
         save_path = self.short_term_json_dir
         save_path.mkdir(parents=True, exist_ok=True)
 
-        created_at = datetime.now()
-        file_name = f"session_{created_at.strftime('%Y%m%d_%H%M%S_%f')}.json"
+        created_at = created_at if created_at is not None else datetime.now()
+        file_stem = f"session_{created_at.strftime('%Y%m%d_%H%M%S_%f')}"
+        file_name = f"{file_stem}.json"
         full_path = save_path / file_name
+        collision_index = 1
+        while full_path.exists():
+            file_name = f"{file_stem}_{collision_index:03d}.json"
+            full_path = save_path / file_name
+            collision_index += 1
 
         user_msg = {"role": "user", "parts": [user_text]}
         if meta:

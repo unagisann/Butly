@@ -41,9 +41,10 @@ During chat (every turn)
 
 | Item | Content |
 |---|---|
-| **Location** | `instances/{name}/short_term_json/session_YYYYMMDD_HHMMSS_ffffff.json` |
+| **Location** | `instances/{name}/short_term_json/session_YYYYMMDD_HHMMSS_ffffff[_NNN].json` |
 | **Written by** | `memory.save_single_turn()` called automatically after every response |
 | **Format** | `{"timestamp": "...", "messages": [{"role": "user", "parts": [...]}, {"role": "model", "parts": [...]}]}` |
+| **Timestamp override** | Live chat uses the current time. History import can pass `save_single_turn(..., created_at=...)`, which applies the source time to both the filename and JSON `timestamp`. Repeated identical timestamps receive `_001` and later suffixes instead of overwriting an existing turn. |
 | **Speaker attribution meta** | Turns from external entrances (Discord / LINE) carry a `meta` on the user message: `{"person_id": "...", "display_name": "...", "lane": "direct", "source": "discord", "channel_key": "guild:channel"}`. **Missing meta is interpreted as owner / direct / web** (backward compatible, no migration needed) |
 | **Limit** | `short_term_limit` (default: 6 files) |
 | **Overflow handling** | `memory.maintain_memory()` summarizes older files via LLM, saves to session_digests/, then moves to 1_integrated/ |
@@ -207,6 +208,9 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 ## Sleeptime Execution Flow (Detailed)
 
 The Sleeptime runs via manual trigger or scheduled execution, processing each instance in sequence.
+Normal operation keeps using the project root. Isolated runs can pass
+`ButlySleeptime(base_dir=..., instances_dir=...)`; Stages 1-3, database backups,
+and person-appearance statistics all use the injected paths.
 
 ```
 ButlySleeptime.run()

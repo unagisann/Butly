@@ -1,0 +1,24 @@
+# Fixed Memory Pipeline Profile — memory roles stay constant, only the chat
+# model changes between runs, so score differences isolate the chat model.
+# Copy to fixed_memory_models.yaml and set real connection ids / model names.
+name: fixed_memory_pipeline
+
+chat:
+  connection: evaluation_target
+  model_name: target-model
+
+gatekeeper:
+  connection: fixed
+  model_name: fixed-model
+
+summary:
+  connection: fixed
+  model_name: fixed-model
+
+knowledge:
+  connection: fixed
+  model_name: fixed-model
+
+embedding:
+  connection: fixed
+  model_name: fixed-embedding
