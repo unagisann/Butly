@@ -587,8 +587,7 @@ class ButlySleeptime:
             instance_name = instance_path.name
             inst_cfg = self.get_instance_config(instance_name)
             summary_conf = self._resolve_conf(inst_cfg, "summary")
-            model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite")
-            
+
             digest_file = instance_path / "mid_term_digest.txt"
             archive_digest_file = instance_path / "memory_archive" / "3_log" / "archive_digest.txt"
             archive_digest_file.parent.mkdir(parents=True, exist_ok=True)
@@ -607,7 +606,7 @@ class ButlySleeptime:
                 print(f"[Sleeptime] Daily digest: Split into {len(text_chunks)} chunks (limit: {digest_max_input} chars)")
 
             loader = PromptLoader()
-            provider = self._get_provider(model_name)
+            provider = self._get_provider(summary_conf)
             digest_parts = []
 
             for ci, chunk in enumerate(text_chunks):
@@ -697,7 +696,6 @@ class ButlySleeptime:
             instance_name = instance_path.name
             inst_cfg = self.get_instance_config(instance_name)
             summary_conf = self._resolve_conf(inst_cfg, "summary")
-            model_name = summary_conf.get("model_name", "gemini-3.1-flash-lite")
 
             loader = PromptLoader()
             prompt = loader.get(
@@ -705,10 +703,10 @@ class ButlySleeptime:
                 agent_name=self.get_instance_agent_name(instance_name),
                 digest_text=digest_text,
             )
-            provider = self._get_provider(model_name)
+            provider = self._get_provider(summary_conf)
             raw_response = provider.classify(
                 prompt,
-                {"model_name": model_name, "generation_config": {"temperature": 0.0, "max_output_tokens": summary_conf.get("generation_config", {}).get("max_output_tokens", 4096)}},
+                {**summary_conf, "generation_config": {"temperature": 0.0, "max_output_tokens": summary_conf.get("generation_config", {}).get("max_output_tokens", 4096)}},
             )
 
             # JSON パース
@@ -794,8 +792,7 @@ class ButlySleeptime:
         
         try:
             k_conf = self._resolve_conf(inst_cfg, "knowledge")
-            model_name = k_conf.get("model_name", "gemini-3.1-pro-preview")
-            
+
             # インスタンス固有の system_instruction と key_memory を取得
             system_instruction = self.get_instance_instruction(instance_name)
             key_memory = self.get_instance_key_memory(instance_name)
@@ -810,7 +807,7 @@ class ButlySleeptime:
                 digest_text=digest_text,
                 max_chars=max_rel_chars,
             )
-            provider = self._get_provider(model_name)
+            provider = self._get_provider(k_conf)
             rel_text = provider.classify(rel_prompt, k_conf)
             rel_text = rel_text.strip() if rel_text else ""
             
@@ -871,7 +868,6 @@ class ButlySleeptime:
 
         try:
             k_conf = self._resolve_conf(inst_cfg, "knowledge")
-            model_name = k_conf.get("model_name", "gemini-3.1-pro-preview")
 
             loader = PromptLoader()
             prompt = loader.get(
@@ -881,7 +877,7 @@ class ButlySleeptime:
                 digest_text=digest_text,
             )
 
-            provider = self._get_provider(model_name)
+            provider = self._get_provider(k_conf)
             llm_output = provider.classify(prompt, k_conf)
             llm_output = llm_output.strip() if llm_output else ""
 

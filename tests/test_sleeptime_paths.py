@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from sleeptime import ButlySleeptime
 
@@ -109,3 +110,94 @@ def test_run_enumerates_only_injected_instances(tmp_path, monkeypatch):
     sleeptime.run()
 
     assert processed == [expected]
+
+
+def _instance_with_roles(instances_dir: Path, roles: dict) -> Path:
+    """user 定義 connection を持つロール設定つきインスタンスを作る。"""
+    instance_dir = instances_dir / "locomo_conn"
+    (instance_dir / "memory_archive" / "1_integrated").mkdir(parents=True)
+    config = {
+        "agent_profile": {"ai_name": "Melanie"},
+        "user_profile": {"preferred_call": "Caroline"},
+    }
+    config.update(roles)
+    (instance_dir / "config.json").write_text(
+        json.dumps(config, ensure_ascii=False), encoding="utf-8"
+    )
+    return instance_dir
+
+
+def test_daily_digest_resolves_provider_with_connection(tmp_path, monkeypatch):
+    """summary の provider 取得が model_name 文字列でなく connection 込み
+    dict で解決される（user 定義 connection の推定失敗を防ぐ回帰）。"""
+    instances_dir = tmp_path / "instances"
+    instance_dir = _instance_with_roles(
+        instances_dir,
+        {"summary": {"connection": "colab_local", "model_name": "qwen3-14b"}},
+    )
+    sleeptime = ButlySleeptime(
+        base_dir=tmp_path / "workspace", instances_dir=instances_dir
+    )
+
+    created = []
+
+    def fake_create(model):
+        created.append(model)
+        provider = MagicMock()
+        provider.classify.return_value = "digest body"
+        return provider
+
+    monkeypatch.setattr(
+        "butly_core.llm.factory.ProviderFactory.create", fake_create
+    )
+
+    raw_text = "[2023-05-08 13:56] Caroline: I started pottery today.\n" * 30
+    sleeptime._generate_daily_digest(instance_dir, raw_text)
+
+    assert created, "provider was never created"
+    assert all(isinstance(model, dict) for model in created), created
+    assert created[0]["connection"] == "colab_local"
+    assert created[0]["model_name"] == "qwen3-14b"
+
+
+def test_recent_headlines_keeps_connection_in_provider_and_classify(
+    tmp_path, monkeypatch
+):
+    """recent_headlines は provider 取得と classify の両方で connection を保つ
+    （classify へ渡す conf を connection 抜きで組み直していたバグの回帰）。"""
+    instances_dir = tmp_path / "instances"
+    instance_dir = _instance_with_roles(
+        instances_dir,
+        {"summary": {"connection": "colab_local", "model_name": "qwen3-14b"}},
+    )
+    (instance_dir / "mid_term_digest.txt").write_text(
+        "[2023-05-08] Pottery\n- Caroline started pottery and planned a mug.\n" * 5,
+        encoding="utf-8",
+    )
+    sleeptime = ButlySleeptime(
+        base_dir=tmp_path / "workspace", instances_dir=instances_dir
+    )
+
+    created = []
+    classify_confs = []
+
+    def fake_create(model):
+        created.append(model)
+        provider = MagicMock()
+
+        def classify(prompt, conf):
+            classify_confs.append(conf)
+            return json.dumps({"headlines": []})
+
+        provider.classify.side_effect = classify
+        return provider
+
+    monkeypatch.setattr(
+        "butly_core.llm.factory.ProviderFactory.create", fake_create
+    )
+
+    sleeptime._generate_recent_headlines(instance_dir)
+
+    assert created and isinstance(created[0], dict)
+    assert created[0]["connection"] == "colab_local"
+    assert classify_confs and classify_confs[0].get("connection") == "colab_local"

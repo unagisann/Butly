@@ -113,8 +113,18 @@ API keys and environment-variable values are never written to these artifacts.
 
 ## Colab
 
-`colab/butly_locomo_eval.ipynb` mounts Drive, clones Butly, starts an
-OpenAI-compatible local model server, registers it as a `colab_local`
-connection, and runs the CLI with artifacts on Drive. After a runtime
-disconnect, re-run the setup cells and the Resume cell. The notebook must stay
-logic-free: anything beyond setup and CLI invocation belongs in this package.
+`colab/butly_locomo_eval.ipynb` mounts Drive, clones Butly, and starts **two**
+OpenAI-compatible servers — a chat model (`colab_local`) and an embeddings
+model (`local_embedding`, llama.cpp with `--embeddings`). Butly's RAG needs a
+real embedding endpoint, so the profile's `embedding` role must point at the
+embedding server, never at the chat connection. The notebook registers both
+connections, runs the CLI with artifacts on Drive, and after a runtime
+disconnect resumes via the Resume cell. It must stay logic-free: anything
+beyond setup and CLI invocation belongs in this package.
+
+Profiles set a `connection` per role. Using a user-defined connection (e.g.
+`colab_local`) for every role exercises code paths that built-in providers
+(gemini/openai) mask — earlier a Sleeptime bug dropped the connection for the
+summary/knowledge roles and only surfaced with local models. If you see
+`Cannot infer connection for model_name=...`, a role is being resolved from a
+bare model name instead of its `{connection, model_name}` pair.

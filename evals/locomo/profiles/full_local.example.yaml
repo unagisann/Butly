@@ -1,6 +1,13 @@
-# Full Local Profile — one local LLM serves every Butly role.
-# Copy to full_local.yaml, then point the connection at your local server
-# (define it in user_config.json LLM_CONNECTIONS, protocol: openai_compat).
+# Full Local Profile — one local chat LLM serves every text-generation role,
+# plus a dedicated embedding model for RAG.
+#
+# Copy to full_local.yaml and edit the connection ids / model names.
+# Define both connections in user_config.json LLM_CONNECTIONS
+# (protocol: openai_compat). Butly needs a real embedding endpoint for RAG:
+# a chat LLM cannot answer /v1/embeddings, so the embedding role must point at
+# an embeddings-capable server (e.g. llama.cpp started with --embeddings, or a
+# separate embedding model), NOT the chat connection.
+#
 # Question answered by this profile: "can this model run all of Butly?"
 name: full_local
 
@@ -20,6 +27,7 @@ knowledge:
   connection: colab_local
   model_name: qwen3-14b
 
+# Separate embedding server — do not reuse the chat connection.
 embedding:
-  connection: colab_local
+  connection: local_embedding
   model_name: nomic-embed-text
