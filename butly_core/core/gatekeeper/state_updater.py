@@ -130,13 +130,12 @@ class StateUpdater:
             return default
 
         try:
-            match = re.search(r"```json(.*?)```", raw_text, re.DOTALL)
-            if match:
-                json_str = match.group(1).strip()
-            else:
-                json_str = raw_text.strip()
-                if json_str.startswith("{") and "}" in json_str:
-                    json_str = json_str[json_str.find("{") : json_str.rfind("}") + 1]
+            # コードフェンスは閉じ ``` が無いケース（トークン切れ・省略）も許容。
+            # 開きフェンスまたは地の文いずれでも、最初の { 〜 最後の } を抽出する。
+            match = re.search(r"```(?:json)?\s*(.*?)```", raw_text, re.DOTALL)
+            json_str = match.group(1).strip() if match else raw_text.strip()
+            if "{" in json_str and "}" in json_str:
+                json_str = json_str[json_str.find("{") : json_str.rfind("}") + 1]
 
             data = json.loads(json_str)
 

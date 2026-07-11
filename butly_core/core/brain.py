@@ -80,18 +80,34 @@ class ButlyBrain:
             print(f"[Brain] Cosine Sim Error: {e}")
             return 0.0
 
-    def get_embedding(self, text):
+    def _resolve_embedding_conf(self, override_config=None) -> dict:
+        """embedding 設定を解決する。
+
+        グローバル AI_CONFIG["embedding"] を基底に、instance/profile 由来の
+        override_config["embedding"] で上書きする。これにより QA 経路の
+        ベクトル検索も、書き込み(Sleeptime)側と同じ embedding connection を
+        使える。override 未指定時はグローバル設定（後方互換）。
+        """
+        conf = dict(AI_CONFIG.get("embedding", {}))
+        if override_config and isinstance(override_config.get("embedding"), dict):
+            conf.update(override_config["embedding"])
+        return conf
+
+    def get_embedding(self, text, embedding_conf=None):
         # Phase 2: connection + model_name の dict 全体を Provider に渡す。
         # Provider 側 (OpenAICompatAdapter) は config["model_name"] を最優先で使う。
-        embedding_cfg = AI_CONFIG.get("embedding", {})
+        # embedding_conf 未指定時はグローバル AI_CONFIG。instance ごとの
+        # embedding を使うには呼び出し側が _resolve_embedding_conf の結果を渡す。
+        if embedding_conf is None:
+            embedding_conf = AI_CONFIG.get("embedding", {})
         t0 = time.time()
         try:
-            provider = self._get_provider(embedding_cfg)
-            result = provider.embed(text, config=embedding_cfg)
+            provider = self._get_provider(embedding_conf)
+            result = provider.embed(text, config=embedding_conf)
             record_llm_call(
                 purpose="embedding",
-                model=embedding_cfg.get("model_name", ""),
-                connection_id=embedding_cfg.get("connection", ""),
+                model=embedding_conf.get("model_name", ""),
+                connection_id=embedding_conf.get("connection", ""),
                 duration_ms=int((time.time() - t0) * 1000),
                 prompt_chars=len(text) if text else 0,
             )
@@ -100,8 +116,8 @@ class ButlyBrain:
             print(f"[Brain] Embedding Error: {e}")
             record_llm_call(
                 purpose="embedding",
-                model=embedding_cfg.get("model_name", ""),
-                connection_id=embedding_cfg.get("connection", ""),
+                model=embedding_conf.get("model_name", ""),
+                connection_id=embedding_conf.get("connection", ""),
                 duration_ms=int((time.time() - t0) * 1000),
                 prompt_chars=len(text) if text else 0,
                 error=str(e),
@@ -244,6 +260,7 @@ class ButlyBrain:
         brain_conf = SYSTEM_CONFIG["brain"].copy()
         if override_config and "brain" in override_config:
             brain_conf.update(override_config["brain"])
+        embedding_conf = self._resolve_embedding_conf(override_config)
 
         # readable_instances の解決
         readable = brain_conf.get("readable_instances", ["self"])
@@ -266,6 +283,7 @@ class ButlyBrain:
                 limit,
                 threshold,
                 brain_conf,
+                embedding_conf,
             )
             # usage_count 用に source_instance を付与（複数 instance 横断時の DB 振り分けに使う）
             for r in single["results"]:
@@ -317,6 +335,7 @@ class ButlyBrain:
         limit: int,
         threshold: float,
         brain_conf: dict,
+        embedding_conf: dict = None,
     ) -> dict:
         """単一インスタンスDBに対する純粋ベクトル検索 + 診断情報。
 
@@ -338,7 +357,7 @@ class ButlyBrain:
         if not instance_db_path.exists():
             return empty
 
-        query_embedding = self.get_embedding(user_input)
+        query_embedding = self.get_embedding(user_input, embedding_conf)
         if not query_embedding:
             return empty
 
@@ -437,6 +456,7 @@ class ButlyBrain:
         brain_conf = SYSTEM_CONFIG["brain"].copy()
         if override_config and "brain" in override_config:
             brain_conf.update(override_config["brain"])
+        embedding_conf = self._resolve_embedding_conf(override_config)
 
         if limit is None:
             limit = brain_conf["search_limit"]
@@ -455,15 +475,20 @@ class ButlyBrain:
         # 単一DBの場合（高速パス）
         if len(target_instances) == 1:
             return self._search_single_db(
-                keywords, user_query, target_instances[0], limit, brain_conf
+                keywords, user_query, target_instances[0], limit, brain_conf,
+                embedding_conf,
             )
 
         # 複数DBの場合: 各DBに個別クエリ → マージしてリランキング
         return self._search_multi_db(
-            keywords, user_query, target_instances, limit, brain_conf
+            keywords, user_query, target_instances, limit, brain_conf,
+            embedding_conf,
         )
 
-    def _search_multi_db(self, keywords, user_query, instances, limit, brain_conf):
+    def _search_multi_db(
+        self, keywords, user_query, instances, limit, brain_conf,
+        embedding_conf=None,
+    ):
         """複数インスタンスのDBを横断検索"""
         all_results = []
         for inst in instances:
@@ -471,7 +496,7 @@ class ButlyBrain:
             if not db_path.exists():
                 continue
             results = self._search_single_db(
-                keywords, user_query, inst, limit, brain_conf
+                keywords, user_query, inst, limit, brain_conf, embedding_conf
             )
             for r in results:
                 r["source_instance"] = inst
@@ -481,7 +506,10 @@ class ButlyBrain:
         all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
         return all_results[:limit]
 
-    def _search_single_db(self, keywords, user_query, instance_name, limit, brain_conf):
+    def _search_single_db(
+        self, keywords, user_query, instance_name, limit, brain_conf,
+        embedding_conf=None,
+    ):
         """
         単一インスタンスDBに対するハイブリッド検索
         (キーワードフィルター + ベクトル類似度リランキング)
@@ -562,7 +590,7 @@ class ButlyBrain:
             # ---------------------------------------------------------
             # 2. Vector Reranking (BLOB / Float32)
             # ---------------------------------------------------------
-            query_embedding = self.get_embedding(user_query)
+            query_embedding = self.get_embedding(user_query, embedding_conf)
             if not query_embedding:
                 # ベクトル生成失敗時はそのまま返す(上位limit件)
                 return [dict(row) for row in rows[:limit]]
