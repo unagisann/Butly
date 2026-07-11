@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import os
 import platform
 from pathlib import Path
 import re
 from typing import Optional
+
+from butly_core.core.chronos import CHRONOS_NOW_ENV
 
 from .adapter import ReplayAdapter
 from .artifacts import append_jsonl, snapshot_instance, write_json
@@ -139,17 +142,30 @@ async def _execute(
         if len(questions) > progress.qa_completed:
             checkpoint.status = STATUS_QA
             checkpoint.save()
-        for index, question in enumerate(questions):
-            if index < progress.qa_completed:
-                continue
-            await qa_runner.run(
-                sample_id=conversation.sample_id,
-                instance_name=instance_name,
-                question=question,
-            )
-            progress.qa_completed = index + 1
-            checkpoint.save()
-            answered_questions += 1
+        # 時間推論の評価妥当性: 会話は過去日時で保存されているため、QA 時の
+        # システム時刻(Chronos)を最終会話日の翌日に固定する。実時刻のままだと
+        # 数年後を「現在」として注入してしまい、時間質問を歪める。
+        prev_now = os.environ.get(CHRONOS_NOW_ENV)
+        if questions and sessions:
+            reference = max(s.timestamp for s in sessions) + timedelta(days=1)
+            os.environ[CHRONOS_NOW_ENV] = reference.isoformat()
+        try:
+            for index, question in enumerate(questions):
+                if index < progress.qa_completed:
+                    continue
+                await qa_runner.run(
+                    sample_id=conversation.sample_id,
+                    instance_name=instance_name,
+                    question=question,
+                )
+                progress.qa_completed = index + 1
+                checkpoint.save()
+                answered_questions += 1
+        finally:
+            if prev_now is None:
+                os.environ.pop(CHRONOS_NOW_ENV, None)
+            else:
+                os.environ[CHRONOS_NOW_ENV] = prev_now
 
     checkpoint.status = STATUS_COMPLETED
     checkpoint.save()
