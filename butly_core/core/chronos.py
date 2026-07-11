@@ -1,4 +1,22 @@
+import os
 from datetime import datetime
+
+
+# 環境変数で「現在時刻」を上書きする。未設定時は実時刻。
+# 履歴リプレイ評価（過去日時の会話を投入して質問する）やテストで、
+# システム時刻を会話の時系列に合わせて固定するための汎用フック。
+# 本番では未設定なので datetime.now() のまま。
+CHRONOS_NOW_ENV = "BUTLY_CHRONOS_NOW"
+
+
+def _resolve_now() -> datetime:
+    override = os.environ.get(CHRONOS_NOW_ENV)
+    if override:
+        try:
+            return datetime.fromisoformat(override)
+        except ValueError:
+            pass
+    return datetime.now()
 
 
 class ButlyChronos:
@@ -32,7 +50,7 @@ class ButlyChronos:
         """前回からの経過時間"""
         if not last_time:
             return "初対面"
-        now = datetime.now()
+        now = _resolve_now()
         delta = now - last_time
         seconds = delta.total_seconds()
 
@@ -48,7 +66,7 @@ class ButlyChronos:
         self, is_holiday=False, is_work_time=True, last_interaction_time=None
     ):
         """Web UI用の統合メソッド"""
-        now = datetime.now()
+        now = _resolve_now()
         weekday_map = ["月", "火", "水", "木", "金", "土", "日"]
 
         return f"""

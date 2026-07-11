@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -28,12 +29,14 @@ class FakeProvider:
 
     def __init__(self):
         self.generate_contexts = []
+        self.chronos_env_seen = "unset"
 
     def supports_vision(self, model_name):
         return True
 
     def generate(self, text, attachments, context):
         self.generate_contexts.append(context)
+        self.chronos_env_seen = os.environ.get("BUTLY_CHRONOS_NOW")
         return ChatResponse(
             text="Maya planned a blue mug and an herb planter.",
             debug_info={"fake_provider": True},
@@ -245,6 +248,31 @@ def test_resume_after_interruption_does_not_reingest(tmp_path):
 
     final = Checkpoint.load("resume-e2e", workspace.checkpoints_dir)
     assert final.status == "completed"
+
+
+def test_qa_pins_chronos_to_last_session_day(tmp_path, monkeypatch):
+    """QA 時のシステム時刻が最終会話日の翌日に固定され、実行後は復元される。"""
+    monkeypatch.delenv("BUTLY_CHRONOS_NOW", raising=False)
+    fake_provider = FakeProvider()
+    config = ReplayConfig(
+        dataset_path=FIXTURE,
+        output_dir=tmp_path,
+        run_id="chronos-e2e",
+        sample_limit=1,
+        session_limit=2,
+        question_limit=1,
+    )
+
+    with patch(
+        "butly_core.llm.factory.ProviderFactory.create",
+        return_value=fake_provider,
+    ), patch("sleeptime.time.sleep", return_value=None):
+        asyncio.run(run_evaluation(config))
+
+    # fixture の最終セッションは 2024-05-20 18:45 → QA 時は翌日に固定
+    assert fake_provider.chronos_env_seen == "2024-05-21T18:45:00"
+    # 実行後は環境変数が元（未設定）に戻っている
+    assert os.environ.get("BUTLY_CHRONOS_NOW") is None
 
 
 def test_discard_partial_session_removes_only_matching_turns(tmp_path):
