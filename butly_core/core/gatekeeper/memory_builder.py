@@ -309,11 +309,18 @@ class MemoryBlockBuilder:
 
         if need and candidates:
             rag_lines = ["【過去の記憶（RAG）】"]
+            if any(c.get("source_date") for c in candidates):
+                rag_lines.append(
+                    "（各記憶の [YYYY-MM-DD] はその会話が行われた日付）"
+                )
             for c in candidates:
                 # summary は箇条書き・複数行を許容する。継続行はインデントして
                 # カード境界（行頭の「・」）と区別できるようにする。
                 summary = str(c.get("summary") or "").strip().replace("\n", "\n  ")
-                rag_lines.append(f"・{c['title']}: {summary}")
+                date_prefix = (
+                    f"[{c['source_date']}] " if c.get("source_date") else ""
+                )
+                rag_lines.append(f"・{date_prefix}{c['title']}: {summary}")
                 if c.get("episode"):
                     episode = str(c["episode"]).strip().replace("\n", "\n  ")
                     rag_lines.append(f"  (補足: {episode})")
