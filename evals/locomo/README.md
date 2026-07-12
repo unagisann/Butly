@@ -113,14 +113,19 @@ API keys and environment-variable values are never written to these artifacts.
 
 ## Colab
 
-`colab/butly_locomo_eval.ipynb` mounts Drive, clones Butly, and starts **two**
-OpenAI-compatible servers — a chat model (`colab_local`) and an embeddings
-model (`local_embedding`, llama.cpp with `--embeddings`). Butly's RAG needs a
-real embedding endpoint, so the profile's `embedding` role must point at the
-embedding server, never at the chat connection. The notebook registers both
-connections, runs the CLI with artifacts on Drive, and after a runtime
-disconnect resumes via the Resume cell. It must stay logic-free: anything
-beyond setup and CLI invocation belongs in this package.
+`colab/butly_locomo_eval.ipynb` mounts Drive, clones Butly, and starts one
+OpenAI-compatible llama.cpp server per model configured in its `MODELS`
+role map (chat / gatekeeper / summary / knowledge / embedding; roles sharing
+a model share a server). Reasoning models are slow, so the memory-pipeline
+roles default to a Non-Reasoning model while chat stays the model under
+evaluation. Butly's RAG needs a real embedding endpoint, so the `embedding`
+role must point at an embeddings-capable server (llama.cpp with
+`--embeddings`), never at a chat connection. The notebook registers every
+server as a connection, generates `profiles/colab_roles.yaml`, runs the CLI
+with artifacts on Drive, and after a runtime disconnect resumes via the
+Resume cell. llama.cpp is built fresh each session (Drive binary caching was
+removed after repeated shared-library breakage). The notebook must stay
+logic-free: anything beyond setup and CLI invocation belongs in this package.
 
 Profiles set a `connection` per role. Using a user-defined connection (e.g.
 `colab_local`) for every role exercises code paths that built-in providers
