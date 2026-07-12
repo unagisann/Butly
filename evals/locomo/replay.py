@@ -279,11 +279,15 @@ def _create_instance(
 ) -> None:
     # 公式LoCoMoプロトコルに合わせ短答を指示する。公式F1は正規化トークンの
     # 重複で採点するため、説明的な長文は正解を含んでいてもprecisionが潰れる。
+    # 日付も正規化でISO形式(2023-05-07)が1トークンに潰れるため、正解データと
+    # 同じ自然形式(7 May 2023)で答えさせる。
     template = (
         f"You are {conversation.speaker_b}, a conversational companion. "
         "Answer evaluation questions from the memories available to you. "
         "Answer as briefly as possible: give only the fact asked for, such as "
         "a date, a name, or a short phrase, with no explanation or context. "
+        "Write dates in natural format such as '7 May 2023' (day month year), "
+        "never in ISO format like 2023-05-07. "
         "When the memories do not contain the answer, reply exactly "
         "'No information available'. Do not use external web knowledge."
     )
