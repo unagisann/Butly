@@ -194,11 +194,13 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | `category` | TEXT | LLMが付与したカテゴリ |
 | `title` | TEXT | 出来事のタイトル |
 | `tags` | TEXT | 検索用タグ（カンマ区切り） |
-| `summary` | TEXT | 事実の概要文 |
-| `episode` | TEXT | エピソード詳細 |
+| `summary` | TEXT | 事実の要約。箇条書き・複数行可。原文の5W1Hを保持し、相対時間表現は会話タイムスタンプ基準の絶対日付へ変換して記録 |
+| `episode` | TEXT | エピソード詳細（AIの所感。簡潔なら複数文可） |
 | `ai_importance` | REAL | AIにとっての重要度 (0-1) |
 | `humanity_importance` | REAL | 人類にとっての重要度 (0-1) |
 | `embedding_blob` | BLOB | float32 バイト列（コサイン類似度検索用） |
+| `source_date` | TEXT | 元会話の日付 (YYYY-MM-DD)。検索の time decay はこの「出来事の古さ」を基準に計算（無い旧カードは `created_at` にフォールバック） |
+| `source_files` | TEXT | カード生成に使った RAW ファイル名の JSON 配列。`memory_archive/2_knowledgeized/{date}/` 配下の元会話へ遡及するためのポインタ |
 
 ---
 

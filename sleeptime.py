@@ -257,7 +257,15 @@ class ButlySleeptime:
             print(f"[Gemini Error] {e}")
         return None
 
-    def insert_knowledge(self, card, db_id, db_type, raw_ref, instance_db_path):
+    def insert_knowledge(
+        self, card, db_id, db_type, raw_ref, instance_db_path,
+        source_date=None, source_files=None,
+    ):
+        """カードを knowledge_cards へ登録する。
+
+        source_date: 元会話の日付 (YYYY-MM-DD)。time decay の基準になる。
+        source_files: 生成に使った RAW ファイル名のリスト（遡及参照用）。
+        """
         conn = sqlite3.connect(instance_db_path)
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
@@ -284,13 +292,16 @@ class ButlySleeptime:
             # embedding (TEXT) は NULL にし、embedding_blob (BLOB) に保存
             cursor.execute("""
             INSERT INTO knowledge_cards (
-                id, type, category, title, tags, ai_importance, humanity_importance, 
-                summary, episode, count, raw_reference, created_at, updated_at, embedding_blob
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                id, type, category, title, tags, ai_importance, humanity_importance,
+                summary, episode, count, raw_reference, created_at, updated_at, embedding_blob,
+                source_date, source_files
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 db_id, db_type, card['category'], card['title'], card['tags'],
                 card['ai_importance'], card['humanity_importance'],
-                summary_text, card['episode'], 1, raw_ref, now, now, embedding_blob
+                summary_text, card['episode'], 1, raw_ref, now, now, embedding_blob,
+                source_date,
+                json.dumps(source_files, ensure_ascii=False) if source_files else None,
             ))
             conn.commit()
             return True
@@ -1298,9 +1309,15 @@ class ButlySleeptime:
 
                 if cards:
                     print(f"[{db_type}] Generated {len(cards)} knowledge cards.")
+                    chunk_file_names = [f.name for f in files_in_batch]
                     for card in cards:
                         db_id = self._get_next_id(db_type, date_str, instance_db_path)
-                        self.insert_knowledge(card, db_id, db_type, f"{date_str}_raw_combined", instance_db_path)
+                        self.insert_knowledge(
+                            card, db_id, db_type,
+                            f"{date_str}_raw_combined", instance_db_path,
+                            source_date=date_str,
+                            source_files=chunk_file_names,
+                        )
                     all_processed_files.extend(files_in_batch)
                 else:
                     print(f"[{db_type}] ナレッジ抽出なし（スキップまたはエラー） for {date_str} chunk {chunk_idx+1}")

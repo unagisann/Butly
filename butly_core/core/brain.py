@@ -10,6 +10,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from butly_core.trace.collector import record_llm_call
+from butly_core.core.chronos import resolve_now
 
 # ★設定ファイルのインポート
 try:
@@ -22,6 +23,25 @@ except ImportError:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
     from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
     from butly_core import prompts
+
+
+def _decay_basis_datetime(row_dict: dict):
+    """time decay の基準日時を返す。
+
+    source_date（元会話の日付 = 出来事の古さ）を優先し、無ければ従来どおり
+    created_at（カード作成日時）。どちらも解釈できなければ None（減衰なし）。
+    """
+    for key, fmt in (
+        ("source_date", "%Y-%m-%d"),
+        ("created_at", "%Y-%m-%d %H:%M:%S"),
+    ):
+        value = row_dict.get(key)
+        if value:
+            try:
+                return datetime.strptime(value, fmt)
+            except (ValueError, TypeError):
+                continue
+    return None
 
 
 class ButlyBrain:
@@ -37,6 +57,29 @@ class ButlyBrain:
     def _get_db_path(self, instance_name: str) -> Path:
         """インスタンス名からDBパスを解決"""
         return self.instances_dir / instance_name / self.db_name
+
+    @staticmethod
+    def _knowledge_select_cols(cursor) -> str:
+        """knowledge_cards の SELECT カラムを DB の実スキーマに合わせて返す。
+
+        source_date はマイグレーション（ButlyDatabase 初期化）で追加される。
+        検索経路は sqlite3 を直接開くため、未マイグレーションの既存 DB でも
+        検索が落ちないようカラムの有無を確認する。
+        """
+        base = (
+            "id, title, summary, episode, type, embedding_blob, "
+            "created_at, is_archived"
+        )
+        try:
+            columns = {
+                row[1]
+                for row in cursor.execute("PRAGMA table_info(knowledge_cards)")
+            }
+            if "source_date" in columns:
+                return base + ", source_date"
+        except sqlite3.Error:
+            pass
+        return base
 
     # --- Provider アクセス ---
     def _get_provider(self, model=None):
@@ -368,7 +411,7 @@ class ButlyBrain:
             cursor = conn.cursor()
 
             fetch_limit = brain_conf.get("fallback_fetch_limit", 50)
-            select_cols = "id, title, summary, episode, type, embedding_blob, created_at, is_archived"
+            select_cols = self._knowledge_select_cols(cursor)
             query = f"""
                 SELECT {select_cols}
                 FROM knowledge_cards
@@ -383,7 +426,7 @@ class ButlyBrain:
                 return empty
 
             decay_rate = brain_conf.get("time_decay_rate", 0.005)
-            now = datetime.now()
+            now = resolve_now()
             scored_results = []
             raw_scores: list = []
             final_scores: list = []
@@ -391,7 +434,6 @@ class ButlyBrain:
             for row in rows:
                 row_dict = dict(row)
                 blob_data = row_dict.pop("embedding_blob")
-                created_at_str = row_dict.get("created_at")
                 is_archived = row_dict.get("is_archived") or 0
 
                 score = 0.0
@@ -404,17 +446,12 @@ class ButlyBrain:
                         )
                         score = raw_score
 
-                        if created_at_str:
-                            try:
-                                created_at_dt = datetime.strptime(
-                                    created_at_str, "%Y-%m-%d %H:%M:%S"
-                                )
-                                days_diff = (now - created_at_dt).days
-                                if days_diff > 0:
-                                    decay_factor = math.exp(-decay_rate * days_diff)
-                                    score *= decay_factor
-                            except ValueError:
-                                pass
+                        basis_dt = _decay_basis_datetime(row_dict)
+                        if basis_dt is not None:
+                            days_diff = (now - basis_dt).days
+                            if days_diff > 0:
+                                decay_factor = math.exp(-decay_rate * days_diff)
+                                score *= decay_factor
 
                         if is_archived:
                             score *= 0.5
@@ -530,7 +567,7 @@ class ButlyBrain:
             rows = []
 
             # 共通カラム定義: embedding -> embedding_blob
-            select_cols = "id, title, summary, episode, type, embedding_blob, created_at, is_archived"
+            select_cols = self._knowledge_select_cols(cursor)
 
             # Keyword Filter
             kw_conditions = []
@@ -601,12 +638,11 @@ class ButlyBrain:
             decay_rate = brain_conf.get(
                 "time_decay_rate", 0.005
             )  # 0.005 means half-life of ~138 days
-            now = datetime.now()
+            now = resolve_now()
 
             for row in rows:
                 row_dict = dict(row)
                 blob_data = row_dict.pop("embedding_blob")  # Remove from result dict
-                created_at_str = row_dict.get("created_at")
                 is_archived = row_dict.get("is_archived") or 0
 
                 score = 0.0
@@ -618,25 +654,19 @@ class ButlyBrain:
                             self._calculate_cosine_similarity(query_embedding, db_emb)
                         )
 
-                        # Apply Time Decay
-                        if created_at_str:
-                            try:
-                                # SQLite DEFAULT CURRENT_TIMESTAMP format is 'YYYY-MM-DD HH:MM:SS'
-                                created_at_dt = datetime.strptime(
-                                    created_at_str, "%Y-%m-%d %H:%M:%S"
-                                )
-                                days_diff = (now - created_at_dt).days
-                                if days_diff > 0:
-                                    decay_factor = math.exp(-decay_rate * days_diff)
-                                    score *= decay_factor
-                            except ValueError:
-                                pass  # Ignore parse errors
+                        # Apply Time Decay (source_date=出来事日 優先)
+                        basis_dt = _decay_basis_datetime(row_dict)
+                        if basis_dt is not None:
+                            days_diff = (now - basis_dt).days
+                            if days_diff > 0:
+                                decay_factor = math.exp(-decay_rate * days_diff)
+                                score *= decay_factor
 
                         # Apply Archive Penalty
                         if is_archived:
                             score *= 0.5
 
-                    except Exception as e:
+                    except Exception:
                         pass
 
                 row_dict["score"] = float(score)  # Ensure it is a float

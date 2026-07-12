@@ -310,9 +310,13 @@ class MemoryBlockBuilder:
         if need and candidates:
             rag_lines = ["【過去の記憶（RAG）】"]
             for c in candidates:
-                rag_lines.append(f"・{c['title']}: {c['summary']}")
+                # summary は箇条書き・複数行を許容する。継続行はインデントして
+                # カード境界（行頭の「・」）と区別できるようにする。
+                summary = str(c.get("summary") or "").strip().replace("\n", "\n  ")
+                rag_lines.append(f"・{c['title']}: {summary}")
                 if c.get("episode"):
-                    rag_lines.append(f"  (補足: {c['episode']})")
+                    episode = str(c["episode"]).strip().replace("\n", "\n  ")
+                    rag_lines.append(f"  (補足: {episode})")
             blocks["rag_context"] = "\n".join(rag_lines)
             blocks["rag_card_ids"] = [c["id"] for c in candidates]  # usage_count 用
             blocks["rag_results_raw"] = candidates  # debug_info 用

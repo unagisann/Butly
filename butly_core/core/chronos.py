@@ -9,7 +9,7 @@ from datetime import datetime
 CHRONOS_NOW_ENV = "BUTLY_CHRONOS_NOW"
 
 
-def _resolve_now() -> datetime:
+def resolve_now() -> datetime:
     override = os.environ.get(CHRONOS_NOW_ENV)
     if override:
         try:
@@ -50,7 +50,7 @@ class ButlyChronos:
         """前回からの経過時間"""
         if not last_time:
             return "初対面"
-        now = _resolve_now()
+        now = resolve_now()
         delta = now - last_time
         seconds = delta.total_seconds()
 
@@ -66,7 +66,7 @@ class ButlyChronos:
         self, is_holiday=False, is_work_time=True, last_interaction_time=None
     ):
         """Web UI用の統合メソッド"""
-        now = _resolve_now()
+        now = resolve_now()
         weekday_map = ["月", "火", "水", "木", "金", "土", "日"]
 
         return f"""
