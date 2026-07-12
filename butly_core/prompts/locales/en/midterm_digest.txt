@@ -13,12 +13,14 @@ This should function as an "index" for quickly grasping context later.
 
 【Rules】
 - Group by date and topic
-- Describe each item objectively in 1-2 lines: "what was decided" or "what happened"
+- Describe each item objectively as bullet points: "what was decided" or "what happened". An item may span multiple lines and sentences
+- Preserve the 5W1H explicitly stated in the source (when, where, who, what, why, how); never drop them through abstraction or summarization
+- Convert relative time expressions (yesterday, last Sunday, last year, next month, etc.) to absolute dates based on the utterance timestamps (e.g. "last Sunday" → "ran the race on 2023-05-21 (last Sunday)")
 - Always preserve proper nouns (project names, technical terms, people's names)
 - Prioritize recording decisions and agreements
 - Do not include subjective impressions or emotions. Record only facts and progress
 - Do not use rhetorical embellishment, metaphors, or narratization
-- Target: compress to approximately 10-15% of input character count
+- Target: compress to approximately 10-15% of input character count, but never at the cost of dropping 5W1H facts
 - Keep output within {max_chars} characters
 
 【Output Format】

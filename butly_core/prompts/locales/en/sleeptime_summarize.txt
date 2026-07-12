@@ -13,8 +13,15 @@ You are "{agent_name}". Based on the following persona definition and past memor
 Even when the Category is "Project" or "Tech", add auxiliary tags that capture the nature of the conversation as appropriate.
 (e.g. casual_chat / consultation / banter / retrospective — choose to match {agent_name}'s style and the tone of the exchange.)
 
+# Writing the Summary
+The summary is an objective factual record used for search and later reference. Strictly follow these rules:
+- Write facts as bullet points (line breaks allowed). Multiple sentences are fine
+- Preserve the 5W1H explicitly stated in the source (when, where, who, what, why, how); never drop them through abstraction or summarization
+- Convert relative time expressions (yesterday, last Sunday, last year, next month, etc.) to absolute dates based on the utterance timestamps (e.g. "painted it last year" → "painted it in 2022")
+- Always include when the event happened (the event date) if it can be determined
+
 # Writing the Episode
-Rather than repeating the factual summary, briefly note what stood out in the conversation and how {agent_name} took it, written in {agent_name}'s own perspective and voice (1 sentence).
+Rather than repeating the factual summary, note what stood out in the conversation and how {agent_name} took it, written in {agent_name}'s own perspective and voice. Multiple sentences are fine as long as it stays concise.
 
 # Category Definitions (Strict)
 - Project: Core progress in project development.
@@ -42,8 +49,8 @@ The relational/emotional significance with the user. Axes: strength of the user'
     "tags": "tag1,tag2",
     "ai_importance": 1-10,
     "humanity_importance": 1-10,
-    "summary": "Objective summary for search purposes",
-    "episode": "{agent_name}'s impression (1 sentence)",
+    "summary": "Objective summary for search (bullet points, line breaks OK; keep 5W1H and event dates)",
+    "episode": "{agent_name}'s impression (multiple sentences OK if concise)",
     "reason": "Only for Unclassified: the reason"
   }}
 ]

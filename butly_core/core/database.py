@@ -79,6 +79,24 @@ class ButlyDatabase:
             except sqlite3.OperationalError:
                 pass
 
+            # source_date: 元会話の日付 (YYYY-MM-DD)。time decay の基準。
+            # 履歴インポートや後日の知識化でも「出来事の古さ」で減衰できる。
+            # source_files: 生成に使った RAW ファイル名の JSON 配列
+            # (memory_archive/2_knowledgeized/ 配下への遡及用)。
+            try:
+                cursor.execute(
+                    "ALTER TABLE knowledge_cards ADD COLUMN source_date TEXT;"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+            try:
+                cursor.execute(
+                    "ALTER TABLE knowledge_cards ADD COLUMN source_files TEXT;"
+                )
+            except sqlite3.OperationalError:
+                pass
+
             # --- Stage 3: Knowledge Maturation tables ---
             cursor.execute(
                 """

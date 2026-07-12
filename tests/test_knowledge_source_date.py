@@ -1,0 +1,163 @@
+"""knowledge_cards の source_date / source_files と time decay の回帰テスト。
+
+- insert_knowledge が元会話の日付と RAW ファイル名リストを保存する
+- time decay が created_at（カード作成日時）ではなく source_date
+  （出来事の古さ）を基準に計算される
+- decay の「現在」が Chronos の固定時刻（BUTLY_CHRONOS_NOW）を尊重する
+"""
+
+import json
+import math
+import sqlite3
+
+import numpy as np
+import pytest
+
+from butly_core.core.brain import ButlyBrain, _decay_basis_datetime
+from butly_core.core.database import ButlyDatabase
+from sleeptime import ButlySleeptime
+
+
+def _make_instance_db(tmp_path, instance_name="test_inst"):
+    instance_dir = tmp_path / "butly_core" / "instances" / instance_name
+    instance_dir.mkdir(parents=True)
+    db_path = instance_dir / "butly_memory.db"
+    ButlyDatabase(db_path=str(db_path))
+    return db_path
+
+
+class TestDecayBasis:
+    def test_source_date_takes_precedence(self):
+        basis = _decay_basis_datetime(
+            {"source_date": "2023-05-08", "created_at": "2026-07-11 06:58:32"}
+        )
+        assert basis.year == 2023 and basis.month == 5 and basis.day == 8
+
+    def test_falls_back_to_created_at(self):
+        basis = _decay_basis_datetime(
+            {"source_date": None, "created_at": "2026-07-11 06:58:32"}
+        )
+        assert basis.year == 2026
+
+    def test_none_when_unparseable(self):
+        assert _decay_basis_datetime({"source_date": "??", "created_at": ""}) is None
+
+
+class TestInsertKnowledgeSourceColumns:
+    def test_insert_stores_source_date_and_files(self, tmp_path, monkeypatch):
+        db_path = _make_instance_db(tmp_path)
+        sleeptime = ButlySleeptime(
+            base_dir=tmp_path,
+            instances_dir=tmp_path / "butly_core" / "instances",
+        )
+        monkeypatch.setattr(
+            sleeptime, "generate_embedding", lambda text, instance_name=None: [0.1, 0.2]
+        )
+
+        card = {
+            "category": "Life",
+            "title": "Pottery class",
+            "tags": "pottery",
+            "ai_importance": 5,
+            "humanity_importance": 5,
+            "summary": "- Maya joined the club on 2024-04-08\n- planned a blue mug",
+            "episode": "She sounded proud.",
+        }
+        ok = sleeptime.insert_knowledge(
+            card,
+            "test_inst_20240408_001",
+            "test_inst",
+            "2024-04-08_raw_combined",
+            str(db_path),
+            source_date="2024-04-08",
+            source_files=["session_20240408_103000_000000.json"],
+        )
+        assert ok is True
+
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = dict(conn.execute("SELECT * FROM knowledge_cards").fetchone())
+        assert row["source_date"] == "2024-04-08"
+        assert json.loads(row["source_files"]) == [
+            "session_20240408_103000_000000.json"
+        ]
+        # summary の改行はそのまま保存される
+        assert "\n" in row["summary"]
+
+    def test_insert_without_source_info_keeps_nulls(self, tmp_path, monkeypatch):
+        db_path = _make_instance_db(tmp_path)
+        sleeptime = ButlySleeptime(
+            base_dir=tmp_path,
+            instances_dir=tmp_path / "butly_core" / "instances",
+        )
+        monkeypatch.setattr(
+            sleeptime, "generate_embedding", lambda text, instance_name=None: None
+        )
+        card = {
+            "category": "Life",
+            "title": "t",
+            "tags": "",
+            "ai_importance": 1,
+            "humanity_importance": 1,
+            "summary": "s",
+            "episode": "e",
+        }
+        assert sleeptime.insert_knowledge(
+            card, "id_001", "test_inst", "ref", str(db_path)
+        )
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT source_date, source_files FROM knowledge_cards"
+            ).fetchone()
+        assert row == (None, None)
+
+
+class TestVectorSearchDecayUsesSourceDate:
+    def _insert_card(self, db_path, card_id, source_date):
+        blob = np.array([1.0, 0.0, 0.0], dtype=np.float32).tobytes()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO knowledge_cards (
+                    id, category, title, summary, embedding_blob,
+                    created_at, updated_at, source_date
+                ) VALUES (?, 'Life', ?, 's', ?, ?, ?, ?)
+                """,
+                (
+                    card_id,
+                    card_id,
+                    blob,
+                    # created_at は両カードとも同じ（source_date 優先の証明用）
+                    "2024-05-20 12:00:00",
+                    "2024-05-20 12:00:00",
+                    source_date,
+                ),
+            )
+
+    def test_older_event_decays_more(self, tmp_path, monkeypatch):
+        db_path = _make_instance_db(tmp_path)
+        self._insert_card(db_path, "recent_card", "2024-05-01")
+        self._insert_card(db_path, "old_card", "2023-05-01")
+
+        brain = ButlyBrain(tmp_path)
+        monkeypatch.setattr(
+            brain, "get_embedding", lambda text, conf=None: [1.0, 0.0, 0.0]
+        )
+        monkeypatch.setenv("BUTLY_CHRONOS_NOW", "2024-05-21T00:00:00")
+
+        diag = brain.quick_vector_search_diag(
+            "pottery", "test_inst", limit=5, threshold=0.0
+        )
+        results = diag["results"]
+
+        assert [r["id"] for r in results] == ["recent_card", "old_card"]
+        # cosine は両方 1.0。差は source_date 由来の decay のみ。
+        from butly_core.config import SYSTEM_CONFIG
+
+        decay_rate = SYSTEM_CONFIG["brain"].get("time_decay_rate", 0.005)
+        assert results[0]["score"] == pytest.approx(
+            math.exp(-decay_rate * 20), rel=1e-3
+        )
+        assert results[1]["score"] == pytest.approx(
+            math.exp(-decay_rate * 386), rel=1e-3
+        )

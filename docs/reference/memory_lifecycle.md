@@ -197,11 +197,13 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | `category` | TEXT | LLM-assigned category |
 | `title` | TEXT | Title of the episode |
 | `tags` | TEXT | Comma-separated search tags |
-| `summary` | TEXT | Factual summary text |
-| `episode` | TEXT | Episode details |
+| `summary` | TEXT | Factual summary. Bullet points and multiple lines allowed. Preserves the source's explicit 5W1H; relative time expressions are converted to absolute dates based on conversation timestamps |
+| `episode` | TEXT | Episode details (the AI's impression; multiple sentences OK if concise) |
 | `ai_importance` | REAL | Importance to AI (0-1) |
 | `humanity_importance` | REAL | Importance to humanity (0-1) |
 | `embedding_blob` | BLOB | float32 byte array for cosine similarity search |
+| `source_date` | TEXT | Date of the source conversation (YYYY-MM-DD). Search time decay is computed from this "event age" (older cards without it fall back to `created_at`) |
+| `source_files` | TEXT | JSON array of RAW file names the card was generated from; pointer back to the original conversations under `memory_archive/2_knowledgeized/{date}/` |
 
 ---
 
