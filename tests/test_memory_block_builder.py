@@ -170,6 +170,56 @@ class TestRAGWithNeed:
         assert blocks["tier"] == "mid"
         assert blocks["rag_context"] != ""
         assert "テストプロジェクト" in blocks["rag_context"]
+        # source_date が無いカードには日付プレフィックスも凡例も付かない
+        assert "[YYYY-MM-DD]" not in blocks["rag_context"]
+
+    def test_rag_context_shows_source_date(self, memory_manager, mock_brain):
+        """source_date 付きカードは会話日付プレフィックスと凡例が付く"""
+        builder = MemoryBlockBuilder()
+
+        gk_output = {
+            "tier": "mid",
+            "need": "memory_probe_hit",
+            "search_targets": ["陶芸"],
+            "memory_probe": {
+                "status": "hit",
+                "candidates": [
+                    {
+                        "id": "test_001",
+                        "title": "陶芸教室",
+                        "summary": "- 2024-04-08に陶芸クラブへ参加\n- 青いマグを計画",
+                        "episode": "誇らしげだった",
+                        "score": 0.85,
+                        "source": "vector",
+                        "source_date": "2024-04-08",
+                    },
+                    {
+                        "id": "test_002",
+                        "title": "旧カード",
+                        "summary": "source_date の無い旧形式カード",
+                        "score": 0.7,
+                        "source": "vector",
+                    },
+                ],
+                "glossary_hits": [],
+            },
+        }
+
+        blocks = builder.build(
+            tier="mid",
+            memory_manager=memory_manager,
+            brain=mock_brain,
+            user_input="陶芸の件を教えて",
+            gatekeeper_output=gk_output,
+        )
+
+        rag = blocks["rag_context"]
+        assert "・[2024-04-08] 陶芸教室: " in rag
+        assert "（各記憶の [YYYY-MM-DD] はその会話が行われた日付）" in rag
+        # 旧形式カードはプレフィックスなしのまま
+        assert "・旧カード: " in rag
+        # 複数行 summary の継続行はインデントされる
+        assert "\n  - 青いマグを計画" in rag
 
     def test_need_includes_need_and_targets(self, memory_manager, mock_brain):
         """が伝播される"""
