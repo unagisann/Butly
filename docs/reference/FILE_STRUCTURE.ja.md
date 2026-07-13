@@ -355,6 +355,13 @@ LLM 呼び出しと RAG 検索のエンジン。Provider に依存しない中�
 
 ---
 
+### `butly_core/core/json_extract.py`
+LLM 応答テキストから JSON 文字列を取り出す共通ヘルパー。
+
+- `extract_json_str(raw_text)` — コードフェンス（閉じ ``` 欠落も許容）または地の文から最初の `{` 〜 最後の `}` を抽出して返す。パースは呼び出し側の責務。ContextClassifier / StateUpdater / Stage 3 (knowledge_maturation) で共用
+
+---
+
 ### `butly_core/core/database.py`
 ナレッジカードの SQLite CRUD を管理するクラス。
 
@@ -467,7 +474,7 @@ LLM に 3 スコア（0–1）+ `need_intent` を出力させ、Python 側でル
 | `relationship` | 関係性・ムード推移・習慣の質問 |
 | `null` | 長期記憶不要（挨拶・将来設計・自己完結発話） |
 
-parse 失敗時は `asks_for_specific_past_detail()` を fallback として使用（マッチで past_fact、なしで null）。
+parse 失敗時は `asks_for_specific_past_detail()` を fallback として使用（マッチで past_fact、なしで null）。parse 成功で LLM が null を出した場合も、同パターンがマッチすれば past_fact に引き上げる（floor — null では vector probe が走らないため）。JSON 抽出は `core/json_extract.py` の `extract_json_str()` を使用。
 
 ---
 

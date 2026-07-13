@@ -12,12 +12,12 @@ ButlySleeptime から呼ばれる。
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from butly_core.core.json_extract import extract_json_str
 from butly_core.core.memory_nodes import (
     MemoryNodeRepository,
     SOURCE_RELATIONS,
@@ -158,17 +158,8 @@ def parse_llm_output(raw: str) -> dict:
     """LLM 応答を JSON に解釈する。失敗時は空構造を返す。"""
     if not raw:
         return {"link_existing": [], "new_nodes": []}
-    text = raw.strip()
-    m = re.search(r"```json(.*?)```", text, re.DOTALL)
-    if m:
-        text = m.group(1).strip()
-    else:
-        # 最後の {...} ブロックを抽出
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if m:
-            text = m.group(0)
     try:
-        data = json.loads(text)
+        data = json.loads(extract_json_str(raw))
     except Exception:
         return {"link_existing": [], "new_nodes": []}
     if not isinstance(data, dict):

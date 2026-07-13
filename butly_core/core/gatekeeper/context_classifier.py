@@ -5,13 +5,13 @@ LLM に 3 つのスコア（rc/ew/cn）を出力させ、Python 側で reflex/mi
 """
 
 import json
-import re
 import time
 from pathlib import Path
 
 from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
 from butly_core.prompts import PromptLoader
 from butly_core.core.gatekeeper.memory_probe import asks_for_specific_past_detail
+from butly_core.core.json_extract import extract_json_str
 from butly_core.trace.collector import record_llm_call
 
 VALID_NEED_INTENTS = ("past_fact", "glossary", "relationship")
@@ -151,6 +151,8 @@ class ContextClassifier:
             )
             result = self._default_output(user_input)
 
+        result = self._apply_need_intent_floor(result, user_input)
+
         t1 = time.time()
         scores = result.get("llm_scoring", {})
         print(
@@ -195,15 +197,7 @@ class ContextClassifier:
             return default
 
         try:
-            match = re.search(r"```json(.*?)```", raw_text, re.DOTALL)
-            if match:
-                json_str = match.group(1).strip()
-            else:
-                json_str = raw_text.strip()
-                if json_str.startswith("{") and "}" in json_str:
-                    json_str = json_str[json_str.find("{") : json_str.rfind("}") + 1]
-
-            data = json.loads(json_str)
+            data = json.loads(extract_json_str(raw_text))
 
             llm_scoring = data.get("llm_scoring", {})
             # スコア値を 0-1 にクランプ
@@ -246,6 +240,25 @@ class ContextClassifier:
             f"falling back to rule-based decision"
         )
         return self._rule_based_need_intent(user_input)
+
+    @staticmethod
+    def _apply_need_intent_floor(result: dict, user_input: str) -> dict:
+        """LLM が need_intent=null でも、明示的な過去参照/時点質問は past_fact に引き上げる。
+
+        need_intent=null だと MemoryProbe は vector/deep を実行しない（glossary のみ）
+        ため、null の誤判定はそのまま RAG 不発火に直結する。ルールで拾える明示的な
+        シグナルだけは vector 検索の事実裏付けへ回す。probe が候補ゼロなら need=null
+        に戻るので、誤検知のコストはローカル vector 検索 1 回に留まる。
+        """
+        if result.get("need_intent") is not None:
+            return result
+        if not asks_for_specific_past_detail(user_input or ""):
+            return result
+        print(
+            "[ContextClassifier] need_intent floor: null → past_fact "
+            "(明示的な過去参照/時点質問)"
+        )
+        return {**result, "need_intent": "past_fact"}
 
     @staticmethod
     def _rule_based_need_intent(user_input: str) -> str | None:

@@ -159,6 +159,29 @@ class TestParseResponse:
         result = classifier._parse_response(raw)
         assert "memory_reference_likelihood" not in result["llm_scoring"]
 
+    def test_parse_unclosed_code_fence(self, classifier):
+        """閉じ ``` 欠落（トークン切れ）でも JSON を抽出できる — v8 qa_007/qa_010 の実障害パターン"""
+        raw = (
+            '```json\n{"llm_scoring": {"response_complexity": 0.6, '
+            '"emotional_weight": 0.1, "continuity_need": 0.2}, '
+            '"need_intent": "past_fact"}'
+        )
+        result = classifier._parse_response(raw, user_input="When did she move?")
+        assert result["llm_scoring"]["response_complexity"] == 0.6
+        assert result["need_intent"] == "past_fact"
+
+    def test_parse_prose_wrapped_json(self, classifier):
+        """地の文に埋め込まれた JSON も抽出できる"""
+        raw = (
+            'Here is my analysis:\n'
+            '{"llm_scoring": {"response_complexity": 0.5, '
+            '"emotional_weight": 0.0, "continuity_need": 0.4}, '
+            '"need_intent": null}\nHope this helps.'
+        )
+        result = classifier._parse_response(raw)
+        assert result["tier"] == "mid"
+        assert result["need_intent"] is None
+
 
 class TestNeedIntentParsing:
     """need_intent の parse とフォールバックのテスト"""
@@ -211,6 +234,47 @@ class TestNeedIntentParsing:
 
     def test_default_output_no_pattern_returns_null(self, classifier):
         result = classifier._default_output(user_input="今日も頑張ろう")
+        assert result["need_intent"] is None
+
+
+class TestNeedIntentFloor:
+    """need_intent floor（LLM null + 明示的過去参照 → past_fact）のテスト"""
+
+    @pytest.fixture
+    def classifier(self):
+        return ContextClassifier()
+
+    def test_floor_promotes_null_on_when_question(self, classifier):
+        """LLM が null でも時点質問なら past_fact に引き上げ — v8 qa_006 の実障害パターン"""
+        result = {"tier": "reflex", "llm_scoring": {}, "need_intent": None}
+        floored = classifier._apply_need_intent_floor(
+            result, "When did Melanie run a charity race?"
+        )
+        assert floored["need_intent"] == "past_fact"
+
+    def test_floor_promotes_null_on_ja_past_reference(self, classifier):
+        result = {"tier": "mid", "llm_scoring": {}, "need_intent": None}
+        floored = classifier._apply_need_intent_floor(result, "前に話したあの店の名前は？")
+        assert floored["need_intent"] == "past_fact"
+
+    def test_floor_keeps_null_without_pattern(self, classifier):
+        """パターンなしなら LLM の null 判定を尊重する"""
+        result = {"tier": "reflex", "llm_scoring": {}, "need_intent": None}
+        floored = classifier._apply_need_intent_floor(result, "おはよう！")
+        assert floored["need_intent"] is None
+
+    def test_floor_preserves_existing_intent(self, classifier):
+        """LLM が glossary 等を出していれば floor は上書きしない"""
+        result = {"tier": "mid", "llm_scoring": {}, "need_intent": "glossary"}
+        floored = classifier._apply_need_intent_floor(
+            result, "remember the TierClassifier we discussed?"
+        )
+        assert floored["need_intent"] == "glossary"
+
+    def test_floor_does_not_mutate_input(self, classifier):
+        """floor は入力 dict を破壊しない"""
+        result = {"tier": "mid", "llm_scoring": {}, "need_intent": None}
+        classifier._apply_need_intent_floor(result, "When was the concert?")
         assert result["need_intent"] is None
 
 

@@ -161,14 +161,14 @@ ContextClassifier は tier に加えて `need_intent` フィールドを出力�
 
 この 2 段構えにより、LLM の意図捕捉と事実裏付けの両方をパスした時のみ RAG ブロックが注入される。reflex tier でも need は有り得る（例: 「前に話したあの曲なんだっけ？」）。
 
-### need_intent の parse 失敗時 fallback
+### need_intent のルール安全網（fallback + floor）
 
-LLM 出力が 4 値以外だった場合や JSON 構造が崩れた場合のフォールバック:
+`asks_for_specific_past_detail(user_input)`（「前に」「以前」「だっけ」「When did」「いつ〜した」等の明示的過去参照・時点質問パターン）を使う 2 段のルール安全網がある:
 
-1. `asks_for_specific_past_detail(user_input)` がマッチ (「前に」「以前」「だっけ」等のパターン) → `past_fact`
-2. マッチしない → `null` (probe スキップ)
+1. **fallback（parse 失敗時）**: LLM 出力が 4 値以外・JSON 構造が崩れた場合 — パターンがマッチすれば `past_fact`、なければ `null`（probe スキップ）。不正値の場合は loud な warning ログを出力し、prompt drift / モデル劣化を検知できるようにしている。
+2. **floor（LLM が null の場合）**: parse に成功して LLM が `null` を出しても、パターンがマッチすれば `past_fact` に引き上げる。`null` だと vector probe が一切走らず、誤判定がそのまま RAG 不発火に直結するため。probe が候補ゼロなら `need = null` に戻るので、誤検知のコストはローカル vector 検索 1 回に留まる。
 
-これにより「不要 probe 削減」という目的を維持しつつ、明示的な過去参照シグナルがある場合は安全網が働く。parse 失敗時は loud な warning ログを出力し、prompt drift / モデル劣化を検知できるようにしている。
+これにより「不要 probe 削減」という目的を維持しつつ、明示的な過去参照シグナルがある場合は安全網が働く。なお LLM 応答からの JSON 抽出は `core/json_extract.py` の `extract_json_str()`（ContextClassifier / StateUpdater / Stage 3 で共用）に統一されており、閉じフェンス欠落（トークン切れ）にも耐える。
 
 ---
 

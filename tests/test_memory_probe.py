@@ -52,6 +52,20 @@ class TestAsksForSpecificPastDetail:
         assert asks_for_specific_past_detail(text) is True
 
     @pytest.mark.parametrize("text", [
+        "When did Melanie run a charity race?",
+        "when was the concert?",
+        "When were they in Paris?",
+        "What day did we meet?",
+        "What year was that trip?",
+        "What time did the party start?",
+        "マラソンはいつ走ったの？",
+        "引っ越しはいつでしたか",
+        "彼女がいつ卒業したか知りたい",
+    ])
+    def test_when_question_patterns_detected(self, text):
+        assert asks_for_specific_past_detail(text) is True
+
+    @pytest.mark.parametrize("text", [
         "今日の天気は？",
         "こんにちは",
         "新しいプロジェクトを始めよう",
@@ -59,6 +73,18 @@ class TestAsksForSpecificPastDetail:
         "ありがとう",
     ])
     def test_no_past_reference(self, text):
+        assert asks_for_specific_past_detail(text) is False
+
+    @pytest.mark.parametrize("text", [
+        "When will we arrive?",
+        "When should I call you?",
+        "What time is it?",
+        "What time should we meet tomorrow?",
+        "いつも通りだよ",
+        "いつか行きたいね、その島",
+        "いつの間にか終わってた",
+    ])
+    def test_future_and_idiom_not_detected(self, text):
         assert asks_for_specific_past_detail(text) is False
 
 
@@ -715,3 +741,64 @@ class TestGatekeeperIntegration:
         mock_gatekeeper.state_updater.update.assert_called_once()
         assert result["topic"] == "新しい話題"
         assert result["mood"] == "focused"
+
+    def test_session_state_topic_passed_to_classifier(
+        self, mock_gatekeeper, test_instance_dir
+    ):
+        """session_state の topic が ContextClassifier の current_topic に配線される。
+        (v8 評価で発覚: 戻り値にしか使われず classifier は常に「(未設定)」だった)"""
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "no_hit", "candidates": [], "glossary_hits": [],
+        }
+
+        mock_gatekeeper.classify(
+            user_input="test",
+            history_msgs=[],
+            session_state={"topic": "前ターンの話題"},
+            instance_dir=test_instance_dir,
+            brain=MagicMock(),
+        )
+
+        call = mock_gatekeeper.context_classifier.classify.call_args
+        assert call.args[2] == "前ターンの話題"
+
+    def test_explicit_current_topic_wins_over_session_state(
+        self, mock_gatekeeper, test_instance_dir
+    ):
+        """引数 current_topic 明示時はそちらを優先 (classify_tier_only 互換)"""
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "no_hit", "candidates": [], "glossary_hits": [],
+        }
+
+        result = mock_gatekeeper.classify(
+            user_input="test",
+            history_msgs=[],
+            session_state={"topic": "state側の話題"},
+            current_topic="明示された話題",
+            instance_dir=test_instance_dir,
+            brain=MagicMock(),
+        )
+
+        call = mock_gatekeeper.context_classifier.classify.call_args
+        assert call.args[2] == "明示された話題"
+        assert result["topic"] == "明示された話題"
+
+    def test_non_dict_session_state_keeps_empty_topic(
+        self, mock_gatekeeper, test_instance_dir
+    ):
+        """session_state が dict でなくても落ちない"""
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "no_hit", "candidates": [], "glossary_hits": [],
+        }
+
+        result = mock_gatekeeper.classify(
+            user_input="test",
+            history_msgs=[],
+            session_state=None,
+            instance_dir=test_instance_dir,
+            brain=MagicMock(),
+        )
+
+        call = mock_gatekeeper.context_classifier.classify.call_args
+        assert call.args[2] == ""
+        assert result["topic"] == ""
