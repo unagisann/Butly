@@ -160,14 +160,14 @@ Final `need` decision:
 
 This two-stage design ensures the RAG block is injected only when both LLM intent capture and the fact-check pass. `need` can fire even at `reflex` tier (e.g., "What was that song we talked about?").
 
-### Fallback for need_intent parse failures
+### Rule-based safety nets for need_intent (fallback + floor)
 
-When the LLM output is outside the 4 valid values or the JSON structure breaks:
+Two rule-based safety nets share `asks_for_specific_past_detail(user_input)` (explicit past-reference / event-time patterns like "前に", "以前", "remember", "last time", "when did", "いつ〜した"):
 
-1. `asks_for_specific_past_detail(user_input)` matches (patterns like "前に", "以前", "remember", "last time") → `past_fact`
-2. No match → `null` (probe skipped)
+1. **Fallback (parse failure)**: when the LLM output is outside the 4 valid values or the JSON structure breaks — a pattern match yields `past_fact`, otherwise `null` (probe skipped). Invalid values emit a loud warning log to surface prompt drift or model degradation.
+2. **Floor (LLM said null)**: even when parsing succeeds and the LLM emits `null`, a pattern match promotes it to `past_fact`. With `null` the vector probe never runs, so a misclassification turns directly into a missed RAG injection; if the probe then finds no candidates, `need` falls back to `null`, so a false positive only costs one local vector search.
 
-This preserves the "reduce unnecessary probes" goal while keeping a safety net for explicit past-reference signals. Parse failures emit a loud warning log to surface prompt drift or model degradation.
+This preserves the "reduce unnecessary probes" goal while keeping a safety net for explicit past-reference signals. JSON extraction from LLM responses is unified in `core/json_extract.py` `extract_json_str()` (shared by ContextClassifier / StateUpdater / Stage 3) and tolerates unclosed code fences (token cutoff).
 
 ---
 

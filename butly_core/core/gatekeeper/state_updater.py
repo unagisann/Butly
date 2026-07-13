@@ -5,12 +5,12 @@ state_updater.py
 """
 
 import json
-import re
 import time
 from pathlib import Path
 
 from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
 from butly_core.prompts import PromptLoader
+from butly_core.core.json_extract import extract_json_str
 from butly_core.trace.collector import record_llm_call
 
 
@@ -130,14 +130,7 @@ class StateUpdater:
             return default
 
         try:
-            # コードフェンスは閉じ ``` が無いケース（トークン切れ・省略）も許容。
-            # 開きフェンスまたは地の文いずれでも、最初の { 〜 最後の } を抽出する。
-            match = re.search(r"```(?:json)?\s*(.*?)```", raw_text, re.DOTALL)
-            json_str = match.group(1).strip() if match else raw_text.strip()
-            if "{" in json_str and "}" in json_str:
-                json_str = json_str[json_str.find("{") : json_str.rfind("}") + 1]
-
-            data = json.loads(json_str)
+            data = json.loads(extract_json_str(raw_text))
 
             # Validate and normalize — topic, mood のみ抽出
             result = {}

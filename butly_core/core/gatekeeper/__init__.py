@@ -74,6 +74,12 @@ class Gatekeeper:
         # B. ContextClassifier (LLM 呼び出し)
         instance_name = instance_dir.name if instance_dir else "00_master"
 
+        # topic は post-response の StateUpdater が育てるため、classify 時点では
+        # session_state の既存 topic (1 ターン前の値) を使う。引数 current_topic が
+        # 明示されていればそちらを優先 (classify_tier_only 互換)。
+        if not current_topic and isinstance(session_state, dict):
+            current_topic = session_state.get("topic", "") or ""
+
         ctx_result = self.context_classifier.classify(
             user_input,
             history_msgs,
@@ -115,17 +121,9 @@ class Gatekeeper:
             need = need_intent
             search_targets = [c.get("title", "") for c in candidates[:3]]
 
-        # topic は state_delta が空 (post-response 実行待ち) なので
-        # session_state の既存 topic を採用 (1 ターン前の値)
-        current_topic_resolved = (
-            session_state.get("topic", current_topic)
-            if isinstance(session_state, dict)
-            else current_topic
-        )
-
         return {
             "tier": tier,
-            "topic": current_topic_resolved,
+            "topic": current_topic,
             "need": need,
             "need_intent": need_intent,
             "search_targets": search_targets,

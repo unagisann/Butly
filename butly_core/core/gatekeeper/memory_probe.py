@@ -68,6 +68,18 @@ def asks_for_specific_past_detail(user_input):
     if re.search(r"(だっけ|でしたっけ|どうなった|どうした|の件)", user_input):
         return True
 
+    # 過去の出来事の日付・時点を尋ねる疑問文。
+    # "what time" は現在時刻の質問（What time is it?）を拾わないよう過去形限定。
+    if re.search(r"\bwhen\s+(did|was|were)\b", input_lower):
+        return True
+    if re.search(r"\bwhat\s+(date|day|year)\b", input_lower):
+        return True
+    if re.search(r"\bwhat\s+time\s+(did|was|were)\b", input_lower):
+        return True
+    # 「いつ〜した/だった」系。「いつも」「いつか」「いつの間に」は除外
+    if re.search(r"いつ(?!も|か|の間).{0,15}(した|った|でした|ました)", user_input):
+        return True
+
     return False
 
 

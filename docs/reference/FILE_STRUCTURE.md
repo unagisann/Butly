@@ -191,6 +191,9 @@ Implements the backward-compat rule: **missing meta = owner / direct / web** (no
   - `_get_time_segment(hour, is_weekday, is_holiday_override)`.
   - `get_system_note(...)` — current-date string prepended to the system prompt.
 
+#### `json_extract.py`
+- `extract_json_str(raw_text)` — pulls the JSON string out of an LLM response (code fence with or without closing ```, or first `{` to last `}` in prose); parsing is the caller's job. Shared by ContextClassifier / StateUpdater / Stage 3 (knowledge_maturation).
+
 #### `database.py`
 - `ButlyDatabase(db_path)` — SQLite CRUD for `knowledge_cards`. Auto-creates / migrates schema. Tables: `knowledge_cards`, `access_logs`.
 
@@ -242,7 +245,7 @@ Gatekeeper.update_state(...) is called in parallel from ChatService (post-respon
 
 Defaults: `rc=0.4`, `cn=0.3`. Override via `SYSTEM_CONFIG["gatekeeper"]` or per-instance `config.json`.
 
-**`need_intent` values**: `past_fact` / `glossary` / `relationship` / `null`. Parse failures fall back to `asks_for_specific_past_detail(user_input)` (regex).
+**`need_intent` values**: `past_fact` / `glossary` / `relationship` / `null`. Parse failures fall back to `asks_for_specific_past_detail(user_input)` (regex). Even on a successful parse, an LLM `null` is promoted to `past_fact` when the same patterns match (floor — with `null` the vector probe never runs). JSON extraction uses `extract_json_str()` from `core/json_extract.py`.
 
 #### `memory_probe.py`
 LLM-free fact-based retrieval.
