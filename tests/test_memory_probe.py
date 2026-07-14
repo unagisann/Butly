@@ -119,6 +119,37 @@ class TestShouldDeepSearch:
         """過去参照ありなら headline があっても deep search する"""
         assert should_deep_search("前に話したプロジェクトの件", layer1_hits=False, headline_match=True, glossary_match=False) is True
 
+    def test_llm_past_fact_intent_triggers_deep_without_pattern(self):
+        """LLM が past_fact 判定なら正規表現パターン不一致でも deep search する
+        (二重ゲート解消: パターンは fallback 用の安全網であってフィルタではない)"""
+        assert should_deep_search(
+            "How did we end up resolving the logo issue?",
+            layer1_hits=False, headline_match=False, glossary_match=False,
+            need_intent="past_fact",
+        ) is True
+
+    def test_llm_past_fact_intent_overrides_headline(self):
+        assert should_deep_search(
+            "How did we end up resolving the logo issue?",
+            layer1_hits=False, headline_match=True, glossary_match=False,
+            need_intent="past_fact",
+        ) is True
+
+    def test_relationship_intent_still_requires_pattern(self):
+        """relationship は常時 Deep 送りの判断前なのでパターン必須のまま"""
+        assert should_deep_search(
+            "How have I seemed lately?",
+            layer1_hits=False, headline_match=False, glossary_match=False,
+            need_intent="relationship",
+        ) is False
+
+    def test_layer1_hit_skips_deep_even_with_past_fact_intent(self):
+        assert should_deep_search(
+            "How did we end up resolving it?",
+            layer1_hits=True, headline_match=False, glossary_match=False,
+            need_intent="past_fact",
+        ) is False
+
 
 # ===================================================================
 # MemoryProbe._match_glossary テスト

@@ -69,14 +69,15 @@ class TestXaiClassify:
         assert '{"tier": "mid"}' in result
 
     @patch("butly_core.llm.providers.xai._get_client")
-    def test_classify_error(self, mock_get_client):
+    def test_classify_error_raises(self, mock_get_client):
+        """エラーは握りつぶさず送出する（呼び出し側が provider_error として fallback）"""
         mock_client = MagicMock()
         mock_client.chat.completions.create.side_effect = Exception("API error")
         mock_get_client.return_value = mock_client
 
         provider = XaiProvider()
-        result = provider.classify("classify this", {"model_name": "grok-4-1-fast-non-reasoning"})
-        assert result == ""
+        with pytest.raises(Exception, match="API error"):
+            provider.classify("classify this", {"model_name": "grok-4-1-fast-non-reasoning"})
 
 
 # ===================================================================

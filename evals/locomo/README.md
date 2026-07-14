@@ -33,10 +33,15 @@ self-contained original-Porter implementation (no nltk dependency), so rare
 words may stem slightly differently from the official nltk stemmer.
 
 Butly-specific metrics (RAG trigger rates, retrieved cards, latency
-percentiles, tier / need_intent distributions, Sleeptime card counts) are
-reported under a separate `butly` key. The evidence-retrieval rate is a
-token-overlap heuristic between evidence turns and retrieved card texts and is
-only computed when the dataset is available at scoring time.
+percentiles, tier / need_intent distributions, classifier fallback / intent
+floor rates, Sleeptime card counts) are reported under a separate `butly` key.
+The evidence-retrieval rate is provenance-based: retrieved card ids are
+resolved through `knowledge_cards.source_files` to the saved-turn files whose
+`locomo_dialog_ids` contain the gold evidence ids. `source_files` carries the
+whole generation chunk rather than card-specific sources, so this is a
+chunk-level provenance metric, not strict per-card evidence. It requires the
+run's workspace (instance DB and turn files) and reports n/a without it; the
+dataset argument to `score` is no longer needed.
 
 ## Speaker Mapping
 

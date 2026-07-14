@@ -29,7 +29,7 @@ User utterance
 [B] MemoryProbe.probe()            ← No LLM call (~100ms)
     ├─ Layer 1.5: Glossary Match — ALWAYS runs (regex-only, ~ms)
     ├─ Layer 1:   Quick Vector Search — gated by need_intent ∈ {past_fact, relationship}
-    └─ Layer 2:   Deep Search — only when Layer 1 missed AND past-reference pattern detected
+    └─ Layer 2:   Deep Search — only when Layer 1 missed AND (need_intent=past_fact OR past-reference pattern)
   ↓
 Gatekeeper.classify() merges results + decides final need
   ↓
@@ -85,6 +85,11 @@ Glossary scan is ungated because it is regex-only and ~ms; running it every turn
     "topic": str,                       # from state_delta or current topic
     "need": str | None,                 # final need (only set when both LLM intent and fact-check pass)
     "need_intent": str | None,          # LLM-emitted intent: past_fact / glossary / relationship / None
+    "classifier_status": "ok" | "fallback",   # whether the LLM output was usable (incl. partial fallback)
+    "fallback_reason": str | None,      # provider_error / empty_response / parse_error
+                                        # / missing_need_intent / invalid_need_intent / not_configured
+    "original_need_intent": str | None, # need_intent before the floor was applied
+    "intent_floor_applied": bool,       # whether the null → past_fact floor fired
     "search_targets": list[str] | None, # top candidate titles / glossary terms when need is set
     "state_delta": {
         "topic": str | None,
@@ -112,7 +117,7 @@ The probe emits diagnostics that surface in `debug_info.gatekeeper.memory_probe_
 {
   "glossary": {"executed": True, "matches": 2},
   "vector":   {"executed": True, "result_count": 3, "max_score": 0.71, "above_threshold_count": 1, ...},
-  "deep":     {"executed": False, "reason": "no past_ref_pattern"},
+  "deep":     {"executed": False, "reason": "no deep trigger"},
 }
 ```
 
@@ -167,7 +172,7 @@ Two rule-based safety nets share `asks_for_specific_past_detail(user_input)` (ex
 1. **Fallback (parse failure)**: when the LLM output is outside the 4 valid values or the JSON structure breaks — a pattern match yields `past_fact`, otherwise `null` (probe skipped). Invalid values emit a loud warning log to surface prompt drift or model degradation.
 2. **Floor (LLM said null)**: even when parsing succeeds and the LLM emits `null`, a pattern match promotes it to `past_fact`. With `null` the vector probe never runs, so a misclassification turns directly into a missed RAG injection; if the probe then finds no candidates, `need` falls back to `null`, so a false positive only costs one local vector search.
 
-This preserves the "reduce unnecessary probes" goal while keeping a safety net for explicit past-reference signals. JSON extraction from LLM responses is unified in `core/json_extract.py` `extract_json_str()` (shared by ContextClassifier / StateUpdater / Stage 3) and tolerates unclosed code fences (token cutoff).
+This preserves the "reduce unnecessary probes" goal while keeping a safety net for explicit past-reference signals. Which net fired is observable via `classifier_status` / `fallback_reason` / `original_need_intent` / `intent_floor_applied` (propagated from the `Gatekeeper.classify()` return value into `debug_info.gatekeeper` and the Trace). Deep Search (Layer 2) fires on `need_intent=past_fact` even without a regex-pattern match — the patterns are a fallback safety net, not a filter, so semantically detected cases are not killed by a double gate (always sending `relationship` to Deep is still undecided; judge from Trace hit rates and latency). JSON extraction from LLM responses is unified in `core/json_extract.py` `extract_json_str()` (shared by ContextClassifier / StateUpdater / Stage 3 / keyword extraction) and tolerates unclosed code fences (token cutoff).
 
 ---
 

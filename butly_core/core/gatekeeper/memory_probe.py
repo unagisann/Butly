@@ -21,19 +21,29 @@ from pathlib import Path
 from butly_core.config import SYSTEM_CONFIG
 
 
-def should_deep_search(user_input, layer1_hits, headline_match, glossary_match):
-    """Layer 1 でヒットなし時に deep search を実行すべきか判定する。"""
+def should_deep_search(
+    user_input, layer1_hits, headline_match, glossary_match, need_intent=None
+):
+    """Layer 1 でヒットなし時に deep search を実行すべきか判定する。
+
+    LLM が past_fact と判定した場合は正規表現パターン一致を要求しない。
+    パターンは need_intent が信頼できない時（fallback 経路）の安全網であり、
+    LLM が意味的に拾ったケースを二重ゲートで潰さない。
+    relationship は常時 Deep に送るか未判断のため、従来どおりパターン必須
+    （Trace でヒット率と遅延を確認してから判断する）。
+    """
     if layer1_hits:
         return False
 
+    explicit_ask = (
+        need_intent == "past_fact" or asks_for_specific_past_detail(user_input)
+    )
+
     if headline_match or glossary_match:
-        if not asks_for_specific_past_detail(user_input):
+        if not explicit_ask:
             return False
 
-    if asks_for_specific_past_detail(user_input):
-        return True
-
-    return False
+    return explicit_ask
 
 
 def asks_for_specific_past_detail(user_input):
@@ -232,7 +242,11 @@ class MemoryProbe:
         headline_match = self._check_headline_match(user_input, recent_headlines)
 
         if should_deep_search(
-            user_input, candidates, headline_match, bool(glossary_hits)
+            user_input,
+            candidates,
+            headline_match,
+            bool(glossary_hits),
+            need_intent=need_intent,
         ):
             deep_data = self._deep_search_diag(
                 user_input, brain, instance_name, override_config
@@ -240,7 +254,11 @@ class MemoryProbe:
             deep_candidates = deep_data["results"]
             layers["deep"] = {
                 "executed": True,
-                "trigger": "past_ref_pattern",
+                "trigger": (
+                    "past_ref_pattern"
+                    if asks_for_specific_past_detail(user_input)
+                    else "llm_intent"
+                ),
                 "keywords": deep_data.get("keywords", []),
                 "result_count": len(deep_candidates),
             }
@@ -262,7 +280,7 @@ class MemoryProbe:
                 f"glossary={len(glossary_hits)} ({int((t2-t0)*1000)}ms)"
             )
         else:
-            layers["deep"] = {"executed": False, "reason": "no past_ref_pattern"}
+            layers["deep"] = {"executed": False, "reason": "no deep trigger"}
             print(
                 f"[MemoryProbe] no_hit (intent={need_intent}, no deep_search trigger), "
                 f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"

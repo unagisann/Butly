@@ -237,6 +237,62 @@ class TestNeedIntentParsing:
         assert result["need_intent"] is None
 
 
+class TestClassifierDiagnostics:
+    """classifier_status / fallback_reason の観測フィールドのテスト"""
+
+    @pytest.fixture
+    def classifier(self):
+        return ContextClassifier()
+
+    def test_valid_response_reports_ok(self, classifier):
+        raw = (
+            '{"llm_scoring": {"response_complexity": 0.5, "emotional_weight": 0.1, '
+            '"continuity_need": 0.4}, "need_intent": "past_fact"}'
+        )
+        result = classifier._parse_response(raw, user_input="any")
+        assert result["classifier_status"] == "ok"
+        assert result["fallback_reason"] is None
+
+    def test_empty_response_reason(self, classifier):
+        result = classifier._parse_response("", user_input="any")
+        assert result["classifier_status"] == "fallback"
+        assert result["fallback_reason"] == "empty_response"
+
+    def test_whitespace_response_reason(self, classifier):
+        result = classifier._parse_response("   \n", user_input="any")
+        assert result["fallback_reason"] == "empty_response"
+
+    def test_parse_error_reason(self, classifier):
+        result = classifier._parse_response("total garbage", user_input="any")
+        assert result["classifier_status"] == "fallback"
+        assert result["fallback_reason"] == "parse_error"
+
+    def test_missing_need_intent_reason_keeps_llm_tier(self, classifier):
+        """need_intent 欠落は部分 fallback — tier/scores は LLM 由来のまま"""
+        raw = (
+            '{"llm_scoring": {"response_complexity": 0.9, "emotional_weight": 0.1, '
+            '"continuity_need": 0.8}}'
+        )
+        result = classifier._parse_response(raw, user_input="こんにちは")
+        assert result["classifier_status"] == "fallback"
+        assert result["fallback_reason"] == "missing_need_intent"
+        assert result["tier"] == "mid"
+        assert result["llm_scoring"]["response_complexity"] == 0.9
+
+    def test_invalid_need_intent_reason(self, classifier):
+        raw = (
+            '{"llm_scoring": {"response_complexity": 0.2, "emotional_weight": 0.0, '
+            '"continuity_need": 0.1}, "need_intent": "bogus_value"}'
+        )
+        result = classifier._parse_response(raw, user_input="ありがとう")
+        assert result["fallback_reason"] == "invalid_need_intent"
+
+    def test_default_output_reports_provider_error_by_default(self, classifier):
+        result = classifier._default_output(user_input="any")
+        assert result["classifier_status"] == "fallback"
+        assert result["fallback_reason"] == "provider_error"
+
+
 class TestNeedIntentFloor:
     """need_intent floor（LLM null + 明示的過去参照 → past_fact）のテスト"""
 
@@ -276,6 +332,20 @@ class TestNeedIntentFloor:
         result = {"tier": "mid", "llm_scoring": {}, "need_intent": None}
         classifier._apply_need_intent_floor(result, "When was the concert?")
         assert result["need_intent"] is None
+
+    def test_floor_records_original_and_applied_flag(self, classifier):
+        """floor 適用時は original_need_intent=None と applied=True を残す"""
+        result = {"tier": "mid", "llm_scoring": {}, "need_intent": None}
+        floored = classifier._apply_need_intent_floor(result, "When was the concert?")
+        assert floored["original_need_intent"] is None
+        assert floored["intent_floor_applied"] is True
+
+    def test_no_floor_still_stamps_fields(self, classifier):
+        """floor 不適用でも観測フィールドは常に付与される"""
+        result = {"tier": "mid", "llm_scoring": {}, "need_intent": "glossary"}
+        floored = classifier._apply_need_intent_floor(result, "何それ？")
+        assert floored["original_need_intent"] == "glossary"
+        assert floored["intent_floor_applied"] is False
 
 
 class TestConfigurableTierThresholds:

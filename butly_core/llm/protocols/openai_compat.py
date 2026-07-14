@@ -231,25 +231,26 @@ class OpenAICompatAdapter(BaseProvider):
             return None
 
     def classify(self, prompt: str, config: dict) -> str:
-        try:
-            model = self._resolve_chat_model(config)
-            messages = [{"role": "user", "content": prompt}]
-            # classify でも reasoning model 対応のため build_chat_completion_kwargs 経由
-            normalized_conf = self._to_chat_completion_conf(
-                config,
-                default_temperature=0.0,
-            )
-            kwargs = compat.build_chat_completion_kwargs(
-                normalized_conf,
-                messages,
-                model_name=model,
-            )
-            kwargs["model"] = model
-            resp = self.client.chat.completions.create(**kwargs)
-            return resp.choices[0].message.content if resp.choices else ""
-        except Exception as e:
-            print(f"[{self._log_tag()}] Classify Error: {e}")
-            return ""
+        """分類呼び出し。エラー時は例外を送出する。
+
+        握りつぶして "" を返すと、呼び出し側で provider エラーと
+        「本当に空の応答」を区別できない。
+        """
+        model = self._resolve_chat_model(config)
+        messages = [{"role": "user", "content": prompt}]
+        # classify でも reasoning model 対応のため build_chat_completion_kwargs 経由
+        normalized_conf = self._to_chat_completion_conf(
+            config,
+            default_temperature=0.0,
+        )
+        kwargs = compat.build_chat_completion_kwargs(
+            normalized_conf,
+            messages,
+            model_name=model,
+        )
+        kwargs["model"] = model
+        resp = self.client.chat.completions.create(**kwargs)
+        return resp.choices[0].message.content if resp.choices else ""
 
     def generate(
         self,

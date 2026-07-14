@@ -29,7 +29,7 @@ tier は `reflex` / `mid` の 2 値のみ。RAG 注入は tier ではなく `nee
 [B] MemoryProbe.probe()            ← LLM不要 (~100ms)
     ├─ Layer 1.5: Glossary Match — 常時実行 (regex のみ・~ms)
     ├─ Layer 1:   Quick Vector Search — need_intent ∈ {past_fact, relationship} のみ
-    └─ Layer 2:   Deep Search — Layer 1 ヒット無し + 過去参照パターン検出時のみ
+    └─ Layer 2:   Deep Search — Layer 1 ヒット無し + (need_intent=past_fact または過去参照パターン) 時のみ
   ↓
 Gatekeeper.classify() が結果をマージし、最終 need を決定
   ↓
@@ -85,6 +85,11 @@ Glossary scan は regex のみ・~ms オーダーなのでゲートを外して�
     "topic": str,                       # state_delta または現在 topic
     "need": str | None,                 # 最終 need (LLM 意図 + 事実裏付けの両方が成立した時のみ設定)
     "need_intent": str | None,          # LLM が出した意図種別: past_fact / glossary / relationship / None
+    "classifier_status": "ok" | "fallback",   # LLM 出力を採用できたか（部分 fallback 含む）
+    "fallback_reason": str | None,      # provider_error / empty_response / parse_error
+                                        # / missing_need_intent / invalid_need_intent / not_configured
+    "original_need_intent": str | None, # floor 適用前の need_intent
+    "intent_floor_applied": bool,       # null → past_fact の floor が適用されたか
     "search_targets": list[str] | None, # need 有時の上位候補タイトル / glossary 用語
     "state_delta": {
         "topic": str | None,
@@ -112,7 +117,7 @@ probe は各 Layer の診断を返却し、`debug_info.gatekeeper.memory_probe_l
 {
   "glossary": {"executed": True, "matches": 2},
   "vector":   {"executed": True, "result_count": 3, "max_score": 0.71, "above_threshold_count": 1, ...},
-  "deep":     {"executed": False, "reason": "no past_ref_pattern"},
+  "deep":     {"executed": False, "reason": "no deep trigger"},
 }
 ```
 
@@ -168,7 +173,7 @@ ContextClassifier は tier に加えて `need_intent` フィールドを出力�
 1. **fallback（parse 失敗時）**: LLM 出力が 4 値以外・JSON 構造が崩れた場合 — パターンがマッチすれば `past_fact`、なければ `null`（probe スキップ）。不正値の場合は loud な warning ログを出力し、prompt drift / モデル劣化を検知できるようにしている。
 2. **floor（LLM が null の場合）**: parse に成功して LLM が `null` を出しても、パターンがマッチすれば `past_fact` に引き上げる。`null` だと vector probe が一切走らず、誤判定がそのまま RAG 不発火に直結するため。probe が候補ゼロなら `need = null` に戻るので、誤検知のコストはローカル vector 検索 1 回に留まる。
 
-これにより「不要 probe 削減」という目的を維持しつつ、明示的な過去参照シグナルがある場合は安全網が働く。なお LLM 応答からの JSON 抽出は `core/json_extract.py` の `extract_json_str()`（ContextClassifier / StateUpdater / Stage 3 で共用）に統一されており、閉じフェンス欠落（トークン切れ）にも耐える。
+これにより「不要 probe 削減」という目的を維持しつつ、明示的な過去参照シグナルがある場合は安全網が働く。どちらの安全網が動いたかは `classifier_status` / `fallback_reason` / `original_need_intent` / `intent_floor_applied`（`Gatekeeper.classify()` 返却値 → `debug_info.gatekeeper` → Trace に伝播）で観測できる。なお Deep Search (Layer 2) は `need_intent=past_fact` なら正規表現パターン不一致でも発火する — パターンは fallback 用の安全網であり、LLM が意味的に拾ったケースを二重ゲートで潰さない（`relationship` の常時 Deep 化は Trace のヒット率・遅延を見て判断予定）。LLM 応答からの JSON 抽出は `core/json_extract.py` の `extract_json_str()`（ContextClassifier / StateUpdater / Stage 3 / keyword 抽出で共用）に統一されており、閉じフェンス欠落（トークン切れ）にも耐える。
 
 ---
 

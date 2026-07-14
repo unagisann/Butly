@@ -720,10 +720,10 @@ class ButlySleeptime:
                 {**summary_conf, "generation_config": {"temperature": 0.0, "max_output_tokens": summary_conf.get("generation_config", {}).get("max_output_tokens", 4096)}},
             )
 
-            # JSON パース
-            match = re.search(r"```json(.*?)```", raw_response, re.DOTALL)
-            json_str = match.group(1).strip() if match else raw_response.strip()
-            data = json.loads(json_str)
+            # JSON パース (閉じフェンス欠落にも耐える共通ヘルパー)
+            from butly_core.core.json_extract import extract_json_str
+
+            data = json.loads(extract_json_str(raw_response))
 
             # バリデーション: headlines は最大4件
             headlines = data.get("headlines", [])[:4]

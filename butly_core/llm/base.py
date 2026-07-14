@@ -89,7 +89,10 @@ class BaseProvider(ABC):
 
     @abstractmethod
     def classify(self, prompt: str, config: dict) -> str:
-        """Gatekeeper の tier 判定用。軽量モデルを使う想定。同期メソッド。"""
+        """Gatekeeper の tier 判定用。軽量モデルを使う想定。同期メソッド。
+
+        エラー時は例外を送出する（呼び出し側が fallback を判断する）。
+        """
         ...
 
     # --- 非同期メソッド（将来用・デフォルト実装は同期版のラップ） ---

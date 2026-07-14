@@ -48,7 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
     score_parser.add_argument(
         "--dataset",
         type=Path,
-        help="Optional dataset path to enable evidence-coverage metrics",
+        help="Unused (kept for compatibility); evidence coverage now reads "
+        "the run's own workspace provenance",
     )
 
     report_parser = subparsers.add_parser(
