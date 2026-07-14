@@ -84,6 +84,7 @@ def _qa_row(question_id: str, **overrides) -> dict:
     row = {
         "run_id": "score-test",
         "sample_id": "synthetic-conv-1",
+        "instance_name": "locomo_synthetic_conv_1",
         "question_id": question_id,
         "question": "What did Maya plan to make?",
         "expected_answer": "a blue mug, an herb planter",
@@ -93,7 +94,13 @@ def _qa_row(question_id: str, **overrides) -> dict:
         "latency_ms": 100,
         "retrieved_card_ids": ["k1"],
         "diagnostics": {
-            "gatekeeper": {"tier": "mid", "need_intent": "past_fact"},
+            "gatekeeper": {
+                "tier": "mid",
+                "need_intent": "past_fact",
+                "classifier_status": "ok",
+                "fallback_reason": None,
+                "intent_floor_applied": False,
+            },
             "rag": {
                 "results": [
                     {
@@ -107,6 +114,40 @@ def _qa_row(question_id: str, **overrides) -> dict:
     }
     row.update(overrides)
     return row
+
+
+def _write_workspace(run_dir: Path) -> None:
+    """provenance 判定用の最小 workspace (カード DB + 保存ターンファイル) を作る。"""
+    import sqlite3
+
+    instance_dir = (
+        run_dir / "workspace" / "butly_core" / "instances" / "locomo_synthetic_conv_1"
+    )
+    (instance_dir / "short_term_json").mkdir(parents=True)
+
+    conn = sqlite3.connect(instance_dir / "butly_memory.db")
+    conn.execute("CREATE TABLE knowledge_cards (id TEXT, source_files TEXT)")
+    conn.execute(
+        "INSERT INTO knowledge_cards VALUES (?, ?)",
+        ("k1", json.dumps(["session_0001.json", "session_0002.json"])),
+    )
+    conn.commit()
+    conn.close()
+
+    (instance_dir / "short_term_json" / "session_0001.json").write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "parts": ["I want to make a blue mug."],
+                        "meta": {"locomo_dialog_ids": ["D1:1", "D1:2"]},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_run(tmp_path: Path, qa_rows: list[dict]) -> Path:
@@ -193,16 +234,61 @@ class TestScoreRun:
         assert scores["question_count"] == 1
         assert scores["official"]["overall"] == pytest.approx(1.0)
 
-    def test_evidence_coverage_requires_dataset(self, tmp_path):
+    def test_evidence_coverage_none_without_workspace(self, tmp_path):
+        """workspace が無い run では provenance を組めず None (n/a) になる"""
         run_dir = _write_run(tmp_path, [_qa_row("qa-1")])
 
-        without_dataset = score_run(run_dir)
-        assert without_dataset["butly"]["evidence_retrieval_rate"] is None
+        scores = score_run(run_dir)
+        assert scores["butly"]["evidence_retrieval_rate"] is None
+        assert scores["questions"][0]["evidence_coverage"] is None
 
-        with_dataset = score_run(run_dir, dataset_path=FIXTURE)
-        rate = with_dataset["butly"]["evidence_retrieval_rate"]
-        assert rate is not None
-        assert 0.0 <= rate <= 1.0
+    def test_evidence_coverage_from_provenance(self, tmp_path):
+        """retrieved card → source_files → locomo_dialog_ids の連鎖で判定する"""
+        rows = [
+            _qa_row("qa-1"),  # evidence D1:1, retrieved k1 → covered
+            _qa_row("qa-2", evidence=["D9:9"]),  # 存在しない evidence → 0.0
+            _qa_row("qa-3", retrieved_card_ids=[]),  # RAG 不発火 → 0.0
+        ]
+        run_dir = _write_run(tmp_path, rows)
+        _write_workspace(run_dir)
+
+        scores = score_run(run_dir)
+
+        by_id = {q["question_id"]: q for q in scores["questions"]}
+        assert by_id["qa-1"]["evidence_coverage"] == pytest.approx(1.0)
+        assert by_id["qa-2"]["evidence_coverage"] == pytest.approx(0.0)
+        assert by_id["qa-3"]["evidence_coverage"] == pytest.approx(0.0)
+        assert scores["butly"]["evidence_retrieval_rate"] == pytest.approx(1 / 3)
+        assert scores["butly"]["evidence_metric"] == "provenance_chunk_level"
+
+    def test_classifier_fallback_and_floor_rates(self, tmp_path):
+        rows = [
+            _qa_row("qa-1"),  # status ok / floor False
+            _qa_row(
+                "qa-2",
+                diagnostics={
+                    "gatekeeper": {
+                        "tier": "mid",
+                        "need_intent": "past_fact",
+                        "classifier_status": "fallback",
+                        "fallback_reason": "parse_error",
+                        "intent_floor_applied": True,
+                    },
+                    "rag": {"results": []},
+                },
+            ),
+            # classifier フィールドの無い旧形式 row は集計から除外される
+            _qa_row(
+                "qa-3",
+                diagnostics={"gatekeeper": {"tier": "mid"}, "rag": {"results": []}},
+            ),
+        ]
+        run_dir = _write_run(tmp_path, rows)
+
+        butly = score_run(run_dir)["butly"]
+        assert butly["classifier_fallback_rate"] == pytest.approx(0.5)
+        assert butly["classifier_fallback_reasons"] == {"parse_error": 1}
+        assert butly["intent_floor_rate"] == pytest.approx(0.5)
 
 
 class TestReport:

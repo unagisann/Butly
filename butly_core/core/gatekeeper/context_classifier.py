@@ -98,11 +98,20 @@ class ContextClassifier:
                     "emotional_weight": float,
                     "continuity_need": float
                 },
-                "need_intent": "past_fact" | "glossary" | "relationship" | None
+                "need_intent": "past_fact" | "glossary" | "relationship" | None,
+                "classifier_status": "ok" | "fallback",
+                "fallback_reason": "provider_error" | "empty_response"
+                    | "parse_error" | "missing_need_intent"
+                    | "invalid_need_intent" | "not_configured" | None,
+                "original_need_intent": floor 適用前の need_intent,
+                "intent_floor_applied": bool,
             }
         """
         if not self.gatekeeper_config:
-            return self._default_output(user_input)
+            return self._apply_need_intent_floor(
+                self._default_output(user_input, fallback_reason="not_configured"),
+                user_input,
+            )
 
         model_name, gk_config = self._resolve_config(override_config)
 
@@ -136,9 +145,6 @@ class ContextClassifier:
                 duration_ms=int((time.time() - t0) * 1000),
                 prompt_chars=len(prompt),
             )
-            result = self._parse_response(
-                raw_text, user_input, override_config=override_config
-            )
         except Exception as e:
             print(f"[ContextClassifier] API呼び出しエラー: {e}")
             record_llm_call(
@@ -149,7 +155,11 @@ class ContextClassifier:
                 prompt_chars=len(prompt),
                 error=str(e),
             )
-            result = self._default_output(user_input)
+            result = self._default_output(user_input, fallback_reason="provider_error")
+        else:
+            result = self._parse_response(
+                raw_text, user_input, override_config=override_config
+            )
 
         result = self._apply_need_intent_floor(result, user_input)
 
@@ -160,7 +170,11 @@ class ContextClassifier:
             f"  scores: rc={scores.get('response_complexity', 0):.2f}, "
             f"ew={scores.get('emotional_weight', 0):.2f}, "
             f"cn={scores.get('continuity_need', 0):.2f}\n"
-            f"  → tier={result['tier']} need_intent={result.get('need_intent')} ({int((t1-t0)*1000)}ms)"
+            f"  → tier={result['tier']} need_intent={result.get('need_intent')} "
+            f"status={result.get('classifier_status')}"
+            f"{'/' + result['fallback_reason'] if result.get('fallback_reason') else ''}"
+            f"{' floor=on' if result.get('intent_floor_applied') else ''} "
+            f"({int((t1-t0)*1000)}ms)"
         )
         return result
 
@@ -192,9 +206,8 @@ class ContextClassifier:
         self, raw_text: str, user_input: str = "", override_config: dict = None
     ) -> dict:
         """LLM応答からJSONを抽出しパースする。"""
-        default = self._default_output(user_input)
-        if not raw_text:
-            return default
+        if not raw_text or not raw_text.strip():
+            return self._default_output(user_input, fallback_reason="empty_response")
 
         try:
             data = json.loads(extract_json_str(raw_text))
@@ -208,38 +221,55 @@ class ContextClassifier:
             tier = self._determine_tier_from_scores(
                 llm_scoring, override_config=override_config
             )
-            need_intent = self._parse_need_intent(data, user_input)
+            need_intent, intent_fallback_reason = self._parse_need_intent(
+                data, user_input
+            )
 
             return {
                 "tier": tier,
                 "llm_scoring": llm_scoring,
                 "need_intent": need_intent,
+                # need_intent のみルール fallback の場合も "fallback" を報告する
+                # (tier/scores は LLM 由来。区別は fallback_reason で可能)
+                "classifier_status": (
+                    "fallback" if intent_fallback_reason else "ok"
+                ),
+                "fallback_reason": intent_fallback_reason,
             }
 
         except Exception as e:
             print(f"[ContextClassifier] JSONパースエラー: {e}\nRaw: '{raw_text}'")
-            return default
+            return self._default_output(user_input, fallback_reason="parse_error")
 
-    def _parse_need_intent(self, data: dict, user_input: str) -> str | None:
-        """need_intent をパース。不正値時は asks_for_specific_past_detail() で fallback。"""
+    def _parse_need_intent(
+        self, data: dict, user_input: str
+    ) -> tuple[str | None, str | None]:
+        """need_intent をパースし (値, fallback理由 | None) を返す。
+        不正値時は asks_for_specific_past_detail() で fallback。"""
         raw = data.get("need_intent", "__missing__")
 
         # 正常: 4 値のいずれか (null / None / "null" 文字列も許容)
         if raw is None or raw == "null":
-            return None
+            return None, None
         if isinstance(raw, str) and raw in VALID_NEED_INTENTS:
-            return raw
+            return raw, None
 
         # フィールドが完全欠落 → スキーマ未対応モデルとみなしルール fallback
         if raw == "__missing__":
-            return self._rule_based_need_intent(user_input)
+            return (
+                self._rule_based_need_intent(user_input),
+                "missing_need_intent",
+            )
 
         # 不正値 → loud にログを出してルール fallback (prompt drift / モデル劣化検知)
         print(
             f"[ContextClassifier] WARNING: invalid need_intent={raw!r}, "
             f"falling back to rule-based decision"
         )
-        return self._rule_based_need_intent(user_input)
+        return (
+            self._rule_based_need_intent(user_input),
+            "invalid_need_intent",
+        )
 
     @staticmethod
     def _apply_need_intent_floor(result: dict, user_input: str) -> dict:
@@ -249,16 +279,24 @@ class ContextClassifier:
         ため、null の誤判定はそのまま RAG 不発火に直結する。ルールで拾える明示的な
         シグナルだけは vector 検索の事実裏付けへ回す。probe が候補ゼロなら need=null
         に戻るので、誤検知のコストはローカル vector 検索 1 回に留まる。
+        適用有無は intent_floor_applied / original_need_intent で観測できる。
         """
-        if result.get("need_intent") is not None:
-            return result
+        floored = {
+            **result,
+            "original_need_intent": result.get("need_intent"),
+            "intent_floor_applied": False,
+        }
+        if floored["original_need_intent"] is not None:
+            return floored
         if not asks_for_specific_past_detail(user_input or ""):
-            return result
+            return floored
         print(
             "[ContextClassifier] need_intent floor: null → past_fact "
             "(明示的な過去参照/時点質問)"
         )
-        return {**result, "need_intent": "past_fact"}
+        floored["need_intent"] = "past_fact"
+        floored["intent_floor_applied"] = True
+        return floored
 
     @staticmethod
     def _rule_based_need_intent(user_input: str) -> str | None:
@@ -267,11 +305,21 @@ class ContextClassifier:
             return "past_fact"
         return None
 
-    def _default_output(self, user_input: str = "") -> dict:
+    def _default_output(
+        self, user_input: str = "", fallback_reason: str = "provider_error"
+    ) -> dict:
+        """LLM 出力を採用できない時の fallback 出力。
+
+        fallback_reason: "provider_error" | "empty_response" | "parse_error"
+        | "not_configured"。need_intent のみの部分 fallback
+        ("missing_need_intent" / "invalid_need_intent") は _parse_response 側。
+        """
         return {
             "tier": "mid",
             "llm_scoring": {},
             "need_intent": self._rule_based_need_intent(user_input),
+            "classifier_status": "fallback",
+            "fallback_reason": fallback_reason,
         }
 
     def _format_history(

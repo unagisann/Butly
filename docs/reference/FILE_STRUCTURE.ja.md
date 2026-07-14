@@ -474,12 +474,12 @@ LLM に 3 スコア（0–1）+ `need_intent` を出力させ、Python 側でル
 | `relationship` | 関係性・ムード推移・習慣の質問 |
 | `null` | 長期記憶不要（挨拶・将来設計・自己完結発話） |
 
-parse 失敗時は `asks_for_specific_past_detail()` を fallback として使用（マッチで past_fact、なしで null）。parse 成功で LLM が null を出した場合も、同パターンがマッチすれば past_fact に引き上げる（floor — null では vector probe が走らないため）。JSON 抽出は `core/json_extract.py` の `extract_json_str()` を使用。
+parse 失敗時は `asks_for_specific_past_detail()` を fallback として使用（マッチで past_fact、なしで null）。parse 成功で LLM が null を出した場合も、同パターンがマッチすれば past_fact に引き上げる（floor — null では vector probe が走らないため）。JSON 抽出は `core/json_extract.py` の `extract_json_str()` を使用。返却 dict は観測用に `classifier_status`（ok/fallback）/ `fallback_reason` / `original_need_intent` / `intent_floor_applied` を含む。
 
 ---
 
 ### `gatekeeper/memory_probe.py`
-LLM 呼び出しなしの事実ベース記憶検索。Glossary scan は常時実行、vector / deep は need_intent でゲート。
+LLM 呼び出しなしの事実ベース記憶検索。Glossary scan は常時実行、vector / deep は need_intent でゲート。Deep (Layer 2) は Layer 1 空振り時に `need_intent=past_fact` または過去参照パターンで発火する（パターン単独ゲートではない）。
 
 - `MemoryProbe()`
   - `probe(user_input, brain, memory_manager, history_msgs=None, need_intent=None, recent_headlines=None, override_config=None, instance_name=None)` — Layer 1.5 を必ず実行し、`need_intent` に応じて Layer 1 / Layer 2 を選択的に実行。返却値の `layers` に Layer 別の診断情報を含む
@@ -656,7 +656,7 @@ LLM プロバイダーの抽象化レイヤー。
   - `generate(text, attachments, context)` — テキスト+添付から応答を生成（同期）
   - `supports_vision(model_name)` — vision 対応モデルかを判定（静的）
   - `embed(text)` — テキストの embedding ベクトルを返す
-  - `classify(prompt, config)` — Gatekeeper 用の分類プロンプトを実行
+  - `classify(prompt, config)` — Gatekeeper 用の分類プロンプトを実行。エラー時は握りつぶさず例外を送出（呼び出し側が fallback_reason を判定）
   - `async_generate(...)` / `async_summarize(...)` / `async_embed(...)` — 同期版を `run_in_threadpool` でラップしたデフォルト async 実装（段階的非同期化用）
   - `async_generate_stream(text, attachments, context)` — SSE ストリーミング向け async generator。デフォルトは `generate()` を threadpool 実行し 1 回 `{"type": "chunk", "text": ...}` を yield、最後に `{"type": "done", ...}` を yield するフォールバック。Provider 個別に逐次出力をオーバーライドする
 

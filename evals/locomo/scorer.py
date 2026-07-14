@@ -22,17 +22,16 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
+import sqlite3
 import string
 from typing import Any, Optional
 
 from .artifacts import append_jsonl, write_json
-from .dataset import load_dataset
 from .stemming import stem
 
 
 NO_INFORMATION_PATTERNS = ("no information available", "not mentioned")
 CORRECTNESS_THRESHOLD = 0.5
-EVIDENCE_COVERAGE_THRESHOLD = 0.6
 
 _ARTICLES = re.compile(r"\b(a|an|the|and)\b")
 _PUNCTUATION = set(string.punctuation)
@@ -119,7 +118,13 @@ def score_question(prediction: Any, ground_truth: Any, category: int) -> dict:
 
 
 def score_run(run_dir: Path, dataset_path: Optional[Path] = None) -> dict:
-    """Score a completed run and write scores.json / errors.jsonl."""
+    """Score a completed run and write scores.json / errors.jsonl.
+
+    ``dataset_path`` is accepted for backward compatibility but no longer
+    used: evidence coverage is provenance-based (retrieved card ids →
+    ``knowledge_cards.source_files`` → saved-turn ``locomo_dialog_ids``)
+    and reads the run's own workspace instead of the dataset.
+    """
     run_path = Path(run_dir)
     qa_rows = _read_qa_results(run_path)
     sleeptime_rows = _read_jsonl_optional(
@@ -127,8 +132,8 @@ def score_run(run_dir: Path, dataset_path: Optional[Path] = None) -> dict:
     )
     replay_rows = _read_jsonl_optional(run_path / "results" / "replay_log.jsonl")
 
-    evidence_texts = _load_evidence_texts(dataset_path)
-    question_scores = [_score_row(row, evidence_texts) for row in qa_rows]
+    provenance = _load_provenance(run_path, qa_rows)
+    question_scores = [_score_row(row, provenance) for row in qa_rows]
     scores = {
         "schema_version": 1,
         "run_id": _run_id(run_path, qa_rows),
@@ -136,7 +141,7 @@ def score_run(run_dir: Path, dataset_path: Optional[Path] = None) -> dict:
         "question_count": len(question_scores),
         "official": _official_aggregate(question_scores),
         "auxiliary": _auxiliary_aggregate(question_scores),
-        "butly": _butly_aggregate(question_scores, sleeptime_rows, evidence_texts),
+        "butly": _butly_aggregate(question_scores, sleeptime_rows),
         "questions": question_scores,
     }
     write_json(run_path / "scores.json", scores)
@@ -182,7 +187,7 @@ def _run_id(run_path: Path, qa_rows: list[dict]) -> str:
     return str(qa_rows[0].get("run_id", run_path.name))
 
 
-def _score_row(row: dict, evidence_texts: Optional[dict[str, str]]) -> dict:
+def _score_row(row: dict, provenance: Optional[dict]) -> dict:
     prediction = row.get("prediction") or ""
     category = int(row.get("category", 0))
     graded = score_question(prediction, row.get("expected_answer", ""), category)
@@ -203,12 +208,13 @@ def _score_row(row: dict, evidence_texts: Optional[dict[str, str]]) -> dict:
         "retrieved_card_count": len(row.get("retrieved_card_ids") or []),
         "tier": gatekeeper.get("tier", row.get("tier")),
         "need_intent": gatekeeper.get("need_intent"),
+        "classifier_status": gatekeeper.get("classifier_status"),
+        "fallback_reason": gatekeeper.get("fallback_reason"),
+        "intent_floor_applied": gatekeeper.get("intent_floor_applied"),
         "latency_ms": row.get("latency_ms"),
         "error": row.get("error"),
     }
-    entry["evidence_coverage"] = _evidence_coverage(
-        row, rag_results, evidence_texts
-    )
+    entry["evidence_coverage"] = _evidence_provenance_coverage(row, provenance)
     return entry
 
 
@@ -248,7 +254,6 @@ def _auxiliary_aggregate(question_scores: list[dict]) -> dict:
 def _butly_aggregate(
     question_scores: list[dict],
     sleeptime_rows: list[dict],
-    evidence_texts: Optional[dict[str, str]],
 ) -> dict:
     correct = [
         e for e in question_scores if e["official_score"] >= CORRECTNESS_THRESHOLD
@@ -281,59 +286,133 @@ def _butly_aggregate(
         "latency_ms_p95": _percentile(latencies, 95),
         "tier_distribution": _distribution(question_scores, "tier"),
         "need_intent_distribution": _distribution(question_scores, "need_intent"),
+        "classifier_fallback_rate": _mean(
+            [
+                float(e["classifier_status"] == "fallback")
+                for e in question_scores
+                if e.get("classifier_status") is not None
+            ]
+        ),
+        "classifier_fallback_reasons": _distribution(
+            question_scores, "fallback_reason"
+        ),
+        "intent_floor_rate": _mean(
+            [
+                float(bool(e["intent_floor_applied"]))
+                for e in question_scores
+                if e.get("intent_floor_applied") is not None
+            ]
+        ),
         "knowledge_cards_created": sum(
             row.get("knowledge_cards_created", 0) for row in sleeptime_rows
         ),
         "sleeptime_failures": sum(
             1 for row in sleeptime_rows if row.get("error")
         ),
-        "evidence_coverage_threshold": EVIDENCE_COVERAGE_THRESHOLD,
-        "evidence_retrieval_rate": (
-            _mean([e["evidence_coverage"] for e in with_evidence])
-            if evidence_texts is not None and with_evidence
-            else None
+        "evidence_metric": "provenance_chunk_level",
+        "evidence_retrieval_rate": _mean(
+            [e["evidence_coverage"] for e in with_evidence]
         ),
     }
     return metrics
 
 
-def _load_evidence_texts(dataset_path: Optional[Path]) -> Optional[dict[str, str]]:
-    """Map every dialog id to its turn text for evidence-coverage checks."""
-    if dataset_path is None:
+def _load_provenance(run_path: Path, qa_rows: list[dict]) -> Optional[dict]:
+    """Build per-instance provenance maps for evidence coverage.
+
+    Chains ``retrieved_card_ids`` → ``knowledge_cards.source_files`` →
+    saved-turn files → ``meta.locomo_dialog_ids``. ``source_files`` carries
+    every file of the generation chunk (not card-specific), so the metric is
+    chunk-level provenance, not strict per-card evidence. Returns None when
+    the run has no workspace (e.g. scoring a copied results directory).
+    """
+    instances_dir = run_path / "workspace" / "butly_core" / "instances"
+    if not instances_dir.is_dir():
         return None
-    texts: dict[str, str] = {}
-    for conversation in load_dataset(Path(dataset_path)):
-        for session in conversation.sessions:
-            for turn in session.turns:
-                texts[turn.dialog_id] = turn.text
-    return texts
+    provenance: dict[str, dict] = {}
+    instance_names = sorted(
+        {str(row.get("instance_name")) for row in qa_rows if row.get("instance_name")}
+    )
+    for name in instance_names:
+        instance_dir = instances_dir / name
+        if not instance_dir.is_dir():
+            continue
+        provenance[name] = {
+            "card_files": _load_card_source_files(instance_dir),
+            "dialog_files": _load_dialog_file_map(instance_dir),
+        }
+    return provenance or None
 
 
-def _evidence_coverage(
-    row: dict,
-    rag_results: list,
-    evidence_texts: Optional[dict[str, str]],
+def _load_card_source_files(instance_dir: Path) -> dict[str, set]:
+    db_path = next(iter(sorted(instance_dir.glob("*.db"))), None)
+    if db_path is None:
+        return {}
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT id, source_files FROM knowledge_cards"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return {}
+    mapping: dict[str, set] = {}
+    for card_id, source_files in rows:
+        try:
+            files = json.loads(source_files) if source_files else []
+        except json.JSONDecodeError:
+            files = []
+        mapping[str(card_id)] = {str(name) for name in files}
+    return mapping
+
+
+def _load_dialog_file_map(instance_dir: Path) -> dict[str, str]:
+    """Map each locomo dialog id to the saved-turn file that contains it.
+
+    Turn files move between short_term_json and the archive folders with the
+    same file name, so the bare name matches ``source_files`` entries.
+    """
+    mapping: dict[str, str] = {}
+    for turn_file in instance_dir.rglob("*.json"):
+        try:
+            payload = json.loads(turn_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        messages = payload.get("messages") if isinstance(payload, dict) else None
+        if not isinstance(messages, list):
+            continue
+        for message in messages:
+            meta = message.get("meta") if isinstance(message, dict) else None
+            if not isinstance(meta, dict):
+                continue
+            for dialog_id in meta.get("locomo_dialog_ids") or []:
+                mapping[str(dialog_id)] = turn_file.name
+    return mapping
+
+
+def _evidence_provenance_coverage(
+    row: dict, provenance: Optional[dict]
 ) -> Optional[float]:
-    """Heuristic: share of evidence turns whose stemmed content tokens appear
-    in the retrieved card texts. Only computed when the dataset is supplied."""
-    if evidence_texts is None:
+    """Share of evidence turns whose saved file is among the retrieved cards'
+    ``source_files``. Chunk-level provenance (see ``_load_provenance``)."""
+    if provenance is None:
+        return None
+    instance = provenance.get(str(row.get("instance_name")))
+    if instance is None:
         return None
     evidence_ids = row.get("evidence") or []
     if not evidence_ids:
         return None
-    retrieved_tokens = set()
-    for result in rag_results:
-        if isinstance(result, dict):
-            retrieved_tokens.update(stemmed_tokens(result.get("title", "")))
-            retrieved_tokens.update(stemmed_tokens(result.get("episode", "")))
-    covered = 0
-    for evidence_id in evidence_ids:
-        tokens = set(stemmed_tokens(evidence_texts.get(evidence_id, "")))
-        if not tokens:
-            continue
-        overlap = len(tokens & retrieved_tokens) / len(tokens)
-        if overlap >= EVIDENCE_COVERAGE_THRESHOLD:
-            covered += 1
+    retrieved_files: set = set()
+    for card_id in row.get("retrieved_card_ids") or []:
+        retrieved_files |= instance["card_files"].get(str(card_id), set())
+    covered = sum(
+        1
+        for evidence_id in evidence_ids
+        if instance["dialog_files"].get(str(evidence_id)) in retrieved_files
+    )
     return covered / len(evidence_ids)
 
 

@@ -1,6 +1,5 @@
 import os
 import json
-import re
 import sqlite3
 import math
 import time
@@ -11,6 +10,7 @@ from dotenv import load_dotenv
 
 from butly_core.trace.collector import record_llm_call
 from butly_core.core.chronos import resolve_now
+from butly_core.core.json_extract import extract_json_str
 
 # ★設定ファイルのインポート
 try:
@@ -251,10 +251,7 @@ class ButlyBrain:
             text = text.strip() if text else ""
             print(f"[Brain] Raw Keyword Response: {text}")
 
-            match = re.search(r"```(?:json)?(.*?)```", text, re.DOTALL)
-            if match:
-                text = match.group(1).strip()
-            return json.loads(text)
+            return json.loads(extract_json_str(text))
         except Exception as e:
             print(f"[Brain] Keyword Extraction Error: {e}")
             return {"keywords": []}

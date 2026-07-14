@@ -145,23 +145,23 @@ class GeminiProvider(BaseProvider):
             return None
 
     def classify(self, prompt: str, config: dict) -> str:
-        """軽量モデルでテキスト分類 / キーワード抽出を行う（同期）。"""
-        try:
-            response = self.client.models.generate_content(
-                model=config["model_name"],
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=config["generation_config"].get("temperature", 0.0),
-                    max_output_tokens=config["generation_config"].get(
-                        "max_output_tokens", 512
-                    ),
-                    safety_settings=config.get("safety_settings"),
+        """軽量モデルでテキスト分類 / キーワード抽出を行う（同期）。
+
+        エラー時は例外を送出する。握りつぶして "" を返すと、呼び出し側で
+        provider エラーと「本当に空の応答」を区別できない。
+        """
+        response = self.client.models.generate_content(
+            model=config["model_name"],
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=config["generation_config"].get("temperature", 0.0),
+                max_output_tokens=config["generation_config"].get(
+                    "max_output_tokens", 512
                 ),
-            )
-            return response.text if response.text else ""
-        except Exception as e:
-            print(f"[GeminiProvider] Classify Error: {e}")
-            return ""
+                safety_settings=config.get("safety_settings"),
+            ),
+        )
+        return response.text if response.text else ""
 
     def generate(
         self,

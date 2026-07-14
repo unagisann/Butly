@@ -129,6 +129,10 @@ class Gatekeeper:
             "search_targets": search_targets,
             "state_delta": {},  # post-response で別途更新
             "llm_scoring": ctx_result.get("llm_scoring"),
+            "classifier_status": ctx_result.get("classifier_status"),
+            "fallback_reason": ctx_result.get("fallback_reason"),
+            "original_need_intent": ctx_result.get("original_need_intent"),
+            "intent_floor_applied": ctx_result.get("intent_floor_applied"),
             "memory_probe": probe_result,
         }
 

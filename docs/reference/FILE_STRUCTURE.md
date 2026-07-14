@@ -245,13 +245,13 @@ Gatekeeper.update_state(...) is called in parallel from ChatService (post-respon
 
 Defaults: `rc=0.4`, `cn=0.3`. Override via `SYSTEM_CONFIG["gatekeeper"]` or per-instance `config.json`.
 
-**`need_intent` values**: `past_fact` / `glossary` / `relationship` / `null`. Parse failures fall back to `asks_for_specific_past_detail(user_input)` (regex). Even on a successful parse, an LLM `null` is promoted to `past_fact` when the same patterns match (floor — with `null` the vector probe never runs). JSON extraction uses `extract_json_str()` from `core/json_extract.py`.
+**`need_intent` values**: `past_fact` / `glossary` / `relationship` / `null`. Parse failures fall back to `asks_for_specific_past_detail(user_input)` (regex). Even on a successful parse, an LLM `null` is promoted to `past_fact` when the same patterns match (floor — with `null` the vector probe never runs). JSON extraction uses `extract_json_str()` from `core/json_extract.py`. The returned dict carries observability fields `classifier_status` (ok/fallback), `fallback_reason`, `original_need_intent`, and `intent_floor_applied`.
 
 #### `memory_probe.py`
 LLM-free fact-based retrieval.
 
 - `MemoryProbe()`
-  - `probe(user_input, brain, memory_manager, history_msgs=None, need_intent=None, recent_headlines=None, override_config=None, instance_name=None)` — Layer 1.5 always runs; vector / deep are conditional.
+  - `probe(user_input, brain, memory_manager, history_msgs=None, need_intent=None, recent_headlines=None, override_config=None, instance_name=None)` — Layer 1.5 always runs; vector / deep are conditional. Deep (Layer 2) fires on a Layer 1 miss when `need_intent=past_fact` or a past-reference pattern matches (the pattern is not a standalone gate).
   - `_match_glossary(user_input, memory_manager, history_msgs=None, override_config=None)` — term/aliases match on `user_input` + recent history. Raw hits with `priority` / `_yaml_index` / `match_source`.
   - `_quick_vector_search_diag(...)` — wraps `brain.quick_vector_search_diag()`.
   - `_deep_search_diag(...)` — `extract_keywords` + `search_knowledge` with diagnostics.
@@ -332,7 +332,7 @@ General-purpose web search package.
 
 Phase 1–3 (2026-05) introduced the `Connection` / `ModelRef` / Protocol Adapter trio. `Connection` represents *where* to talk (base_url / auth env / protocol); `ModelRef` pairs a connection_id with a model_name; Protocol Adapters carry the actual API logic. Legacy string `model_name` routing is still accepted by `ProviderFactory.create()` for backward compatibility.
 
-- `base.py` — `BaseProvider` ABC: `generate(text, attachments, context)`, `supports_vision(model_name)`, `embed(text)`, `classify(prompt, config)`. Default async wrappers `async_generate` / `async_summarize` / `async_embed` via `run_in_threadpool`. Default `async_generate_stream(...)` falls back to a single `chunk` + `done` yield based on sync `generate()`.
+- `base.py` — `BaseProvider` ABC: `generate(text, attachments, context)`, `supports_vision(model_name)`, `embed(text)`, `classify(prompt, config)` (raises on error; callers derive `fallback_reason`). Default async wrappers `async_generate` / `async_summarize` / `async_embed` via `run_in_threadpool`. Default `async_generate_stream(...)` falls back to a single `chunk` + `done` yield based on sync `generate()`.
 - `connections.py` — `Connection` dataclass + `ConnectionRegistry`. Built-in connections (`openai` / `xai` / `ollama` / `google`) plus user-defined entries loaded from `user_config.json["LLM_CONNECTIONS"]`. Helpers: `get_connection` / `try_get_connection` / `register_connection` / `list_connections` / `is_builtin_connection`.
 - `model_registry.py` — `ModelRef` (connection_id + model_name) and `ModelPreset` (per-role recommended models). `normalize_model_ref()` accepts str / dict / ModelRef and uses `infer_connection_id()` to back-fill the connection from the model name. `resolve_role_model_ref()` resolves per-role defaults. `get_presets_for_role()` / `find_preset()` / `is_deprecated()` / `get_replacement()` drive the Settings UI dropdowns.
 - `factory.py` — `ProviderFactory.create(model)` accepts `ModelRef`, dict (`{"connection": ..., "model_name": ...}`), or legacy str. Normalizes via `model_registry.normalize_model_ref`, resolves the `Connection`, and instantiates the matching Protocol Adapter (`openai_compat` → `OpenAICompatAdapter`, `gemini_native` → `GeminiNativeAdapter`).
