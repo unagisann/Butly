@@ -11,6 +11,8 @@ from typing import Optional
 from dotenv import load_dotenv
 import numpy as np
 
+from butly_core.core.json_extract import extract_json_array, extract_json_str
+
 # ★設定ファイルのインポート
 try:
     from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
@@ -219,16 +221,24 @@ class ButlySleeptime:
         """各インスタンスの視点でナレッジカードを生成する。
         各インスタンス固有の人格・記憶を使用してナレッジ化を行い、
         DBへのTypeには各インスタンス名を使用する。
+
+        Returns:
+            (cards, status):
+              cards  — list[dict] | None（失敗時 None、正当な抽出なしは []）
+              status — "ok" | "no_cards" | "empty_response"
+                       | "parse_error" | "provider_error"
+            失敗を黙って None にしない: 0 枚と失敗が観測上区別できないと、
+            生成分散の原因調査ができない（v10 で session まるごと消えた前例）。
         """
-        
+
         # インスタンス設定 → グローバル knowledge のフォールバック
         inst_cfg = self.get_instance_config(db_type)
         k_conf = self._resolve_conf(inst_cfg, "knowledge")
-        
+
         # ナレッジカード化は各インスタンス固有の人格・記憶で行う
         agent_instruction = self.get_instance_instruction(db_type)
         agent_key_memory = self.get_instance_key_memory(db_type)
-        
+
         from butly_core.prompts import PromptLoader
         loader = PromptLoader()
         prompt = loader.get(
@@ -247,15 +257,28 @@ class ButlySleeptime:
                 return provider.classify(prompt, k_conf)
 
             text = self._robust_api_call(_call)
-            if not text:
-                return None
-                
-            json_match = re.search(r'\[.*\]', text, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
         except Exception as e:
-            print(f"[Gemini Error] {e}")
-        return None
+            print(f"[Sleeptime] Knowledgeize provider error: {e}")
+            return None, "provider_error"
+
+        if not text or not text.strip():
+            print("[Sleeptime] Knowledgeize: empty response from LLM")
+            return None, "empty_response"
+
+        try:
+            cards = json.loads(extract_json_array(text))
+        except Exception as e:
+            print(
+                f"[Sleeptime] Knowledgeize parse error: {e}\n"
+                f"Raw (先頭200字): '{text[:200]}'"
+            )
+            return None, "parse_error"
+        if not isinstance(cards, list):
+            print(f"[Sleeptime] Knowledgeize: 配列でない応答 ({type(cards).__name__})")
+            return None, "parse_error"
+        if not cards:
+            return [], "no_cards"
+        return cards, "ok"
 
     def insert_knowledge(
         self, card, db_id, db_type, raw_ref, instance_db_path,
@@ -721,8 +744,6 @@ class ButlySleeptime:
             )
 
             # JSON パース (閉じフェンス欠落にも耐える共通ヘルパー)
-            from butly_core.core.json_extract import extract_json_str
-
             data = json.loads(extract_json_str(raw_response))
 
             # バリデーション: headlines は最大4件
@@ -1192,8 +1213,14 @@ class ButlySleeptime:
         1_integrated にある生ログ (JSON) を読み込み、
         日付ごとにまとめてAIにナレッジ抽出させる。
         処理完了後、JSONファイルは 2_knowledgeized フォルダへ移動する。
+        失敗チャンクの RAW は移動せず残す（次回パスで再試行される）。
+
+        Returns:
+            {"chunks": int, "failed_chunks": int, "cards_created": int,
+             "failures": [{"date", "chunk", "reason"}, ...]}
         """
         print(f"--- Stage 2: Knowledgeize (RAW) for {target_instance} ({db_type}) ---")
+        stats = {"chunks": 0, "failed_chunks": 0, "cards_created": 0, "failures": []}
 
         instance_dir = self.instances_dir / target_instance
         integrated_dir = instance_dir / "memory_archive" / "1_integrated"
@@ -1208,13 +1235,13 @@ class ButlySleeptime:
 
         if not integrated_dir.exists():
             print(f"[{db_type}] No integrated directory.")
-            return
+            return stats
 
         # 処理対象ファイル収集 (JSON) — ドットファイル (.mid_term_processed.json 等) を除外
         json_files = sorted(f for f in integrated_dir.glob("*.json") if not f.name.startswith("."))
         if not json_files:
             print(f"[{db_type}] No JSON files to process in 1_integrated.")
-            return
+            return stats
 
         # 日付ごとにグループ化
         grouped_files = {} # { "YYYY-MM-DD": [file1, file2...] }
@@ -1305,9 +1332,10 @@ class ButlySleeptime:
                 if len(chunks) > 1:
                     print(f"[{db_type}]   Chunk {chunk_idx+1}/{len(chunks)}: {len(combined_text)} chars, {len(files_in_batch)} files")
 
-                cards = self.ask_gemini_to_summarize(combined_text, db_type)
+                cards, status = self.ask_gemini_to_summarize(combined_text, db_type)
+                stats["chunks"] += 1
 
-                if cards:
+                if status == "ok":
                     print(f"[{db_type}] Generated {len(cards)} knowledge cards.")
                     chunk_file_names = [f.name for f in files_in_batch]
                     for card in cards:
@@ -1318,9 +1346,22 @@ class ButlySleeptime:
                             source_date=date_str,
                             source_files=chunk_file_names,
                         )
+                    stats["cards_created"] += len(cards)
+                    all_processed_files.extend(files_in_batch)
+                elif status == "no_cards":
+                    # 正当な「抽出対象なし」— 再処理し続けないよう処理済み扱いで移動
+                    print(f"[{db_type}] ナレッジ抽出対象なし for {date_str} chunk {chunk_idx+1}")
                     all_processed_files.extend(files_in_batch)
                 else:
-                    print(f"[{db_type}] ナレッジ抽出なし（スキップまたはエラー） for {date_str} chunk {chunk_idx+1}")
+                    # 失敗チャンクの RAW は 1_integrated に残し、次回の Sleeptime で再試行する
+                    stats["failed_chunks"] += 1
+                    stats["failures"].append(
+                        {"date": date_str, "chunk": chunk_idx + 1, "reason": status}
+                    )
+                    print(
+                        f"[{db_type}] ナレッジ抽出失敗 ({status}) for {date_str} "
+                        f"chunk {chunk_idx+1} — RAW は保持し次回再試行"
+                    )
 
                 # チャンク間のAPI待機
                 if chunk_idx < len(chunks) - 1:
@@ -1358,9 +1399,12 @@ class ButlySleeptime:
             # APIレート制限対策: 日付グループ間に少し待機
             time.sleep(5)
 
-
-        # ★追加: DBバックアップ (ここで呼ぶと早期リターン時にスキップされるため削除)
-        # self.backup_database()
+        if stats["failed_chunks"]:
+            print(
+                f"[{db_type}] Stage 2: {stats['failed_chunks']}/{stats['chunks']} "
+                f"チャンクが失敗 (RAW 保持済み): {stats['failures']}"
+            )
+        return stats
 
 
     def remove_empty_folders(self, method_dir):

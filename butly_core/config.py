@@ -41,7 +41,9 @@ AI_CONFIG = {
         "connection": "google",
         "model_name": "gemini-3.1-pro-preview",
         "generation_config": {
-            "temperature": 0.7,  # Consistent output preferred
+            # カード JSON の形状安定を最優先 (0.7 では配列パース成功率が run ごとに揺れ、
+            # v10 でセッション丸ごとカード0枚が発生)
+            "temperature": 0.2,
             "max_output_tokens": 8192,
         },
         "safety_settings": [

@@ -105,6 +105,9 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         f"- Knowledge cards created by Sleeptime: "
         f"{butly.get('knowledge_cards_created', 0)}",
         f"- Sleeptime failures: {butly.get('sleeptime_failures', 0)}",
+        f"- Sleeptime stage2 chunk failures: "
+        f"{butly.get('stage2_chunk_failures', 0)} / "
+        f"{butly.get('stage2_chunks', 0)} chunks",
     ]
 
     worst = [

@@ -9,9 +9,10 @@ import json
 
 import pytest
 
-from butly_core.core.json_extract import extract_json_str
+from butly_core.core.json_extract import extract_json_array, extract_json_str
 
 PAYLOAD = '{"topic": "camping", "mood": "happy"}'
+ARRAY = '[{"title": "card1"}, {"title": "card2"}]'
 
 
 class TestExtractJsonStr:
@@ -52,3 +53,37 @@ class TestExtractJsonStr:
 
     def test_no_json_returns_stripped_raw(self):
         assert extract_json_str("  not json at all  ") == "not json at all"
+
+
+class TestExtractJsonArray:
+
+    def test_closed_json_fence(self):
+        raw = f"```json\n{ARRAY}\n```"
+        assert json.loads(extract_json_array(raw)) == json.loads(ARRAY)
+
+    def test_unclosed_fence(self):
+        """閉じ ``` 欠落（トークン切れ）— v10 の Stage 2 全滅パターン対策"""
+        raw = f"```json\n{ARRAY}"
+        assert json.loads(extract_json_array(raw)) == json.loads(ARRAY)
+
+    def test_bare_array(self):
+        assert json.loads(extract_json_array(ARRAY)) == json.loads(ARRAY)
+
+    def test_prose_wrapped_array(self):
+        raw = f"Here are the cards:\n{ARRAY}\nDone."
+        assert json.loads(extract_json_array(raw)) == json.loads(ARRAY)
+
+    def test_object_wrapped_array_extracts_array(self):
+        """{"cards": [...]} 形式でも配列部分を拾える"""
+        raw = f'{{"cards": {ARRAY}}}'
+        assert json.loads(extract_json_array(raw)) == json.loads(ARRAY)
+
+    def test_empty_array(self):
+        assert json.loads(extract_json_array("```json\n[]\n```")) == []
+
+    @pytest.mark.parametrize("raw", ["", None])
+    def test_empty_input_returns_empty(self, raw):
+        assert extract_json_array(raw) == ""
+
+    def test_no_array_returns_stripped_raw(self):
+        assert extract_json_array("  no array here  ") == "no array here"
