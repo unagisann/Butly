@@ -27,7 +27,12 @@ API.
 Porter-stemmed before token F1. Category 1 averages, over comma-separated gold
 parts, the best F1 against any comma-separated predicted part; category 3
 grades only the gold text before the first semicolon; category 5 checks for
-"no information available" / "not mentioned" phrases. Exact match and answer
+"no information available" / "not mentioned" phrases. Category numbers map to
+question types as 1 = multi-hop, 2 = temporal reasoning, 3 = open-domain
+knowledge, 4 = single-hop, 5 = adversarial (the official repo defines only the
+scoring rules per number; the names follow the dataset contents — every
+category-2 question is a "When ..." question — and common usage in other
+LoCoMo evaluations). Exact match and answer
 containment are auxiliary metrics, not official scores. Stemming uses a
 self-contained original-Porter implementation (no nltk dependency), so rare
 words may stem slightly differently from the official nltk stemmer.

@@ -57,11 +57,14 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         "| Category | Score | Questions |",
         "| --- | --- | --- |",
     ]
+    # 公式 locomo10.json の category 番号との対応。採点ルールとデータ実体から:
+    # 1 はカンマ区切り複数正解 (multi-hop の集約回答)、2 は When 系の時間推論、
+    # 3 は世界知識推論 (セミコロン以降の補足を切る採点)、5 は no-info 検出。
     category_labels = {
-        "1": "1 (multi-answer)",
-        "2": "2 (single-hop)",
-        "3": "3 (temporal)",
-        "4": "4 (open-domain)",
+        "1": "1 (multi-hop)",
+        "2": "2 (temporal)",
+        "3": "3 (open-domain)",
+        "4": "4 (single-hop)",
         "5": "5 (adversarial)",
     }
     for category, entry in sorted(official.get("by_category", {}).items()):

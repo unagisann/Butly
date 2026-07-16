@@ -323,7 +323,7 @@ class TestReport:
         text = summary_path.read_text(encoding="utf-8")
         assert "LoCoMo Evaluation Summary — score-test" in text
         assert "Overall score: 0.500" in text
-        assert "| 1 (multi-answer) | 1.000 | 1 |" in text
+        assert "| 1 (multi-hop) | 1.000 | 1 |" in text
         assert "Lowest-scoring questions" in text
         assert "qa-2" in text
         assert "CC BY-NC 4.0" in text
