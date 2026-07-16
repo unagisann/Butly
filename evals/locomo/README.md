@@ -121,9 +121,10 @@ API keys and environment-variable values are never written to these artifacts.
 `colab/butly_locomo_eval.ipynb` mounts Drive, clones Butly, and starts one
 OpenAI-compatible llama.cpp server per model configured in its `MODELS`
 role map (chat / gatekeeper / summary / knowledge / embedding; roles sharing
-a model share a server). Reasoning models are slow, so the memory-pipeline
-roles default to a Non-Reasoning model while chat stays the model under
-evaluation. Butly's RAG needs a real embedding endpoint, so the `embedding`
+a model share a server). A role may carry a `generation_config` override that
+is written into the generated profile — the gatekeeper default raises
+`max_output_tokens` to 2048 because a reasoning model's thinking can consume
+the stock 512-token budget and return an empty classification. Butly's RAG needs a real embedding endpoint, so the `embedding`
 role must point at an embeddings-capable server (llama.cpp with
 `--embeddings`), never at a chat connection. The notebook registers every
 server as a connection, generates `profiles/colab_roles.yaml`, runs the CLI

@@ -10,6 +10,10 @@ chat:
 gatekeeper:
   connection: fixed
   model_name: fixed-model
+  # If fixed-model is a reasoning model, uncomment: thinking alone can eat
+  # the default 512-token output budget and empty the classification.
+  # generation_config:
+  #   max_output_tokens: 2048
 
 summary:
   connection: fixed
