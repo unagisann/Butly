@@ -158,7 +158,14 @@ def _write_run(tmp_path: Path, qa_rows: list[dict]) -> Path:
         "".join(json.dumps(row) + "\n" for row in qa_rows), encoding="utf-8"
     )
     (results / "sleeptime_log.jsonl").write_text(
-        json.dumps({"knowledge_cards_created": 3, "error": None})
+        json.dumps(
+            {
+                "knowledge_cards_created": 3,
+                "knowledge_chunks": 2,
+                "knowledge_chunk_failures": 1,
+                "error": None,
+            }
+        )
         + "\n"
         + json.dumps({"knowledge_cards_created": 0, "error": "Boom"})
         + "\n",
@@ -216,6 +223,8 @@ class TestScoreRun:
         assert butly["tier_distribution"] == {"low": 1, "mid": 2}
         assert butly["knowledge_cards_created"] == 3
         assert butly["sleeptime_failures"] == 1
+        assert butly["stage2_chunks"] == 2
+        assert butly["stage2_chunk_failures"] == 1
 
         assert (run_dir / "scores.json").is_file()
         errors = (run_dir / "errors.jsonl").read_text(encoding="utf-8").splitlines()

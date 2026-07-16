@@ -30,6 +30,9 @@ class SleeptimeResult:
     stage_2_success: bool
     stage_2_status: str
     knowledge_cards_created: int
+    knowledge_chunks: int
+    knowledge_chunk_failures: int
+    knowledge_chunk_failure_details: list
     digest_updated: bool
     recent_snapshot_updated: bool
     retry_count: int
@@ -48,6 +51,9 @@ class SleeptimeResult:
             "stage_2_success": self.stage_2_success,
             "stage_2_status": self.stage_2_status,
             "knowledge_cards_created": self.knowledge_cards_created,
+            "knowledge_chunks": self.knowledge_chunks,
+            "knowledge_chunk_failures": self.knowledge_chunk_failures,
+            "knowledge_chunk_failure_details": self.knowledge_chunk_failure_details,
             "digest_updated": self.digest_updated,
             "recent_snapshot_updated": self.recent_snapshot_updated,
             "retry_count": self.retry_count,
@@ -87,6 +93,7 @@ class SleeptimeRunner:
         stage_1_success = False
         stage_2_success = False
         stage_2_status = "not_started"
+        stage_2_stats: dict = {}
         error = None
 
         try:
@@ -94,9 +101,17 @@ class SleeptimeRunner:
             stage_1_success = True
             instance_config = self.sleeptime.get_instance_config(instance_name)
             if self.sleeptime.should_update(instance_config, "knowledge_cards"):
-                self.sleeptime.stage_2_knowledgeize(instance_name, instance_name)
+                stage_2_stats = (
+                    self.sleeptime.stage_2_knowledgeize(instance_name, instance_name)
+                    or {}
+                )
                 stage_2_success = True
-                stage_2_status = "succeeded"
+                # チャンク失敗は致命エラーではないが「成功」とも言わせない
+                stage_2_status = (
+                    "partial"
+                    if stage_2_stats.get("failed_chunks")
+                    else "succeeded"
+                )
             else:
                 stage_2_success = True
                 stage_2_status = "skipped"
@@ -120,6 +135,9 @@ class SleeptimeRunner:
             stage_2_success=stage_2_success,
             stage_2_status=stage_2_status,
             knowledge_cards_created=max(0, cards_after - cards_before),
+            knowledge_chunks=stage_2_stats.get("chunks", 0),
+            knowledge_chunk_failures=stage_2_stats.get("failed_chunks", 0),
+            knowledge_chunk_failure_details=stage_2_stats.get("failures", []),
             digest_updated=_read_optional(digest_path) != digest_before,
             recent_snapshot_updated=(
                 _read_optional(snapshot_path) != snapshot_before

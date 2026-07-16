@@ -309,6 +309,12 @@ def _butly_aggregate(
         "sleeptime_failures": sum(
             1 for row in sleeptime_rows if row.get("error")
         ),
+        "stage2_chunk_failures": sum(
+            row.get("knowledge_chunk_failures", 0) for row in sleeptime_rows
+        ),
+        "stage2_chunks": sum(
+            row.get("knowledge_chunks", 0) for row in sleeptime_rows
+        ),
         "evidence_metric": "provenance_chunk_level",
         "evidence_retrieval_rate": _mean(
             [e["evidence_coverage"] for e in with_evidence]

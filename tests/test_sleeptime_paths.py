@@ -201,3 +201,172 @@ def test_recent_headlines_keeps_connection_in_provider_and_classify(
     assert created and isinstance(created[0], dict)
     assert created[0]["connection"] == "colab_local"
     assert classify_confs and classify_confs[0].get("connection") == "colab_local"
+
+
+# ===================================================================
+# ask_gemini_to_summarize の status 返却テスト (v10 の無音失敗対策)
+# ===================================================================
+
+def _fake_factory(monkeypatch, text=None, exc=None):
+    from butly_core.llm import factory
+
+    provider = MagicMock()
+    if exc is not None:
+        provider.classify.side_effect = exc
+    else:
+        provider.classify.return_value = text
+    monkeypatch.setattr(factory.ProviderFactory, "create", lambda conf: provider)
+    return provider
+
+
+def _sleeptime_with_instance(tmp_path):
+    instances_dir = tmp_path / "instances"
+    instance_dir = _instance_with_roles(instances_dir, {})
+    sleeptime = ButlySleeptime(
+        base_dir=tmp_path / "workspace", instances_dir=instances_dir
+    )
+    return sleeptime, instance_dir
+
+
+def test_knowledgeize_ok_with_unclosed_fence(tmp_path, monkeypatch):
+    sleeptime, instance_dir = _sleeptime_with_instance(tmp_path)
+    _fake_factory(monkeypatch, text='```json\n[{"title": "t1"}, {"title": "t2"}]')
+
+    cards, status = sleeptime.ask_gemini_to_summarize("text", instance_dir.name)
+
+    assert status == "ok"
+    assert [c["title"] for c in cards] == ["t1", "t2"]
+
+
+def test_knowledgeize_object_wrapped_array(tmp_path, monkeypatch):
+    sleeptime, instance_dir = _sleeptime_with_instance(tmp_path)
+    _fake_factory(monkeypatch, text='{"cards": [{"title": "t"}]}')
+
+    cards, status = sleeptime.ask_gemini_to_summarize("text", instance_dir.name)
+
+    assert status == "ok"
+    assert cards == [{"title": "t"}]
+
+
+def test_knowledgeize_empty_array_is_no_cards(tmp_path, monkeypatch):
+    sleeptime, instance_dir = _sleeptime_with_instance(tmp_path)
+    _fake_factory(monkeypatch, text="[]")
+
+    cards, status = sleeptime.ask_gemini_to_summarize("text", instance_dir.name)
+
+    assert status == "no_cards"
+    assert cards == []
+
+
+def test_knowledgeize_empty_response_status(tmp_path, monkeypatch):
+    sleeptime, instance_dir = _sleeptime_with_instance(tmp_path)
+    _fake_factory(monkeypatch, text="")
+
+    cards, status = sleeptime.ask_gemini_to_summarize("text", instance_dir.name)
+
+    assert status == "empty_response"
+    assert cards is None
+
+
+def test_knowledgeize_parse_error_status(tmp_path, monkeypatch):
+    sleeptime, instance_dir = _sleeptime_with_instance(tmp_path)
+    _fake_factory(monkeypatch, text="thinking out loud, no json at all")
+
+    cards, status = sleeptime.ask_gemini_to_summarize("text", instance_dir.name)
+
+    assert status == "parse_error"
+    assert cards is None
+
+
+def test_knowledgeize_non_list_json_is_parse_error(tmp_path, monkeypatch):
+    sleeptime, instance_dir = _sleeptime_with_instance(tmp_path)
+    _fake_factory(monkeypatch, text='{"title": "not an array"}')
+
+    cards, status = sleeptime.ask_gemini_to_summarize("text", instance_dir.name)
+
+    assert status == "parse_error"
+    assert cards is None
+
+
+def test_knowledgeize_provider_error_status(tmp_path, monkeypatch):
+    sleeptime, instance_dir = _sleeptime_with_instance(tmp_path)
+    _fake_factory(monkeypatch, exc=RuntimeError("boom"))
+
+    cards, status = sleeptime.ask_gemini_to_summarize("text", instance_dir.name)
+
+    assert status == "provider_error"
+    assert cards is None
+
+
+# ===================================================================
+# stage_2_knowledgeize のチャンク統計と RAW 保持テスト
+# ===================================================================
+
+def _instance_with_integrated_turn(tmp_path):
+    instances_dir = tmp_path / "instances"
+    instance_dir = _build_isolated_instance(instances_dir)
+    short_term = instance_dir / "short_term_json"
+    integrated = instance_dir / "memory_archive" / "1_integrated"
+    for f in short_term.glob("*.json"):
+        f.rename(integrated / f.name)
+    sleeptime = ButlySleeptime(
+        base_dir=tmp_path / "workspace", instances_dir=instances_dir
+    )
+    return sleeptime, instance_dir, integrated
+
+
+def test_stage2_failed_chunk_keeps_raw_and_reports(tmp_path, monkeypatch):
+    sleeptime, instance_dir, integrated = _instance_with_integrated_turn(tmp_path)
+    monkeypatch.setattr("sleeptime.time.sleep", lambda s: None)
+    monkeypatch.setattr(
+        sleeptime, "ask_gemini_to_summarize", lambda text, db: (None, "parse_error")
+    )
+
+    stats = sleeptime.stage_2_knowledgeize(instance_dir.name, instance_dir.name)
+
+    assert stats["chunks"] == 1
+    assert stats["failed_chunks"] == 1
+    assert stats["failures"] == [
+        {"date": "2023-05-08", "chunk": 1, "reason": "parse_error"}
+    ]
+    # RAW は移動されず次回再試行できる
+    assert len(list(integrated.glob("session_*.json"))) == 1
+    knowledgeized = instance_dir / "memory_archive" / "2_knowledgeized"
+    assert not list(knowledgeized.rglob("session_*.json"))
+
+
+def test_stage2_no_cards_archives_raw(tmp_path, monkeypatch):
+    sleeptime, instance_dir, integrated = _instance_with_integrated_turn(tmp_path)
+    monkeypatch.setattr("sleeptime.time.sleep", lambda s: None)
+    monkeypatch.setattr(
+        sleeptime, "ask_gemini_to_summarize", lambda text, db: ([], "no_cards")
+    )
+
+    stats = sleeptime.stage_2_knowledgeize(instance_dir.name, instance_dir.name)
+
+    assert stats == {
+        "chunks": 1, "failed_chunks": 0, "cards_created": 0, "failures": [],
+    }
+    # 正当な抽出なしは再処理ループを防ぐため処理済みとして移動
+    assert not list(integrated.glob("session_*.json"))
+
+
+def test_stage2_ok_counts_cards(tmp_path, monkeypatch):
+    sleeptime, instance_dir, integrated = _instance_with_integrated_turn(tmp_path)
+    monkeypatch.setattr("sleeptime.time.sleep", lambda s: None)
+    monkeypatch.setattr(sleeptime, "generate_embedding", lambda text, instance_name=None: None)
+    card = {
+        "category": "Life", "title": "Pottery", "tags": "hobby",
+        "ai_importance": 3, "humanity_importance": 3,
+        "summary": "Caroline started pottery.", "episode": "She enjoyed it.",
+    }
+    monkeypatch.setattr(
+        sleeptime, "ask_gemini_to_summarize", lambda text, db: ([card], "ok")
+    )
+
+    stats = sleeptime.stage_2_knowledgeize(instance_dir.name, instance_dir.name)
+
+    assert stats["chunks"] == 1
+    assert stats["failed_chunks"] == 0
+    assert stats["cards_created"] == 1
+    assert not list(integrated.glob("session_*.json"))

@@ -73,8 +73,8 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
   - `stage_1_cleanup(instance_path)` — short_term_json flush、mid_term 追記、digest・headlines・relationship 生成
   - `_generate_daily_digest(instance_path, new_text)` — 当日RAWからダイジェスト生成（`digest_max_input_chars` 超過時は日付ヘッダ区切りでチャンク分割）
   - `_split_text_by_date_headers(text, max_chars)` — 日付ヘッダ `[YYYY-MM-DD ...]` を区切りにテキストをチャンク分割するヘルパー
-  - `stage_2_knowledgeize(instance_path, db_type)` — 1_integrated JSON を日付グループ化し、ファイル単位のチャンク分割でナレッジカードを生成・DB登録（`knowledge_max_input_chars` で制御）
-  - `ask_gemini_to_summarize(session_text, db_type)` — LLM にナレッジカード抽出を依頼
+  - `stage_2_knowledgeize(instance_path, db_type)` — 1_integrated JSON を日付グループ化し、ファイル単位のチャンク分割でナレッジカードを生成・DB登録（`knowledge_max_input_chars` で制御）。チャンク統計 `{chunks, failed_chunks, cards_created, failures}` を返す。失敗チャンクの RAW は移動せず残し次回パスで再試行、正当な「抽出対象なし」（空配列）は処理済みとして移動する
+  - `ask_gemini_to_summarize(session_text, db_type)` — LLM にナレッジカード抽出を依頼。`(cards, status)` を返す（status: ok / no_cards / empty_response / parse_error / provider_error — 0枚と失敗を観測上区別するため）。JSON 抽出は `extract_json_array()`（閉じフェンス欠落耐性）
   - `run_with_progress(instance_name)` — 上記を順番に実行し進捗を更新（`skip_knowledge_generation` 対応）
   - `estimate_workload(instance_name)` — 処理量の見積もりを返す
   - `update_status(instance_name, state, progress, message)` — 実行ステータス更新
@@ -358,7 +358,8 @@ LLM 呼び出しと RAG 検索のエンジン。Provider に依存しない中�
 ### `butly_core/core/json_extract.py`
 LLM 応答テキストから JSON 文字列を取り出す共通ヘルパー。
 
-- `extract_json_str(raw_text)` — コードフェンス（閉じ ``` 欠落も許容）または地の文から最初の `{` 〜 最後の `}` を抽出して返す。パースは呼び出し側の責務。ContextClassifier / StateUpdater / Stage 3 (knowledge_maturation) で共用
+- `extract_json_str(raw_text)` — コードフェンス（閉じ ``` 欠落も許容）または地の文から最初の `{` 〜 最後の `}` を抽出して返す。パースは呼び出し側の責務。ContextClassifier / StateUpdater / Stage 3 (knowledge_maturation) / keyword 抽出 / recent_headlines で共用
+- `extract_json_array(raw_text)` — 同上の配列版（最初の `[` 〜 最後の `]`）。Stage 2 ナレッジカード抽出で使用。`{"cards": [...]}` のようなオブジェクト包みからも配列側を拾う
 
 ---
 

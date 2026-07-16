@@ -34,7 +34,11 @@ words may stem slightly differently from the official nltk stemmer.
 
 Butly-specific metrics (RAG trigger rates, retrieved cards, latency
 percentiles, tier / need_intent distributions, classifier fallback / intent
-floor rates, Sleeptime card counts) are reported under a separate `butly` key.
+floor rates, Sleeptime card counts and stage-2 chunk failures) are reported
+under a separate `butly` key. A knowledgeization chunk that fails to parse is
+counted in `stage2_chunk_failures` and its session row is marked
+`stage_2_status: "partial"` — zero cards with zero failures means the model
+genuinely extracted nothing.
 The evidence-retrieval rate is provenance-based: retrieved card ids are
 resolved through `knowledge_cards.source_files` to the saved-turn files whose
 `locomo_dialog_ids` contain the gold evidence ids. `source_files` carries the
