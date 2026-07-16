@@ -18,6 +18,12 @@ chat:
 gatekeeper:
   connection: colab_local
   model_name: qwen3-14b
+  # Reasoning models think before answering, and the thinking alone can
+  # consume the default 512-token output budget — the classification then
+  # comes back empty and Butly falls back to rule-based need_intent.
+  # 2048 leaves room; the JSON itself needs only ~100 tokens.
+  generation_config:
+    max_output_tokens: 2048
 
 summary:
   connection: colab_local
