@@ -562,6 +562,13 @@ tier に応じて、LLM プロバイダーに渡す「記憶ブロック辞書�
 
 RAG (`rag_context`) は `need` に連動する独立判定で、tier ではなく `MemoryProbe` のヒットで注入される。
 
+**RAG 注入ソースの制御 (SYSTEM_CONFIG["memory"] + instance_config["memory"] で上書き可):**
+
+| キー | デフォルト | 説明 |
+|---|---|---|
+| `rag_source_mode` | `"cards"` | RAG ブロックに何を注入するか: `"cards"`（カード summary/episode のみ）/ `"raw"`（当時の会話原文抜粋のみ）/ `"both"`（カード + 原文）。解決不能時はカード注入にフォールバック |
+| `rag_raw_max_chars` | 6000 | 原文抜粋の合計文字数上限（ファイル単位の greedy skip。`0` = 無制限） |
+
 - `build_system_instruction_from_blocks(blocks, memory_manager, use_google_search)` — **不変セクション**（system_instruction + Key_Memory）のみを結合して system_instruction 文字列を生成
 - `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / glossary / mid_term / RAG / session_digest / tier 情報 / Google 検索注意書き / Web 検索結果）を結合し、Provider が会話履歴の先頭に user メッセージとして注入する文字列を生成
 - `is_long_definition(definition)` — glossary エントリの definition が複数行（= 長文 / 「関連設定」扱い）かを判定。`strip()` 後の `\n` 有無で判定
@@ -575,6 +582,15 @@ RAG (`rag_context`) は `need` に連動する独立判定で、tier ではな�
 | `scan_target` | "both" | "user" / "assistant" / "both" |
 | `max_entries` | 20 | 注入する最大エントリ数 |
 | `max_chars` | 4000 | 注入合計文字数の上限。greedy skip で個別エントリをスキップ |
+
+### `gatekeeper/raw_reference.py`
+RAG 候補カードを、生成元の RAW 会話 JSON へ逆引きしてプロンプト注入用の原文抜粋を構築する
+（parent-document retrieval — カード=検索インデックス、事実の根拠=原文）。
+逆引き先は `source_files` → `memory_archive/2_knowledgeized/{source_date}/`（`1_integrated/` フォールバック）。
+`rag_source_mode` が raw を要求するときだけ遅延読み込みする。
+
+- `collect_source_refs(candidates, default_instance)` — `(instance, source_date, file_name)` をカードのスコア順で dedup 収集
+- `resolve_raw_reference(candidates, instances_dir, default_instance, max_chars, user_name, agent_name)` — `{"text", "files", "missing", "truncated", "chars"}` または `None` を返す。話者ラベルは `turn_meta` の帰属規則に従う（複数話者対応）
 
 ---
 

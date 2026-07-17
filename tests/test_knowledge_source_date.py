@@ -43,6 +43,47 @@ class TestDecayBasis:
         assert _decay_basis_datetime({"source_date": "??", "created_at": ""}) is None
 
 
+class TestKnowledgeSelectCols:
+    def test_includes_source_columns_when_present(self, tmp_path):
+        """マイグレーション済み DB では source_date / source_files も SELECT する"""
+        db_path = _make_instance_db(tmp_path)
+        conn = sqlite3.connect(db_path)
+        cols = ButlyBrain._knowledge_select_cols(conn.cursor())
+        conn.close()
+        assert "source_date" in cols
+        assert "source_files" in cols
+
+    def test_base_columns_only_for_legacy_schema(self, tmp_path):
+        """未マイグレーションの旧スキーマでは base カラムのみ"""
+        db_path = tmp_path / "legacy.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE knowledge_cards ("
+            "id TEXT, title TEXT, summary TEXT, episode TEXT, type TEXT, "
+            "embedding_blob BLOB, created_at TEXT, is_archived INTEGER)"
+        )
+        cols = ButlyBrain._knowledge_select_cols(conn.cursor())
+        conn.close()
+        assert "source_date" not in cols
+        assert "source_files" not in cols
+
+
+class TestQuickVectorSearchErrorPath:
+    def test_returns_diag_dict_on_db_error(self, tmp_path, monkeypatch):
+        """DB 破損等の例外時も diag dict 契約を守る（list を返すと呼び出し側で TypeError）"""
+        inst = "broken_inst"
+        inst_dir = tmp_path / "butly_core" / "instances" / inst
+        inst_dir.mkdir(parents=True)
+        (inst_dir / "butly_memory.db").write_text("not a sqlite database")
+
+        brain = ButlyBrain(base_dir=tmp_path)
+        monkeypatch.setattr(brain, "get_embedding", lambda *a, **k: [0.1, 0.2])
+
+        diag = brain.quick_vector_search_diag("query", inst)
+        assert diag["results"] == []
+        assert diag["diagnostics"]["fetched_count"] == 0
+
+
 class TestInsertKnowledgeSourceColumns:
     def test_insert_stores_source_date_and_files(self, tmp_path, monkeypatch):
         db_path = _make_instance_db(tmp_path)

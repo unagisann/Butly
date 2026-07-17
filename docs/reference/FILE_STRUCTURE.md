@@ -283,6 +283,17 @@ Returned dict includes `status` (`hit` / `no_hit` / `deep_search` / `skipped`), 
 
 RAG is tier-independent and decided by `need` only.
 
+**RAG source control** (`SYSTEM_CONFIG["memory"]` / `instance_config["memory"]`):
+| key | default | meaning |
+|---|---|---|
+| `rag_source_mode` | `"cards"` | what the RAG block injects: `"cards"` (summary/episode only) / `"raw"` (original conversation excerpts only) / `"both"` (cards + excerpts). Falls back to cards when nothing resolves. |
+| `rag_raw_max_chars` | 6000 | total char cap for the excerpts (greedy skip per file; `0` = unlimited) |
+
+#### `raw_reference.py`
+Resolves RAG candidate cards back to the RAW conversation JSON they were built from (`source_files` → `memory_archive/2_knowledgeized/{source_date}/` with a `1_integrated/` fallback) and renders prompt-ready excerpts — parent-document retrieval: cards act as the search index, the original text carries the facts. Loaded lazily only when `rag_source_mode` requires raw.
+- `collect_source_refs(candidates, default_instance)` — dedup `(instance, source_date, file_name)` refs in card-score order.
+- `resolve_raw_reference(candidates, instances_dir, default_instance, max_chars, user_name, agent_name)` — returns `{"text", "files", "missing", "truncated", "chars"}` or `None`. Speaker labels follow `turn_meta` attribution (multi-speaker aware).
+
 **Glossary controls** (`SYSTEM_CONFIG["glossary"]`):
 | key | default | meaning |
 |---|---|---|

@@ -303,6 +303,149 @@ class TestBlockStructure:
 
 
 # ===================================================================
+# RAG 注入ソース (rag_source_mode) テスト
+# ===================================================================
+
+class TestRAGSourceMode:
+    """rag_source_mode（cards / raw / both）による RAG ブロック構築テスト"""
+
+    RAW_HEADER_BOTH = "【記憶の元になった当時の会話（抜粋）】"
+    RAW_HEADER_ONLY = "【過去の記憶（当時の会話・抜粋）】"
+    CARDS_HEADER = "【過去の記憶（RAG）】"
+
+    def _write_raw_file(self, base_dir, date, name, text):
+        from tests.conftest import TEST_INSTANCE_FOLDER
+        dest = (
+            base_dir / "butly_core" / "instances" / TEST_INSTANCE_FOLDER
+            / "memory_archive" / "2_knowledgeized" / date
+        )
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / name).write_text(
+            json.dumps(
+                {
+                    "timestamp": f"{date}T10:00:00",
+                    "messages": [
+                        {"role": "user", "parts": [text]},
+                        {"role": "model", "parts": ["覚えています"]},
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    def _gk_output(self, with_source_files=True):
+        card = {
+            "id": "test_001",
+            "title": "引っ越し",
+            "summary": "- 2023-05-08 に引っ越した",
+            "score": 0.85,
+            "source": "vector",
+            "source_date": "2023-05-08",
+        }
+        if with_source_files:
+            card["source_files"] = json.dumps(["s1.json"])
+        return {
+            "tier": "mid",
+            "need": "memory_probe_hit",
+            "search_targets": ["引っ越し"],
+            "memory_probe": {
+                "status": "hit",
+                "candidates": [card],
+                "glossary_hits": [],
+            },
+        }
+
+    def _build(self, memory_manager, mock_brain, base_dir, mode=None, **kwargs):
+        from tests.conftest import TEST_INSTANCE_FOLDER
+        mock_brain.instances_dir = base_dir / "butly_core" / "instances"
+        override = {"memory": {"rag_source_mode": mode}} if mode else None
+        builder = MemoryBlockBuilder()
+        return builder.build(
+            tier="mid",
+            memory_manager=memory_manager,
+            brain=mock_brain,
+            user_input="引っ越しっていつだっけ",
+            instance_name=TEST_INSTANCE_FOLDER,
+            override_config=override,
+            gatekeeper_output=kwargs.get("gk_output", self._gk_output()),
+        )
+
+    def test_default_mode_is_cards(self, memory_manager, mock_brain, base_dir):
+        """既定はカードのみ（従来挙動）— RAW ファイルがあっても読まない"""
+        self._write_raw_file(base_dir, "2023-05-08", "s1.json", "引っ越したよ")
+        blocks = self._build(memory_manager, mock_brain, base_dir)
+
+        assert blocks["rag_source_mode"] == "cards"
+        assert self.CARDS_HEADER in blocks["rag_context"]
+        assert self.RAW_HEADER_BOTH not in blocks["rag_context"]
+        assert "rag_raw_reference" not in blocks
+
+    def test_both_appends_raw_block(self, memory_manager, mock_brain, base_dir):
+        """both: カードブロックの後に原文抜粋が付く"""
+        self._write_raw_file(base_dir, "2023-05-08", "s1.json", "先週の日曜に引っ越したよ")
+        blocks = self._build(memory_manager, mock_brain, base_dir, mode="both")
+
+        rag = blocks["rag_context"]
+        assert self.CARDS_HEADER in rag
+        assert self.RAW_HEADER_BOTH in rag
+        assert "先週の日曜に引っ越したよ" in rag
+        assert rag.find(self.CARDS_HEADER) < rag.find(self.RAW_HEADER_BOTH)
+        assert blocks["rag_source_mode"] == "both"
+        assert blocks["rag_raw_reference"]["status"] == "ok"
+        assert blocks["rag_raw_reference"]["files"] == ["s1.json"]
+        assert blocks["rag_raw_reference"]["truncated"] is False
+        # usage_count / debug 用のキーは mode に関わらず維持される
+        assert blocks["rag_card_ids"] == ["test_001"]
+
+    def test_raw_mode_replaces_cards(self, memory_manager, mock_brain, base_dir):
+        """raw: 原文のみ注入され、カードブロックは含まれない"""
+        self._write_raw_file(base_dir, "2023-05-08", "s1.json", "先週の日曜に引っ越したよ")
+        blocks = self._build(memory_manager, mock_brain, base_dir, mode="raw")
+
+        rag = blocks["rag_context"]
+        assert self.RAW_HEADER_ONLY in rag
+        assert self.CARDS_HEADER not in rag
+        assert "先週の日曜に引っ越したよ" in rag
+        assert blocks["rag_card_ids"] == ["test_001"]
+
+    def test_fallback_to_cards_when_no_source_files(
+        self, memory_manager, mock_brain, base_dir
+    ):
+        """source_files の無い旧カードのみ → カード注入にフォールバック"""
+        blocks = self._build(
+            memory_manager, mock_brain, base_dir, mode="both",
+            gk_output=self._gk_output(with_source_files=False),
+        )
+
+        assert self.CARDS_HEADER in blocks["rag_context"]
+        assert self.RAW_HEADER_BOTH not in blocks["rag_context"]
+        # 無音フォールバックにしない（観測用ステータスを残す）
+        assert blocks["rag_raw_reference"]["status"] == "fallback_cards"
+
+    def test_fallback_to_cards_when_files_missing(
+        self, memory_manager, mock_brain, base_dir
+    ):
+        """RAW ファイルが実在しない → カード注入にフォールバック"""
+        blocks = self._build(memory_manager, mock_brain, base_dir, mode="both")
+
+        assert self.CARDS_HEADER in blocks["rag_context"]
+        assert self.RAW_HEADER_BOTH not in blocks["rag_context"]
+        assert blocks["rag_raw_reference"]["status"] == "fallback_cards"
+
+    def test_unknown_mode_falls_back_to_cards(
+        self, memory_manager, mock_brain, base_dir
+    ):
+        """不明な mode 値は cards として扱う"""
+        self._write_raw_file(base_dir, "2023-05-08", "s1.json", "引っ越したよ")
+        blocks = self._build(memory_manager, mock_brain, base_dir, mode="everything")
+
+        assert blocks["rag_source_mode"] == "cards"
+        assert self.CARDS_HEADER in blocks["rag_context"]
+        assert self.RAW_HEADER_BOTH not in blocks["rag_context"]
+
+
+# ===================================================================
 # コンテキスト順序制御テスト
 # ===================================================================
 

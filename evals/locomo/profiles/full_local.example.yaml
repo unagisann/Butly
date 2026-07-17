@@ -37,3 +37,14 @@ knowledge:
 embedding:
   connection: local_embedding
   model_name: nomic-embed-text
+
+# Non-model override: what the RAG block injects into the prompt.
+# Cards are lossy compression — extraction can drop event dates or status
+# facts. "both" keeps the cards as the search index and appends the original
+# conversation excerpts they were built from (parent-document retrieval),
+# resolved via each card's source_files. "cards" is the pre-v12 behaviour,
+# "raw" injects only the excerpts. rag_raw_max_chars caps the total excerpt
+# size in characters (0 = unlimited).
+memory:
+  rag_source_mode: both
+  rag_raw_max_chars: 6000

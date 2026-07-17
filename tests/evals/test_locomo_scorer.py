@@ -231,6 +231,61 @@ class TestScoreRun:
         assert len(errors) == 1
         assert json.loads(errors[0])["source"] == "sleeptime"
 
+    def test_raw_reference_metrics_aggregated(self, tmp_path):
+        """rag.raw_reference の status/chars/truncated が集計される"""
+        rows = [
+            _qa_row(
+                "qa-1",
+                diagnostics={
+                    "gatekeeper": {"tier": "mid"},
+                    "rag": {
+                        "results": [{"title": "t"}],
+                        "source_mode": "both",
+                        "raw_reference": {
+                            "status": "ok",
+                            "files": ["s1.json"],
+                            "chars": 500,
+                            "truncated": False,
+                        },
+                    },
+                },
+            ),
+            _qa_row(
+                "qa-2",
+                diagnostics={
+                    "gatekeeper": {"tier": "mid"},
+                    "rag": {
+                        "results": [{"title": "t"}],
+                        "source_mode": "both",
+                        "raw_reference": {
+                            "status": "fallback_cards",
+                            "files": [],
+                            "chars": 0,
+                            "truncated": False,
+                        },
+                    },
+                },
+            ),
+        ]
+        run_dir = _write_run(tmp_path, rows)
+
+        butly = score_run(run_dir)["butly"]
+        assert butly["rag_source_mode_distribution"] == {"both": 2}
+        assert butly["raw_reference_status_distribution"] == {
+            "fallback_cards": 1,
+            "ok": 1,
+        }
+        assert butly["raw_reference_chars_mean"] == pytest.approx(250)
+        assert butly["raw_reference_truncated_rate"] == pytest.approx(0.0)
+
+    def test_raw_reference_metrics_absent_for_cards_mode(self, tmp_path):
+        """raw_reference 無し（cards モード・旧 run）でも集計が壊れない"""
+        run_dir = _write_run(tmp_path, [_qa_row("qa-1")])
+
+        butly = score_run(run_dir)["butly"]
+        assert butly["raw_reference_status_distribution"] == {}
+        assert butly["raw_reference_chars_mean"] is None
+
     def test_deduplicates_resumed_question_records(self, tmp_path):
         rows = [
             _qa_row("qa-1", prediction="wrong answer entirely"),

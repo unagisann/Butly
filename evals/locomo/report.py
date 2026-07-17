@@ -105,6 +105,12 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         f" ({_fmt_distribution(butly.get('classifier_fallback_reasons'))})",
         f"- Intent floor rate (null→past_fact): "
         f"{_fmt(butly.get('intent_floor_rate'))}",
+        f"- RAG source mode: "
+        f"{_fmt_distribution(butly.get('rag_source_mode_distribution'))}",
+        f"- RAG raw reference status: "
+        f"{_fmt_distribution(butly.get('raw_reference_status_distribution'))}"
+        f" (chars mean {_fmt(butly.get('raw_reference_chars_mean'), digits=0)}, "
+        f"truncated rate {_fmt(butly.get('raw_reference_truncated_rate'))})",
         f"- Knowledge cards created by Sleeptime: "
         f"{butly.get('knowledge_cards_created', 0)}",
         f"- Sleeptime failures: {butly.get('sleeptime_failures', 0)}",

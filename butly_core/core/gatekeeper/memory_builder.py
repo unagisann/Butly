@@ -308,6 +308,9 @@ class MemoryBlockBuilder:
         blocks["_probe_ran"] = bool(probe)
 
         if need and candidates:
+            _inst_mem = override_config.get("memory", {}) if override_config else {}
+            _sys_mem = SYSTEM_CONFIG.get("memory", {})
+
             rag_lines = ["【過去の記憶（RAG）】"]
             if any(c.get("source_date") for c in candidates):
                 rag_lines.append(
@@ -324,12 +327,80 @@ class MemoryBlockBuilder:
                 if c.get("episode"):
                     episode = str(c["episode"]).strip().replace("\n", "\n  ")
                     rag_lines.append(f"  (補足: {episode})")
-            blocks["rag_context"] = "\n".join(rag_lines)
+            cards_text = "\n".join(rag_lines)
+
+            # --- RAG 注入ソースの解決（cards / raw / both） ---
+            # カード = 検索インデックス、事実の根拠 = 原文（parent-document
+            # retrieval）。RAW の読み込みは raw を要求するモードのときだけ行う。
+            rag_mode = _inst_mem.get(
+                "rag_source_mode", _sys_mem.get("rag_source_mode", "cards")
+            )
+            if rag_mode not in ("cards", "raw", "both"):
+                print(
+                    f"[Gatekeeper] 不明な rag_source_mode={rag_mode!r} — cards で続行"
+                )
+                rag_mode = "cards"
+
+            raw_ref = None
+            if rag_mode in ("raw", "both") and brain is not None:
+                raw_ref = _resolve_raw_block(
+                    candidates=candidates,
+                    brain=brain,
+                    instance_name=instance_name,
+                    override_config=override_config,
+                    inst_mem=_inst_mem,
+                    sys_mem=_sys_mem,
+                )
+
+            if raw_ref:
+                if rag_mode == "raw":
+                    blocks["rag_context"] = (
+                        "【過去の記憶（当時の会話・抜粋）】\n"
+                        "（関連する過去の会話の原文。--- 行はその会話の日時）\n"
+                        + raw_ref["text"]
+                    )
+                else:
+                    blocks["rag_context"] = (
+                        cards_text
+                        + "\n\n【記憶の元になった当時の会話（抜粋）】\n"
+                        "（上の記憶カードの根拠となる会話原文。"
+                        "日付や事実の詳細はこちらを優先する）\n"
+                        + raw_ref["text"]
+                    )
+                blocks["rag_raw_reference"] = {
+                    "status": "ok",
+                    "files": raw_ref["files"],
+                    "missing": raw_ref["missing"],
+                    "truncated": raw_ref["truncated"],
+                    "chars": raw_ref["chars"],
+                }
+                print(
+                    f"[Gatekeeper] MemoryBlock: RAG raw reference "
+                    f"{len(raw_ref['files'])} files / {raw_ref['chars']} chars "
+                    f"(mode={rag_mode})"
+                )
+            else:
+                # source_files 無し・ファイル欠落等で解決できない場合はカード注入
+                blocks["rag_context"] = cards_text
+                if rag_mode != "cards":
+                    # raw を要求したのに注入できなかったことを無音にしない
+                    # （v10 の Stage 2 無音失敗の教訓）
+                    blocks["rag_raw_reference"] = {
+                        "status": "fallback_cards",
+                        "files": [],
+                        "missing": [],
+                        "truncated": False,
+                        "chars": 0,
+                    }
+                    print(
+                        "[Gatekeeper] MemoryBlock: RAW 参照を解決できず"
+                        f"カード注入にフォールバック (mode={rag_mode})"
+                    )
+            blocks["rag_source_mode"] = rag_mode
             blocks["rag_card_ids"] = [c["id"] for c in candidates]  # usage_count 用
             blocks["rag_results_raw"] = candidates  # debug_info 用
 
             # --- Stage 3 opt-in: ヒットしたカードに紐づく active node を併走 ---
-            _inst_mem = override_config.get("memory", {}) if override_config else {}
             _km_enabled = _inst_mem.get(
                 "knowledge_maturation_enabled",
                 SYSTEM_CONFIG.get("memory", {}).get(
@@ -496,7 +567,6 @@ def build_context_prefix(
     str
         可変コンテキスト文字列。空の場合は空文字列。
     """
-    from butly_core.core.chronos import ButlyChronos
     from butly_core.prompts import PromptLoader
 
     loader = PromptLoader()
@@ -715,7 +785,7 @@ def _build_mid_term(blocks: dict, level: str, tier: str, h) -> str | None:
             text = blocks.get("mid_term", "")
         if not text:
             return None
-        lines = [l for l in text.strip().split("\n") if l.strip()]
+        lines = [ln for ln in text.strip().split("\n") if ln.strip()]
         truncated = lines[-4:] if len(lines) > 4 else lines
         return "[直近の背景]\n" + "\n".join(truncated)
 
@@ -750,7 +820,7 @@ def _build_rag(blocks: dict, level: str, tier: str, h) -> str | None:
     if not rag_context:
         return None
     if level == "low":
-        lines = [l for l in rag_context.strip().split("\n") if l.strip()]
+        lines = [ln for ln in rag_context.strip().split("\n") if ln.strip()]
         truncated = lines[:3] if len(lines) > 3 else lines
         return "[関連記憶]\n" + "\n".join(truncated)
     # high / mid
@@ -819,6 +889,50 @@ def _lookup_active_nodes_for_candidates(
     nodes = list(out.values())
     nodes.sort(key=lambda n: float(n.get("confidence") or 0.0), reverse=True)
     return nodes
+
+
+def _resolve_raw_block(
+    *,
+    candidates: list,
+    brain,
+    instance_name: str,
+    override_config: dict | None,
+    inst_mem: dict,
+    sys_mem: dict,
+) -> dict | None:
+    """RAG 候補カードの RAW 原文抜粋を解決する（失敗時 None でカード注入へ）。
+
+    話者ラベルは sleeptime Stage 2 と同じ規則（AI 名 = agent_profile.ai_name、
+    ユーザー名 = preferred_call 優先）で解決する。
+    """
+    from butly_core.core.gatekeeper.raw_reference import resolve_raw_reference
+
+    max_chars = int(
+        inst_mem.get("rag_raw_max_chars", sys_mem.get("rag_raw_max_chars", 6000))
+    )
+    agent_conf = SYSTEM_CONFIG.get("agent", {})
+    conf = override_config or {}
+    agent_name = (conf.get("agent_profile") or {}).get("ai_name") or agent_conf.get(
+        "agent_name", "AI"
+    )
+    user_profile = conf.get("user_profile") or {}
+    user_name = (
+        user_profile.get("preferred_call")
+        or user_profile.get("user_name")
+        or agent_conf.get("user_name", "User")
+    )
+    try:
+        return resolve_raw_reference(
+            candidates,
+            brain.instances_dir,
+            instance_name,
+            max_chars,
+            user_name=user_name,
+            agent_name=agent_name,
+        )
+    except Exception as e:
+        print(f"[Gatekeeper] RAW 参照の解決に失敗: {e}")
+        return None
 
 
 def _build_session_digest(blocks: dict, level: str, h) -> str | None:

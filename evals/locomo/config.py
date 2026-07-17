@@ -9,12 +9,15 @@ from typing import Any, Optional
 import yaml
 
 
+# モデル role 5種 + instance-config にそのまま流し込む非モデルセクション
+# ("memory": rag_source_mode / rag_raw_max_chars 等の記憶設定オーバーライド)
 PROFILE_ROLE_SECTIONS = (
     "chat",
     "gatekeeper",
     "summary",
     "knowledge",
     "embedding",
+    "memory",
 )
 
 

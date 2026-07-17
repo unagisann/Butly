@@ -95,6 +95,12 @@ SYSTEM_CONFIG = {
         "relationship_update_interval_days": 7,  # Phase 3: 関係性スナップショットの更新間隔（日数）
         "use_summarized_mid_term": True,  # ★NEW: True=要約注入 / False=RAW注入
         "count_dedup_hours": 6,  # usage_count dedup 窓（同一カードの再カウント抑制時間）
+        # --- RAG 注入ソース（parent-document retrieval） ---
+        # "cards": カード(summary/episode)のみ / "raw": 当時の会話原文のみ /
+        # "both": カード + 原文。原文はカードの source_files から遅延解決する。
+        "rag_source_mode": "cards",
+        # 原文抜粋の合計文字数上限（0 = 無制限。超過ファイルは greedy skip）
+        "rag_raw_max_chars": 6000,
         # --- Stage 3: Knowledge Maturation (§13) ---
         "knowledge_maturation_enabled": False,
         "knowledge_maturation_interval_days": 1,
