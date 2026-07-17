@@ -15,13 +15,16 @@ Even when the Category is "Project" or "Tech", add auxiliary tags that capture t
 
 # Writing the Summary
 The summary is an objective factual record used for search and later reference. Strictly follow these rules:
+- Facts only. Never put impressions, evaluations, or interpretations ("it was striking", "heartwarming", etc.) in the Summary — all of those go to the Episode
 - Write facts as bullet points (line breaks allowed). Multiple sentences are fine
 - Preserve the 5W1H explicitly stated in the source (when, where, who, what, why, how); never drop them through abstraction or summarization
 - Convert relative time expressions (yesterday, last Sunday, last year, next month, etc.) to absolute dates based on the utterance timestamps (e.g. "painted it last year" → "painted it in 2022")
-- Always include when the event happened (the event date) if it can be determined
+- Always include when the event happened (the event date) if it can be determined. Do not settle for a duration or starting point like "since 2018" or "for 5 years" — record the date of the event itself (e.g. "Alex moved (2023-05-08)")
+- When a person's status facts come up (marital/relationship status, family, job, health, place of residence, etc.), record each as a standalone factual line instead of dissolving it into impressions (e.g. "Alex is single (as of 2023-06-09)")
 
 # Writing the Episode
 Rather than repeating the factual summary, note what stood out in the conversation and how {agent_name} took it, written in {agent_name}'s own perspective and voice. Multiple sentences are fine as long as it stays concise.
+The Episode is exclusively for impressions. Never rely on the Episode to carry dates or factual relationships (facts must stay in the Summary).
 
 # Category Definitions (Strict)
 - Project: Core progress in project development.

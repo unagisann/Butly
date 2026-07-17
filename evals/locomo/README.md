@@ -78,9 +78,12 @@ python -m evals.locomo.cli run \
 `run` finishes with scoring and a summary; pass `--skip-scoring` to stop after
 QA. `--model-name` and `--connection` override the chat role for QA;
 `--profile <yaml>` applies role sections (`chat` / `gatekeeper` / `summary` /
-`knowledge` / `embedding`) to the evaluation instance config — see
-`profiles/*.example.yaml`. Existing run directories are preserved; replacing
-one requires both the same `--run-id` and explicit `--clean`.
+`knowledge` / `embedding`) plus the non-model `memory` section
+(e.g. `rag_source_mode: both` to inject original-conversation excerpts next to
+the RAG cards, `rag_raw_max_chars` to cap them) to the evaluation instance
+config — see `profiles/*.example.yaml`. Existing run directories are
+preserved; replacing one requires both the same `--run-id` and explicit
+`--clean`.
 
 ```bash
 # continue an interrupted run (skips completed sessions and questions)

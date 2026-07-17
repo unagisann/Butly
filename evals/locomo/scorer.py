@@ -195,6 +195,7 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
     diagnostics = row.get("diagnostics") or {}
     rag = diagnostics.get("rag") or {}
     rag_results = rag.get("results") or []
+    raw_reference = rag.get("raw_reference") or {}
     gatekeeper = diagnostics.get("gatekeeper") or {}
     entry = {
         "question_id": row.get("question_id"),
@@ -206,6 +207,10 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
         **graded,
         "rag_triggered": bool(rag_results),
         "retrieved_card_count": len(row.get("retrieved_card_ids") or []),
+        "rag_source_mode": rag.get("source_mode"),
+        "raw_reference_status": raw_reference.get("status"),
+        "raw_reference_chars": raw_reference.get("chars"),
+        "raw_reference_truncated": raw_reference.get("truncated"),
         "tier": gatekeeper.get("tier", row.get("tier")),
         "need_intent": gatekeeper.get("need_intent"),
         "classifier_status": gatekeeper.get("classifier_status"),
@@ -301,6 +306,27 @@ def _butly_aggregate(
                 float(bool(e["intent_floor_applied"]))
                 for e in question_scores
                 if e.get("intent_floor_applied") is not None
+            ]
+        ),
+        # RAG raw reference (rag_source_mode raw/both): 注入の成否と量
+        "rag_source_mode_distribution": _distribution(
+            question_scores, "rag_source_mode"
+        ),
+        "raw_reference_status_distribution": _distribution(
+            question_scores, "raw_reference_status"
+        ),
+        "raw_reference_chars_mean": _mean(
+            [
+                e["raw_reference_chars"]
+                for e in question_scores
+                if e.get("raw_reference_chars") is not None
+            ]
+        ),
+        "raw_reference_truncated_rate": _mean(
+            [
+                float(bool(e["raw_reference_truncated"]))
+                for e in question_scores
+                if e.get("raw_reference_truncated") is not None
             ]
         ),
         "knowledge_cards_created": sum(

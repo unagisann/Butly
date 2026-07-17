@@ -996,6 +996,12 @@ class ChatService:
             "rag": {
                 "query": gk_result.get("need"),
                 "results": rag_debug_results,
+                "source_mode": (
+                    memory_blocks.get("rag_source_mode") if memory_blocks else None
+                ),
+                "raw_reference": (
+                    memory_blocks.get("rag_raw_reference") if memory_blocks else None
+                ),
             },
             "prompt": provider_debug.get("messages", []),
             "prompt_full": provider_debug.get("messages_full", []),

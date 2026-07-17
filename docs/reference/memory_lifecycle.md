@@ -184,7 +184,7 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | **Schema** | `knowledge_cards` table (see below) |
 | **Embedding** | `title + tags + summary` embedded via `AI_CONFIG["embedding"]["model_name"]` → stored as BLOB |
 | **Search** | `ButlyBrain.search_memories()` re-ranks by cosine similarity between query and embedding_blob |
-| **Injected by Gatekeeper** | Whenever `need` is set (tier-independent): RAG block built from MemoryProbe candidates, injected as LONG-TERM MEMORY block |
+| **Injected by Gatekeeper** | Whenever `need` is set (tier-independent): RAG block built from MemoryProbe candidates, injected as LONG-TERM MEMORY block. The injected source is controlled by `memory.rag_source_mode`: `"cards"` (default, cards only) / `"raw"` (original conversation excerpts only) / `"both"` (cards + excerpts). For raw/both, each card's `source_files` is lazily resolved back to the RAW conversation JSON and excerpts are injected up to `memory.rag_raw_max_chars` characters in total (default 6000, 0 = unlimited, oversized files are greedy-skipped) — parent-document retrieval: cards act as the search index, the original text carries the facts. Falls back to card injection when nothing can be resolved |
 | **Post-processing** | Processed JSONs moved to `memory_archive/2_knowledgeized/{date}/` |
 | **Backup** | Rotation backup saved to `butly_core/db_backups/` (generations: `backup.generations`) |
 
@@ -203,7 +203,7 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | `humanity_importance` | REAL | Importance to humanity (0-1) |
 | `embedding_blob` | BLOB | float32 byte array for cosine similarity search |
 | `source_date` | TEXT | Date of the source conversation (YYYY-MM-DD). Search time decay is computed from this "event age" (older cards without it fall back to `created_at`) |
-| `source_files` | TEXT | JSON array of RAW file names the card was generated from; pointer back to the original conversations under `memory_archive/2_knowledgeized/{date}/` |
+| `source_files` | TEXT | JSON array of RAW file names the card was generated from; pointer back to the original conversations under `memory_archive/2_knowledgeized/{date}/`. Used to resolve the RAG raw-excerpt injection when `rag_source_mode` is raw/both |
 
 ---
 

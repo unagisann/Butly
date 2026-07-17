@@ -37,7 +37,8 @@ AI_CONFIG = {
         "connection": "google",
         "model_name": "gemini-3.1-pro-preview",
         "generation_config": {
-            "temperature": 0.7,
+            # カード JSON の形状安定を最優先 (config.py AI_CONFIG と同値に保つ)
+            "temperature": 0.2,
             "max_output_tokens": 8192,
         },
         "safety_settings": [
@@ -84,6 +85,12 @@ SYSTEM_CONFIG = {
         "relationship_update_interval_days": 7,
         "use_summarized_mid_term": True,
         "count_dedup_hours": 6,
+        # --- RAG 注入ソース（parent-document retrieval） ---
+        # "cards": カード(summary/episode)のみ / "raw": 当時の会話原文のみ /
+        # "both": カード + 原文。原文はカードの source_files から遅延解決する。
+        "rag_source_mode": "cards",
+        # 原文抜粋の合計文字数上限（0 = 無制限。超過ファイルは greedy skip）
+        "rag_raw_max_chars": 6000,
         # --- Stage 3: Knowledge Maturation (§13) ---
         "knowledge_maturation_enabled": False,
         "knowledge_maturation_interval_days": 1,

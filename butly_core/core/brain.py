@@ -62,9 +62,9 @@ class ButlyBrain:
     def _knowledge_select_cols(cursor) -> str:
         """knowledge_cards の SELECT カラムを DB の実スキーマに合わせて返す。
 
-        source_date はマイグレーション（ButlyDatabase 初期化）で追加される。
-        検索経路は sqlite3 を直接開くため、未マイグレーションの既存 DB でも
-        検索が落ちないようカラムの有無を確認する。
+        source_date / source_files はマイグレーション（ButlyDatabase 初期化）で
+        追加される。検索経路は sqlite3 を直接開くため、未マイグレーションの
+        既存 DB でも検索が落ちないようカラムの有無を確認する。
         """
         base = (
             "id, title, summary, episode, type, embedding_blob, "
@@ -75,8 +75,9 @@ class ButlyBrain:
                 row[1]
                 for row in cursor.execute("PRAGMA table_info(knowledge_cards)")
             }
-            if "source_date" in columns:
-                return base + ", source_date"
+            extras = [c for c in ("source_date", "source_files") if c in columns]
+            if extras:
+                return base + ", " + ", ".join(extras)
         except sqlite3.Error:
             pass
         return base
@@ -472,8 +473,10 @@ class ButlyBrain:
             }
 
         except Exception as e:
+            # 契約は diag dict。list を返すと呼び出し側の single["results"] が
+            # TypeError になるため、失敗時も同じ形で返す
             print(f"[Brain] Quick Vector Search Error: {e}")
-            return []
+            return empty
 
     def search_knowledge(
         self,
@@ -626,8 +629,13 @@ class ButlyBrain:
             # ---------------------------------------------------------
             query_embedding = self.get_embedding(user_query, embedding_conf)
             if not query_embedding:
-                # ベクトル生成失敗時はそのまま返す(上位limit件)
-                return [dict(row) for row in rows[:limit]]
+                # ベクトル生成失敗時はそのまま返す(上位limit件)。
+                # embedding_blob(bytes) は候補 dict に残すと後段の JSON 化で
+                # 落ちるため除外する
+                return [
+                    {k: v for k, v in dict(row).items() if k != "embedding_blob"}
+                    for row in rows[:limit]
+                ]
 
             scored_results = []
 
