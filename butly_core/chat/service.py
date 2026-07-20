@@ -816,6 +816,7 @@ class ChatService:
 
             t0 = time.time()
             gen_error = None
+            res = None
             try:
                 res = await run_in_threadpool(
                     provider.generate,
@@ -828,6 +829,11 @@ class ChatService:
                 raise
             finally:
                 gen_elapsed_ms["value"] = int((time.time() - t0) * 1000)
+                _token_usage = (
+                    (getattr(res, "debug_info", None) or {}).get("token_usage")
+                    if res is not None
+                    else None
+                )
                 record_llm_call(
                     purpose="chat_generate",
                     model=model_name,
@@ -835,6 +841,9 @@ class ChatService:
                     duration_ms=gen_elapsed_ms["value"],
                     prompt_chars=len(full_prompt),
                     error=gen_error,
+                    metadata=(
+                        {"token_usage": _token_usage} if _token_usage else None
+                    ),
                 )
             return res
 
@@ -978,6 +987,8 @@ class ChatService:
                 "prompt": _estimate_tokens(total_prompt_text),
                 "response": _estimate_tokens(result.text),
             },
+            # API 実測トークン数（provider が返した場合のみ。無い場合 None）
+            "token_usage": provider_debug.get("token_usage"),
             "gatekeeper": {
                 "tier": tier,
                 "enabled": gk_enabled,

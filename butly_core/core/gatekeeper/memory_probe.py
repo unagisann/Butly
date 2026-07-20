@@ -90,6 +90,18 @@ def asks_for_specific_past_detail(user_input):
     if re.search(r"いつ(?!も|か|の間).{0,15}(した|った|でした|ました)", user_input):
         return True
 
+    # 以前語られた予定・約束の時期を尋ねる疑問文（"When is X planning to...?"）。
+    # 予定を表す明示語を要求し、"When is the meeting?" のような一般疑問での
+    # 過剰発火を避ける。floor は probe 候補ゼロなら need=null に戻るので安全側。
+    if re.search(
+        r"\bwhen\s+(is|are|will)\b.*\b(plan|plans|planning|planned|scheduled)\b",
+        input_lower,
+    ):
+        return True
+    # 「いつ〜する予定/つもり」系
+    if re.search(r"いつ(?!も|か|の間).{0,20}(予定|つもり)", user_input):
+        return True
+
     return False
 
 

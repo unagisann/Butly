@@ -118,6 +118,7 @@ class QARunner:
                 "gatekeeper": debug_info.get("gatekeeper", {}),
                 "rag": rag,
                 "timing": debug_info.get("timing", {}),
+                "token_usage": debug_info.get("token_usage"),
                 "provider": debug_info.get("provider"),
                 "model": debug_info.get("model"),
                 "connection_id": debug_info.get("connection_id"),

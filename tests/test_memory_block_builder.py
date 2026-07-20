@@ -47,7 +47,7 @@ class TestReflexTier:
         assert blocks["mid_term"] == ""
 
     def test_reflex_has_no_rag(self, memory_manager, mock_brain):
-        """reflex: RAG コンテキストは空"""
+        """reflex: need が無ければ RAG コンテキストは空"""
         builder = MemoryBlockBuilder()
 
         blocks = builder.build(
@@ -58,6 +58,44 @@ class TestReflexTier:
         )
 
         assert blocks["rag_context"] == ""
+
+    def test_reflex_with_need_gets_rag(self, memory_manager, mock_brain):
+        """reflex でも need + candidates があれば RAG は注入される（tier 非依存）"""
+        builder = MemoryBlockBuilder()
+
+        gk_output = {
+            "tier": "reflex",
+            "need": "past_fact",
+            "search_targets": ["キャンプ"],
+            "memory_probe": {
+                "status": "hit",
+                "candidates": [
+                    {
+                        "id": "test_001",
+                        "title": "キャンプの予定",
+                        "summary": "- 2023年6月にキャンプ予定",
+                        "score": 0.8,
+                        "source": "vector",
+                    }
+                ],
+                "glossary_hits": [],
+            },
+        }
+
+        blocks = builder.build(
+            tier="reflex",
+            memory_manager=memory_manager,
+            brain=mock_brain,
+            user_input="キャンプいつ行く予定だっけ",
+            gatekeeper_output=gk_output,
+        )
+
+        assert "キャンプの予定" in blocks["rag_context"]
+        assert blocks["mid_term"] == ""  # mid_term は引き続き tier 依存
+        # 描画側も reflex で RAG を落とさない
+        from butly_core.core.gatekeeper.memory_builder import _build_rag
+        rendered = _build_rag(blocks, "high", "reflex", lambda k: f"[{k}]")
+        assert rendered is not None and "キャンプの予定" in rendered
 
 
 class TestMidTier:

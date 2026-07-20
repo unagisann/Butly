@@ -252,50 +252,52 @@ class MemoryBlockBuilder:
         }
 
         if tier == "reflex":
-            # short_term + session_digest のみ
+            # short_term + session_digest（mid_term なし）。
+            # RAG / glossary は need に連動する tier 非依存の判定なので
+            # ここで return せず後段で処理する（docs の仕様どおり）。
             print("[Gatekeeper] MemoryBlock: reflex（short_term + session_digest）")
-            return blocks
-
-        # --- mid 以上: mid_term を追加 ---
-        # インスタンス設定を優先、なければシステムデフォルト
-        _inst_mem = override_config.get("memory", {}) if override_config else {}
-        use_summary = _inst_mem.get(
-            "use_summarized_mid_term",
-            SYSTEM_CONFIG.get("memory", {}).get("use_summarized_mid_term", True),
-        )
-
-        if use_summary:
-            # 要約モード: digest + recent_snapshot を使用
-            digest = memory_manager.get_mid_term_digest()
-            recent_snapshot = memory_manager.get_recent_snapshot()
-
-            if digest or recent_snapshot:
-                blocks["mid_term_digest"] = digest
-                blocks["mid_term_recent_snapshot"] = recent_snapshot
-                blocks["mid_term"] = ""  # RAWは空にする
-                blocks["mid_term_mode"] = "summary"
-                total_chars = len(digest) + len(recent_snapshot)
-                print(
-                    f"[Gatekeeper] MemoryBlock: {tier}（+ digest {len(digest)}文字 + recent_snapshot {len(recent_snapshot)}文字 = {total_chars}文字）"
-                )
-            else:
-                # 要約ファイルが存在しない → RAWにフォールバック
-                mid_term = memory_manager.get_raw_memory()
-                blocks["mid_term"] = mid_term
-                blocks["mid_term_mode"] = "raw_fallback"
-                print(
-                    f"[Gatekeeper] MemoryBlock: {tier}（要約なし → RAWフォールバック {len(mid_term)}文字）"
-                )
         else:
-            # RAWモード: 1_integrated + 2_knowledgeized から読み込み
-            mid_term = memory_manager.get_raw_memory()
-            blocks["mid_term"] = mid_term
-            blocks["mid_term_mode"] = "raw"
-            print(
-                f"[Gatekeeper] MemoryBlock: {tier}（+ mid_term RAW {len(mid_term)}文字）"
+            # --- mid 以上: mid_term を追加 ---
+            # インスタンス設定を優先、なければシステムデフォルト
+            _inst_mem = override_config.get("memory", {}) if override_config else {}
+            use_summary = _inst_mem.get(
+                "use_summarized_mid_term",
+                SYSTEM_CONFIG.get("memory", {}).get("use_summarized_mid_term", True),
             )
 
+            if use_summary:
+                # 要約モード: digest + recent_snapshot を使用
+                digest = memory_manager.get_mid_term_digest()
+                recent_snapshot = memory_manager.get_recent_snapshot()
+
+                if digest or recent_snapshot:
+                    blocks["mid_term_digest"] = digest
+                    blocks["mid_term_recent_snapshot"] = recent_snapshot
+                    blocks["mid_term"] = ""  # RAWは空にする
+                    blocks["mid_term_mode"] = "summary"
+                    total_chars = len(digest) + len(recent_snapshot)
+                    print(
+                        f"[Gatekeeper] MemoryBlock: {tier}（+ digest {len(digest)}文字 + recent_snapshot {len(recent_snapshot)}文字 = {total_chars}文字）"
+                    )
+                else:
+                    # 要約ファイルが存在しない → RAWにフォールバック
+                    mid_term = memory_manager.get_raw_memory()
+                    blocks["mid_term"] = mid_term
+                    blocks["mid_term_mode"] = "raw_fallback"
+                    print(
+                        f"[Gatekeeper] MemoryBlock: {tier}（要約なし → RAWフォールバック {len(mid_term)}文字）"
+                    )
+            else:
+                # RAWモード: 1_integrated + 2_knowledgeized から読み込み
+                mid_term = memory_manager.get_raw_memory()
+                blocks["mid_term"] = mid_term
+                blocks["mid_term_mode"] = "raw"
+                print(
+                    f"[Gatekeeper] MemoryBlock: {tier}（+ mid_term RAW {len(mid_term)}文字）"
+                )
+
         # --- RAG: need がある場合、probe candidates から RAG コンテキストを構築 ---
+        # tier 非依存（reflex でも need が立てば注入する）
         need = blocks.get("need")
         probe = gatekeeper_output.get("memory_probe", {}) if gatekeeper_output else {}
         candidates = probe.get("candidates", [])
@@ -812,9 +814,8 @@ def _build_mid_term(blocks: dict, level: str, tier: str, h) -> str | None:
 
 
 def _build_rag(blocks: dict, level: str, tier: str, h) -> str | None:
+    # RAG は need 連動の tier 非依存注入（reflex でも rag_context があれば描画）
     if level == "off":
-        return None
-    if tier == "reflex":
         return None
     rag_context = blocks.get("rag_context", "")
     if not rag_context:

@@ -196,6 +196,7 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
     rag = diagnostics.get("rag") or {}
     rag_results = rag.get("results") or []
     raw_reference = rag.get("raw_reference") or {}
+    token_usage = diagnostics.get("token_usage") or {}
     gatekeeper = diagnostics.get("gatekeeper") or {}
     entry = {
         "question_id": row.get("question_id"),
@@ -211,6 +212,8 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
         "raw_reference_status": raw_reference.get("status"),
         "raw_reference_chars": raw_reference.get("chars"),
         "raw_reference_truncated": raw_reference.get("truncated"),
+        "prompt_tokens": token_usage.get("prompt_tokens"),
+        "completion_tokens": token_usage.get("completion_tokens"),
         "tier": gatekeeper.get("tier", row.get("tier")),
         "need_intent": gatekeeper.get("need_intent"),
         "classifier_status": gatekeeper.get("classifier_status"),
@@ -327,6 +330,28 @@ def _butly_aggregate(
                 float(bool(e["raw_reference_truncated"]))
                 for e in question_scores
                 if e.get("raw_reference_truncated") is not None
+            ]
+        ),
+        # API 実測トークン数（provider の usage 由来。旧 run は None）
+        "prompt_tokens_mean": _mean(
+            [
+                e["prompt_tokens"]
+                for e in question_scores
+                if e.get("prompt_tokens") is not None
+            ]
+        ),
+        "prompt_tokens_total": _sum_or_none(
+            [
+                e["prompt_tokens"]
+                for e in question_scores
+                if e.get("prompt_tokens") is not None
+            ]
+        ),
+        "completion_tokens_total": _sum_or_none(
+            [
+                e["completion_tokens"]
+                for e in question_scores
+                if e.get("completion_tokens") is not None
             ]
         ),
         "knowledge_cards_created": sum(
@@ -471,6 +496,12 @@ def _mean(values: list) -> Optional[float]:
     if not values:
         return None
     return sum(values) / len(values)
+
+
+def _sum_or_none(values: list) -> Optional[float]:
+    if not values:
+        return None
+    return sum(values)
 
 
 def _percentile(sorted_values: list, percentile: int) -> Optional[float]:
