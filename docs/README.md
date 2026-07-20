@@ -22,6 +22,7 @@ Documents are grouped by purpose:
 - [Context Levels](reference/context_levels.md)
 - [Gatekeeper I/O Specification](reference/gatekeeper_io_summary.md)
 - [Memory Lifecycle](reference/memory_lifecycle.md)
+- [LoCoMo Evaluation Data and QA Flow](reference/locomo_evaluation_flow.md)
 
 ## Project History
 
