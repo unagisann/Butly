@@ -280,7 +280,7 @@ class TestSleeptimeStage1:
         (inst_dir / "config.json").write_text(
             json.dumps(
                 {
-                    "agent_profile": {"ai_name": "Butly"},
+                    "agent_profile": {"ai_name": "Butly", "locale": "ja"},
                     "user_profile": {"preferred_call": "悠希"},
                 },
                 ensure_ascii=False,
