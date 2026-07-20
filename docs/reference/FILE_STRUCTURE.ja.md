@@ -116,8 +116,8 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | `config.py` | CLI設定DTO（QA mode、sample/session/question範囲、localeを含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
 | `cli.py` | `run` / `resume` / `score` / `report` subcommands。`run`は`--qa-mode`、各`--*-limit` / `--all-*`、`--locale`を受け付け、採点・レポートまで実行 |
 | `progress.py` | CLI / Colab向けの即時進捗ログ。Replay・Sleeptime・QAの完了unitを0〜90%、採点・レポートを90〜100%としてstderrへ表示 |
-| `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`）。top-level `locale`は内部prompt／memory出力言語を指定 |
-| `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook。ParametersセルでQA mode、locale、sample/session/questionの全件／上限制御を選択（評価ロジック禁止） |
+| `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`）。top-level `locale`は内部prompt／memory出力言語、`brain.time_decay_rate`は評価runの検索時間減衰を指定 |
+| `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook。ParametersセルでQA mode、locale、sample/session/questionの全件／上限制御と評価用`TIME_DECAY_RATE`を選択（評価ロジック禁止） |
 
 QA modeは、全質問を同じpost-Sleeptime状態から評価する`independent`
 （バージョン比較の既定）と、QAターンを同一instanceへ蓄積する`sequential`

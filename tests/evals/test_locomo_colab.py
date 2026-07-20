@@ -25,6 +25,7 @@ def _code_cells() -> list[str]:
 def test_colab_exposes_qa_scope_mode_and_locale_to_cli():
     cells = _code_cells()
     parameters = next(cell for cell in cells if "QA_MODE =" in cell)
+    clone = next(cell for cell in cells if "git', 'clone'" in cell)
     profile = next(cell for cell in cells if "profile = {" in cell)
     run = next(cell for cell in cells if "scope_args = []" in cell)
 
@@ -37,8 +38,14 @@ def test_colab_exposes_qa_scope_mode_and_locale_to_cli():
     assert "ALL_SAMPLES = False" in parameters
     assert "ALL_SESSIONS = False" in parameters
     assert "ALL_QUESTIONS = False" in parameters
+    assert "TIME_DECAY_RATE = 0.0" in parameters
 
     assert "'locale': LOCALE" in profile
+    assert "'brain': dict(" in parameters
+    assert "time_decay_rate=TIME_DECAY_RATE" in parameters
+    assert "'fetch', 'origin'" in clone
+    assert "'checkout', BRANCH" in clone
+    assert "'pull', '--ff-only', 'origin', BRANCH" in clone
     assert "'--qa-mode', QA_MODE" in run
     assert "'--locale', LOCALE" in run
     assert "f'--all-{dimension}'" in run

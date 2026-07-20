@@ -154,6 +154,10 @@ before returning the top `limit` RAG candidates. `fallback_fetch_limit` belongs
 only to keyword-search fallback and does not restrict this vector candidate
 pool. In `memory_probe_layers.vector` traces, `fetch_limit: null` denotes the
 full-card scan and `fetched_count` is the number of cards actually scored.
+An evaluation profile can override retrieval recency through
+`brain.time_decay_rate`. The Colab default of `0.0` is an ablation that ranks
+old and new cards by semantic similarity alone; it does not change the system
+default for normal instances.
 
 ## `independent` QA
 

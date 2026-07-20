@@ -167,6 +167,9 @@ RAW参照をpromptへ組み込む。生成後、ChatServiceは質問と回答を
 フォールバック専用であり、純粋ベクトル検索の候補範囲を制限しない。
 Traceの`memory_probe_layers.vector`では、`fetch_limit: null`が全件検索、
 `fetched_count`が実際に評価したカード数を示す。
+検索の時間減衰はprofileの`brain.time_decay_rate`で評価run単位に上書きできる。
+Colabの既定値`0.0`は新旧カードを意味類似度だけで比較するA/B用であり、
+通常インスタンスのシステム既定値は変更しない。
 
 ## `independent`: 独立QA
 

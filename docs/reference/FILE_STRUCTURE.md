@@ -206,7 +206,7 @@ Implements the backward-compat rule: **missing meta = owner / direct / web** (no
 - `ButlyBrain(base_dir)`
   - `get_embedding(text)`, `extract_keywords(text, override_config)`
   - `search_knowledge(keywords, query, instance_name, limit, override_config)` — keyword filter + cosine similarity rerank + time decay.
-  - `quick_vector_search(...)` / `quick_vector_search_diag(...)` — pure vector search (no keyword extraction). It scores every knowledge card, then applies time decay/archive weighting and returns the top `limit`; diagnostics report the full candidate count and retain `fetch_limit: null` for trace compatibility.
+  - `quick_vector_search(...)` / `quick_vector_search_diag(...)` — pure vector search (no keyword extraction). It scores every knowledge card, then applies time decay/archive weighting and returns the top `limit`; diagnostics report the full candidate count and retain `fetch_limit: null` for trace compatibility. Evaluation profiles may override `brain.time_decay_rate` without changing the normal system default.
   - `summarize_conversation(text, override_config)`, `generate_knowledge_card(text, override_config)`.
   - `_calculate_cosine_similarity(...)`, `_get_provider(model_name)`.
 

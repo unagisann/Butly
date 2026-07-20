@@ -80,10 +80,11 @@ python -m evals.locomo.cli run \
 `run` finishes with scoring and a summary; pass `--skip-scoring` to stop after
 QA. `--model-name` and `--connection` override the chat role for QA.
 `--profile <yaml>` applies role sections (`chat` / `gatekeeper` / `summary` /
-`knowledge` / `embedding`) plus the non-model `memory` section
+`knowledge` / `embedding`) plus the non-model `memory` and `brain` sections
 (e.g. `rag_source_mode: both` to inject original-conversation excerpts next to
-the RAG cards, `rag_raw_max_chars` to cap them) to the evaluation instance
-config — see `profiles/*.example.yaml`.
+the RAG cards, `rag_raw_max_chars` to cap them, or
+`brain.time_decay_rate: 0.0` to disable recency weighting for a retrieval
+ablation) to the evaluation instance config — see `profiles/*.example.yaml`.
 
 `run` and `resume` emit flushed live progress to stderr, so the Colab run cell
 shows the active sample, session, or question even during long model calls.

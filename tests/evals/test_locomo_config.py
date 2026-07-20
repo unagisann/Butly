@@ -111,6 +111,40 @@ def test_load_profile_rejects_unknown_locale(tmp_path):
         load_profile(path)
 
 
+def test_profile_brain_override_applies_to_instance(tmp_path):
+    profile_path = tmp_path / "profile.yaml"
+    profile_path.write_text(
+        "locale: en\nbrain:\n  time_decay_rate: 0.0\n",
+        encoding="utf-8",
+    )
+    config, profile = _resolve_config_and_profile(
+        ReplayConfig(
+            dataset_path=FIXTURE,
+            output_dir=tmp_path,
+            profile_path=profile_path,
+        )
+    )
+    conversation = load_dataset(FIXTURE)[0]
+    workspace = EvaluationWorkspace.create(tmp_path / "runs", run_id="no-decay")
+
+    _create_instance(
+        workspace.create_runtime(),
+        conversation,
+        "locomo_no_decay",
+        config,
+        profile,
+    )
+
+    instance_config = json.loads(
+        (
+            workspace.instances_dir
+            / "locomo_no_decay"
+            / "config.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert instance_config["brain"]["time_decay_rate"] == 0.0
+
+
 def test_locale_resolution_prefers_cli_then_profile_then_english():
     assert resolve_evaluation_locale(" ja ", "en") == "ja"
     assert resolve_evaluation_locale(None, "ja") == "ja"
