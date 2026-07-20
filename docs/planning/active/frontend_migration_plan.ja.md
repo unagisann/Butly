@@ -1,6 +1,6 @@
 # 正式フロントエンド移行計画: Streamlit から Windows デスクトップアプリへ
 
-> **ステータス: Phase 0 完了（2026-07-09）。次は Phase 1（Windows sidecar spike）。**
+> **ステータス: Phase 1 実装済み（2026-07-09、CI での Windows 検証待ち）。次は Phase 2（Chat vertical slice）。**
 > 段階移行を前提に `docs/planning/active/` で管理し、§18 の完了条件を満たしたら
 > archived へ移す。
 >
@@ -961,6 +961,29 @@ idle
 - `%LOCALAPPDATA%\Butly` で既存dataを読み書きできることを確認。
 
 **完了条件:** clean Windows環境でinstaller → 起動 → backend health → 終了時process残存なし。
+
+> **Phase 1 実装状況（2026-07-09）**
+>
+> - 実装済み: `butly_api/server.py`（sidecar CLI: loopback 既定 / port 0 +
+>   listening JSON 通知 / token は `BUTLY_DESKTOP_TOKEN` 環境変数のみ /
+>   production CORS = `http://tauri.localhost` / token 必須の
+>   `POST /api/v1/shutdown`）、`frontend/`（pnpm + Tauri v2 + React + TS +
+>   Vite、strict、`@hey-api/openapi-ts` 生成 client、app shell の
+>   starting / ready / unavailable / crashed / version_mismatch 表示 +
+>   restart）、Rust lifecycle（per-launch CSPRNG token・spawn・health polling・
+>   token 付き readiness・version handshake・crash 検知・restart・graceful shutdown・
+>   single-instance・最小 capabilities / CSP）、PyInstaller one-folder spec +
+>   build / smoke test script、`.github/workflows/windows-desktop.yml`
+>   （Windows x64 NSIS installer artifact）。仕様の正本:
+>   [desktop_sidecar.ja.md](../../reference/desktop_sidecar.ja.md)。
+> - テスト: backend（CLI / data-dir / bind / token 401 / listening 通知 /
+>   subprocess E2E で graceful shutdown と process 残存なし）、frontend
+>   （状態遷移と restart 表示の vitest）。`check_before_push.sh` に frontend
+>   lint / typecheck / test / build を統合（pnpm 不在時は SKIP を明示）。
+> - 未検証（完了条件に未到達の項目）: Windows 実機での
+>   installer → 起動 → 終了確認、および CI workflow の初回実行
+>   （Tauri build / NSIS / one-folder 同梱の安定性）。one-folder が不安定な
+>   場合は one-file へ切替え、理由と起動時間を desktop_sidecar.ja.md に記録する。
 
 ### Phase 2 — Chat vertical slice
 

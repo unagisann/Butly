@@ -15,9 +15,11 @@
 | `dependencies.py` | ルーター間共有のグローバル状態・ヘルパー |
 | `sleeptime.py` | 記憶自動整理スクリプト（単体実行 & APIから呼び出し可） |
 | `migrate_embeddings.py` | プロバイダー切り替え時の embedding 再生成ユーティリティ |
-| `butly_api/` | 正式フロントエンド向け `/api/v1` transport 層（app factory / schemas / error contract） |
+| `butly_api/` | 正式フロントエンド向け `/api/v1` transport 層（app factory / schemas / error contract / sidecar CLI） |
 | `openapi/butly.openapi.json` | `/api/v1` の OpenAPI 3.1 snapshot（`scripts/generate_openapi.py` で生成） |
 | `evals/locomo/` | LoCoMo長期記憶評価CLI。正式APIへ混入せず、checkpoint付き隔離Workspace上でReplay → Sleeptime → QA → 公式互換採点・レポートまで実行 |
+| `frontend/` | 正式デスクトップ frontend（pnpm + Tauri v2 + React + TypeScript + Vite）。Phase 1 は app shell + sidecar lifecycle のみ |
+| `packaging/pyinstaller/` | FastAPI sidecar の PyInstaller spec（`butly-backend.spec`）と entry script |
 
 ---
 
@@ -168,6 +170,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 | `errors.py` | `ApiException` と `/api/v1` 共通 error envelope（`ApiError`）への正規化 handler。legacy route は FastAPI default（`{"detail": ...}`）を維持 |
 | `middleware.py` | `RequestIDMiddleware` — `X-Request-ID` の採番・伝播（pure ASGI） |
 | `version.py` | `BACKEND_VERSION` / `API_VERSION` / `API_V1_PREFIX` |
+| `server.py` | desktop sidecar 用 CLI entrypoint（`--host/--port/--parent-pid/--data-dir/--dev-cors`）。port 0 → 実 port を 1 行 JSON で stdout 通知、production CORS は `http://tauri.localhost` のみ、graceful shutdown 用 `POST /api/v1/shutdown`（token 必須・OpenAPI 非公開）。詳細は [desktop_sidecar.ja.md](desktop_sidecar.ja.md) |
 | `routers/system.py` | `GET /api/v1/health` / `/ready` / `/app-info` / `/capabilities` |
 | `routers/instances.py` | `GET /api/v1/instances`（typed 一覧） / `GET /api/v1/instances/{name}/messages`（typed 履歴 + `last_interaction_at`。cursor pagination は記憶ストア正規化後） |
 | `routers/chat.py` | `POST /api/v1/chat`（non-stream fallback） / `POST /api/v1/chat/stream`（typed SSE: metadata → chunk* → done、失敗時 error 終端）。`ButlyRuntime` へ委譲する transport adapter |

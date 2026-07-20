@@ -19,6 +19,7 @@ Documents are grouped by purpose:
 - [Architecture Diagrams](reference/DIAGRAMS.md)
 - [File Structure](reference/FILE_STRUCTURE.md)
 - [Coding Conventions](reference/coding_conventions.md)
+- [Desktop sidecar specification](reference/desktop_sidecar.md)
 - [Context Levels](reference/context_levels.md)
 - [Gatekeeper I/O Specification](reference/gatekeeper_io_summary.md)
 - [Memory Lifecycle](reference/memory_lifecycle.md)
