@@ -261,6 +261,30 @@ behavior across long operational question sequences.
 Independent QA instances live outside this tree in the OS temporary directory
 and are deleted after all questions for the sample.
 
+## CLI and Colab live progress
+
+`run` and `resume` emit flushed progress before and after long model operations.
+The Colab run cell inherits the child process's stderr, so no notebook-side
+output reader is required.
+
+```text
+[LoCoMo  41.2%] [11/24] sleeptime | conv-26 session_6 completed
+```
+
+The overall percentage is a simple completed-work indicator rather than an
+elapsed-time estimate:
+
+- one replayed session is one unit;
+- one Sleeptime pass is one unit;
+- one answered question is one unit;
+- those units map to 0–90%;
+- scoring completes at 96%, and `summary.md` generation completes at 100%.
+
+Units have equal weight, so wall-clock progress varies with model and session
+length. A resumed run includes checkpointed units in its initial percentage and
+therefore continues near its prior position. Progress uses stderr, while the
+existing final result JSON remains the last stdout line.
+
 ## Reading the checkpoint
 
 For each sample, `checkpoints/checkpoint.json` records:

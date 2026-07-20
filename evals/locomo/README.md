@@ -85,6 +85,24 @@ QA. `--model-name` and `--connection` override the chat role for QA.
 the RAG cards, `rag_raw_max_chars` to cap them) to the evaluation instance
 config — see `profiles/*.example.yaml`.
 
+`run` and `resume` emit flushed live progress to stderr, so the Colab run cell
+shows the active sample, session, or question even during long model calls.
+Replay, Sleeptime, and QA each count as one equal work unit and occupy 0–90%;
+scoring occupies 90–96%, and report generation finishes at 100%. The percentage
+is therefore a simple completed-work indicator, not an elapsed-time estimate.
+The final result JSON remains the last stdout line.
+
+```text
+[LoCoMo   0.0%] [0/24] setup      | run=example; samples=1, sessions=11, questions=2, ...
+[LoCoMo  41.2%] [11/24] sleeptime | conv-26 session_6 completed
+[LoCoMo  86.2%] [23/24] qa         | conv-26 conv-26-qa-1 completed
+[LoCoMo  90.0%] score      | Official-compatible scoring starting
+[LoCoMo 100.0%] complete   | report completed; .../summary.md
+```
+
+On `resume`, already checkpointed Replay, Sleeptime, and QA units are included
+in the initial percentage instead of restarting the display from zero.
+
 The default QA mode is `independent`. Each question starts from the same
 post-Sleeptime memory state, so an earlier evaluation answer cannot affect a
 later question. Use `--qa-mode sequential` for an operational endurance run in

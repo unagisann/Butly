@@ -269,6 +269,28 @@ RAG判断のドリフトなどを含む運用耐久評価に向く。
 
 独立QAの一時instanceはこのtree外のOS temp directoryに作られ、全質問後に削除される。
 
+## CLI / Colabの進捗表示
+
+`run`と`resume`は、長いモデル呼び出しの開始前と完了後に、次の形式で進捗を
+stderrへ即時出力する。Colabの実行セルは子プロセスのstderrをそのまま表示するため、
+Notebook側で出力を読み取る処理は不要。
+
+```text
+[LoCoMo  41.2%] [11/24] sleeptime | conv-26 session_6 completed
+```
+
+全体率は経過時間の予測ではなく、完了した処理件数による簡易指標。
+
+- Replay 1 session = 1 unit
+- Sleeptime 1 session = 1 unit
+- QA 1 question = 1 unit
+- 上記を0〜90%へ換算
+- 採点完了で96%、`summary.md`生成完了で100%
+
+各unitは同じ重みなので、モデルやsession長によって実時間とのずれは生じる。
+`resume`ではcheckpoint済みunitを初期完了数へ含めるため、表示は中断前の位置に近い
+割合から再開する。進捗はstderr、従来の最終結果JSONはstdoutの最終行に出力する。
+
 ## Checkpointの読み方
 
 `checkpoints/checkpoint.json`は、各サンプルについて次を記録する。

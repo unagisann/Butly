@@ -44,6 +44,8 @@ instances tree. The bundled mini fixture is synthetic.
 - `replay.py` — replay/Sleeptime/independent-or-sequential QA orchestration
   with checkpoint updates and `resume_evaluation()`; interrupted sequential
   questions roll back instance, result, and Trace state before retry.
+- `progress.py` — flushed CLI/Colab stderr progress; completed Replay,
+  Sleeptime, and QA units map to 0–90%, followed by scoring and reporting.
 - `artifacts.py` — JSON/JSONL, Trace copies, and before/after snapshots.
 - `scorer.py` — official-compatible scoring (normalized + stemmed token F1,
   per-category rules, no-information detection) plus Butly-specific metrics;
