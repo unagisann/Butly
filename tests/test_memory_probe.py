@@ -66,6 +66,25 @@ class TestAsksForSpecificPastDetail:
         assert asks_for_specific_past_detail(text) is True
 
     @pytest.mark.parametrize("text", [
+        "When is Melanie planning on going camping?",
+        "When are we planning to meet again?",
+        "When will the trip be scheduled?",
+        "旅行はいつ行く予定？",
+        "彼はいつ来るつもりなの",
+    ])
+    def test_plan_question_patterns_detected(self, text):
+        """以前語られた予定の時期を尋ねる疑問文（予定語を要求）"""
+        assert asks_for_specific_past_detail(text) is True
+
+    @pytest.mark.parametrize("text", [
+        "What time is it?",
+        "When is the meeting?",  # 予定語なしの一般疑問は floor 対象外（LLM に委ねる）
+        "いつもありがとう",
+    ])
+    def test_plan_words_required_for_when_is(self, text):
+        assert asks_for_specific_past_detail(text) is False
+
+    @pytest.mark.parametrize("text", [
         "今日の天気は？",
         "こんにちは",
         "新しいプロジェクトを始めよう",

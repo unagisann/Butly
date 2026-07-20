@@ -704,8 +704,12 @@ class TestContextPrefixReflex:
 
         assert "=== CURRENT TIME" in result
 
-    def test_reflex_no_mid_term_or_rag(self, memory_manager):
-        """reflex では MID-TERM, RAG が含まれない"""
+    def test_reflex_no_mid_term_but_rag_allowed(self, memory_manager):
+        """reflex では MID-TERM は含まれないが、RAG は need 連動で tier 非依存
+
+        rag_context は need が立ったときだけ MemoryBlockBuilder が構築する。
+        reflex でも構築済みなら描画する（docs の tier×ブロック行列どおり）。
+        """
         blocks = {
             "tier": "reflex",
             "short_term": [],
@@ -718,7 +722,7 @@ class TestContextPrefixReflex:
         result = build_context_prefix(blocks, memory_manager)
 
         assert "=== MID-TERM MEMORY" not in result
-        assert "=== LONG-TERM MEMORY" not in result
+        assert "=== LONG-TERM MEMORY" in result
 
 
 # ==================================================================
