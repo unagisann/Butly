@@ -44,6 +44,18 @@ def _uses_google_connection(connection_id: str) -> bool:
     return connection_id == "google"
 
 
+def _aggregate_turn_token_usage():
+    """このターンで trace collector に記録された全 LLM 呼び出しの usage 合算。
+
+    classifier / state_updater / embedding / keyword_extract / chat_generate を
+    横断したコスト指標。trace 収集が無効（record_llm_call が no-op）のターンや
+    usage 非対応 provider のみの場合は None。
+    """
+    from butly_core.trace.collector import aggregate_token_usage, get_collected
+
+    return aggregate_token_usage(get_collected())
+
+
 def _build_prompt_full(
     system_instruction: str,
     context_prefix: str,
@@ -989,6 +1001,9 @@ class ChatService:
             },
             # API 実測トークン数（provider が返した場合のみ。無い場合 None）
             "token_usage": provider_debug.get("token_usage"),
+            # このターンの全 LLM 呼び出し合算（classifier / state_updater /
+            # embedding / keyword_extract / chat）。trace 収集が有効なときのみ
+            "token_usage_total": _aggregate_turn_token_usage(),
             "gatekeeper": {
                 "tier": tier,
                 "enabled": gk_enabled,

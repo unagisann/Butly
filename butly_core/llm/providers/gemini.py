@@ -151,6 +151,7 @@ class GeminiProvider(BaseProvider):
                     safety_settings=safety_settings,
                 ),
             )
+            self._set_last_token_usage(_extract_gemini_usage(response))
             return response.text.strip() if response.text else "要約なし"
         except Exception as e:
             print(f"[GeminiProvider] Summarize Error: {e}")
@@ -193,6 +194,7 @@ class GeminiProvider(BaseProvider):
                 safety_settings=config.get("safety_settings"),
             ),
         )
+        self._set_last_token_usage(_extract_gemini_usage(response))
         return response.text if response.text else ""
 
     def generate(
@@ -269,6 +271,7 @@ class GeminiProvider(BaseProvider):
                 print("[GeminiProvider] Got response from Gemini API!")
                 response_text, sources, _ = self._extract_response(response)
                 token_usage = _extract_gemini_usage(response)
+                self._set_last_token_usage(token_usage)
 
             # debug_info 構築（Gemini 固有）
             from butly_core.core.gatekeeper import (

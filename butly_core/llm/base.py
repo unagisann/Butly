@@ -14,6 +14,23 @@ from butly_core.chat.types import Attachment, ChatResponse
 class BaseProvider(ABC):
     """LLM プロバイダーの抽象基底クラス"""
 
+    # ==================================================================
+    # トークン実測値 (API usage) の受け渡し
+    # ==================================================================
+    # 各 provider は API 呼び出し直後に _set_last_token_usage() を呼ぶ。
+    # 呼び出し側 (record_llm_call する層) は呼び出し直後に
+    # pop_last_token_usage() で取り出して trace / 集計に記録する。
+    # 「直後に pop」が前提の 1 スロット方式 (別スレッドの同一 provider
+    # 共有は想定しない — ProviderFactory は呼び出しごとに生成する)。
+
+    def _set_last_token_usage(self, usage: Optional[dict]) -> None:
+        self._last_token_usage = usage or None
+
+    def pop_last_token_usage(self) -> Optional[dict]:
+        usage = getattr(self, "_last_token_usage", None)
+        self._last_token_usage = None
+        return usage
+
     @abstractmethod
     def generate(
         self,

@@ -452,3 +452,67 @@ class TestTraceSettingsGate:
         with override_settings(enabled):
             _build_and_save_trace(**common)
         assert (instance_dir / "traces" / "latest.json").exists()
+
+
+# ===================================================================
+# usage_metadata / aggregate_token_usage (API 実測トークンのコスト観測)
+# ===================================================================
+
+class TestTokenUsageAggregation:
+    def _usage(self, prompt, completion):
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "source": "api",
+        }
+
+    def test_usage_metadata_pops_provider_slot(self):
+        from butly_core.trace.collector import usage_metadata
+
+        provider = MagicMock(spec=["pop_last_token_usage"])
+        provider.pop_last_token_usage.return_value = self._usage(100, 10)
+        assert usage_metadata(provider) == {"token_usage": self._usage(100, 10)}
+
+        provider.pop_last_token_usage.return_value = None
+        assert usage_metadata(provider) is None
+
+    def test_usage_metadata_tolerates_provider_without_slot(self):
+        from butly_core.trace.collector import usage_metadata
+
+        assert usage_metadata(object()) is None
+
+    def test_aggregate_sums_by_purpose(self):
+        from butly_core.trace.collector import aggregate_token_usage
+
+        token = start_collection()
+        try:
+            record_llm_call(
+                purpose="context_classifier",
+                metadata={"token_usage": self._usage(500, 50)},
+            )
+            record_llm_call(purpose="embedding")  # usage 無し → 集計対象外
+            record_llm_call(
+                purpose="chat_generate",
+                metadata={"token_usage": self._usage(4000, 30)},
+            )
+            record_llm_call(
+                purpose="state_updater",
+                metadata={"token_usage": self._usage(300, 20)},
+            )
+            total = aggregate_token_usage(get_collected())
+        finally:
+            reset_collection(token)
+
+        assert total["prompt_tokens"] == 4800
+        assert total["completion_tokens"] == 100
+        assert total["calls"] == 3
+        assert total["by_purpose"]["chat_generate"]["prompt_tokens"] == 4000
+        assert total["by_purpose"]["context_classifier"]["calls"] == 1
+
+    def test_aggregate_none_when_no_usage(self):
+        from butly_core.trace.collector import aggregate_token_usage
+
+        assert aggregate_token_usage([]) is None
+        assert (
+            aggregate_token_usage([{"purpose": "embedding", "metadata": {}}]) is None
+        )

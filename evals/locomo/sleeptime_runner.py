@@ -37,6 +37,9 @@ class SleeptimeResult:
     recent_snapshot_updated: bool
     retry_count: int
     error: Optional[str]
+    llm_prompt_tokens: Optional[int] = None
+    llm_completion_tokens: Optional[int] = None
+    llm_calls: Optional[int] = None
 
     def to_dict(self) -> dict:
         return {
@@ -58,6 +61,9 @@ class SleeptimeResult:
             "recent_snapshot_updated": self.recent_snapshot_updated,
             "retry_count": self.retry_count,
             "error": self.error,
+            "llm_prompt_tokens": self.llm_prompt_tokens,
+            "llm_completion_tokens": self.llm_completion_tokens,
+            "llm_calls": self.llm_calls,
         }
 
 
@@ -95,6 +101,8 @@ class SleeptimeRunner:
         stage_2_status = "not_started"
         stage_2_stats: dict = {}
         error = None
+        # 前回 run の取り残しを捨ててこのセッション分だけを累積する
+        self.sleeptime.pop_llm_usage()
 
         try:
             self.sleeptime.stage_1_cleanup(instance_name)
@@ -123,6 +131,10 @@ class SleeptimeRunner:
 
         finished_at = datetime.now(timezone.utc)
         cards_after = count_knowledge_cards(database_path)
+        llm_usage = self.sleeptime.pop_llm_usage()
+        if not isinstance(llm_usage, dict):
+            # モック sleeptime や旧実装では usage が取れない → フィールドは None
+            llm_usage = {}
         result = SleeptimeResult(
             run_id=self.run_id,
             sample_id=sample_id,
@@ -144,6 +156,9 @@ class SleeptimeRunner:
             ),
             retry_count=0,
             error=error,
+            llm_prompt_tokens=llm_usage.get("prompt_tokens"),
+            llm_completion_tokens=llm_usage.get("completion_tokens"),
+            llm_calls=llm_usage.get("calls"),
         )
         append_jsonl(self.log_path, result.to_dict())
         if error is not None:

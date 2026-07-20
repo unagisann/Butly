@@ -119,6 +119,7 @@ class QARunner:
                 "rag": rag,
                 "timing": debug_info.get("timing", {}),
                 "token_usage": debug_info.get("token_usage"),
+                "token_usage_total": debug_info.get("token_usage_total"),
                 "provider": debug_info.get("provider"),
                 "model": debug_info.get("model"),
                 "connection_id": debug_info.get("connection_id"),

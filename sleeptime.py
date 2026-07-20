@@ -45,6 +45,9 @@ class ButlySleeptime:
 
         # Configからナレッジモデル設定を使用
         self.k_conf = AI_CONFIG["knowledge"]
+
+        # API 実測トークン数の累積（コスト観測用。pop_llm_usage() で取り出し）
+        self._llm_usage = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
         
         # 根幹情報の読み込み (グローバルデフォルト)
         sys_inst_path = self.base_dir / SYSTEM_CONFIG["paths"]["system_instruction"]
@@ -167,6 +170,31 @@ class ButlySleeptime:
 
         return base
 
+    def _track_llm_usage(self, provider) -> None:
+        """直近 API 呼び出しの実測トークン数を累積する（呼び出し直後に使う）。
+
+        usage を返さない provider / 経路は無視。累積値は pop_llm_usage() で
+        取り出す（eval の sleeptime_log などコスト観測用）。
+        """
+        pop = getattr(provider, "pop_last_token_usage", None)
+        usage = pop() if callable(pop) else None
+        # モック等の非 dict 汚染に耐える（実 provider は dict か None を返す）
+        if not isinstance(usage, dict):
+            return
+        prompt = usage.get("prompt_tokens")
+        completion = usage.get("completion_tokens")
+        self._llm_usage["prompt_tokens"] += prompt if isinstance(prompt, int) else 0
+        self._llm_usage["completion_tokens"] += (
+            completion if isinstance(completion, int) else 0
+        )
+        self._llm_usage["calls"] += 1
+
+    def pop_llm_usage(self):
+        """累積した実測トークン数を返してリセットする（1 件も無ければ None）。"""
+        acc = self._llm_usage
+        self._llm_usage = {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0}
+        return acc if acc["calls"] else None
+
     def _robust_api_call(self, func, *args, retries=5, base_delay=5, **kwargs):
         """API呼び出しの堅牢化（指数バックオフ付きリトライ）"""
         for i in range(retries):
@@ -198,6 +226,7 @@ class ButlySleeptime:
             provider = ProviderFactory.create(emb_conf)
 
             result = self._robust_api_call(lambda: provider.embed(text, config=emb_conf))
+            self._track_llm_usage(provider)
             return result
         except Exception as e:
             print(f"[Embedding Error] {e}")
@@ -257,6 +286,7 @@ class ButlySleeptime:
                 return provider.classify(prompt, k_conf)
 
             text = self._robust_api_call(_call)
+            self._track_llm_usage(provider)
         except Exception as e:
             print(f"[Sleeptime] Knowledgeize provider error: {e}")
             return None, "provider_error"
@@ -656,6 +686,7 @@ class ButlySleeptime:
                     max_chars=max_digest,
                 )
                 result = provider.classify(digest_prompt, summary_conf)
+                self._track_llm_usage(provider)
                 if result and result.strip():
                     digest_parts.append(result.strip())
                 # チャンク間のAPI待機
@@ -742,6 +773,7 @@ class ButlySleeptime:
                 prompt,
                 {**summary_conf, "generation_config": {"temperature": 0.0, "max_output_tokens": summary_conf.get("generation_config", {}).get("max_output_tokens", 4096)}},
             )
+            self._track_llm_usage(provider)
 
             # JSON パース (閉じフェンス欠落にも耐える共通ヘルパー)
             data = json.loads(extract_json_str(raw_response))
@@ -841,6 +873,7 @@ class ButlySleeptime:
             )
             provider = self._get_provider(k_conf)
             rel_text = provider.classify(rel_prompt, k_conf)
+            self._track_llm_usage(provider)
             rel_text = rel_text.strip() if rel_text else ""
             
             if rel_text:
@@ -911,6 +944,7 @@ class ButlySleeptime:
 
             provider = self._get_provider(k_conf)
             llm_output = provider.classify(prompt, k_conf)
+            self._track_llm_usage(provider)
             llm_output = llm_output.strip() if llm_output else ""
 
             if not llm_output or "NO_PROPOSALS" in llm_output:
@@ -1050,6 +1084,7 @@ class ButlySleeptime:
             k_conf = self._resolve_conf(inst_cfg, "knowledge")
             provider = self._get_provider(k_conf)
             llm_raw = self._robust_api_call(lambda: provider.classify(prompt, k_conf))
+            self._track_llm_usage(provider)
             if not llm_raw:
                 print("[Stage3] LLM returned empty output; finishing run as completed (no-op).")
                 repo.update_run_counters(run_id, reviewed_card_count=len(review_cards))

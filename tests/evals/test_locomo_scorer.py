@@ -163,6 +163,9 @@ def _write_run(tmp_path: Path, qa_rows: list[dict]) -> Path:
                 "knowledge_cards_created": 3,
                 "knowledge_chunks": 2,
                 "knowledge_chunk_failures": 1,
+                "llm_prompt_tokens": 9000,
+                "llm_completion_tokens": 1500,
+                "llm_calls": 4,
                 "error": None,
             }
         )
@@ -299,6 +302,11 @@ class TestScoreRun:
                         "completion_tokens": 40,
                         "source": "api",
                     },
+                    "token_usage_total": {
+                        "prompt_tokens": 1600,
+                        "completion_tokens": 90,
+                        "calls": 3,
+                    },
                 },
             ),
             _qa_row(
@@ -311,6 +319,11 @@ class TestScoreRun:
                         "completion_tokens": 60,
                         "source": "api",
                     },
+                    "token_usage_total": {
+                        "prompt_tokens": 3800,
+                        "completion_tokens": 110,
+                        "calls": 3,
+                    },
                 },
             ),
         ]
@@ -320,6 +333,13 @@ class TestScoreRun:
         assert butly["prompt_tokens_mean"] == pytest.approx(2000)
         assert butly["prompt_tokens_total"] == 4000
         assert butly["completion_tokens_total"] == 100
+        # QA ターン全体（chat + 補助呼び出し）の合算
+        assert butly["qa_all_calls_prompt_tokens_mean"] == pytest.approx(2700)
+        assert butly["qa_all_calls_prompt_tokens_total"] == 5400
+        assert butly["qa_all_calls_completion_tokens_total"] == 200
+        # Sleeptime 側（_write_run の 1 行目に 9000/1500 を記録済み）
+        assert butly["sleeptime_prompt_tokens_total"] == 9000
+        assert butly["sleeptime_completion_tokens_total"] == 1500
 
     def test_token_usage_absent_for_old_runs(self, tmp_path):
         """token_usage 無しの旧 run でも None で集計が壊れない"""

@@ -197,6 +197,7 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
     rag_results = rag.get("results") or []
     raw_reference = rag.get("raw_reference") or {}
     token_usage = diagnostics.get("token_usage") or {}
+    token_usage_total = diagnostics.get("token_usage_total") or {}
     gatekeeper = diagnostics.get("gatekeeper") or {}
     entry = {
         "question_id": row.get("question_id"),
@@ -214,6 +215,8 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
         "raw_reference_truncated": raw_reference.get("truncated"),
         "prompt_tokens": token_usage.get("prompt_tokens"),
         "completion_tokens": token_usage.get("completion_tokens"),
+        "total_prompt_tokens": token_usage_total.get("prompt_tokens"),
+        "total_completion_tokens": token_usage_total.get("completion_tokens"),
         "tier": gatekeeper.get("tier", row.get("tier")),
         "need_intent": gatekeeper.get("need_intent"),
         "classifier_status": gatekeeper.get("classifier_status"),
@@ -352,6 +355,43 @@ def _butly_aggregate(
                 e["completion_tokens"]
                 for e in question_scores
                 if e.get("completion_tokens") is not None
+            ]
+        ),
+        # QA ターン全体（chat + classifier + state_updater + embedding 等）
+        "qa_all_calls_prompt_tokens_mean": _mean(
+            [
+                e["total_prompt_tokens"]
+                for e in question_scores
+                if e.get("total_prompt_tokens") is not None
+            ]
+        ),
+        "qa_all_calls_prompt_tokens_total": _sum_or_none(
+            [
+                e["total_prompt_tokens"]
+                for e in question_scores
+                if e.get("total_prompt_tokens") is not None
+            ]
+        ),
+        "qa_all_calls_completion_tokens_total": _sum_or_none(
+            [
+                e["total_completion_tokens"]
+                for e in question_scores
+                if e.get("total_completion_tokens") is not None
+            ]
+        ),
+        # Sleeptime 側（記憶構築コスト）
+        "sleeptime_prompt_tokens_total": _sum_or_none(
+            [
+                row["llm_prompt_tokens"]
+                for row in sleeptime_rows
+                if row.get("llm_prompt_tokens") is not None
+            ]
+        ),
+        "sleeptime_completion_tokens_total": _sum_or_none(
+            [
+                row["llm_completion_tokens"]
+                for row in sleeptime_rows
+                if row.get("llm_completion_tokens") is not None
             ]
         ),
         "knowledge_cards_created": sum(

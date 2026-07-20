@@ -208,6 +208,7 @@ class OpenAICompatAdapter(BaseProvider):
             )
             kwargs["model"] = model
             resp = self.client.chat.completions.create(**kwargs)
+            self._set_last_token_usage(compat.extract_token_usage(resp))
             return (
                 resp.choices[0].message.content.strip() if resp.choices else "要約なし"
             )
@@ -225,6 +226,7 @@ class OpenAICompatAdapter(BaseProvider):
         try:
             model = self._resolve_embedding_model(config)
             resp = self.client.embeddings.create(model=model, input=text)
+            self._set_last_token_usage(compat.extract_token_usage(resp))
             return resp.data[0].embedding
         except Exception as e:
             print(f"[{self._log_tag()}] Embed Error: {e}")
@@ -250,6 +252,7 @@ class OpenAICompatAdapter(BaseProvider):
         )
         kwargs["model"] = model
         resp = self.client.chat.completions.create(**kwargs)
+        self._set_last_token_usage(compat.extract_token_usage(resp))
         return resp.choices[0].message.content if resp.choices else ""
 
     def generate(
@@ -306,6 +309,7 @@ class OpenAICompatAdapter(BaseProvider):
             }
             # API 実測のトークン数（llama.cpp 含む OpenAI 互換が返す）
             token_usage = compat.extract_token_usage(resp)
+            self._set_last_token_usage(token_usage)
             if token_usage:
                 result.debug_info["token_usage"] = token_usage
             return result
