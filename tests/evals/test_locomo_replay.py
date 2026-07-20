@@ -1,6 +1,7 @@
 """External-API-free end-to-end tests for the replay runner and resume flow."""
 
 import asyncio
+from io import StringIO
 import json
 import os
 import sqlite3
@@ -15,6 +16,7 @@ from evals.locomo.cli import main as cli_main
 from evals.locomo.config import ReplayConfig
 from evals.locomo.dataset import LocomoConversation
 from evals.locomo.qa_runner import QARunner, build_qa_request
+from evals.locomo.progress import create_console_progress
 from evals.locomo.replay import (
     _discard_partial_session,
     _instance_name,
@@ -278,10 +280,19 @@ def test_resume_after_interruption_does_not_reingest(tmp_path):
         assert progress.replayed_sessions == ["session_1", "session_2"]
         assert progress.qa_completed == 0
 
-        result = asyncio.run(resume_evaluation(run_dir))
+        progress_stream = StringIO()
+        result = asyncio.run(
+            resume_evaluation(
+                run_dir,
+                progress_reporter=create_console_progress(progress_stream),
+            )
+        )
 
     assert result.replayed_sessions == 1
     assert result.answered_questions == 1
+    assert progress_stream.getvalue().splitlines()[0].startswith(
+        "[LoCoMo  54.0%] [3/5] setup"
+    )
 
     workspace = result.workspace
     replay_rows = _read_jsonl(workspace.results_dir / "replay_log.jsonl")
@@ -407,9 +418,18 @@ def test_cli_run_scores_reports_and_applies_profile(tmp_path, capsys):
         )
 
     assert exit_code == 0
-    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    captured = capsys.readouterr()
+    stdout_lines = captured.out.strip().splitlines()
+    payload = json.loads(stdout_lines[-1])
     assert payload["run_id"] == "cli-e2e"
     assert "overall_score" in payload
+    assert "setup" in captured.err
+    assert "replay" in captured.err
+    assert "sleeptime" in captured.err
+    assert "qa" in captured.err
+    assert "score" in captured.err
+    assert "report" in captured.err
+    assert "[LoCoMo 100.0%]" in captured.err
 
     run_dir = tmp_path / "runs" / "cli-e2e"
     scores = json.loads((run_dir / "scores.json").read_text(encoding="utf-8"))

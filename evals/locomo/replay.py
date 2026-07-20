@@ -29,6 +29,7 @@ from .config import (
     resolve_evaluation_locale,
 )
 from .dataset import LocomoConversation, load_dataset
+from .progress import ProgressReporter
 from .qa_runner import QARunner
 from .sleeptime_runner import SleeptimeRunner
 from .workspace import (
@@ -53,7 +54,11 @@ class EvaluationRunResult:
     answered_questions: int
 
 
-async def run_evaluation(config: ReplayConfig) -> EvaluationRunResult:
+async def run_evaluation(
+    config: ReplayConfig,
+    *,
+    progress_reporter: Optional[ProgressReporter] = None,
+) -> EvaluationRunResult:
     """Start a fresh run without importing any HTTP or UI layer."""
     config, profile = _resolve_config_and_profile(config)
     conversations = _select_conversations(load_dataset(config.dataset_path), config)
@@ -65,10 +70,21 @@ async def run_evaluation(config: ReplayConfig) -> EvaluationRunResult:
     workspace.assert_isolated()
     _write_run_metadata(workspace, config, conversations)
     checkpoint = Checkpoint.create(workspace.run_id, workspace.checkpoints_dir)
-    return await _execute(workspace, config, conversations, checkpoint, profile)
+    return await _execute(
+        workspace,
+        config,
+        conversations,
+        checkpoint,
+        profile,
+        progress_reporter,
+    )
 
 
-async def resume_evaluation(run_dir: Path) -> EvaluationRunResult:
+async def resume_evaluation(
+    run_dir: Path,
+    *,
+    progress_reporter: Optional[ProgressReporter] = None,
+) -> EvaluationRunResult:
     """Continue an interrupted run from its checkpoint without re-ingesting."""
     workspace = EvaluationWorkspace.open(run_dir)
     run_config = json.loads(
@@ -78,7 +94,14 @@ async def resume_evaluation(run_dir: Path) -> EvaluationRunResult:
     config, profile = _resolve_config_and_profile(config)
     conversations = _select_conversations(load_dataset(config.dataset_path), config)
     checkpoint = Checkpoint.load(workspace.run_id, workspace.checkpoints_dir)
-    return await _execute(workspace, config, conversations, checkpoint, profile)
+    return await _execute(
+        workspace,
+        config,
+        conversations,
+        checkpoint,
+        profile,
+        progress_reporter,
+    )
 
 
 async def _execute(
@@ -87,8 +110,34 @@ async def _execute(
     conversations: list[LocomoConversation],
     checkpoint: Checkpoint,
     profile: Optional[EvaluationProfile],
+    progress_reporter: Optional[ProgressReporter],
 ) -> EvaluationRunResult:
     instance_names_by_sample = _resolve_instance_names(conversations, checkpoint)
+    progress_total, progress_completed = _evaluation_progress_counts(
+        conversations,
+        config,
+        checkpoint,
+        instance_names_by_sample,
+    )
+    session_count = sum(
+        len(conversation.sessions[: config.session_limit])
+        for conversation in conversations
+    )
+    question_count = sum(
+        len(conversation.questions[: config.question_limit])
+        for conversation in conversations
+    )
+    _emit_progress(
+        progress_reporter,
+        progress_completed,
+        progress_total,
+        "setup",
+        (
+            f"run={workspace.run_id}; samples={len(conversations)}, "
+            f"sessions={session_count}, questions={question_count}, "
+            f"qa_mode={config.qa_mode}, locale={config.locale}"
+        ),
+    )
     runtime = workspace.create_runtime()
     sleeptime_runner = SleeptimeRunner(
         workspace.create_sleeptime(),
@@ -98,9 +147,19 @@ async def _execute(
     instance_names = []
     replayed_sessions = 0
     answered_questions = 0
-    for conversation in conversations:
+    for sample_index, conversation in enumerate(conversations, start=1):
         instance_name = instance_names_by_sample[conversation.sample_id]
         instance_names.append(instance_name)
+        _emit_progress(
+            progress_reporter,
+            progress_completed,
+            progress_total,
+            "sample",
+            (
+                f"{conversation.sample_id} "
+                f"({sample_index}/{len(conversations)}) starting"
+            ),
+        )
         progress = checkpoint.progress_for(conversation.sample_id, instance_name)
         sequential_recovery = SequentialQARecoveryPoint(
             workspace,
@@ -116,12 +175,22 @@ async def _execute(
         adapter = ReplayAdapter(components["memory"], conversation)
 
         sessions = conversation.sessions[: config.session_limit]
-        for session in sessions:
+        for session_index, session in enumerate(sessions, start=1):
             if session.session_id in progress.sleeptime_completed:
                 continue
             checkpoint.status = STATUS_REPLAYING
 
             if session.session_id not in progress.replayed_sessions:
+                _emit_progress(
+                    progress_reporter,
+                    progress_completed,
+                    progress_total,
+                    "replay",
+                    (
+                        f"{conversation.sample_id} {session.session_id} "
+                        f"({session_index}/{len(sessions)}) starting"
+                    ),
+                )
                 _discard_partial_session(
                     workspace.instances_dir / instance_name,
                     conversation.sample_id,
@@ -132,9 +201,27 @@ async def _execute(
                 )
                 progress.replayed_sessions.append(session.session_id)
                 checkpoint.save()
+                progress_completed += 1
+                _emit_progress(
+                    progress_reporter,
+                    progress_completed,
+                    progress_total,
+                    "replay",
+                    f"{conversation.sample_id} {session.session_id} completed",
+                )
 
             snapshot_root = (
                 workspace.snapshots_dir / instance_name / session.session_id
+            )
+            _emit_progress(
+                progress_reporter,
+                progress_completed,
+                progress_total,
+                "sleeptime",
+                (
+                    f"{conversation.sample_id} {session.session_id} "
+                    f"({session_index}/{len(sessions)}) starting"
+                ),
             )
             snapshot_instance(
                 workspace.instances_dir / instance_name,
@@ -152,6 +239,14 @@ async def _execute(
             progress.sleeptime_completed.append(session.session_id)
             checkpoint.save()
             replayed_sessions += 1
+            progress_completed += 1
+            _emit_progress(
+                progress_reporter,
+                progress_completed,
+                progress_total,
+                "sleeptime",
+                f"{conversation.sample_id} {session.session_id} completed",
+            )
 
         questions = conversation.questions[: config.question_limit]
         if len(questions) > progress.qa_completed:
@@ -169,10 +264,32 @@ async def _execute(
                 len(questions) > progress.qa_completed
             ):
                 canonical_dir = workspace.instances_dir / instance_name
+                _emit_progress(
+                    progress_reporter,
+                    progress_completed,
+                    progress_total,
+                    "qa-setup",
+                    (
+                        f"{conversation.sample_id} creating the "
+                        "post-Sleeptime baseline clone"
+                    ),
+                )
                 with IndependentQAWorkspace(canonical_dir) as qa_workspace:
                     for index, question in enumerate(questions):
                         if index < progress.qa_completed:
                             continue
+                        _emit_progress(
+                            progress_reporter,
+                            progress_completed,
+                            progress_total,
+                            "qa",
+                            (
+                                f"{conversation.sample_id} "
+                                f"{question.question_id} "
+                                f"({index + 1}/{len(questions)}) "
+                                "independent starting"
+                            ),
+                        )
                         qa_workspace.reset()
                         qa_runner = QARunner(
                             qa_workspace.create_runtime(),
@@ -190,6 +307,17 @@ async def _execute(
                         progress.qa_completed = index + 1
                         checkpoint.save()
                         answered_questions += 1
+                        progress_completed += 1
+                        _emit_progress(
+                            progress_reporter,
+                            progress_completed,
+                            progress_total,
+                            "qa",
+                            (
+                                f"{conversation.sample_id} "
+                                f"{question.question_id} completed"
+                            ),
+                        )
             elif config.qa_mode == "sequential":
                 qa_runner = QARunner(
                     runtime,
@@ -201,6 +329,18 @@ async def _execute(
                 for index, question in enumerate(questions):
                     if index < progress.qa_completed:
                         continue
+                    _emit_progress(
+                        progress_reporter,
+                        progress_completed,
+                        progress_total,
+                        "qa",
+                        (
+                            f"{conversation.sample_id} "
+                            f"{question.question_id} "
+                            f"({index + 1}/{len(questions)}) "
+                            "sequential starting"
+                        ),
+                    )
                     sequential_recovery.begin(
                         question_index=index,
                         question_id=question.question_id,
@@ -214,6 +354,17 @@ async def _execute(
                     checkpoint.save()
                     sequential_recovery.clear()
                     answered_questions += 1
+                    progress_completed += 1
+                    _emit_progress(
+                        progress_reporter,
+                        progress_completed,
+                        progress_total,
+                        "qa",
+                        (
+                            f"{conversation.sample_id} "
+                            f"{question.question_id} completed"
+                        ),
+                    )
         finally:
             if prev_now is None:
                 os.environ.pop(CHRONOS_NOW_ENV, None)
@@ -222,6 +373,13 @@ async def _execute(
 
     checkpoint.status = STATUS_COMPLETED
     checkpoint.save()
+    _emit_progress(
+        progress_reporter,
+        progress_total,
+        progress_total,
+        "evaluation",
+        "Replay, Sleeptime, and QA completed",
+    )
     return EvaluationRunResult(
         workspace=workspace,
         sample_ids=[conversation.sample_id for conversation in conversations],
@@ -229,6 +387,45 @@ async def _execute(
         replayed_sessions=replayed_sessions,
         answered_questions=answered_questions,
     )
+
+
+def _evaluation_progress_counts(
+    conversations: list[LocomoConversation],
+    config: ReplayConfig,
+    checkpoint: Checkpoint,
+    instance_names_by_sample: dict[str, str],
+) -> tuple[int, int]:
+    total = 0
+    completed = 0
+    for conversation in conversations:
+        sessions = conversation.sessions[: config.session_limit]
+        questions = conversation.questions[: config.question_limit]
+        total += len(sessions) * 2 + len(questions)
+        progress = checkpoint.progress_for(
+            conversation.sample_id,
+            instance_names_by_sample[conversation.sample_id],
+        )
+        completed += sum(
+            session.session_id in progress.replayed_sessions
+            for session in sessions
+        )
+        completed += sum(
+            session.session_id in progress.sleeptime_completed
+            for session in sessions
+        )
+        completed += min(max(progress.qa_completed, 0), len(questions))
+    return total, completed
+
+
+def _emit_progress(
+    reporter: Optional[ProgressReporter],
+    completed: int,
+    total: int,
+    phase: str,
+    message: str,
+) -> None:
+    if reporter is not None:
+        reporter.emit_evaluation(completed, total, phase, message)
 
 
 def _replay_session_logged(

@@ -9,6 +9,12 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from .config import ReplayConfig, SUPPORTED_EVALUATION_LOCALES
+from .progress import (
+    EVALUATION_PROGRESS_MAX,
+    SCORING_PROGRESS_MAX,
+    ProgressReporter,
+    create_console_progress,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -105,8 +111,16 @@ def _command_run(args: argparse.Namespace) -> int:
     config = _replay_config_from_args(args)
     from .replay import run_evaluation
 
-    result = asyncio.run(run_evaluation(config))
-    return _finish(result, dataset=args.dataset, skip_scoring=args.skip_scoring)
+    progress_reporter = create_console_progress()
+    result = asyncio.run(
+        run_evaluation(config, progress_reporter=progress_reporter)
+    )
+    return _finish(
+        result,
+        dataset=args.dataset,
+        skip_scoring=args.skip_scoring,
+        progress_reporter=progress_reporter,
+    )
 
 
 def _replay_config_from_args(args: argparse.Namespace) -> ReplayConfig:
@@ -130,18 +144,36 @@ def _replay_config_from_args(args: argparse.Namespace) -> ReplayConfig:
 def _command_resume(args: argparse.Namespace) -> int:
     from .replay import resume_evaluation
 
-    result = asyncio.run(resume_evaluation(args.run_dir))
+    progress_reporter = create_console_progress()
+    result = asyncio.run(
+        resume_evaluation(
+            args.run_dir,
+            progress_reporter=progress_reporter,
+        )
+    )
     run_config = json.loads(
         result.workspace.run_config_path.read_text(encoding="utf-8")
     )
     dataset = Path(run_config["dataset_path"])
-    return _finish(result, dataset=dataset, skip_scoring=args.skip_scoring)
+    return _finish(
+        result,
+        dataset=dataset,
+        skip_scoring=args.skip_scoring,
+        progress_reporter=progress_reporter,
+    )
 
 
 def _command_score(args: argparse.Namespace) -> int:
     from .scorer import score_run
 
+    progress_reporter = create_console_progress()
+    progress_reporter.emit(0.0, "score", f"{args.run_dir} starting")
     scores = score_run(args.run_dir, dataset_path=args.dataset)
+    progress_reporter.emit(
+        100.0,
+        "score",
+        f"completed; overall={scores['official']['overall']:.4f}",
+    )
     print(
         json.dumps(
             {
@@ -159,12 +191,21 @@ def _command_score(args: argparse.Namespace) -> int:
 def _command_report(args: argparse.Namespace) -> int:
     from .report import write_report
 
+    progress_reporter = create_console_progress()
+    progress_reporter.emit(0.0, "report", f"{args.run_dir} starting")
     summary_path = write_report(args.run_dir)
+    progress_reporter.emit(100.0, "report", f"completed; {summary_path}")
     print(json.dumps({"summary_path": str(summary_path)}, ensure_ascii=False))
     return 0
 
 
-def _finish(result, *, dataset: Path, skip_scoring: bool) -> int:
+def _finish(
+    result,
+    *,
+    dataset: Path,
+    skip_scoring: bool,
+    progress_reporter: ProgressReporter,
+) -> int:
     payload = {
         "run_id": result.workspace.run_id,
         "run_dir": str(result.workspace.run_dir),
@@ -172,12 +213,38 @@ def _finish(result, *, dataset: Path, skip_scoring: bool) -> int:
         "replayed_sessions": result.replayed_sessions,
         "answered_questions": result.answered_questions,
     }
-    if not skip_scoring:
+    if skip_scoring:
+        progress_reporter.emit(
+            100.0,
+            "complete",
+            "Scoring and report skipped (--skip-scoring)",
+        )
+    else:
         from .report import write_report
         from .scorer import score_run
 
+        progress_reporter.emit(
+            EVALUATION_PROGRESS_MAX,
+            "score",
+            "Official-compatible scoring starting",
+        )
         scores = score_run(result.workspace.run_dir, dataset_path=dataset)
+        progress_reporter.emit(
+            SCORING_PROGRESS_MAX,
+            "score",
+            f"completed; overall={scores['official']['overall']:.4f}",
+        )
+        progress_reporter.emit(
+            SCORING_PROGRESS_MAX,
+            "report",
+            "summary.md generation starting",
+        )
         summary_path = write_report(result.workspace.run_dir)
+        progress_reporter.emit(
+            100.0,
+            "complete",
+            f"report completed; {summary_path}",
+        )
         payload["overall_score"] = scores["official"]["overall"]
         payload["scores_path"] = str(result.workspace.run_dir / "scores.json")
         payload["summary_path"] = str(summary_path)
