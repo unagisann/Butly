@@ -223,6 +223,68 @@ def build_debug_messages(messages: list, max_len: int = 500) -> list:
     ]
 
 
+def _full_text_content(c) -> str:
+    """content が str / list(multimodal) のどちらでも全文テキストを返す（画像 part は除外）。"""
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return " ".join(
+            p.get("text", "")
+            for p in c
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return str(c)
+
+
+def build_full_messages(messages: list) -> list:
+    """debug_info 用の全文 messages（テキストのみ）。
+
+    prompt_full の表示とトークン概算のフォールバックに使う。画像 part は
+    base64 が巨大になるため含めない。
+    """
+    return [
+        {"role": m["role"], "content": _full_text_content(m.get("content", ""))}
+        for m in messages
+    ]
+
+
+def extract_token_usage(resp) -> Optional[dict]:
+    """API レスポンスの usage を dict 化する（取れなければ None）。
+
+    OpenAI 互換 API (llama.cpp サーバー含む) は非ストリーム応答に
+    usage.prompt_tokens / completion_tokens を返す。ストリーミングは
+    stream_options={"include_usage": True} の指定が必要なため未対応。
+    """
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return None
+
+    def _as_int(name: str):
+        # 実数値のみ受け付ける（MagicMock 等は int() 可能なため型で判定する）
+        value = getattr(usage, name, None)
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        return None
+
+    prompt = _as_int("prompt_tokens")
+    completion = _as_int("completion_tokens")
+    if prompt is None and completion is None:
+        return None
+    out = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "source": "api",
+    }
+    total = _as_int("total_tokens")
+    if total is not None:
+        out["total_tokens"] = total
+    return out
+
+
 # =====================================================================
 # 設定マージ
 # =====================================================================

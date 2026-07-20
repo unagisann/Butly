@@ -385,7 +385,20 @@ def build_chat_trace(
                 "ttfb_ms": timing.get("ttfb_ms"),
                 "token_estimate": token_estimate,
                 **(
-                    {"prompt_chars": chat_gen_rec.get("prompt_chars")}
+                    {
+                        "prompt_chars": chat_gen_rec.get("prompt_chars"),
+                        **(
+                            {
+                                "token_usage": (
+                                    chat_gen_rec.get("metadata") or {}
+                                ).get("token_usage")
+                            }
+                            if (chat_gen_rec.get("metadata") or {}).get(
+                                "token_usage"
+                            )
+                            else {}
+                        ),
+                    }
                     if chat_gen_rec
                     else {}
                 ),

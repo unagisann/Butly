@@ -18,6 +18,8 @@ from butly_core.llm._openai_compat import (
     build_messages,
     convert_history,
     build_debug_messages,
+    build_full_messages,
+    extract_token_usage,
     merge_chat_config,
     build_chat_completion_kwargs,
     build_chat_response,
@@ -346,3 +348,68 @@ class TestLoadEnvFile:
         mock_find.return_value = None
         # Should not raise
         load_env_file()
+
+
+# ===================================================================
+# build_full_messages / extract_token_usage テスト
+# ===================================================================
+
+class TestBuildFullMessages:
+    def test_full_text_not_truncated(self):
+        """500 文字超でも全文を保持する（build_debug_messages と対照）"""
+        long_text = "あ" * 2000
+        messages = [{"role": "user", "content": long_text}]
+        full = build_full_messages(messages)
+        assert full[0]["content"] == long_text
+
+    def test_multimodal_keeps_text_parts_only(self):
+        """画像 part（base64）は含めず text part のみ結合する"""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "この画像を見て"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ],
+            }
+        ]
+        full = build_full_messages(messages)
+        assert full[0]["content"] == "この画像を見て"
+        assert "base64" not in full[0]["content"]
+
+
+class TestExtractTokenUsage:
+    class _Usage:
+        def __init__(self, prompt=None, completion=None, total=None):
+            if prompt is not None:
+                self.prompt_tokens = prompt
+            if completion is not None:
+                self.completion_tokens = completion
+            if total is not None:
+                self.total_tokens = total
+
+    class _Resp:
+        def __init__(self, usage):
+            if usage is not None:
+                self.usage = usage
+
+    def test_extracts_counts(self):
+        resp = self._Resp(self._Usage(prompt=1200, completion=45, total=1245))
+        usage = extract_token_usage(resp)
+        assert usage == {
+            "prompt_tokens": 1200,
+            "completion_tokens": 45,
+            "source": "api",
+            "total_tokens": 1245,
+        }
+
+    def test_none_when_no_usage_attr(self):
+        assert extract_token_usage(self._Resp(None)) is None
+
+    def test_none_when_counts_missing(self):
+        assert extract_token_usage(self._Resp(self._Usage())) is None
+
+    def test_non_int_values_ignored(self):
+        """MagicMock 等の非数値属性は None 扱い（既存モックを壊さない）"""
+        resp = self._Resp(MagicMock())
+        assert extract_token_usage(resp) is None

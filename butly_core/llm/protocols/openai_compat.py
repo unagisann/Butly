@@ -300,8 +300,14 @@ class OpenAICompatAdapter(BaseProvider):
             result.debug_info = {
                 "messages": _debug_messages,
                 "messages_preview": _debug_messages,
+                # 全文（テキストのみ）: prompt_full 表示とトークン概算に使う
+                "messages_full": compat.build_full_messages(messages),
                 "raw_response": response_text,
             }
+            # API 実測のトークン数（llama.cpp 含む OpenAI 互換が返す）
+            token_usage = compat.extract_token_usage(resp)
+            if token_usage:
+                result.debug_info["token_usage"] = token_usage
             return result
         except Exception as e:
             import traceback

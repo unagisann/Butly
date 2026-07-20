@@ -218,3 +218,57 @@ class TestFactoryRouting:
         from butly_core.llm.factory import ProviderFactory
         with pytest.raises(NotImplementedError):
             ProviderFactory.create("totally-unknown-model")
+
+
+# ===================================================================
+# generate: token_usage / messages_full の debug_info 伝搬
+# ===================================================================
+
+class TestGenerateTokenUsage:
+    @patch("butly_core.core.gatekeeper.build_system_instruction_from_blocks", return_value="sys")
+    @patch("butly_core.core.gatekeeper.build_context_prefix", return_value="長いコンテキスト" * 100)
+    def test_generate_captures_api_usage_and_full_messages(
+        self, mock_prefix, mock_sys, mock_openai_client
+    ):
+        adapter = OpenAICompatAdapter(connection=get_connection("openai"))
+        _attach_client(adapter, mock_openai_client)
+
+        usage = MagicMock(spec=["prompt_tokens", "completion_tokens", "total_tokens"])
+        usage.prompt_tokens = 1200
+        usage.completion_tokens = 45
+        usage.total_tokens = 1245
+        mock_openai_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="answer"))],
+            usage=usage,
+        )
+
+        result = adapter.generate("question", [], {"history": [], "rag_results": []})
+
+        assert result.debug_info["token_usage"] == {
+            "prompt_tokens": 1200,
+            "completion_tokens": 45,
+            "source": "api",
+            "total_tokens": 1245,
+        }
+        # messages_full は truncate されない全文（messages は 500 字で切られる）
+        full_prefix = next(
+            m["content"] for m in result.debug_info["messages_full"]
+            if m["content"].startswith("長いコンテキスト")
+        )
+        assert len(full_prefix) == len("長いコンテキスト") * 100
+
+    @patch("butly_core.core.gatekeeper.build_system_instruction_from_blocks", return_value="sys")
+    @patch("butly_core.core.gatekeeper.build_context_prefix", return_value="")
+    def test_generate_without_usage_omits_key(
+        self, mock_prefix, mock_sys, mock_openai_client
+    ):
+        """usage が取れない（MagicMock 汚染含む）場合は token_usage キー無し"""
+        adapter = OpenAICompatAdapter(connection=get_connection("openai"))
+        _attach_client(adapter, mock_openai_client)
+        mock_openai_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="answer"))]
+        )
+
+        result = adapter.generate("question", [], {"history": [], "rag_results": []})
+
+        assert "token_usage" not in result.debug_info

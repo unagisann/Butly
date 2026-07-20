@@ -111,6 +111,10 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         f"{_fmt_distribution(butly.get('raw_reference_status_distribution'))}"
         f" (chars mean {_fmt(butly.get('raw_reference_chars_mean'), digits=0)}, "
         f"truncated rate {_fmt(butly.get('raw_reference_truncated_rate'))})",
+        f"- Token usage (API-reported): prompt mean "
+        f"{_fmt(butly.get('prompt_tokens_mean'), digits=0)} / total "
+        f"{_fmt(butly.get('prompt_tokens_total'), digits=0)}, completion total "
+        f"{_fmt(butly.get('completion_tokens_total'), digits=0)}",
         f"- Knowledge cards created by Sleeptime: "
         f"{butly.get('knowledge_cards_created', 0)}",
         f"- Sleeptime failures: {butly.get('sleeptime_failures', 0)}",

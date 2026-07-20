@@ -50,6 +50,38 @@ def _get_client() -> genai.Client:
     return genai.Client(api_key=api_key)
 
 
+def _extract_gemini_usage(response) -> Optional[dict]:
+    """usage_metadata（API 実測トークン数）を dict 化する。取れなければ None。"""
+    meta = getattr(response, "usage_metadata", None)
+    if meta is None:
+        return None
+
+    def _as_int(name: str):
+        # 実数値のみ受け付ける（MagicMock 等は int() 可能なため型で判定する）
+        value = getattr(meta, name, None)
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        return None
+
+    prompt = _as_int("prompt_token_count")
+    completion = _as_int("candidates_token_count")
+    if prompt is None and completion is None:
+        return None
+    out = {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "source": "api",
+    }
+    total = _as_int("total_token_count")
+    if total is not None:
+        out["total_tokens"] = total
+    return out
+
+
 class GeminiProvider(BaseProvider):
     """
     Gemini API を使った LLM プロバイダー。
@@ -208,6 +240,7 @@ class GeminiProvider(BaseProvider):
             pass
 
         # --- チャット実行 ---
+        token_usage = None
         try:
             if use_google_search:
                 response_text, sources = self._try_search_with_retry(
@@ -235,6 +268,7 @@ class GeminiProvider(BaseProvider):
                 response = chat_session.send_message(prompt_parts)
                 print("[GeminiProvider] Got response from Gemini API!")
                 response_text, sources, _ = self._extract_response(response)
+                token_usage = _extract_gemini_usage(response)
 
             # debug_info 構築（Gemini 固有）
             from butly_core.core.gatekeeper import (
@@ -280,6 +314,9 @@ class GeminiProvider(BaseProvider):
                 "user_input": full_prompt,
                 "raw_response": response_text,
             }
+            # API 実測のトークン数（google_search 経由は response 非公開のため無し）
+            if token_usage:
+                result.debug_info["token_usage"] = token_usage
             return result
         except Exception as e:
             import traceback

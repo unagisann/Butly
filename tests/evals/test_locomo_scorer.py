@@ -286,6 +286,49 @@ class TestScoreRun:
         assert butly["raw_reference_status_distribution"] == {}
         assert butly["raw_reference_chars_mean"] is None
 
+    def test_token_usage_aggregated(self, tmp_path):
+        """diagnostics.token_usage（API 実測）が平均・合計に集計される"""
+        rows = [
+            _qa_row(
+                "qa-1",
+                diagnostics={
+                    "gatekeeper": {"tier": "mid"},
+                    "rag": {"results": []},
+                    "token_usage": {
+                        "prompt_tokens": 1000,
+                        "completion_tokens": 40,
+                        "source": "api",
+                    },
+                },
+            ),
+            _qa_row(
+                "qa-2",
+                diagnostics={
+                    "gatekeeper": {"tier": "mid"},
+                    "rag": {"results": []},
+                    "token_usage": {
+                        "prompt_tokens": 3000,
+                        "completion_tokens": 60,
+                        "source": "api",
+                    },
+                },
+            ),
+        ]
+        run_dir = _write_run(tmp_path, rows)
+
+        butly = score_run(run_dir)["butly"]
+        assert butly["prompt_tokens_mean"] == pytest.approx(2000)
+        assert butly["prompt_tokens_total"] == 4000
+        assert butly["completion_tokens_total"] == 100
+
+    def test_token_usage_absent_for_old_runs(self, tmp_path):
+        """token_usage 無しの旧 run でも None で集計が壊れない"""
+        run_dir = _write_run(tmp_path, [_qa_row("qa-1")])
+
+        butly = score_run(run_dir)["butly"]
+        assert butly["prompt_tokens_mean"] is None
+        assert butly["prompt_tokens_total"] is None
+
     def test_deduplicates_resumed_question_records(self, tmp_path):
         rows = [
             _qa_row("qa-1", prediction="wrong answer entirely"),
