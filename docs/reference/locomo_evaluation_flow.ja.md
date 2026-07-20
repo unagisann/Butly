@@ -161,6 +161,13 @@ Gatekeeperが`need`を立てた場合、MemoryBlockBuilderがknowledge cardや�
 RAW参照をpromptへ組み込む。生成後、ChatServiceは質問と回答を通常の会話turnとして
 処理対象instanceの`short_term_json`へ保存し、session stateも更新する。
 
+純粋ベクトル検索は、instance内のknowledge cardを新旧に関係なくすべて
+コサイン類似度の計算対象にする。その後で時間減衰・archive補正・閾値判定を適用し、
+上位`limit`件だけをRAG候補として返す。`fallback_fetch_limit`はキーワード検索の
+フォールバック専用であり、純粋ベクトル検索の候補範囲を制限しない。
+Traceの`memory_probe_layers.vector`では、`fetch_limit: null`が全件検索、
+`fetched_count`が実際に評価したカード数を示す。
+
 ## `independent`: 独立QA
 
 目的は、**すべての質問を完全に同じpost-Sleeptime状態から評価すること**。
@@ -200,6 +207,11 @@ flowchart TD
 - コストは正本→baselineの初回コピーに加え、質問ごとのbaseline→activeコピー。
 
 このモードはバージョン間の回答性能比較に向く。質問順序による有利・不利を除去できる。
+
+セッション数による影響を切り分ける場合は、モデル・profile・質問範囲を固定し、
+まず`--session-limit 3 --question-limit 10`、次に
+`--all-sessions --question-limit 10`を別run IDで実行する。前者は旧評価条件との
+比較、後者は全会話を記憶したときの検索スケーリング確認になる。
 
 ## `sequential`: 継続QA
 

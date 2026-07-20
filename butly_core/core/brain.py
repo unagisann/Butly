@@ -317,6 +317,7 @@ class ButlyBrain:
                 "diagnostics": {
                     "threshold": float,
                     "decay_rate": float,
+                    "fetch_limit": None,
                     "fetched_count": int,
                     "passed_threshold": int,
                     "top_raw_scores": [...],
@@ -370,7 +371,9 @@ class ButlyBrain:
         diagnostics = {
             "threshold": float(threshold),
             "decay_rate": float(brain_conf.get("time_decay_rate", 0.005)),
-            "fetch_limit": int(brain_conf.get("fallback_fetch_limit", 50)),
+            # Kept for trace compatibility. Pure vector search scores the full
+            # card set; fallback_fetch_limit only applies to keyword fallback.
+            "fetch_limit": None,
             "fetched_count": total_fetched,
             "passed_threshold": len(all_results),
             "top_raw_scores": [round(s, 3) for s in all_raw_scores[:5]],
@@ -435,13 +438,10 @@ class ButlyBrain:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
-            fetch_limit = brain_conf.get("fallback_fetch_limit", 50)
             select_cols = self._knowledge_select_cols(cursor)
             query = f"""
                 SELECT {select_cols}
                 FROM knowledge_cards
-                ORDER BY created_at DESC
-                LIMIT {fetch_limit}
             """
             cursor.execute(query)
             rows = cursor.fetchall()

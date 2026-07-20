@@ -138,6 +138,14 @@ The defaults remain one sample, all sessions, and one question. Explicit
 `--all-*` flags make full, potentially expensive runs visible in saved commands
 and Colab parameters.
 
+For an apples-to-apples check against a prior three-session run, keep the same
+model/profile and select one sample, `--session-limit 3`, and
+`--question-limit 10`. Then use a different run ID and change only the session
+scope to `--all-sessions`. Pure vector retrieval scores the instance's complete
+knowledge-card set in both runs; `fallback_fetch_limit` limits only the
+keyword-search fallback path. A vector trace therefore reports
+`fetch_limit: null` and the actual full-card count in `fetched_count`.
+
 ### Evaluation prompt locale
 
 The internal prompt and memory-output locale defaults to English. It can be

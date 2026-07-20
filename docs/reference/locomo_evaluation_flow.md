@@ -148,6 +148,13 @@ selected session.
 After generation, ChatService persists the question and answer as a normal
 conversation turn in the target instance and updates session state.
 
+Pure vector retrieval scores every knowledge card in the instance regardless
+of age. It then applies time decay, archive weighting, and the score threshold
+before returning the top `limit` RAG candidates. `fallback_fetch_limit` belongs
+only to keyword-search fallback and does not restrict this vector candidate
+pool. In `memory_probe_layers.vector` traces, `fetch_limit: null` denotes the
+full-card scan and `fetched_count` is the number of cards actually scored.
+
 ## `independent` QA
 
 The goal is to start every question from exactly the same post-Sleeptime state.
@@ -188,6 +195,13 @@ Properties:
   per question.
 
 This is the default mode for comparable model and version measurements.
+
+To isolate the effect of session count, keep the model, profile, and question
+scope fixed and use separate run IDs for
+`--session-limit 3 --question-limit 10` and
+`--all-sessions --question-limit 10`. The first reproduces the older bounded
+condition; the second exercises retrieval after the full conversation has
+been stored.
 
 ## `sequential` QA
 

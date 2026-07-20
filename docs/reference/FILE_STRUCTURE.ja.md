@@ -350,8 +350,8 @@ LLM 呼び出しと RAG 検索のエンジン。Provider に依存しない中�
   - `get_embedding(text)` — Embedding ベクトルを取得
   - `extract_keywords(text, override_config)` — RAG 用キーワードを LLM で抽出
   - `search_knowledge(keywords, query, instance_name, limit, override_config)` — コサイン類似度で RAG 検索（時間減衰込み）
-  - `quick_vector_search(user_input, instance_name, limit, threshold, override_config)` — キーワード抽出なしの純粋なベクトル検索
-  - `quick_vector_search_diag(...)` — Layer 別診断情報（候補数 / 閾値判定 / 平均スコア等）を含む診断付き版
+  - `quick_vector_search(user_input, instance_name, limit, threshold, override_config)` — キーワード抽出なしの純粋なベクトル検索。新旧を問わず全knowledge cardを類似度計算し、時間減衰・archive補正後の上位`limit`件を返す
+  - `quick_vector_search_diag(...)` — Layer 別診断情報（全候補数 / 閾値判定 / スコア等）を含む診断付き版。互換フィールド`fetch_limit`は全件検索を示す`null`
   - `summarize_conversation(conversation_text, override_config)` — 会話テキストを要約（summary モデル使用）
   - `generate_knowledge_card(text, override_config)` — ナレッジカード JSON を生成（knowledge モデル使用）
   - `_calculate_cosine_similarity(vec1, vec2)` — コサイン類似度計算
