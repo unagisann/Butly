@@ -1,0 +1,16 @@
+/* Phase 1: 装飾はしない。読める最小限だけ。 */
+
+:root {
+  font-family: system-ui, "Segoe UI", "Yu Gothic UI", sans-serif;
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+}
+
+.shell {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}

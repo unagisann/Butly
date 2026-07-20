@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 from butly_core.core.tokenizer import count_tokens
-from butly_core.core.turn_meta import has_multiple_speakers, user_label
+from butly_core.core.turn_meta import has_multiple_speakers, speaker_label, user_label
 
 # ファイル名からタイムスタンプを抽出する正規表現
 _TS_PATTERN_8 = re.compile(
@@ -135,6 +135,7 @@ def format_sessions(
     format: str = "plaintext",
     agent_name: str = "Agent",
     user_name: str = "User",
+    locale: str = "ja",
 ) -> str:
     """収集済みセッションを指定形式のテキストに変換。
 
@@ -143,6 +144,7 @@ def format_sessions(
         format: "markdown" | "plaintext" | "compact"
         agent_name: エージェント表示名
         user_name: ユーザー表示名
+        locale: 話者ラベルの locale
 
     Returns:
         変換済みテキスト
@@ -157,6 +159,8 @@ def format_sessions(
     )
 
     def _user_role(msg: dict) -> str:
+        if locale != "ja":
+            return speaker_label(msg, user_name)
         return user_label(msg, user_name, multi_speaker=multi_speaker)
 
     lines: list[str] = []
@@ -212,6 +216,7 @@ def build_raw_memory_cache(
     injection_format: str = "plaintext",
     agent_name: str = "Agent",
     user_name: str = "User",
+    locale: str = "ja",
 ) -> dict:
     """2_knowledgeized/ の JSON からキャッシュファイルを生成する。
 
@@ -224,6 +229,7 @@ def build_raw_memory_cache(
         injection_format: "markdown" | "plaintext" | "compact"
         agent_name: エージェント表示名
         user_name: ユーザー表示名
+        locale: 話者ラベルの locale
 
     Returns:
         {"sessions": int, "tokens": int, "format": str, "path": str}
@@ -234,6 +240,7 @@ def build_raw_memory_cache(
         format=injection_format,
         agent_name=agent_name,
         user_name=user_name,
+        locale=locale,
     )
 
     cache_path = instance_path / CACHE_FILENAME

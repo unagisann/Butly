@@ -126,6 +126,20 @@ class ButlySleeptime:
                     pass
         return {}
 
+    def get_instance_prompt_loader(self, instance_name=None):
+        """Return a prompt loader bound to the instance's locale and policy."""
+        from butly_core.prompts import (
+            PromptLoader,
+            resolve_prompt_locale,
+            user_prompt_overrides_enabled,
+        )
+
+        inst_cfg = self.get_instance_config(instance_name) if instance_name else {}
+        return PromptLoader(
+            locale=resolve_prompt_locale(inst_cfg),
+            allow_user_overrides=user_prompt_overrides_enabled(inst_cfg),
+        )
+
     def should_update(self, inst_cfg: dict, target: str) -> bool:
         """update_targets 設定に基づいて更新すべきかを判定する。"""
         targets = inst_cfg.get("sleeptime", {}).get("update_targets", {})
@@ -268,8 +282,7 @@ class ButlySleeptime:
         agent_instruction = self.get_instance_instruction(db_type)
         agent_key_memory = self.get_instance_key_memory(db_type)
 
-        from butly_core.prompts import PromptLoader
-        loader = PromptLoader()
+        loader = self.get_instance_prompt_loader(db_type)
         prompt = loader.get(
             "sleeptime_summarize",
             agent_name=self.get_instance_agent_name(db_type),
@@ -458,6 +471,9 @@ class ButlySleeptime:
         multi_speaker = turn_meta.has_multiple_speakers(
             [m for _, d in loaded_files for m in d.get("messages", [])]
         )
+        from butly_core.prompts import resolve_prompt_locale
+
+        _locale = resolve_prompt_locale(self.get_instance_config(instance_name))
         _agent_name = self.get_instance_agent_name(instance_name)
         _user_name = self.get_instance_user_name(instance_name)
 
@@ -469,9 +485,14 @@ class ButlySleeptime:
                 ts = ts_raw.split('.')[0].replace('T', ' ')
                 for msg in data.get("messages", []):
                     if msg["role"] == "user":
-                        role_label = turn_meta.user_label(
-                            msg, _user_name, multi_speaker=multi_speaker
-                        )
+                        if _locale == "ja":
+                            role_label = turn_meta.user_label(
+                                msg,
+                                _user_name,
+                                multi_speaker=multi_speaker,
+                            )
+                        else:
+                            role_label = turn_meta.speaker_label(msg, _user_name)
                         self._tally_appearance(appearances, msg, ts_raw)
                     else:
                         role_label = _agent_name
@@ -520,6 +541,7 @@ class ButlySleeptime:
                 injection_format=raw_format,
                 agent_name=_agent_name_cache,
                 user_name=_user_name_cache,
+                locale=_locale,
             )
         else:
             print(f"[Sleeptime] RAW memory cache rebuild skipped (raw_memory_cache disabled)")
@@ -644,8 +666,6 @@ class ButlySleeptime:
         
         print(f"[Sleeptime] Daily digest: Generating from {len(new_text)} chars of today's raw text...")
         
-        from butly_core.prompts import PromptLoader
-        
         try:
             # インスタンス設定 → グローバル summary のフォールバック
             instance_name = instance_path.name
@@ -669,7 +689,7 @@ class ButlySleeptime:
             if len(text_chunks) > 1:
                 print(f"[Sleeptime] Daily digest: Split into {len(text_chunks)} chunks (limit: {digest_max_input} chars)")
 
-            loader = PromptLoader()
+            loader = self.get_instance_prompt_loader(instance_name)
             provider = self._get_provider(summary_conf)
             digest_parts = []
 
@@ -756,13 +776,12 @@ class ButlySleeptime:
 
         print(f"[Sleeptime] recent_headlines: Generating from {len(digest_text)} chars of digest...")
 
-        from butly_core.prompts import PromptLoader
         try:
             instance_name = instance_path.name
             inst_cfg = self.get_instance_config(instance_name)
             summary_conf = self._resolve_conf(inst_cfg, "summary")
 
-            loader = PromptLoader()
+            loader = self.get_instance_prompt_loader(instance_name)
             prompt = loader.get(
                 "recent_headlines",
                 agent_name=self.get_instance_agent_name(instance_name),
@@ -852,8 +871,6 @@ class ButlySleeptime:
             print("[Sleeptime] Recent snapshot: digest too short, skipping.")
             return
         
-        from butly_core.prompts import PromptLoader
-        
         try:
             k_conf = self._resolve_conf(inst_cfg, "knowledge")
 
@@ -862,7 +879,7 @@ class ButlySleeptime:
             key_memory = self.get_instance_key_memory(instance_name)
             max_rel_chars = inst_cfg.get("sleeptime", {}).get("max_relationship_chars", 600)
             
-            loader = PromptLoader()
+            loader = self.get_instance_prompt_loader(instance_name)
             rel_prompt = loader.get(
                 "recent_snapshot",
                 agent_name=self.get_instance_agent_name(instance_name),
@@ -929,12 +946,10 @@ class ButlySleeptime:
             print("[Sleeptime] Key Memory proposal: digest too short, skipping.")
             return
 
-        from butly_core.prompts import PromptLoader
-
         try:
             k_conf = self._resolve_conf(inst_cfg, "knowledge")
 
-            loader = PromptLoader()
+            loader = self.get_instance_prompt_loader(instance_name)
             prompt = loader.get(
                 "key_memory_proposal",
                 agent_name=self.get_instance_agent_name(instance_name),
@@ -1006,7 +1021,6 @@ class ButlySleeptime:
         from butly_core.core.database import ButlyDatabase
         from butly_core.core.memory_nodes import MemoryNodeRepository
         from butly_core.core import knowledge_maturation as km
-        from butly_core.prompts import PromptLoader
 
         instance_name = instance_path.name
         instance_db_path = str(self.instances_dir / instance_name / "butly_memory.db")
@@ -1068,7 +1082,7 @@ class ButlySleeptime:
             )
 
             # 4. LLM 推論
-            loader = PromptLoader()
+            loader = self.get_instance_prompt_loader(instance_name)
             agent_instruction = self.get_instance_instruction(instance_name)
             agent_key_memory = self.get_instance_key_memory(instance_name)
 
@@ -1302,6 +1316,9 @@ class ButlySleeptime:
         
         # チャンク分割の上限文字数を取得
         inst_cfg = self.get_instance_config(db_type)
+        from butly_core.prompts import resolve_prompt_locale
+
+        locale = resolve_prompt_locale(inst_cfg)
         knowledge_max_chars = inst_cfg.get("sleeptime", {}).get("knowledge_max_input_chars", 0)
 
         # グループごとに処理
@@ -1330,9 +1347,14 @@ class ButlySleeptime:
                 file_text = f"\n--- Source: {f_path.name} ({ts}) ---\n"
                 for msg in data.get("messages", []):
                     if msg["role"] == "user":
-                        role_label = turn_meta.user_label(
-                            msg, _user_name, multi_speaker=multi_speaker
-                        )
+                        if locale == "ja":
+                            role_label = turn_meta.user_label(
+                                msg,
+                                _user_name,
+                                multi_speaker=multi_speaker,
+                            )
+                        else:
+                            role_label = turn_meta.speaker_label(msg, _user_name)
                     else:
                         role_label = _agent_name
                     content = msg.get("parts", [""])[0]

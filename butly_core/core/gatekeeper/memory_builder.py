@@ -18,6 +18,55 @@ def is_long_definition(definition: str) -> bool:
     return "\n" in normalized
 
 
+def _resolve_prompt_loader(
+    *,
+    blocks: dict | None = None,
+    memory_manager=None,
+    override_config: dict | None = None,
+):
+    """Build a PromptLoader from per-instance settings without global mutation."""
+    from butly_core.prompts import (
+        PromptLoader,
+        resolve_prompt_locale,
+        user_prompt_overrides_enabled,
+    )
+
+    config = override_config if isinstance(override_config, dict) else {}
+    block_locale = (blocks or {}).get("locale")
+    if isinstance(block_locale, str) and block_locale.strip():
+        locale = block_locale.strip()
+    else:
+        agent_profile = config.get("agent_profile") or {}
+        legacy_agent = config.get("agent") or {}
+        config_locale = agent_profile.get("locale") or legacy_agent.get("locale")
+        profile_locale = None
+        if (
+            not config_locale
+            and memory_manager
+            and hasattr(memory_manager, "get_agent_profile")
+        ):
+            profile = memory_manager.get_agent_profile()
+            if isinstance(profile, dict):
+                profile_locale = profile.get("locale")
+        if isinstance(config_locale, str) and config_locale.strip():
+            locale = config_locale.strip()
+        elif isinstance(profile_locale, str) and profile_locale.strip():
+            locale = profile_locale.strip()
+        else:
+            locale = resolve_prompt_locale(config)
+
+    block_policy = (blocks or {}).get("allow_user_prompt_overrides")
+    if isinstance(block_policy, bool):
+        allow_user_overrides = block_policy
+    else:
+        allow_user_overrides = user_prompt_overrides_enabled(config)
+
+    return PromptLoader(
+        locale=locale,
+        allow_user_overrides=allow_user_overrides,
+    )
+
+
 # セクション順序のデフォルト定義
 DEFAULT_CONTEXT_ORDER = {
     "system_instruction": ["system_instruction", "key_memory"],
@@ -233,6 +282,11 @@ class MemoryBlockBuilder:
         else:
             session_digest = memory_manager.get_floating_summary()
 
+        prompt_loader = _resolve_prompt_loader(
+            memory_manager=memory_manager,
+            override_config=override_config,
+        )
+
         # topic を gatekeeper_output から取得
         topic = ""
         if gatekeeper_output:
@@ -245,6 +299,8 @@ class MemoryBlockBuilder:
             "mid_term": "",
             "rag_context": "",
             "topic": topic,
+            "locale": prompt_loader.locale,
+            "allow_user_prompt_overrides": prompt_loader.allow_user_overrides,
             "need": gatekeeper_output.get("need") if gatekeeper_output else None,
             "search_targets": (
                 gatekeeper_output.get("search_targets") if gatekeeper_output else None
@@ -312,12 +368,12 @@ class MemoryBlockBuilder:
         if need and candidates:
             _inst_mem = override_config.get("memory", {}) if override_config else {}
             _sys_mem = SYSTEM_CONFIG.get("memory", {})
+            h = prompt_loader.get_section_header
 
-            rag_lines = ["【過去の記憶（RAG）】"]
+            rag_lines = [h("rag_cards")]
+            rag_bullet = h("rag_bullet")
             if any(c.get("source_date") for c in candidates):
-                rag_lines.append(
-                    "（各記憶の [YYYY-MM-DD] はその会話が行われた日付）"
-                )
+                rag_lines.append(h("rag_date_note"))
             for c in candidates:
                 # summary は箇条書き・複数行を許容する。継続行はインデントして
                 # カード境界（行頭の「・」）と区別できるようにする。
@@ -325,10 +381,10 @@ class MemoryBlockBuilder:
                 date_prefix = (
                     f"[{c['source_date']}] " if c.get("source_date") else ""
                 )
-                rag_lines.append(f"・{date_prefix}{c['title']}: {summary}")
+                rag_lines.append(f"{rag_bullet}{date_prefix}{c['title']}: {summary}")
                 if c.get("episode"):
                     episode = str(c["episode"]).strip().replace("\n", "\n  ")
-                    rag_lines.append(f"  (補足: {episode})")
+                    rag_lines.append(f"  ({h('rag_episode_label')}: {episode})")
             cards_text = "\n".join(rag_lines)
 
             # --- RAG 注入ソースの解決（cards / raw / both） ---
@@ -352,21 +408,21 @@ class MemoryBlockBuilder:
                     override_config=override_config,
                     inst_mem=_inst_mem,
                     sys_mem=_sys_mem,
+                    locale=prompt_loader.locale,
                 )
 
             if raw_ref:
                 if rag_mode == "raw":
                     blocks["rag_context"] = (
-                        "【過去の記憶（当時の会話・抜粋）】\n"
-                        "（関連する過去の会話の原文。--- 行はその会話の日時）\n"
+                        f"{h('rag_raw')}\n"
+                        f"{h('rag_raw_note')}\n"
                         + raw_ref["text"]
                     )
                 else:
                     blocks["rag_context"] = (
                         cards_text
-                        + "\n\n【記憶の元になった当時の会話（抜粋）】\n"
-                        "（上の記憶カードの根拠となる会話原文。"
-                        "日付や事実の詳細はこちらを優先する）\n"
+                        + f"\n\n{h('rag_source_raw')}\n"
+                        f"{h('rag_source_raw_note')}\n"
                         + raw_ref["text"]
                     )
                 blocks["rag_raw_reference"] = {
@@ -464,9 +520,10 @@ def build_system_instruction_from_blocks(
     str
         LLM に渡す system_instruction 文字列。
     """
-    from butly_core.prompts import PromptLoader
-
-    loader = PromptLoader()
+    loader = _resolve_prompt_loader(
+        blocks=blocks,
+        memory_manager=memory_manager,
+    )
     h = loader.get_section_header
 
     levels = _resolve_levels(context_levels, context_order)
@@ -532,7 +589,7 @@ def _build_km_section(key_mem: str, km_level: str, h) -> str | None:
     if not key_mem or km_level == "off":
         return None
     if km_level == "low":
-        return f"[会話核] {key_mem.strip()}"
+        return f"{h('conversation_core')} {key_mem.strip()}"
     # high / mid
     return f"{h('key_memory')}\n{key_mem}"
 
@@ -569,9 +626,10 @@ def build_context_prefix(
     str
         可変コンテキスト文字列。空の場合は空文字列。
     """
-    from butly_core.prompts import PromptLoader
-
-    loader = PromptLoader()
+    loader = _resolve_prompt_loader(
+        blocks=blocks,
+        memory_manager=memory_manager,
+    )
     h = loader.get_section_header
 
     levels = _resolve_levels(context_levels, context_order)
@@ -581,7 +639,7 @@ def build_context_prefix(
     builders = {
         "label_notes": lambda: _build_label_notes(levels.get("label_notes", "high"), h),
         "current_time": lambda: _build_current_time(
-            levels.get("current_time", "high"), h
+            levels.get("current_time", "high"), h, loader.locale
         ),
         "glossary": lambda: _build_glossary(
             blocks, memory_manager, levels.get("glossary", "high"), h
@@ -638,12 +696,12 @@ def _build_label_notes(level: str, h) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
-def _build_current_time(level: str, h) -> str | None:
+def _build_current_time(level: str, h, locale: str = "ja") -> str | None:
     if level == "off":
         return None
     from butly_core.core.chronos import ButlyChronos
 
-    current_time = ButlyChronos().get_system_note()
+    current_time = ButlyChronos(locale=locale).get_system_note()
     if level == "low":
         return current_time.split("\n")[0].strip()  # 時刻のみ1行
     # high / mid
@@ -789,7 +847,7 @@ def _build_mid_term(blocks: dict, level: str, tier: str, h) -> str | None:
             return None
         lines = [ln for ln in text.strip().split("\n") if ln.strip()]
         truncated = lines[-4:] if len(lines) > 4 else lines
-        return "[直近の背景]\n" + "\n".join(truncated)
+        return f"{h('recent_context')}\n" + "\n".join(truncated)
 
     # high / mid
     parts = []
@@ -823,21 +881,21 @@ def _build_rag(blocks: dict, level: str, tier: str, h) -> str | None:
     if level == "low":
         lines = [ln for ln in rag_context.strip().split("\n") if ln.strip()]
         truncated = lines[:3] if len(lines) > 3 else lines
-        return "[関連記憶]\n" + "\n".join(truncated)
+        return f"{h('related_memory')}\n" + "\n".join(truncated)
     # high / mid
     body = f"{h('long_term_memory')}\n{h('note_rag')}\n{rag_context}"
 
     # Stage 3: active node の小量併記 (opt-in)
     active_nodes = blocks.get("active_nodes") or []
     if active_nodes:
-        node_lines = ["", "【関連する熟成記憶（active nodes）】"]
+        node_lines = ["", h("active_nodes")]
         for n in active_nodes[:5]:
             statement = (n.get("statement") or "").strip().replace("\n", " ")
             if not statement:
                 continue
             confidence = n.get("confidence")
             conf_str = f" (conf={confidence:.2f})" if isinstance(confidence, (int, float)) else ""
-            node_lines.append(f"・{statement}{conf_str}")
+            node_lines.append(f"{h('rag_bullet')}{statement}{conf_str}")
         if len(node_lines) > 2:
             body += "\n" + "\n".join(node_lines[1:])
     return body
@@ -900,6 +958,7 @@ def _resolve_raw_block(
     override_config: dict | None,
     inst_mem: dict,
     sys_mem: dict,
+    locale: str = "ja",
 ) -> dict | None:
     """RAG 候補カードの RAW 原文抜粋を解決する（失敗時 None でカード注入へ）。
 
@@ -930,6 +989,7 @@ def _resolve_raw_block(
             max_chars,
             user_name=user_name,
             agent_name=agent_name,
+            locale=locale,
         )
     except Exception as e:
         print(f"[Gatekeeper] RAW 参照の解決に失敗: {e}")

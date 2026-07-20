@@ -294,3 +294,35 @@ class TestResolveRawReference:
             user_name="ゆうき",
         )
         assert "「たろう」: こんにちは" in result["text"]
+
+    def test_english_locale_uses_plain_speaker_labels(self, instances_dir):
+        """English evaluation prompts do not inherit Japanese speaker punctuation."""
+        _write_raw(
+            instances_dir,
+            "2023-05-08",
+            "s1.json",
+            [
+                {
+                    "role": "user",
+                    "parts": ["Hello"],
+                    "meta": {"person_id": "p_1", "display_name": "Caroline"},
+                },
+                {
+                    "role": "user",
+                    "parts": ["Hi"],
+                    "meta": {"person_id": "p_2", "display_name": "Melanie"},
+                },
+            ],
+            "2023-05-08T09:00:00",
+        )
+
+        result = resolve_raw_reference(
+            [_card("a", "2023-05-08", ["s1.json"])],
+            instances_dir,
+            INST,
+            max_chars=6000,
+            locale="en",
+        )
+
+        assert "Caroline: Hello" in result["text"]
+        assert "「" not in result["text"]

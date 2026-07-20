@@ -2,7 +2,7 @@
 
 🌐 **日本語** | [English](FILE_STRUCTURE.md)
 
-> 最終更新: 2026-05-24
+> 最終更新: 2026-07-20
 
 ---
 
@@ -15,9 +15,11 @@
 | `dependencies.py` | ルーター間共有のグローバル状態・ヘルパー |
 | `sleeptime.py` | 記憶自動整理スクリプト（単体実行 & APIから呼び出し可） |
 | `migrate_embeddings.py` | プロバイダー切り替え時の embedding 再生成ユーティリティ |
-| `butly_api/` | 正式フロントエンド向け `/api/v1` transport 層（app factory / schemas / error contract） |
+| `butly_api/` | 正式フロントエンド向け `/api/v1` transport 層（app factory / schemas / error contract / sidecar CLI） |
 | `openapi/butly.openapi.json` | `/api/v1` の OpenAPI 3.1 snapshot（`scripts/generate_openapi.py` で生成） |
 | `evals/locomo/` | LoCoMo長期記憶評価CLI。正式APIへ混入せず、checkpoint付き隔離Workspace上でReplay → Sleeptime → QA → 公式互換採点・レポートまで実行 |
+| `frontend/` | 正式デスクトップ frontend（pnpm + Tauri v2 + React + TypeScript + Vite）。Phase 1 は app shell + sidecar lifecycle のみ |
+| `packaging/pyinstaller/` | FastAPI sidecar の PyInstaller spec（`butly-backend.spec`）と entry script |
 
 ---
 
@@ -101,20 +103,30 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | ファイル | 役割 |
 |---|---|
 | `dataset.py` | `LocomoTurn` / `LocomoSession` / `LocomoQuestion` / `LocomoConversation` DTOと公式JSON parser |
-| `workspace.py` | run ID単位の隔離ディレクトリ、`ButlyRuntime` / `ButlySleeptime`生成 |
+| `workspace.py` | run ID単位の隔離ディレクトリ、`ButlyRuntime` / `ButlySleeptime`生成、独立QA用の使い捨てinstance clone、逐次QA中断時のdurable復元点 |
 | `adapter.py` | `speaker_a=user` / `speaker_b=assistant`変換と元日時・evidence追跡用meta付き保存 |
 | `sleeptime_runner.py` | Stage 1/2の同期実行と`results/sleeptime_log.jsonl`記録 |
-| `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、QA結果とTraceを保存 |
-| `replay.py` | セッションReplay、Sleeptime、QA、checkpoint更新のオーケストレーション。`resume_evaluation()`で途中再開 |
+| `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、独立／逐次QAの結果とTraceを保存 |
+| `replay.py` | セッションReplay、Sleeptime、独立／逐次QA、checkpoint更新のオーケストレーション。逐次QAはcheckpoint commit前の中断時にinstance・結果・Traceをrollbackし、`resume_evaluation()`で重複なく途中再開 |
 | `artifacts.py` | JSON/JSONL、Traceコピー、セッション前後スナップショットの保存 |
 | `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。`scores.json` / `errors.jsonl`出力 |
 | `stemming.py` | 依存追加なしのPorter (1980) stemmer。公式のnltk stemmerと稀な語で差が出る旨をdocstringに明記 |
 | `report.py` | `scores.json`から`summary.md`を生成 |
 | `checkpoint.py` | セッション/Sleeptime/QA単位のatomicなcheckpoint。run ID照合と破損検出つき |
-| `config.py` | CLI設定DTO（`from_json_dict()`でresume時復元）とprofile YAML読込 |
-| `cli.py` | `run` / `resume` / `score` / `report` subcommands。`run`は採点・レポートまで実行 |
-| `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`） |
-| `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook（評価ロジック禁止） |
+| `config.py` | CLI設定DTO（QA mode、sample/session/question範囲、localeを含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
+| `cli.py` | `run` / `resume` / `score` / `report` subcommands。`run`は`--qa-mode`、各`--*-limit` / `--all-*`、`--locale`を受け付け、採点・レポートまで実行 |
+| `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`）。top-level `locale`は内部prompt／memory出力言語を指定 |
+| `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook。ParametersセルでQA mode、locale、sample/session/questionの全件／上限制御を選択（評価ロジック禁止） |
+
+QA modeは、全質問を同じpost-Sleeptime状態から評価する`independent`
+（バージョン比較の既定）と、QAターンを同一instanceへ蓄積する`sequential`
+（連続運用・耐久評価）を分離する。全LoCoMo評価はsample/session/questionの
+3軸すべてで`--all-*`を明示する。評価localeの優先順位は
+CLI `--locale` → profile top-level `locale` → `en`。localeはButly内部promptと
+memory出力言語を選び、LoCoMoの質問・正解は翻訳しない。公式Token F1との
+互換性を保つためQA回答も英語に固定する。日本語版ベンチマークには、別途
+翻訳済みdatasetと日本語対応scorerが必要となる。評価instanceでは再現性の
+ためローカル`user_prompts.json` overrideを無効化する。
 
 ---
 
@@ -158,6 +170,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 | `errors.py` | `ApiException` と `/api/v1` 共通 error envelope（`ApiError`）への正規化 handler。legacy route は FastAPI default（`{"detail": ...}`）を維持 |
 | `middleware.py` | `RequestIDMiddleware` — `X-Request-ID` の採番・伝播（pure ASGI） |
 | `version.py` | `BACKEND_VERSION` / `API_VERSION` / `API_V1_PREFIX` |
+| `server.py` | desktop sidecar 用 CLI entrypoint（`--host/--port/--parent-pid/--data-dir/--dev-cors`）。port 0 → 実 port を 1 行 JSON で stdout 通知、production CORS は `http://tauri.localhost` のみ、graceful shutdown 用 `POST /api/v1/shutdown`（token 必須・OpenAPI 非公開）。詳細は [desktop_sidecar.ja.md](desktop_sidecar.ja.md) |
 | `routers/system.py` | `GET /api/v1/health` / `/ready` / `/app-info` / `/capabilities` |
 | `routers/instances.py` | `GET /api/v1/instances`（typed 一覧） / `GET /api/v1/instances/{name}/messages`（typed 履歴 + `last_interaction_at`。cursor pagination は記憶ストア正規化後） |
 | `routers/chat.py` | `POST /api/v1/chat`（non-stream fallback） / `POST /api/v1/chat/stream`（typed SSE: metadata → chunk* → done、失敗時 error 終端）。`ButlyRuntime` へ委譲する transport adapter |
@@ -794,15 +807,24 @@ xAI (Grok) の `OpenAICompatAdapter` シム。OpenAI SDK + `base_url="https://ap
 ### `butly_core/prompts/__init__.py`（`PromptLoader` クラス）
 `control/` と `locales/` の 2 種類のプロンプトを統一インターフェースで提供する。
 
-**解決優先順位:**
+**解決規則:**
 ```
-user_prompts.json (ユーザーオーバーライド)
-  → control/{name}.txt (機能プロンプト、英語固定)
-  → locales/{locale}/{name}.txt (人格プロンプト)
-  → locales/en/{name}.txt (言語フォールバック)
+control prompt:
+  control/{name}.txt (英語固定、ユーザーオーバーライド対象外)
+
+localized prompt:
+  user_prompts.json (allow_user_overrides=True の場合)
+    → locales/{locale}/{name}.txt
+    → locales/en/{name}.txt (言語フォールバック)
 ```
 
-- `PromptLoader(locale=None)` — locale 未指定時は SYSTEM_CONFIG の値を使用
+- `PromptLoader(locale=None, allow_user_overrides=True)` — locale 未指定時は
+  SYSTEM_CONFIG の値を使用。評価など再現性を優先する呼び出しは
+  `allow_user_overrides=False`でローカル上書きを無効化できる
+- `resolve_prompt_locale(instance_config)` — `agent_profile.locale`（旧
+  `agent.locale`）→ SYSTEM_CONFIG の順でlocaleを解決
+- `user_prompt_overrides_enabled(instance_config)` —
+  `prompts.allow_user_overrides`を解決（通常既定は`True`）
   - `get(name, **kwargs)` — プロンプトを取得し、`{変数}` を kwargs で展開して返す
   - `get_section_header(key)` — `section_headers.yaml` からセクションヘッダー文字列を取得
 

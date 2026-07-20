@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
+from pathlib import Path
+from typing import Literal, Optional
 
 from butly_core.chat.types import ChatRequest
 from butly_core.runtime import ButlyRuntime
@@ -44,13 +45,21 @@ class QARunner:
         runtime: ButlyRuntime,
         workspace: EvaluationWorkspace,
         *,
+        qa_mode: Literal["independent", "sequential"],
         model_name: Optional[str] = None,
         connection: Optional[str] = None,
+        instances_dir: Optional[Path] = None,
     ):
         self.runtime = runtime
         self.workspace = workspace
         self.model_name = model_name
         self.connection = connection
+        self.instances_dir = (
+            Path(instances_dir)
+            if instances_dir is not None
+            else workspace.instances_dir
+        )
+        self.qa_mode = qa_mode
         self.log_path = workspace.results_dir / "qa_results.jsonl"
 
     async def run(
@@ -70,11 +79,12 @@ class QARunner:
         response = await self.runtime.chat(request)
         latency_ms = int((time.perf_counter() - started) * 1000)
 
-        instance_dir = self.workspace.instances_dir / instance_name
+        instance_dir = self.instances_dir / instance_name
         copied_trace = copy_latest_trace(
             instance_dir,
             self.workspace.traces_dir,
             question.question_id,
+            sample_id=sample_id,
         )
         if copied_trace is None:
             raise RuntimeError(
@@ -93,6 +103,7 @@ class QARunner:
             "run_id": self.workspace.run_id,
             "sample_id": sample_id,
             "instance_name": instance_name,
+            "qa_mode": self.qa_mode,
             "question_id": question.question_id,
             "question": question.question,
             "expected_answer": question.answer,

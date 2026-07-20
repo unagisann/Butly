@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .config import ReplayConfig
+from .config import ReplayConfig, SUPPORTED_EVALUATION_LOCALES
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,9 +22,38 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--output-dir", type=Path, required=True)
     run_parser.add_argument("--run-id")
     run_parser.add_argument("--sample-ids", nargs="*", default=[])
-    run_parser.add_argument("--sample-limit", type=int, default=1)
-    run_parser.add_argument("--session-limit", type=int)
-    run_parser.add_argument("--question-limit", type=int, default=1)
+    sample_group = run_parser.add_mutually_exclusive_group()
+    sample_group.add_argument("--sample-limit", type=_positive_int, default=1)
+    sample_group.add_argument(
+        "--all-samples",
+        action="store_true",
+        help="Evaluate every selected LoCoMo sample",
+    )
+    session_group = run_parser.add_mutually_exclusive_group()
+    session_group.add_argument("--session-limit", type=_positive_int)
+    session_group.add_argument(
+        "--all-sessions",
+        action="store_true",
+        help="Replay every session (also the default when no limit is given)",
+    )
+    question_group = run_parser.add_mutually_exclusive_group()
+    question_group.add_argument("--question-limit", type=_positive_int, default=1)
+    question_group.add_argument(
+        "--all-questions",
+        action="store_true",
+        help="Answer every question in each selected sample",
+    )
+    run_parser.add_argument(
+        "--qa-mode",
+        choices=("independent", "sequential"),
+        default="independent",
+        help="Reset to the post-Sleeptime state for each QA, or keep QA history",
+    )
+    run_parser.add_argument(
+        "--locale",
+        choices=SUPPORTED_EVALUATION_LOCALES,
+        help="Evaluation prompt locale (overrides profile locale; default: en)",
+    )
     run_parser.add_argument("--model-name")
     run_parser.add_argument("--connection")
     run_parser.add_argument("--profile", type=Path)
@@ -73,23 +102,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 
 def _command_run(args: argparse.Namespace) -> int:
-    config = ReplayConfig(
+    config = _replay_config_from_args(args)
+    from .replay import run_evaluation
+
+    result = asyncio.run(run_evaluation(config))
+    return _finish(result, dataset=args.dataset, skip_scoring=args.skip_scoring)
+
+
+def _replay_config_from_args(args: argparse.Namespace) -> ReplayConfig:
+    return ReplayConfig(
         dataset_path=args.dataset,
         output_dir=args.output_dir,
         run_id=args.run_id,
         sample_ids=tuple(args.sample_ids),
-        sample_limit=args.sample_limit,
-        session_limit=args.session_limit,
-        question_limit=args.question_limit,
+        sample_limit=None if args.all_samples else args.sample_limit,
+        session_limit=None if args.all_sessions else args.session_limit,
+        question_limit=None if args.all_questions else args.question_limit,
+        qa_mode=args.qa_mode,
+        locale=args.locale,
         model_name=args.model_name,
         connection=args.connection,
         profile_path=args.profile,
         clean=args.clean,
     )
-    from .replay import run_evaluation
-
-    result = asyncio.run(run_evaluation(config))
-    return _finish(result, dataset=args.dataset, skip_scoring=args.skip_scoring)
 
 
 def _command_resume(args: argparse.Namespace) -> int:
@@ -148,6 +183,16 @@ def _finish(result, *, dataset: Path, skip_scoring: bool) -> int:
         payload["summary_path"] = str(summary_path)
     print(json.dumps(payload, ensure_ascii=False))
     return 0
+
+
+def _positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("expected a positive integer")
+    return parsed
 
 
 if __name__ == "__main__":

@@ -669,21 +669,25 @@ embedding:
 python -m evals.locomo.cli run \
   --dataset data/locomo10.json \
   --profile evals/locomo/profiles/full_local.yaml \
+  --qa-mode independent \
+  --locale en \
   --sample-limit 1 \
   --session-limit 3 \
   --question-limit 10 \
-  --run-sleeptime-per-session \
   --output-dir /content/drive/MyDrive/butly-evals
 ```
 
-全セッション・全質問:
+全LoCoMo（全sample・全session・全question）:
 
 ```bash
 python -m evals.locomo.cli run \
   --dataset data/locomo10.json \
   --profile evals/locomo/profiles/full_local.yaml \
-  --sample-ids conv-0 \
-  --run-sleeptime-per-session \
+  --qa-mode independent \
+  --locale en \
+  --all-samples \
+  --all-sessions \
+  --all-questions \
   --output-dir ./eval_runs
 ```
 
@@ -880,14 +884,21 @@ Butly側から既存のOpenAI互換Connectionとして利用できる方式を�
 * `replay.py`に`resume_evaluation(run_dir)`を追加。`run_config.json`から
   `ReplayConfig`を復元し、checkpointの続きから実行（resume時は`clean`を
   常に無効化）
-* CLI `resume --run-dir`を追加。QA書き込みとcheckpoint更新の間で落ちた
-  場合の重複レコードは採点時にquestion_id単位で最新を採用
+* CLI `resume --run-dir`を追加。独立QAは使い捨てcloneを再生成し、逐次QAは
+  各問直前のinstance・QA結果offset・Traceをdurable復元点へ保存する。
+  QA書き込みとcheckpoint更新の間で落ちた場合はresume時に未commit分を
+  rollbackしてから再実行する。採点時の`(sample_id, question_id)`単位の
+  最新レコード採用も旧artifact互換の防御として残す
 * `--profile <yaml>`対応: chat/gatekeeper/summary/knowledge/embeddingの
   ロール別セクションを評価インスタンスconfigへ適用。
   `profiles/full_local.example.yaml` / `fixed_memory_models.example.yaml`を同梱
+* profile top-level `locale`とCLI `--locale`に対応（CLI > profile > `en`）。
+  `--qa-mode independent|sequential`、sample/session/questionごとの
+  `--*-limit` / `--all-*`を追加
 * `colab/butly_locomo_eval.ipynb`: Driveマウント→clone→依存インストール→
   HFトークン→llama.cppサーバー起動→`colab_local` Connection登録→CLI実行→
-  resume→summary表示のみ。評価ロジックはNotebookに置かない
+  resume→summary表示のみ。ParametersセルでQA mode、locale、3軸の全件／
+  上限制御を選択し、評価ロジックはNotebookに置かない
 
 ### 完了条件
 
@@ -1054,10 +1065,17 @@ QAへの回答自体が次のQA用記憶へ保存されると、後続質問へ�
 
 推奨は、最終Replay完了時点のWorkspaceをQAごとに複製し、各質問を独立評価する方式である。
 
-Phase 2では既定を1問とする。`question_limit > 1`の場合は順次実行し、
-QAターンをSleeptimeへ投入しないが、先行QAはshort-termに残る。
-checkpoint/resumeはPhase 4で実装済み。QAごとのWorkspace複製のみ引き続き
-後続Phaseへ先送りする。
+現在は`--qa-mode independent`を既定とし、各QAを同じ最終Replay /
+post-Sleeptime状態から独立実行する。`--qa-mode sequential`では従来どおり
+先行QAをshort-termとsession stateへ残し、実運用の連続質問耐久を測る。
+どちらのmodeでもQAターンをSleeptimeへは投入しない。sample/session/question
+の各範囲は`--*-limit`と`--all-*`を排他的に選択し、全LoCoMo評価では3軸すべて
+の`--all-*`を明示する。localeはCLI、profile、英語既定値の順に解決し、
+checkpoint resumeでもrun開始時の値を維持する。localeはButly内部prompt /
+memory出力を選び、LoCoMo質問・正解は翻訳しない。公式Token F1との互換性を
+保つためQA回答も英語に固定する。日本語版ベンチマークには翻訳済みdatasetと
+日本語対応scorerを別途用意する。評価instanceでは再現性のためローカル
+`user_prompts.json` overrideを無効化する。
 
 ### 15.9 データセットのライセンス
 

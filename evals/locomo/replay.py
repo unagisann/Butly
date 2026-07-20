@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -22,11 +22,26 @@ from .checkpoint import (
     STATUS_REPLAYING,
     Checkpoint,
 )
-from .config import ReplayConfig, load_profile
+from .config import (
+    EvaluationProfile,
+    ReplayConfig,
+    load_profile,
+    resolve_evaluation_locale,
+)
 from .dataset import LocomoConversation, load_dataset
 from .qa_runner import QARunner
 from .sleeptime_runner import SleeptimeRunner
-from .workspace import EvaluationWorkspace
+from .workspace import (
+    EvaluationWorkspace,
+    IndependentQAWorkspace,
+    SequentialQARecoveryPoint,
+)
+
+
+_CANONICAL_SAMPLE_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_SAFE_INSTANCE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
+_MAX_READABLE_SLUG_LENGTH = 96
+_MAX_LEGACY_INSTANCE_NAME_LENGTH = 180
 
 
 @dataclass(frozen=True)
@@ -40,6 +55,7 @@ class EvaluationRunResult:
 
 async def run_evaluation(config: ReplayConfig) -> EvaluationRunResult:
     """Start a fresh run without importing any HTTP or UI layer."""
+    config, profile = _resolve_config_and_profile(config)
     conversations = _select_conversations(load_dataset(config.dataset_path), config)
     workspace = EvaluationWorkspace.create(
         config.output_dir,
@@ -49,7 +65,7 @@ async def run_evaluation(config: ReplayConfig) -> EvaluationRunResult:
     workspace.assert_isolated()
     _write_run_metadata(workspace, config, conversations)
     checkpoint = Checkpoint.create(workspace.run_id, workspace.checkpoints_dir)
-    return await _execute(workspace, config, conversations, checkpoint)
+    return await _execute(workspace, config, conversations, checkpoint, profile)
 
 
 async def resume_evaluation(run_dir: Path) -> EvaluationRunResult:
@@ -59,9 +75,10 @@ async def resume_evaluation(run_dir: Path) -> EvaluationRunResult:
         workspace.run_config_path.read_text(encoding="utf-8")
     )
     config = ReplayConfig.from_json_dict(run_config)
+    config, profile = _resolve_config_and_profile(config)
     conversations = _select_conversations(load_dataset(config.dataset_path), config)
     checkpoint = Checkpoint.load(workspace.run_id, workspace.checkpoints_dir)
-    return await _execute(workspace, config, conversations, checkpoint)
+    return await _execute(workspace, config, conversations, checkpoint, profile)
 
 
 async def _execute(
@@ -69,32 +86,30 @@ async def _execute(
     config: ReplayConfig,
     conversations: list[LocomoConversation],
     checkpoint: Checkpoint,
+    profile: Optional[EvaluationProfile],
 ) -> EvaluationRunResult:
-    profile = (
-        load_profile(config.profile_path)
-        if config.profile_path is not None
-        else None
-    )
+    instance_names_by_sample = _resolve_instance_names(conversations, checkpoint)
     runtime = workspace.create_runtime()
     sleeptime_runner = SleeptimeRunner(
         workspace.create_sleeptime(),
         run_id=workspace.run_id,
         log_path=workspace.results_dir / "sleeptime_log.jsonl",
     )
-    qa_runner = QARunner(
-        runtime,
-        workspace,
-        model_name=config.model_name,
-        connection=config.connection,
-    )
-
     instance_names = []
     replayed_sessions = 0
     answered_questions = 0
     for conversation in conversations:
-        instance_name = _instance_name(conversation.sample_id)
+        instance_name = instance_names_by_sample[conversation.sample_id]
         instance_names.append(instance_name)
         progress = checkpoint.progress_for(conversation.sample_id, instance_name)
+        sequential_recovery = SequentialQARecoveryPoint(
+            workspace,
+            sample_id=conversation.sample_id,
+            instance_name=instance_name,
+        )
+        sequential_recovery.reconcile(
+            checkpoint_qa_completed=progress.qa_completed
+        )
         if not (workspace.instances_dir / instance_name).exists():
             _create_instance(runtime, conversation, instance_name, config, profile)
         components = runtime.get_instance_components(instance_name)
@@ -150,17 +165,55 @@ async def _execute(
             reference = max(s.timestamp for s in sessions) + timedelta(days=1)
             os.environ[CHRONOS_NOW_ENV] = reference.isoformat()
         try:
-            for index, question in enumerate(questions):
-                if index < progress.qa_completed:
-                    continue
-                await qa_runner.run(
-                    sample_id=conversation.sample_id,
-                    instance_name=instance_name,
-                    question=question,
+            if config.qa_mode == "independent" and (
+                len(questions) > progress.qa_completed
+            ):
+                canonical_dir = workspace.instances_dir / instance_name
+                with IndependentQAWorkspace(canonical_dir) as qa_workspace:
+                    for index, question in enumerate(questions):
+                        if index < progress.qa_completed:
+                            continue
+                        qa_workspace.reset()
+                        qa_runner = QARunner(
+                            qa_workspace.create_runtime(),
+                            workspace,
+                            model_name=config.model_name,
+                            connection=config.connection,
+                            instances_dir=qa_workspace.instances_dir,
+                            qa_mode=config.qa_mode,
+                        )
+                        await qa_runner.run(
+                            sample_id=conversation.sample_id,
+                            instance_name=instance_name,
+                            question=question,
+                        )
+                        progress.qa_completed = index + 1
+                        checkpoint.save()
+                        answered_questions += 1
+            elif config.qa_mode == "sequential":
+                qa_runner = QARunner(
+                    runtime,
+                    workspace,
+                    model_name=config.model_name,
+                    connection=config.connection,
+                    qa_mode=config.qa_mode,
                 )
-                progress.qa_completed = index + 1
-                checkpoint.save()
-                answered_questions += 1
+                for index, question in enumerate(questions):
+                    if index < progress.qa_completed:
+                        continue
+                    sequential_recovery.begin(
+                        question_index=index,
+                        question_id=question.question_id,
+                    )
+                    await qa_runner.run(
+                        sample_id=conversation.sample_id,
+                        instance_name=instance_name,
+                        question=question,
+                    )
+                    progress.qa_completed = index + 1
+                    checkpoint.save()
+                    sequential_recovery.clear()
+                    answered_questions += 1
         finally:
             if prev_now is None:
                 os.environ.pop(CHRONOS_NOW_ENV, None)
@@ -275,7 +328,7 @@ def _create_instance(
     conversation,
     instance_name,
     config,
-    profile: Optional[dict] = None,
+    profile: Optional[EvaluationProfile] = None,
 ) -> None:
     # 公式LoCoMoプロトコルに合わせ短答を指示する。公式F1は正規化トークンの
     # 重複で採点するため、説明的な長文は正解を含んでいてもprecisionが潰れる。
@@ -284,6 +337,8 @@ def _create_instance(
     template = (
         f"You are {conversation.speaker_b}, a conversational companion. "
         "Answer evaluation questions from the memories available to you. "
+        "Answer in English, matching the language of the official LoCoMo "
+        "questions and reference answers. "
         "Answer as briefly as possible: give only the fact asked for, such as "
         "a date, a name, or a short phrase, with no explanation or context. "
         "Write dates in natural format such as '7 May 2023' (day month year), "
@@ -294,7 +349,10 @@ def _create_instance(
     success, message = runtime.instance_manager.create_instance(
         instance_name,
         template,
-        agent_profile={"ai_name": conversation.speaker_b, "locale": "en"},
+        agent_profile={
+            "ai_name": conversation.speaker_b,
+            "locale": config.locale or "en",
+        },
         user_profile={
             "user_name": conversation.speaker_a,
             "preferred_call": conversation.speaker_a,
@@ -315,8 +373,9 @@ def _create_instance(
         }
     )
     if profile:
-        for section, overrides in profile.items():
+        for section, overrides in profile.sections.items():
             instance_config.setdefault(section, {}).update(overrides)
+    instance_config.setdefault("prompts", {})["allow_user_overrides"] = False
     if config.model_name is not None:
         instance_config.setdefault("chat", {})["model_name"] = config.model_name
     if config.connection is not None:
@@ -337,7 +396,7 @@ def _write_run_metadata(
 ) -> None:
     workspace.write_run_config(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "created_at": datetime.now(timezone.utc).isoformat(),
             **config.to_json_dict(),
             "selected_sample_ids": [item.sample_id for item in conversations],
@@ -371,8 +430,73 @@ def _write_run_metadata(
     )
 
 
+def _resolve_config_and_profile(
+    config: ReplayConfig,
+) -> tuple[ReplayConfig, Optional[EvaluationProfile]]:
+    profile = (
+        load_profile(config.profile_path)
+        if config.profile_path is not None
+        else None
+    )
+    locale = resolve_evaluation_locale(
+        config.locale,
+        profile.locale if profile is not None else None,
+    )
+    return replace(config, locale=locale), profile
+
+
 def _instance_name(sample_id: str) -> str:
+    """Build a readable, deterministic instance name without slug collisions.
+
+    Existing lowercase kebab-case IDs retain their historical names so normal
+    runs and their checkpoints keep working. IDs whose spelling would lose
+    information during slugging get an explicit hash namespace instead.
+    """
+    if not isinstance(sample_id, str) or not sample_id:
+        raise ValueError(f"Invalid sample_id for instance name: {sample_id!r}")
+
     slug = re.sub(r"[^A-Za-z0-9]+", "_", sample_id).strip("_").lower()
-    if not slug:
-        raise ValueError(f"sample_id cannot form an instance name: {sample_id!r}")
-    return f"locomo_{slug}"
+    legacy_name = f"locomo_{slug}"
+    if (
+        _CANONICAL_SAMPLE_ID.fullmatch(sample_id)
+        and len(legacy_name) <= _MAX_LEGACY_INSTANCE_NAME_LENGTH
+    ):
+        return legacy_name
+
+    readable_slug = slug[:_MAX_READABLE_SLUG_LENGTH].rstrip("_") or "sample"
+    digest = hashlib.sha256(sample_id.encode("utf-8")).hexdigest()
+    return f"locomo_{readable_slug}__{digest}"
+
+
+def _resolve_instance_names(
+    conversations: list[LocomoConversation],
+    checkpoint: Checkpoint,
+) -> dict[str, str]:
+    """Resolve names up front and reject corrupt/ambiguous run mappings."""
+    resolved: dict[str, str] = {}
+    owners: dict[str, str] = {}
+    for conversation in conversations:
+        sample_id = conversation.sample_id
+        previous = checkpoint.samples.get(sample_id)
+        instance_name = (
+            previous.instance_name
+            if previous is not None
+            else _instance_name(sample_id)
+        )
+        if not _SAFE_INSTANCE_NAME.fullmatch(instance_name):
+            raise ValueError(
+                "Invalid LoCoMo instance name "
+                f"{instance_name!r} for sample_id {sample_id!r}; "
+                "the checkpoint may be corrupt"
+            )
+        existing_owner = owners.get(instance_name)
+        if existing_owner is not None and existing_owner != sample_id:
+            raise ValueError(
+                "LoCoMo instance-name collision: sample_ids "
+                f"{existing_owner!r} and {sample_id!r} both resolve to "
+                f"{instance_name!r}. Start a clean run or repair the "
+                "checkpoint before resuming."
+            )
+        owners[instance_name] = sample_id
+        resolved[sample_id] = instance_name
+    return resolved

@@ -121,7 +121,7 @@ class GeminiProvider(BaseProvider):
     def summarize(self, conversation_text: str, config: dict) -> str:
         """会話ログの要約を生成する。"""
         from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
-        from butly_core.prompts import PromptLoader
+        from butly_core.prompts import PromptLoader, resolve_prompt_locale
 
         # config から model_name / temperature を取得（brain.summarize_conversation がマージ済み）
         model_name = config.get("model_name", AI_CONFIG["summary"]["model_name"])
@@ -134,10 +134,18 @@ class GeminiProvider(BaseProvider):
         )
         safety_settings = AI_CONFIG["summary"].get("safety_settings")
 
-        loader = PromptLoader()
+        locale = config.get("locale") or resolve_prompt_locale()
+        loader = PromptLoader(
+            locale=locale,
+            allow_user_overrides=config.get(
+                "allow_user_prompt_overrides",
+                True,
+            ),
+        )
+        agent_name = config.get("agent_name") or SYSTEM_CONFIG["agent"]["agent_name"]
         prompt = loader.get(
             "brain_summarize_conversation",
-            agent_name=SYSTEM_CONFIG["agent"]["agent_name"],
+            agent_name=agent_name,
             char_limit=char_limit,
             conversation_text=conversation_text,
         )
@@ -152,9 +160,13 @@ class GeminiProvider(BaseProvider):
                 ),
             )
             self._set_last_token_usage(_extract_gemini_usage(response))
-            return response.text.strip() if response.text else "要約なし"
+            if response.text:
+                return response.text.strip()
+            return "No summary" if locale != "ja" else "要約なし"
         except Exception as e:
             print(f"[GeminiProvider] Summarize Error: {e}")
+            if locale != "ja":
+                return "(Failed to create summary)"
             return "（要約作成に失敗）"
 
     def embed(self, text: str, config: Optional[dict] = None) -> Optional[List[float]]:

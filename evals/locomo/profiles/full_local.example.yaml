@@ -11,6 +11,12 @@
 # Question answered by this profile: "can this model run all of Butly?"
 name: full_local
 
+# Internal prompt/memory locale. CLI --locale takes precedence; omitted values
+# default to English. Official LoCoMo QA answers remain English for scoring.
+# This is kept in the profile so the prompt choice is reproducible without
+# relying on the machine-wide Butly locale.
+locale: en
+
 chat:
   connection: colab_local
   model_name: qwen3-14b

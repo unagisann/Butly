@@ -3,18 +3,22 @@
 import asyncio
 import json
 import os
+import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from butly_core.chat.types import ChatResponse
-from evals.locomo.checkpoint import Checkpoint
+from evals.locomo.checkpoint import STATUS_QA, Checkpoint
 from evals.locomo.cli import main as cli_main
 from evals.locomo.config import ReplayConfig
-from evals.locomo.qa_runner import build_qa_request
+from evals.locomo.dataset import LocomoConversation
+from evals.locomo.qa_runner import QARunner, build_qa_request
 from evals.locomo.replay import (
     _discard_partial_session,
+    _instance_name,
+    _resolve_instance_names,
     resume_evaluation,
     run_evaluation,
 )
@@ -114,6 +118,61 @@ def test_build_qa_request_disables_external_search():
     assert request.source == "api"
 
 
+def _empty_conversation(sample_id: str) -> LocomoConversation:
+    return LocomoConversation(
+        sample_id=sample_id,
+        speaker_a="Alex",
+        speaker_b="Maya",
+        sessions=[],
+        questions=[],
+    )
+
+
+def test_instance_name_preserves_normal_ids_and_disambiguates_lossy_slugs():
+    legacy = _instance_name("synthetic-conv-1")
+    underscore = _instance_name("synthetic_conv_1")
+    punctuation = _instance_name("synthetic?conv?1")
+
+    assert legacy == "locomo_synthetic_conv_1"
+    assert underscore.startswith("locomo_synthetic_conv_1__")
+    assert punctuation.startswith("locomo_synthetic_conv_1__")
+    assert len({legacy, underscore, punctuation}) == 3
+    assert _instance_name("synthetic_conv_1") == underscore
+    assert _instance_name("日本語").startswith("locomo_sample__")
+
+
+def test_resolve_instance_names_reuses_legacy_checkpoint_mapping(tmp_path):
+    checkpoint = Checkpoint.create("legacy", tmp_path)
+    checkpoint.progress_for("conv_1", "locomo_conv_1")
+
+    resolved = _resolve_instance_names(
+        [_empty_conversation("conv_1")],
+        checkpoint,
+    )
+
+    assert resolved == {"conv_1": "locomo_conv_1"}
+
+
+def test_resolve_instance_names_rejects_checkpoint_collision(tmp_path):
+    checkpoint = Checkpoint.create("colliding", tmp_path)
+    checkpoint.progress_for("conv-1", "locomo_shared")
+    checkpoint.progress_for("conv_1", "locomo_shared")
+
+    with pytest.raises(ValueError, match="instance-name collision") as exc_info:
+        _resolve_instance_names(
+            [
+                _empty_conversation("conv-1"),
+                _empty_conversation("conv_1"),
+            ],
+            checkpoint,
+        )
+
+    message = str(exc_info.value)
+    assert "conv-1" in message
+    assert "conv_1" in message
+    assert "locomo_shared" in message
+
+
 def test_replay_sleeptime_qa_and_jsonl_outputs(tmp_path):
     fake_provider = FakeProvider()
     config = ReplayConfig(
@@ -147,6 +206,7 @@ def test_replay_sleeptime_qa_and_jsonl_outputs(tmp_path):
     assert sum(row["knowledge_cards_created"] for row in sleeptime_rows) == 2
 
     assert len(qa_rows) == 1
+    assert qa_rows[0]["qa_mode"] == "independent"
     assert qa_rows[0]["prediction"] == (
         "Maya planned a blue mug and an herb planter."
     )
@@ -157,11 +217,13 @@ def test_replay_sleeptime_qa_and_jsonl_outputs(tmp_path):
 
     trace_path = workspace.run_dir / qa_rows[0]["trace_path"]
     assert trace_path.is_file()
+    assert trace_path.parent.name == "synthetic-conv-1"
     trace = json.loads(trace_path.read_text(encoding="utf-8"))
     assert trace["nodes"]
 
     instance_dir = workspace.instances_dir / "locomo_synthetic_conv_1"
     assert (instance_dir / "butly_memory.db").is_file()
+    assert list((instance_dir / "short_term_json").glob("*.json")) == []
     snapshot_root = workspace.snapshots_dir / instance_dir.name / "session_1"
     assert (snapshot_root / "before_sleeptime").is_dir()
     assert (snapshot_root / "after_sleeptime").is_dir()
@@ -233,8 +295,8 @@ def test_resume_after_interruption_does_not_reingest(tmp_path):
     )
     expected_turn_files = sum(row["saved_turn_count"] for row in replay_rows)
     assert total_turn_files == expected_turn_files
-    # QA answers legitimately land in short-term (plan §15.8); no replayed
-    # LoCoMo turn may remain there after both sleeptime passes.
+    # Independent QA runs in disposable clones, so the canonical instance keeps
+    # neither QA turns nor replay turns after both Sleeptime passes.
     leftover_replay_turns = [
         f
         for f in (instance_dir / "short_term_json").glob("*.json")
@@ -311,6 +373,7 @@ def test_cli_run_scores_reports_and_applies_profile(tmp_path, capsys):
     profile_path = tmp_path / "profile.yaml"
     profile_path.write_text(
         "name: test_profile\n"
+        "locale: ja\n"
         "chat:\n"
         "  connection: fake_conn\n"
         "  model_name: fake-chat\n"
@@ -336,6 +399,8 @@ def test_cli_run_scores_reports_and_applies_profile(tmp_path, capsys):
                 "1",
                 "--question-limit",
                 "2",
+                "--locale",
+                "en",
                 "--profile",
                 str(profile_path),
             ]
@@ -366,3 +431,254 @@ def test_cli_run_scores_reports_and_applies_profile(tmp_path, capsys):
     assert instance_config["chat"]["model_name"] == "fake-chat"
     assert instance_config["chat"]["connection"] == "fake_conn"
     assert instance_config["knowledge"]["model_name"] == "fake-knowledge"
+    assert instance_config["agent_profile"]["locale"] == "en"
+    assert instance_config["prompts"]["allow_user_overrides"] is False
+    system_instruction = (
+        run_dir
+        / "workspace"
+        / "butly_core"
+        / "instances"
+        / "locomo_synthetic_conv_1"
+        / "system_instruction.txt"
+    ).read_text(encoding="utf-8")
+    assert "Answer in English" in system_instruction
+
+    run_config = json.loads(
+        (run_dir / "run_config.json").read_text(encoding="utf-8")
+    )
+    assert run_config["locale"] == "en"
+    assert run_config["qa_mode"] == "independent"
+
+
+def test_independent_all_questions_reset_history_and_keep_canonical_clean(tmp_path):
+    fake_provider = FakeProvider()
+    config = ReplayConfig(
+        dataset_path=FIXTURE,
+        output_dir=tmp_path,
+        run_id="independent-all",
+        sample_limit=1,
+        session_limit=1,
+        question_limit=None,
+        qa_mode="independent",
+    )
+
+    with patch(
+        "butly_core.llm.factory.ProviderFactory.create",
+        return_value=fake_provider,
+    ), patch("sleeptime.time.sleep", return_value=None):
+        result = asyncio.run(run_evaluation(config))
+
+    qa_rows = _read_jsonl(result.workspace.results_dir / "qa_results.jsonl")
+    assert len(qa_rows) == 5
+    assert all(row["qa_mode"] == "independent" for row in qa_rows)
+    baseline_history = fake_provider.generate_contexts[0]["history"]
+    assert baseline_history
+    assert all(
+        context["history"] == baseline_history
+        for context in fake_provider.generate_contexts
+    )
+    assert all(
+        "What two pottery projects did Maya plan to make?"
+        not in json.dumps(context["history"], ensure_ascii=False)
+        for context in fake_provider.generate_contexts
+    )
+
+    canonical = (
+        result.workspace.instances_dir / "locomo_synthetic_conv_1"
+    )
+    assert list((canonical / "short_term_json").glob("*.json")) == []
+    assert not (canonical / "traces").exists()
+    assert not (canonical / "session_state.json").exists()
+    with sqlite3.connect(canonical / "butly_memory.db") as connection:
+        usage_total = connection.execute(
+            "SELECT COALESCE(SUM(usage_count), 0) FROM knowledge_cards"
+        ).fetchone()[0]
+    assert usage_total == 0
+
+
+def test_sequential_mode_keeps_prior_qa_in_history(tmp_path):
+    fake_provider = FakeProvider()
+    config = ReplayConfig(
+        dataset_path=FIXTURE,
+        output_dir=tmp_path,
+        run_id="sequential-two",
+        sample_limit=1,
+        session_limit=1,
+        question_limit=2,
+        qa_mode="sequential",
+    )
+
+    with patch(
+        "butly_core.llm.factory.ProviderFactory.create",
+        return_value=fake_provider,
+    ), patch("sleeptime.time.sleep", return_value=None):
+        result = asyncio.run(run_evaluation(config))
+
+    first_history = json.dumps(
+        fake_provider.generate_contexts[0]["history"],
+        ensure_ascii=False,
+    )
+    second_history = json.dumps(
+        fake_provider.generate_contexts[1]["history"],
+        ensure_ascii=False,
+    )
+    assert "What two pottery projects did Maya plan to make?" not in first_history
+    assert "What two pottery projects did Maya plan to make?" in second_history
+    qa_rows = _read_jsonl(result.workspace.results_dir / "qa_results.jsonl")
+    assert [row["qa_mode"] for row in qa_rows] == ["sequential", "sequential"]
+    canonical = result.workspace.instances_dir / "locomo_synthetic_conv_1"
+    assert len(list((canonical / "short_term_json").glob("*.json"))) == 2
+
+
+def test_independent_qa_resume_rebuilds_disposable_clone(tmp_path):
+    fake_provider = FakeProvider()
+    config = ReplayConfig(
+        dataset_path=FIXTURE,
+        output_dir=tmp_path,
+        run_id="independent-resume",
+        sample_limit=1,
+        session_limit=1,
+        question_limit=2,
+        qa_mode="independent",
+    )
+    original_run = QARunner.run
+    calls = {"count": 0}
+
+    async def flaky_run(self, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            raise RuntimeError("injected QA interruption")
+        return await original_run(self, **kwargs)
+
+    with patch(
+        "butly_core.llm.factory.ProviderFactory.create",
+        return_value=fake_provider,
+    ), patch("sleeptime.time.sleep", return_value=None):
+        with patch.object(QARunner, "run", flaky_run):
+            with pytest.raises(RuntimeError, match="QA interruption"):
+                asyncio.run(run_evaluation(config))
+
+        run_dir = tmp_path / "independent-resume"
+        interrupted = Checkpoint.load("independent-resume", run_dir / "checkpoints")
+        progress = interrupted.progress_for(
+            "synthetic-conv-1",
+            "locomo_synthetic_conv_1",
+        )
+        assert progress.qa_completed == 1
+        canonical = (
+            run_dir
+            / "workspace"
+            / "butly_core"
+            / "instances"
+            / "locomo_synthetic_conv_1"
+        )
+        assert list((canonical / "short_term_json").glob("*.json")) == []
+
+        result = asyncio.run(resume_evaluation(run_dir))
+
+    assert result.answered_questions == 1
+    qa_rows = _read_jsonl(result.workspace.results_dir / "qa_results.jsonl")
+    assert len(qa_rows) == 2
+    final = Checkpoint.load("independent-resume", result.workspace.checkpoints_dir)
+    assert final.progress_for(
+        "synthetic-conv-1",
+        "locomo_synthetic_conv_1",
+    ).qa_completed == 2
+
+
+def test_sequential_resume_rolls_back_qa_before_unwritten_checkpoint(tmp_path):
+    fake_provider = FakeProvider()
+    config = ReplayConfig(
+        dataset_path=FIXTURE,
+        output_dir=tmp_path,
+        run_id="sequential-crash-window",
+        sample_limit=1,
+        session_limit=1,
+        question_limit=2,
+        qa_mode="sequential",
+    )
+    original_save = Checkpoint.save
+    interruption = {"raised": False}
+
+    def fail_first_qa_commit(self):
+        progress = self.samples.get("synthetic-conv-1")
+        if (
+            self.status == STATUS_QA
+            and progress is not None
+            and progress.qa_completed == 1
+            and not interruption["raised"]
+        ):
+            interruption["raised"] = True
+            raise RuntimeError("injected checkpoint interruption")
+        return original_save(self)
+
+    with patch(
+        "butly_core.llm.factory.ProviderFactory.create",
+        return_value=fake_provider,
+    ), patch("sleeptime.time.sleep", return_value=None):
+        with patch.object(Checkpoint, "save", fail_first_qa_commit):
+            with pytest.raises(RuntimeError, match="checkpoint interruption"):
+                asyncio.run(run_evaluation(config))
+
+        run_dir = tmp_path / "sequential-crash-window"
+        interrupted = Checkpoint.load(
+            "sequential-crash-window",
+            run_dir / "checkpoints",
+        )
+        progress = interrupted.progress_for(
+            "synthetic-conv-1",
+            "locomo_synthetic_conv_1",
+        )
+        assert progress.qa_completed == 0
+
+        canonical = (
+            run_dir
+            / "workspace"
+            / "butly_core"
+            / "instances"
+            / "locomo_synthetic_conv_1"
+        )
+        assert len(list((canonical / "short_term_json").glob("*.json"))) == 1
+        assert len(_read_jsonl(run_dir / "results" / "qa_results.jsonl")) == 1
+        assert any(
+            (run_dir / "checkpoints" / "sequential_qa").iterdir()
+        )
+
+        result = asyncio.run(resume_evaluation(run_dir))
+
+    assert result.answered_questions == 2
+    qa_rows = _read_jsonl(result.workspace.results_dir / "qa_results.jsonl")
+    assert len(qa_rows) == 2
+    assert len({row["question_id"] for row in qa_rows}) == 2
+
+    first_question = "What two pottery projects did Maya plan to make?"
+    assert len(fake_provider.generate_contexts) == 3
+    retried_history = json.dumps(
+        fake_provider.generate_contexts[1]["history"],
+        ensure_ascii=False,
+    )
+    second_history = json.dumps(
+        fake_provider.generate_contexts[2]["history"],
+        ensure_ascii=False,
+    )
+    assert first_question not in retried_history
+    assert second_history.count(first_question) == 1
+
+    canonical = result.workspace.instances_dir / "locomo_synthetic_conv_1"
+    turn_files = list((canonical / "short_term_json").glob("*.json"))
+    assert len(turn_files) == 2
+    persisted_history = "\n".join(
+        turn_file.read_text(encoding="utf-8") for turn_file in turn_files
+    )
+    assert persisted_history.count(first_question) == 1
+    recovery_root = result.workspace.checkpoints_dir / "sequential_qa"
+    assert not recovery_root.exists() or not any(recovery_root.iterdir())
+
+    final = Checkpoint.load(
+        "sequential-crash-window",
+        result.workspace.checkpoints_dir,
+    )
+    assert final.progress_for(
+        "synthetic-conv-1",
+        "locomo_synthetic_conv_1",
+    ).qa_completed == 2

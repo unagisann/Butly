@@ -28,10 +28,30 @@ def _strip_legacy_time_line(text: str) -> str:
     return text
 
 
-def _format_relative_time(dt: datetime, now: datetime) -> str:
+def _format_relative_time(dt: datetime, now: datetime, locale: str = "ja") -> str:
     """相対時間表現を返す。Sleeptime は日次なので主に分/時間オーダー。"""
     delta = now - dt
     seconds = delta.total_seconds()
+    if locale != "ja":
+        if seconds < 60:
+            return "just now"
+        if seconds < 3600:
+            minutes = int(seconds // 60)
+            unit = "minute" if minutes == 1 else "minutes"
+            return f"about {minutes} {unit} ago"
+        if seconds < 86400:
+            hours = seconds / 3600
+            if hours < 2:
+                display_hours = f"{hours:.1f}"
+                unit = "hour" if display_hours == "1.0" else "hours"
+                return f"about {display_hours} {unit} ago"
+            whole_hours = int(hours)
+            unit = "hour" if whole_hours == 1 else "hours"
+            return f"about {whole_hours} {unit} ago"
+        days = int(seconds // 86400)
+        unit = "day" if days == 1 else "days"
+        return f"about {days} {unit} ago"
+
     if seconds < 60:
         return "たった今"
     if seconds < 3600:
@@ -589,6 +609,7 @@ class ButlyMemory:
         from datetime import datetime
 
         now = datetime.now()
+        locale = self.get_agent_profile().get("locale", "ja")
         combined = ""
 
         for file_path, label in [
@@ -620,7 +641,7 @@ class ButlyMemory:
                         file_dt = _parse_session_filename_timestamp(
                             summary_file.name
                         ) or datetime.fromtimestamp(summary_file.stat().st_mtime)
-                        rel = _format_relative_time(file_dt, now)
+                        rel = _format_relative_time(file_dt, now, locale=locale)
                         combined += f"--- {rel} ---\n{cleaned}\n\n"
             except Exception as e:
                 print(f"[Memory] Failed to read {label}: {e}")
@@ -658,6 +679,7 @@ class ButlyMemory:
         # "ルナ" のような架空のアシスタント名を補完してしまう (session digest 汚染の原因)。
         agent_profile = self.get_agent_profile()
         user_profile = self.get_user_profile()
+        locale = agent_profile.get("locale", "ja")
         agent_name = (agent_profile.get("ai_name") or "").strip() or SYSTEM_CONFIG[
             "agent"
         ].get("agent_name", "AI")
@@ -667,7 +689,11 @@ class ButlyMemory:
 
         # 先に全ファイルを読み、バッチ全体で複数話者かを判定する。
         # 1 ファイル = 1 ターンのため、ファイル単体では複数話者になり得ない。
-        from butly_core.core.turn_meta import has_multiple_speakers, user_label
+        from butly_core.core.turn_meta import (
+            has_multiple_speakers,
+            speaker_label,
+            user_label,
+        )
 
         loaded_files = []
         for json_file in overflow_files:
@@ -699,7 +725,14 @@ class ButlyMemory:
                     role = m.get("role", "unknown")
                     text = m.get("parts", [""])[0]
                     if role == "user":
-                        label = user_label(m, user_name, multi_speaker=multi_speaker)
+                        if locale == "ja":
+                            label = user_label(
+                                m,
+                                user_name,
+                                multi_speaker=multi_speaker,
+                            )
+                        else:
+                            label = speaker_label(m, user_name)
                     elif role in ("model", "assistant"):
                         label = agent_name
                     else:

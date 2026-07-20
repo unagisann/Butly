@@ -81,7 +81,11 @@ def _find_raw_file(instances_dir: Path, inst: str, date: str, name: str):
 
 
 def _render_file(
-    data: dict, user_name: str, agent_name: str, multi_speaker: bool
+    data: dict,
+    user_name: str,
+    agent_name: str,
+    multi_speaker: bool,
+    locale: str,
 ) -> str:
     ts = str(data.get("timestamp", "Unknown")).replace("T", " ").split(".")[0]
     lines = [f"--- {ts} ---"]
@@ -89,7 +93,12 @@ def _render_file(
         if not isinstance(msg, dict):
             continue
         if msg.get("role") == "user":
-            label = turn_meta.user_label(msg, user_name, multi_speaker=multi_speaker)
+            if locale == "ja":
+                label = turn_meta.user_label(
+                    msg, user_name, multi_speaker=multi_speaker
+                )
+            else:
+                label = turn_meta.speaker_label(msg, user_name)
         else:
             label = agent_name
         text = turn_meta.message_text(msg)
@@ -107,6 +116,7 @@ def resolve_raw_reference(
     max_chars: int,
     user_name: str = "User",
     agent_name: str = "AI",
+    locale: str = "ja",
 ):
     """候補カード群に対応する RAW 会話原文の抜粋を構築する。
 
@@ -162,12 +172,23 @@ def resolve_raw_reference(
     total = 0
     truncated = False
     for date, name, data in loaded:
-        text = _render_file(data, user_name, agent_name, multi_speaker)
+        text = _render_file(
+            data,
+            user_name,
+            agent_name,
+            multi_speaker,
+            locale,
+        )
         if not text:
             continue
         if max_chars > 0 and total + len(text) > max_chars:
             if not included:
-                text = text[:max_chars] + "\n…（文字数上限で省略）"
+                suffix = (
+                    "\n…（文字数上限で省略）"
+                    if locale == "ja"
+                    else "\n… (truncated at the character limit)"
+                )
+                text = text[:max_chars] + suffix
                 included.append((date, name, text))
                 total += len(text)
             truncated = True

@@ -46,6 +46,11 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         f"- Dataset: {run_config.get('dataset_path', 'unknown')}",
         f"- Chat model: {run_config.get('model_name') or 'default'}"
         f" (connection: {run_config.get('connection') or 'default'})",
+        f"- QA mode: {run_config.get('qa_mode', 'legacy/unknown')}",
+        f"- Prompt locale: {run_config.get('locale') or 'legacy/unknown'}",
+        f"- Scope: samples={_fmt_limit(run_config.get('sample_limit'))}, "
+        f"sessions={_fmt_limit(run_config.get('session_limit'))}, "
+        f"questions={_fmt_limit(run_config.get('question_limit'))}",
         f"- Errors recorded: {error_count} (see errors.jsonl)",
         "",
         "## Official-compatible scores",
@@ -188,6 +193,10 @@ def _fmt_distribution(distribution: Optional[dict]) -> str:
     if not distribution:
         return "n/a"
     return ", ".join(f"{key}={count}" for key, count in distribution.items())
+
+
+def _fmt_limit(value: Any) -> str:
+    return "all" if value is None else str(value)
 
 
 def _truncate(text: Any, limit: int = 300) -> str:

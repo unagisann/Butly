@@ -69,7 +69,7 @@ class Gatekeeper:
         recent_headlines = self._load_headlines(instance_dir)
 
         # A2. agent_name をインスタンス config から解決
-        agent_name = self._resolve_agent_name(instance_dir)
+        agent_name = self._resolve_agent_name(instance_dir, override_config)
 
         # B. ContextClassifier (LLM 呼び出し)
         instance_name = instance_dir.name if instance_dir else "00_master"
@@ -154,7 +154,7 @@ class Gatekeeper:
         dict
             state_delta: {"topic": str | None, "mood": str | None}
         """
-        agent_name = self._resolve_agent_name(instance_dir)
+        agent_name = self._resolve_agent_name(instance_dir, override_config)
         return self.state_updater.update(
             user_input,
             history_msgs,
@@ -183,14 +183,27 @@ class Gatekeeper:
         except Exception:
             return "(no recent headlines)"
 
-    def _resolve_agent_name(self, instance_dir: Path = None) -> str:
-        """instance_dir の config.json["agent"]["ai_name"] を読んで返す。見つからない場合は SYSTEM_CONFIG フォールバック。"""
+    def _resolve_agent_name(
+        self,
+        instance_dir: Path = None,
+        override_config: dict = None,
+    ) -> str:
+        """Resolve the AI name from the current instance profile."""
+        if isinstance(override_config, dict):
+            profile = override_config.get("agent_profile") or {}
+            legacy_agent = override_config.get("agent") or {}
+            name = profile.get("ai_name") or legacy_agent.get("ai_name")
+            if name:
+                return name
+
         if instance_dir:
             config_path = instance_dir / "config.json"
             if config_path.exists():
                 try:
                     cfg = json.loads(config_path.read_text(encoding="utf-8"))
-                    name = cfg.get("agent", {}).get("ai_name", "")
+                    profile = cfg.get("agent_profile") or {}
+                    legacy_agent = cfg.get("agent") or {}
+                    name = profile.get("ai_name") or legacy_agent.get("ai_name")
                     if name:
                         return name
                 except Exception:

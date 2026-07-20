@@ -361,6 +361,24 @@ class TestScoreRun:
         assert scores["question_count"] == 1
         assert scores["official"]["overall"] == pytest.approx(1.0)
 
+    def test_same_question_id_in_different_samples_is_not_deduplicated(
+        self,
+        tmp_path,
+    ):
+        rows = [
+            _qa_row("qa-1", sample_id="conv-a"),
+            _qa_row("qa-1", sample_id="conv-b"),
+        ]
+        run_dir = _write_run(tmp_path, rows)
+
+        scores = score_run(run_dir)
+
+        assert scores["question_count"] == 2
+        assert {row["sample_id"] for row in scores["questions"]} == {
+            "conv-a",
+            "conv-b",
+        }
+
     def test_evidence_coverage_none_without_workspace(self, tmp_path):
         """workspace が無い run では provenance を組めず None (n/a) になる"""
         run_dir = _write_run(tmp_path, [_qa_row("qa-1")])

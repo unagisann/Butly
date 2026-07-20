@@ -70,20 +70,96 @@ from the CC BY-NC 4.0 LoCoMo conversations.
 python -m evals.locomo.cli run \
   --dataset /path/to/locomo10.json \
   --output-dir ./eval_runs \
+  --qa-mode independent \
   --sample-limit 1 \
   --session-limit 2 \
-  --question-limit 1
+  --question-limit 1 \
+  --profile /path/to/profile.yaml
 ```
 
 `run` finishes with scoring and a summary; pass `--skip-scoring` to stop after
-QA. `--model-name` and `--connection` override the chat role for QA;
+QA. `--model-name` and `--connection` override the chat role for QA.
 `--profile <yaml>` applies role sections (`chat` / `gatekeeper` / `summary` /
 `knowledge` / `embedding`) plus the non-model `memory` section
 (e.g. `rag_source_mode: both` to inject original-conversation excerpts next to
 the RAG cards, `rag_raw_max_chars` to cap them) to the evaluation instance
-config — see `profiles/*.example.yaml`. Existing run directories are
-preserved; replacing one requires both the same `--run-id` and explicit
-`--clean`.
+config — see `profiles/*.example.yaml`.
+
+The default QA mode is `independent`. Each question starts from the same
+post-Sleeptime memory state, so an earlier evaluation answer cannot affect a
+later question. Use `--qa-mode sequential` for an operational endurance run in
+which QA turns intentionally remain in short-term memory and session state:
+
+```bash
+python -m evals.locomo.cli run \
+  --dataset /path/to/locomo10.json \
+  --output-dir ./eval_runs \
+  --qa-mode sequential \
+  --sample-limit 1 \
+  --all-sessions \
+  --question-limit 100
+```
+
+QA mode and dataset scope are independent settings. `--sample-limit`,
+`--session-limit`, and `--question-limit` select bounded subsets. Each has a
+mutually exclusive all-items form. A full LoCoMo run must select all three
+dimensions:
+
+```bash
+python -m evals.locomo.cli run \
+  --dataset /path/to/locomo10.json \
+  --output-dir ./eval_runs \
+  --qa-mode independent \
+  --all-samples \
+  --all-sessions \
+  --all-questions \
+  --profile /path/to/profile.yaml
+```
+
+The defaults remain one sample, all sessions, and one question. Explicit
+`--all-*` flags make full, potentially expensive runs visible in saved commands
+and Colab parameters.
+
+### Evaluation prompt locale
+
+The internal prompt and memory-output locale defaults to English. It can be
+stored in the profile:
+
+```yaml
+name: full_local
+locale: en
+
+chat:
+  connection: colab_local
+  model_name: qwen3-14b
+```
+
+or overridden for one CLI run with `--locale en` / `--locale ja`. Resolution
+order is:
+
+```text
+--locale > profile top-level locale > en
+```
+
+Locale selects Butly's internal localized prompts and memory-output language;
+it does not translate the LoCoMo dataset, questions, or gold answers. QA
+answers remain explicitly English to match the official LoCoMo questions,
+reference answers, and token-F1 scorer. A true Japanese benchmark therefore
+requires a separately translated dataset and Japanese-compatible scoring,
+rather than only `--locale ja`.
+Evaluation instances disable project-local `user_prompts.json` overrides so a
+machine-specific custom prompt cannot silently change the selected language or
+invalidate a cross-version comparison. Normal Butly instances retain their
+existing override behavior.
+
+The resolved locale is persisted in `run_config.json` and used again by
+`resume`. Keep locale, QA mode, scope, profile, model parameters, and the
+post-Sleeptime input fixed when comparing versions. Otherwise prompt-language
+changes, regenerated memory, and sequential QA history can all move the score
+independently of the code change being measured.
+
+Existing run directories are preserved; replacing one requires both the same
+`--run-id` and explicit `--clean`.
 
 ```bash
 # continue an interrupted run (skips completed sessions and questions)
@@ -97,14 +173,17 @@ python -m evals.locomo.cli report --run-dir ./eval_runs/<run-id>
 The checkpoint under `checkpoints/checkpoint.json` records replayed sessions,
 completed Sleeptime passes, and answered questions. A session interrupted
 mid-replay is discarded (its partly saved turns are removed by metadata match)
-and replayed in full, so resuming never double-ingests a conversation. If a
-crash lands between a QA write and its checkpoint update, the duplicate answer
-is deduplicated at scoring time (the newest record wins).
+and replayed in full, so resuming never double-ingests a conversation.
 
-The default is one question. When `--question-limit` is greater than one,
-questions run sequentially and their answers are not sent through Sleeptime,
-but earlier QA turns remain in short-term memory. Per-question workspace
-cloning is still deferred.
+In independent mode, interrupted questions are recreated from the same
+post-Sleeptime state before retrying. In sequential mode, the checkpoint keeps
+the cumulative QA conversation and resumes after the latest completed
+question. Before each sequential question, a durable recovery point captures
+the canonical instance, QA-result offset, and existing trace. If execution
+stops after writing the answer but before committing the checkpoint, `resume`
+rolls all three back before retrying, so the QA history is not duplicated.
+Scoring still applies last-write deduplication as a compatibility safeguard for
+older run artifacts. Neither mode sends QA turns through Sleeptime.
 
 ## Artifacts
 
@@ -114,10 +193,11 @@ cloning is still deferred.
   results/replay_log.jsonl
   results/sleeptime_log.jsonl
   results/qa_results.jsonl
-  traces/<question-id>.json
+  traces/<sample-id>/<question-id>.json
   snapshots/<instance>/<session>/before_sleeptime/
   snapshots/<instance>/<session>/after_sleeptime/
   checkpoints/checkpoint.json
+  checkpoints/sequential_qa/  # present only while a sequential QA is in flight
   run_config.json
   dataset_manifest.json
   environment.json
@@ -144,6 +224,8 @@ with artifacts on Drive, and after a runtime disconnect resumes via the
 Resume cell. llama.cpp is built fresh each session (Drive binary caching was
 removed after repeated shared-library breakage). The notebook must stay
 logic-free: anything beyond setup and CLI invocation belongs in this package.
+Its Parameters cell exposes QA mode, locale, and separate all/limit controls
+for samples, sessions, and questions.
 
 Profiles set a `connection` per role. Using a user-defined connection (e.g.
 `colab_local`) for every role exercises code paths that built-in providers
