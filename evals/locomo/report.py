@@ -115,6 +115,15 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         f"{_fmt(butly.get('prompt_tokens_mean'), digits=0)} / total "
         f"{_fmt(butly.get('prompt_tokens_total'), digits=0)}, completion total "
         f"{_fmt(butly.get('completion_tokens_total'), digits=0)}",
+        f"- Token usage per question, all QA-side calls: prompt mean "
+        f"{_fmt(butly.get('qa_all_calls_prompt_tokens_mean'), digits=0)} / total "
+        f"{_fmt(butly.get('qa_all_calls_prompt_tokens_total'), digits=0)}, "
+        f"completion total "
+        f"{_fmt(butly.get('qa_all_calls_completion_tokens_total'), digits=0)}",
+        f"- Sleeptime token usage: prompt total "
+        f"{_fmt(butly.get('sleeptime_prompt_tokens_total'), digits=0)}, "
+        f"completion total "
+        f"{_fmt(butly.get('sleeptime_completion_tokens_total'), digits=0)}",
         f"- Knowledge cards created by Sleeptime: "
         f"{butly.get('knowledge_cards_created', 0)}",
         f"- Sleeptime failures: {butly.get('sleeptime_failures', 0)}",

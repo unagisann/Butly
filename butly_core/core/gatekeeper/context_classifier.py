@@ -138,12 +138,15 @@ class ContextClassifier:
                 gk_config if gk_config.get("model_name") else model_name
             )
             raw_text = provider.classify(prompt, gk_config)
+            from butly_core.trace.collector import usage_metadata
+
             record_llm_call(
                 purpose="context_classifier",
                 model=model_name,
                 connection_id=gk_config.get("connection", ""),
                 duration_ms=int((time.time() - t0) * 1000),
                 prompt_chars=len(prompt),
+                metadata=usage_metadata(provider),
             )
         except Exception as e:
             print(f"[ContextClassifier] API呼び出しエラー: {e}")

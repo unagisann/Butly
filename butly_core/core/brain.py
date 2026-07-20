@@ -148,12 +148,15 @@ class ButlyBrain:
         try:
             provider = self._get_provider(embedding_conf)
             result = provider.embed(text, config=embedding_conf)
+            from butly_core.trace.collector import usage_metadata
+
             record_llm_call(
                 purpose="embedding",
                 model=embedding_conf.get("model_name", ""),
                 connection_id=embedding_conf.get("connection", ""),
                 duration_ms=int((time.time() - t0) * 1000),
                 prompt_chars=len(text) if text else 0,
+                metadata=usage_metadata(provider),
             )
             return result
         except Exception as e:
@@ -241,6 +244,8 @@ class ButlyBrain:
             finally:
                 # LLM 呼び出し自体の成否だけを記録する (後続の JSON パース失敗は
                 # 呼び出し失敗ではないため、ここで finally 記録する)
+                from butly_core.trace.collector import usage_metadata
+
                 record_llm_call(
                     purpose="keyword_extract",
                     model=chat_conf.get("model_name", ""),
@@ -248,6 +253,7 @@ class ButlyBrain:
                     duration_ms=int((time.time() - t0) * 1000),
                     prompt_chars=len(prompt),
                     error=call_error,
+                    metadata=usage_metadata(provider),
                 )
             text = text.strip() if text else ""
             print(f"[Brain] Raw Keyword Response: {text}")

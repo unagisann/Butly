@@ -272,3 +272,28 @@ class TestGenerateTokenUsage:
         result = adapter.generate("question", [], {"history": [], "rag_results": []})
 
         assert "token_usage" not in result.debug_info
+
+
+class TestClassifyTokenUsage:
+    def test_classify_sets_poppable_usage(self, mock_openai_client):
+        """classify 後に pop_last_token_usage で実測値を取り出せる（1回限り）"""
+        adapter = OpenAICompatAdapter(connection=get_connection("openai"))
+        _attach_client(adapter, mock_openai_client)
+
+        usage = MagicMock(spec=["prompt_tokens", "completion_tokens"])
+        usage.prompt_tokens = 800
+        usage.completion_tokens = 120
+        mock_openai_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content="ok"))],
+            usage=usage,
+        )
+
+        adapter.classify("prompt", {"model_name": "gpt-4o-mini"})
+        popped = adapter.pop_last_token_usage()
+        assert popped == {
+            "prompt_tokens": 800,
+            "completion_tokens": 120,
+            "source": "api",
+        }
+        # 1 スロット方式: 2 回目は None
+        assert adapter.pop_last_token_usage() is None

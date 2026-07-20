@@ -60,6 +60,61 @@ def get_collected() -> List[Dict[str, Any]]:
     return list(calls) if calls is not None else []
 
 
+def usage_metadata(provider) -> Optional[Dict[str, Any]]:
+    """provider の直近 API usage を record_llm_call の metadata 形式で返す。
+
+    呼び出し直後に使う（BaseProvider の 1 スロット方式に対応）。
+    usage が取れないときは None（metadata 自体を付けない）。
+    """
+    pop = getattr(provider, "pop_last_token_usage", None)
+    usage = pop() if callable(pop) else None
+    # モック等の非 dict 汚染に耐える（実 provider は dict か None を返す）
+    if not isinstance(usage, dict) or not usage:
+        return None
+    return {"token_usage": usage}
+
+
+def aggregate_token_usage(
+    calls: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """記録済み呼び出し全体の token usage を合算する。
+
+    Returns
+    -------
+    dict | None
+        {"prompt_tokens", "completion_tokens", "calls",
+         "by_purpose": {purpose: {...}}}。usage が 1 件も無ければ None。
+    """
+    total_prompt = 0
+    total_completion = 0
+    total_calls = 0
+    by_purpose: Dict[str, Dict[str, int]] = {}
+    for call in calls:
+        usage = (call.get("metadata") or {}).get("token_usage")
+        if not usage:
+            continue
+        prompt = usage.get("prompt_tokens") or 0
+        completion = usage.get("completion_tokens") or 0
+        total_prompt += prompt
+        total_completion += completion
+        total_calls += 1
+        bucket = by_purpose.setdefault(
+            call.get("purpose") or "unknown",
+            {"prompt_tokens": 0, "completion_tokens": 0, "calls": 0},
+        )
+        bucket["prompt_tokens"] += prompt
+        bucket["completion_tokens"] += completion
+        bucket["calls"] += 1
+    if total_calls == 0:
+        return None
+    return {
+        "prompt_tokens": total_prompt,
+        "completion_tokens": total_completion,
+        "calls": total_calls,
+        "by_purpose": by_purpose,
+    }
+
+
 def record_llm_call(
     *,
     purpose: str,
