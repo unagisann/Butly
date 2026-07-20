@@ -158,9 +158,9 @@ def _read_qa_results(run_path: Path) -> list[dict]:
         raise ScoringError(f"qa_results.jsonl is empty: {qa_path}")
     # Resume can append a question twice when interrupted between the QA write
     # and the checkpoint write; the newest record wins.
-    deduplicated: dict[str, dict] = {}
+    deduplicated: dict[tuple[str, str], dict] = {}
     for row in rows:
-        key = str(row.get("question_id"))
+        key = (str(row.get("sample_id")), str(row.get("question_id")))
         deduplicated[key] = row
     return list(deduplicated.values())
 

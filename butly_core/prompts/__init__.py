@@ -40,6 +40,40 @@ _LEGACY_KEY_MAP = {
 _REVERSE_LEGACY_MAP = {v: k for k, v in _LEGACY_KEY_MAP.items()}
 
 
+def resolve_prompt_locale(instance_config: Optional[dict] = None) -> str:
+    """Resolve prompt locale from an instance config, then the system default."""
+    config = instance_config if isinstance(instance_config, dict) else {}
+    agent_profile = config.get("agent_profile")
+    if isinstance(agent_profile, dict):
+        locale = agent_profile.get("locale")
+        if isinstance(locale, str) and locale.strip():
+            return locale.strip()
+
+    legacy_agent = config.get("agent")
+    if isinstance(legacy_agent, dict):
+        locale = legacy_agent.get("locale")
+        if isinstance(locale, str) and locale.strip():
+            return locale.strip()
+
+    try:
+        from butly_core.config import SYSTEM_CONFIG
+
+        locale = SYSTEM_CONFIG.get("agent", {}).get("locale", "ja")
+    except ImportError:
+        locale = "ja"
+    return locale if isinstance(locale, str) and locale.strip() else "ja"
+
+
+def user_prompt_overrides_enabled(instance_config: Optional[dict] = None) -> bool:
+    """Return whether local ``user_prompts.json`` overrides should be applied."""
+    config = instance_config if isinstance(instance_config, dict) else {}
+    prompts_config = config.get("prompts")
+    if not isinstance(prompts_config, dict):
+        return True
+    enabled = prompts_config.get("allow_user_overrides", True)
+    return enabled if isinstance(enabled, bool) else True
+
+
 class PromptLoader:
     """
     control/locales 分離対応のプロンプトローダー。
@@ -48,15 +82,16 @@ class PromptLoader:
     locales/  — 人格プロンプト（locale 別、en フォールバック）
     """
 
-    def __init__(self, locale: str = None):
+    def __init__(
+        self,
+        locale: Optional[str] = None,
+        *,
+        allow_user_overrides: bool = True,
+    ):
         if locale is None:
-            try:
-                from butly_core.config import SYSTEM_CONFIG
-
-                locale = SYSTEM_CONFIG.get("agent", {}).get("locale", "ja")
-            except ImportError:
-                locale = "ja"
+            locale = resolve_prompt_locale()
         self.locale = locale
+        self.allow_user_overrides = allow_user_overrides
         self._registry = self._load_registry()
         self._user_prompts = self._load_user_prompts()
         self._section_headers_cache = None
@@ -87,6 +122,8 @@ class PromptLoader:
     # ----------------------------------------------------------
     def _load_user_prompts(self) -> dict:
         """user_prompts.json を読み込む。"""
+        if not self.allow_user_overrides:
+            return {}
         if _USER_PROMPTS_PATH.exists():
             try:
                 with open(_USER_PROMPTS_PATH, "r", encoding="utf-8") as f:

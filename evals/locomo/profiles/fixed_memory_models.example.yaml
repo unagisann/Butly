@@ -3,6 +3,10 @@
 # Copy to fixed_memory_models.yaml and set real connection ids / model names.
 name: fixed_memory_pipeline
 
+# Internal prompt/memory locale. CLI --locale takes precedence; omitted values
+# default to English. Official LoCoMo QA answers remain English for scoring.
+locale: en
+
 chat:
   connection: evaluation_target
   model_name: target-model

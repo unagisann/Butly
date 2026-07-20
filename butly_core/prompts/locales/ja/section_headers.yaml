@@ -43,3 +43,16 @@ context_prefix_label: "[背景情報]"
 web_search: >-
   【Web検索結果】以下はインターネットから取得した参考情報です。
   最新情報として参考にしつつ、必ず自分の知識と照合してください。
+
+conversation_core: "[会話核]"
+recent_context: "[直近の背景]"
+related_memory: "[関連記憶]"
+rag_cards: "【過去の記憶（RAG）】"
+rag_bullet: "・"
+rag_date_note: "（各記憶の [YYYY-MM-DD] はその会話が行われた日付）"
+rag_episode_label: "補足"
+rag_raw: "【過去の記憶（当時の会話・抜粋）】"
+rag_raw_note: "（関連する過去の会話の原文。--- 行はその会話の日時）"
+rag_source_raw: "【記憶の元になった当時の会話（抜粋）】"
+rag_source_raw_note: "（上の記憶カードの根拠となる会話原文。日付や事実の詳細はこちらを優先する）"
+active_nodes: "【関連する熟成記憶（active nodes）】"

@@ -240,6 +240,7 @@ def rebuild_raw_cache(instance_name: str, params: dict | None = None):
         injection_format=injection_format,
         agent_name=agent_name,
         user_name=user_name,
+        locale=agent_profile.get("locale", "ja"),
     )
 
     return {"status": "ok", **result}

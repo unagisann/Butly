@@ -476,9 +476,19 @@ async def _prepare_chat_context(
     brain = components["brain"]
     chronos = components["chronos"]
 
-    # --- 2. 時刻コンテキスト ---
+    # --- 2. インスタンス設定 ---
+    instance_config = instance_manager.get_instance_config(instance_name)
+
+    # --- 3. 時刻コンテキスト ---
+    from butly_core.prompts import resolve_prompt_locale
+
+    prompt_locale = resolve_prompt_locale(instance_config)
     last_ts = memory.get_last_interaction_time()
-    sys_note = chronos.get_system_note(is_holiday=False, last_interaction_time=last_ts)
+    sys_note = chronos.get_system_note(
+        is_holiday=False,
+        last_interaction_time=last_ts,
+        locale=prompt_locale,
+    )
     full_prompt = f"{sys_note}\n\n{request.text}"
 
     # 外部入口（Discord 等）の reply profile による生成時 style hint。
@@ -493,9 +503,6 @@ async def _prepare_chat_context(
     )
     if style_hint:
         full_prompt = f"{sys_note}\n\n[応答スタイル指示: {style_hint}]\n\n{request.text}"
-
-    # --- 3. インスタンス設定 ---
-    instance_config = instance_manager.get_instance_config(instance_name)
 
     # --- 4. Gatekeeper 分類 ---
     history, _ = memory.load_recent_sessions(limit=6)

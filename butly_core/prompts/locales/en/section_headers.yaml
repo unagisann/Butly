@@ -43,3 +43,16 @@ context_prefix_label: "[Background Info]"
 web_search: >-
   [Web Search Results] The following is reference information retrieved from the internet.
   Use it as a reference for up-to-date information, but always cross-check with your own knowledge.
+
+conversation_core: "[Conversation Core]"
+recent_context: "[Recent Context]"
+related_memory: "[Related Memory]"
+rag_cards: "[Past Memories (RAG)]"
+rag_bullet: "- "
+rag_date_note: "Each [YYYY-MM-DD] is the date when that conversation occurred."
+rag_episode_label: "Additional context"
+rag_raw: "[Past Conversation Excerpts]"
+rag_raw_note: "Original excerpts from relevant past conversations. Lines beginning with --- show the conversation date and time."
+rag_source_raw: "[Source Conversation Excerpts]"
+rag_source_raw_note: "These excerpts are the source of the memory cards above. Prefer them for exact dates and factual details."
+active_nodes: "[Related Matured Memories (active nodes)]"

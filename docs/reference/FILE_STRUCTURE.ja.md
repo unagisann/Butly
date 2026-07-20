@@ -2,7 +2,7 @@
 
 🌐 **日本語** | [English](FILE_STRUCTURE.md)
 
-> 最終更新: 2026-05-24
+> 最終更新: 2026-07-20
 
 ---
 
@@ -101,20 +101,30 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | ファイル | 役割 |
 |---|---|
 | `dataset.py` | `LocomoTurn` / `LocomoSession` / `LocomoQuestion` / `LocomoConversation` DTOと公式JSON parser |
-| `workspace.py` | run ID単位の隔離ディレクトリ、`ButlyRuntime` / `ButlySleeptime`生成 |
+| `workspace.py` | run ID単位の隔離ディレクトリ、`ButlyRuntime` / `ButlySleeptime`生成、独立QA用の使い捨てinstance clone、逐次QA中断時のdurable復元点 |
 | `adapter.py` | `speaker_a=user` / `speaker_b=assistant`変換と元日時・evidence追跡用meta付き保存 |
 | `sleeptime_runner.py` | Stage 1/2の同期実行と`results/sleeptime_log.jsonl`記録 |
-| `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、QA結果とTraceを保存 |
-| `replay.py` | セッションReplay、Sleeptime、QA、checkpoint更新のオーケストレーション。`resume_evaluation()`で途中再開 |
+| `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、独立／逐次QAの結果とTraceを保存 |
+| `replay.py` | セッションReplay、Sleeptime、独立／逐次QA、checkpoint更新のオーケストレーション。逐次QAはcheckpoint commit前の中断時にinstance・結果・Traceをrollbackし、`resume_evaluation()`で重複なく途中再開 |
 | `artifacts.py` | JSON/JSONL、Traceコピー、セッション前後スナップショットの保存 |
 | `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。`scores.json` / `errors.jsonl`出力 |
 | `stemming.py` | 依存追加なしのPorter (1980) stemmer。公式のnltk stemmerと稀な語で差が出る旨をdocstringに明記 |
 | `report.py` | `scores.json`から`summary.md`を生成 |
 | `checkpoint.py` | セッション/Sleeptime/QA単位のatomicなcheckpoint。run ID照合と破損検出つき |
-| `config.py` | CLI設定DTO（`from_json_dict()`でresume時復元）とprofile YAML読込 |
-| `cli.py` | `run` / `resume` / `score` / `report` subcommands。`run`は採点・レポートまで実行 |
-| `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`） |
-| `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook（評価ロジック禁止） |
+| `config.py` | CLI設定DTO（QA mode、sample/session/question範囲、localeを含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
+| `cli.py` | `run` / `resume` / `score` / `report` subcommands。`run`は`--qa-mode`、各`--*-limit` / `--all-*`、`--locale`を受け付け、採点・レポートまで実行 |
+| `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`）。top-level `locale`は内部prompt／memory出力言語を指定 |
+| `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook。ParametersセルでQA mode、locale、sample/session/questionの全件／上限制御を選択（評価ロジック禁止） |
+
+QA modeは、全質問を同じpost-Sleeptime状態から評価する`independent`
+（バージョン比較の既定）と、QAターンを同一instanceへ蓄積する`sequential`
+（連続運用・耐久評価）を分離する。全LoCoMo評価はsample/session/questionの
+3軸すべてで`--all-*`を明示する。評価localeの優先順位は
+CLI `--locale` → profile top-level `locale` → `en`。localeはButly内部promptと
+memory出力言語を選び、LoCoMoの質問・正解は翻訳しない。公式Token F1との
+互換性を保つためQA回答も英語に固定する。日本語版ベンチマークには、別途
+翻訳済みdatasetと日本語対応scorerが必要となる。評価instanceでは再現性の
+ためローカル`user_prompts.json` overrideを無効化する。
 
 ---
 
@@ -794,15 +804,24 @@ xAI (Grok) の `OpenAICompatAdapter` シム。OpenAI SDK + `base_url="https://ap
 ### `butly_core/prompts/__init__.py`（`PromptLoader` クラス）
 `control/` と `locales/` の 2 種類のプロンプトを統一インターフェースで提供する。
 
-**解決優先順位:**
+**解決規則:**
 ```
-user_prompts.json (ユーザーオーバーライド)
-  → control/{name}.txt (機能プロンプト、英語固定)
-  → locales/{locale}/{name}.txt (人格プロンプト)
-  → locales/en/{name}.txt (言語フォールバック)
+control prompt:
+  control/{name}.txt (英語固定、ユーザーオーバーライド対象外)
+
+localized prompt:
+  user_prompts.json (allow_user_overrides=True の場合)
+    → locales/{locale}/{name}.txt
+    → locales/en/{name}.txt (言語フォールバック)
 ```
 
-- `PromptLoader(locale=None)` — locale 未指定時は SYSTEM_CONFIG の値を使用
+- `PromptLoader(locale=None, allow_user_overrides=True)` — locale 未指定時は
+  SYSTEM_CONFIG の値を使用。評価など再現性を優先する呼び出しは
+  `allow_user_overrides=False`でローカル上書きを無効化できる
+- `resolve_prompt_locale(instance_config)` — `agent_profile.locale`（旧
+  `agent.locale`）→ SYSTEM_CONFIG の順でlocaleを解決
+- `user_prompt_overrides_enabled(instance_config)` —
+  `prompts.allow_user_overrides`を解決（通常既定は`True`）
   - `get(name, **kwargs)` — プロンプトを取得し、`{変数}` を kwargs で展開して返す
   - `get_section_header(key)` — `section_headers.yaml` からセクションヘッダー文字列を取得
 

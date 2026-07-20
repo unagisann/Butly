@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import tempfile
 from typing import Any, Optional
 
-from butly_core.io_utils import atomic_write_text
+from butly_core.io_utils import atomic_write_bytes, atomic_write_text
+
+from .artifacts import safe_artifact_name
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -175,6 +180,292 @@ class EvaluationWorkspace:
 
     def assert_isolated(self) -> None:
         _assert_isolated(self.instances_dir)
+
+
+class IndependentQAWorkspace:
+    """Disposable local clone used to reset one instance before every QA."""
+
+    def __init__(self, canonical_instance_dir: Path):
+        canonical = Path(canonical_instance_dir).resolve()
+        if not canonical.is_dir():
+            raise WorkspaceError(f"Canonical QA instance not found: {canonical}")
+
+        self.instance_name = canonical.name
+        self._temporary_dir = tempfile.TemporaryDirectory(
+            prefix=f"butly-locomo-qa-{self.instance_name}-"
+        )
+        self.root_dir = Path(self._temporary_dir.name)
+        self.baseline_instance_dir = (
+            self.root_dir / "baseline" / self.instance_name
+        )
+        self.data_dir = self.root_dir / "active"
+        self.instances_dir = self.data_dir / "butly_core" / "instances"
+        self.instance_dir = self.instances_dir / self.instance_name
+        try:
+            self.baseline_instance_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(canonical, self.baseline_instance_dir)
+        except Exception:
+            self.close()
+            raise
+
+    def __enter__(self) -> "IndependentQAWorkspace":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
+    def reset(self) -> Path:
+        """Replace the active instance with an exact clean baseline clone."""
+        self.instances_dir.mkdir(parents=True, exist_ok=True)
+        if self.instance_dir.exists():
+            shutil.rmtree(self.instance_dir)
+        shutil.copytree(self.baseline_instance_dir, self.instance_dir)
+        for volatile_name in ("debug_logs", "traces"):
+            volatile_dir = self.instance_dir / volatile_name
+            if volatile_dir.exists():
+                shutil.rmtree(volatile_dir)
+        return self.instance_dir
+
+    def create_runtime(self):
+        """Build a fresh runtime so no per-instance component cache leaks."""
+        from butly_core.runtime import ButlyRuntime
+
+        if not self.instance_dir.is_dir():
+            raise WorkspaceError("Independent QA workspace must be reset first")
+        _assert_isolated(self.instances_dir)
+        return ButlyRuntime(
+            data_dir=self.data_dir,
+            base_dir=self.data_dir,
+            instances_dir=self.instances_dir,
+        )
+
+    def close(self) -> None:
+        self._temporary_dir.cleanup()
+
+
+class SequentialQARecoveryPoint:
+    """Durable rollback point for one in-flight sequential QA turn."""
+
+    def __init__(
+        self,
+        workspace: EvaluationWorkspace,
+        *,
+        sample_id: str,
+        instance_name: str,
+    ):
+        self.workspace = workspace
+        self.sample_id = sample_id
+        self.instance_name = instance_name
+        self.instance_dir = workspace.instances_dir / instance_name
+        sample_digest = hashlib.sha256(sample_id.encode("utf-8")).hexdigest()[:12]
+        self.root_dir = (
+            workspace.checkpoints_dir
+            / "sequential_qa"
+            / f"{instance_name}-{sample_digest}"
+        )
+        self.baseline_instance_dir = self.root_dir / "instance"
+        self.metadata_path = self.root_dir / "recovery.json"
+        self._staging_dir = self.root_dir.with_name(self.root_dir.name + ".tmp")
+        self._discarded_dir = self.root_dir.with_name(
+            self.root_dir.name + ".discarded"
+        )
+        self._restore_staging_dir = self.instance_dir.with_name(
+            f".{instance_name}.qa-restore.tmp"
+        )
+        self._restore_retired_dir = self.instance_dir.with_name(
+            f".{instance_name}.qa-restore.retired"
+        )
+
+    def begin(self, *, question_index: int, question_id: str) -> None:
+        """Persist the canonical pre-question state before chat mutates it."""
+        if question_index < 0:
+            raise WorkspaceError("question_index must be non-negative")
+        if self.root_dir.exists():
+            raise WorkspaceError(
+                "Sequential QA recovery point already exists; reconcile it "
+                "before starting another question"
+            )
+        if not self.instance_dir.is_dir():
+            raise WorkspaceError(
+                f"Sequential QA instance not found: {self.instance_dir}"
+            )
+
+        self._cleanup_directory(self._staging_dir)
+        self._cleanup_directory(self._discarded_dir)
+        self._staging_dir.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copytree(
+                self.instance_dir,
+                self._staging_dir / "instance",
+            )
+            trace_path = self._trace_path(question_id)
+            trace_existed = trace_path.is_file()
+            if trace_existed:
+                shutil.copy2(trace_path, self._staging_dir / "trace.json")
+            qa_results_path = self.workspace.results_dir / "qa_results.jsonl"
+            metadata = {
+                "schema_version": 1,
+                "sample_id": self.sample_id,
+                "instance_name": self.instance_name,
+                "question_index": question_index,
+                "question_id": question_id,
+                "qa_results_size": (
+                    qa_results_path.stat().st_size
+                    if qa_results_path.is_file()
+                    else 0
+                ),
+                "trace_existed": trace_existed,
+            }
+            atomic_write_text(
+                self._staging_dir / "recovery.json",
+                json.dumps(
+                    metadata,
+                    ensure_ascii=False,
+                    indent=2,
+                    sort_keys=True,
+                ),
+            )
+            os.replace(self._staging_dir, self.root_dir)
+        except Exception:
+            self._cleanup_directory(self._staging_dir)
+            raise
+
+    def reconcile(self, *, checkpoint_qa_completed: int) -> bool:
+        """Rollback an uncommitted QA or discard a committed stale marker.
+
+        The checkpoint is the commit record. A recovery point whose question
+        index equals ``qa_completed`` belongs to an interrupted question and is
+        restored. If the checkpoint has advanced past it, only the stale
+        recovery point is removed.
+        """
+        self._cleanup_directory(self._staging_dir)
+        self._cleanup_directory(self._discarded_dir)
+        if not self.root_dir.exists():
+            return False
+
+        metadata = self._load_metadata()
+        question_index = metadata["question_index"]
+        if checkpoint_qa_completed < question_index:
+            raise WorkspaceError(
+                "Sequential QA checkpoint precedes its recovery point: "
+                f"qa_completed={checkpoint_qa_completed}, "
+                f"question_index={question_index}"
+            )
+
+        rolled_back = checkpoint_qa_completed == question_index
+        if rolled_back:
+            self._restore_instance()
+            self._restore_artifacts(metadata)
+        self.clear()
+        return rolled_back
+
+    def clear(self) -> None:
+        """Atomically retire the recovery point after checkpoint commit."""
+        if not self.root_dir.exists():
+            return
+        self._cleanup_directory(self._discarded_dir)
+        os.replace(self.root_dir, self._discarded_dir)
+        self._cleanup_directory(self._discarded_dir)
+
+    def _load_metadata(self) -> dict[str, Any]:
+        try:
+            payload = json.loads(self.metadata_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError) as exc:
+            raise WorkspaceError(
+                f"Unreadable sequential QA recovery point: {self.metadata_path}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise WorkspaceError(
+                f"Invalid sequential QA recovery point: {self.metadata_path}"
+            )
+        if (
+            payload.get("sample_id") != self.sample_id
+            or payload.get("instance_name") != self.instance_name
+        ):
+            raise WorkspaceError(
+                f"Sequential QA recovery point identity mismatch: "
+                f"{self.metadata_path}"
+            )
+        try:
+            question_index = int(payload["question_index"])
+            qa_results_size = int(payload["qa_results_size"])
+            question_id = str(payload["question_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise WorkspaceError(
+                f"Invalid sequential QA recovery metadata: {self.metadata_path}"
+            ) from exc
+        if question_index < 0 or qa_results_size < 0 or not question_id:
+            raise WorkspaceError(
+                f"Invalid sequential QA recovery metadata: {self.metadata_path}"
+            )
+        return {
+            **payload,
+            "question_index": question_index,
+            "qa_results_size": qa_results_size,
+            "question_id": question_id,
+            "trace_existed": bool(payload.get("trace_existed", False)),
+        }
+
+    def _restore_instance(self) -> None:
+        if not self.baseline_instance_dir.is_dir():
+            raise WorkspaceError(
+                "Sequential QA recovery point has no instance baseline: "
+                f"{self.baseline_instance_dir}"
+            )
+
+        self._cleanup_directory(self._restore_staging_dir)
+        shutil.copytree(
+            self.baseline_instance_dir,
+            self._restore_staging_dir,
+        )
+        self._cleanup_directory(self._restore_retired_dir)
+        if self.instance_dir.exists():
+            os.replace(self.instance_dir, self._restore_retired_dir)
+        os.replace(self._restore_staging_dir, self.instance_dir)
+        self._cleanup_directory(self._restore_retired_dir)
+
+    def _restore_artifacts(self, metadata: dict[str, Any]) -> None:
+        qa_results_path = self.workspace.results_dir / "qa_results.jsonl"
+        expected_size = metadata["qa_results_size"]
+        if qa_results_path.exists():
+            actual_size = qa_results_path.stat().st_size
+            if actual_size < expected_size:
+                raise WorkspaceError(
+                    "qa_results.jsonl is shorter than the sequential QA "
+                    f"recovery offset: {actual_size} < {expected_size}"
+                )
+            with qa_results_path.open("rb") as handle:
+                committed_prefix = handle.read(expected_size)
+            atomic_write_bytes(qa_results_path, committed_prefix)
+        elif expected_size:
+            raise WorkspaceError(
+                "qa_results.jsonl is missing but the sequential QA recovery "
+                f"offset is {expected_size}"
+            )
+
+        trace_path = self._trace_path(metadata["question_id"])
+        if metadata["trace_existed"]:
+            trace_backup = self.root_dir / "trace.json"
+            if not trace_backup.is_file():
+                raise WorkspaceError(
+                    f"Sequential QA trace backup is missing: {trace_backup}"
+                )
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(trace_backup, trace_path)
+        elif trace_path.exists():
+            trace_path.unlink()
+
+    def _trace_path(self, question_id: str) -> Path:
+        return (
+            self.workspace.traces_dir
+            / safe_artifact_name(self.sample_id)
+            / f"{safe_artifact_name(question_id)}.json"
+        )
+
+    @staticmethod
+    def _cleanup_directory(path: Path) -> None:
+        if path.exists():
+            shutil.rmtree(path)
 
 
 def _new_run_id() -> str:

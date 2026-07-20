@@ -20,8 +20,8 @@ def resolve_now() -> datetime:
 
 
 class ButlyChronos:
-    def __init__(self):
-        pass
+    def __init__(self, locale: str = "ja"):
+        self.locale = locale
 
     def _get_time_segment(self, hour, is_weekday, is_holiday_override):
         """時間帯と状況によるモード判定"""
@@ -46,13 +46,29 @@ class ButlyChronos:
 
         return "Normal Mode", "通常"
 
-    def get_delta_text(self, last_time):
+    def get_delta_text(self, last_time, locale=None):
         """前回からの経過時間"""
+        selected_locale = locale or self.locale
         if not last_time:
-            return "初対面"
+            return "First interaction" if selected_locale != "ja" else "初対面"
         now = resolve_now()
         delta = now - last_time
         seconds = delta.total_seconds()
+
+        if selected_locale != "ja":
+            if seconds < 60:
+                value = int(seconds)
+                unit = "second" if value == 1 else "seconds"
+            elif seconds < 3600:
+                value = int(seconds // 60)
+                unit = "minute" if value == 1 else "minutes"
+            elif seconds < 86400:
+                value = int(seconds // 3600)
+                unit = "hour" if value == 1 else "hours"
+            else:
+                value = int(seconds // 86400)
+                unit = "day" if value == 1 else "days"
+            return f"{value} {unit} since the last interaction"
 
         if seconds < 60:
             return f"{int(seconds)}秒ぶり"
@@ -63,11 +79,20 @@ class ButlyChronos:
         return f"{int(seconds // 86400)}日ぶり"
 
     def get_system_note(
-        self, is_holiday=False, is_work_time=True, last_interaction_time=None
+        self,
+        is_holiday=False,
+        is_work_time=True,
+        last_interaction_time=None,
+        locale=None,
     ):
         """Web UI用の統合メソッド"""
         now = resolve_now()
-        weekday_map = ["月", "火", "水", "木", "金", "土", "日"]
+        selected_locale = locale or self.locale
+        weekday_map = (
+            ["月", "火", "水", "木", "金", "土", "日"]
+            if selected_locale == "ja"
+            else ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        )
 
         return f"""
 {now.strftime('%Y-%m-%d %H:%M')} ({weekday_map[now.weekday()]})

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 from typing import Any, Optional
@@ -18,6 +20,8 @@ _SNAPSHOT_FILES = (
     "recent_digest_headlines.json",
     "session_state.json",
 )
+_SAFE_ARTIFACT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,179}$")
+_MAX_READABLE_ARTIFACT_LENGTH = 96
 
 
 def append_jsonl(path: Path, payload: dict[str, Any]) -> None:
@@ -72,11 +76,16 @@ def copy_latest_trace(
     instance_dir: Path,
     traces_dir: Path,
     question_id: str,
+    *,
+    sample_id: Optional[str] = None,
 ) -> Optional[Path]:
     source = Path(instance_dir) / "traces" / "latest.json"
     if not source.is_file():
         return None
-    destination = Path(traces_dir) / f"{_safe_name(question_id)}.json"
+    destination_root = Path(traces_dir)
+    if sample_id is not None:
+        destination_root = destination_root / safe_artifact_name(sample_id)
+    destination = destination_root / f"{safe_artifact_name(question_id)}.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
     return destination
@@ -148,5 +157,16 @@ def _count_json_recursive(directory: Path) -> int:
     return len(list(directory.rglob("*.json"))) if directory.is_dir() else 0
 
 
-def _safe_name(value: str) -> str:
-    return "".join(char if char.isalnum() or char in "_.-" else "_" for char in value)
+def safe_artifact_name(value: str) -> str:
+    """Return a deterministic path component without lossy-name collisions."""
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"Artifact name must be a non-empty string: {value!r}")
+    if _SAFE_ARTIFACT_NAME.fullmatch(value):
+        return value
+
+    readable = re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+    readable = readable.strip("._-")[:_MAX_READABLE_ARTIFACT_LENGTH].rstrip(
+        "._-"
+    )
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"{readable or 'item'}__{digest}"

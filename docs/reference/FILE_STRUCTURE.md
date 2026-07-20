@@ -2,7 +2,7 @@
 
 🌐 [日本語](FILE_STRUCTURE.ja.md) | **English**
 
-> Last updated: 2026-05-24
+> Last updated: 2026-07-20
 
 This document gives an overview of every file and module in the repository. For exhaustive per-method commentary, see the Japanese version — this English version covers the same scope but stays concise.
 
@@ -32,12 +32,16 @@ run-scoped workspace that is rejected if it resolves inside the production
 instances tree. The bundled mini fixture is synthetic.
 
 - `dataset.py` — typed DTOs and official-shape parser.
-- `workspace.py` — isolated run directories and injected Runtime/Sleeptime factories.
+- `workspace.py` — isolated run directories, injected Runtime/Sleeptime
+  factories, disposable instance clones for independent QA, and durable
+  in-flight recovery points for sequential QA.
 - `adapter.py` — ordered speaker-role conversion with source timestamp/meta retention.
 - `sleeptime_runner.py` — synchronous Stage 1/2 execution and structured JSONL log.
-- `qa_runner.py` — Runtime QA with RAG on, external search off, plus Trace capture.
-- `replay.py` — replay/Sleeptime/QA orchestration with checkpoint updates and
-  `resume_evaluation()`.
+- `qa_runner.py` — independent or sequential Runtime QA with RAG on, external
+  search off, plus Trace capture.
+- `replay.py` — replay/Sleeptime/independent-or-sequential QA orchestration
+  with checkpoint updates and `resume_evaluation()`; interrupted sequential
+  questions roll back instance, result, and Trace state before retry.
 - `artifacts.py` — JSON/JSONL, Trace copies, and before/after snapshots.
 - `scorer.py` — official-compatible scoring (normalized + stemmed token F1,
   per-category rules, no-information detection) plus Butly-specific metrics;
@@ -47,11 +51,27 @@ instances tree. The bundled mini fixture is synthetic.
 - `report.py` — renders `summary.md` from `scores.json`.
 - `checkpoint.py` — atomic per-session/Sleeptime/QA checkpoints with run-id
   validation and corruption detection.
-- `config.py`, `cli.py` — typed CLI configuration (rebuildable from
-  `run_config.json` for resume), profile YAML loading, and the `run` /
-  `resume` / `score` / `report` subcommands (`run` scores and reports too).
-- `profiles/` — Full Local and Fixed Memory Pipeline example profiles.
-- `colab/` — thin notebook limited to Drive, model-server, and CLI calls.
+- `config.py`, `cli.py` — typed CLI configuration (QA mode, sample/session/
+  question scope, and locale; rebuildable from `run_config.json` for resume),
+  profile YAML loading, and the `run` / `resume` / `score` / `report`
+  subcommands. `run` accepts `--qa-mode`, paired `--*-limit` / `--all-*`
+  scope flags, and `--locale`, then scores and reports.
+- `profiles/` — Full Local and Fixed Memory Pipeline example profiles;
+  top-level `locale` selects the internal prompt and memory-output language.
+- `colab/` — thin notebook limited to Drive, model-server, and CLI calls. Its
+  Parameters cell selects QA mode, locale, and all/limit scope independently
+  for samples, sessions, and questions.
+
+`independent` QA (the comparison default) starts every question from the same
+post-Sleeptime state. `sequential` QA retains QA turns for operational
+endurance testing. A full LoCoMo run explicitly selects all samples, sessions,
+and questions. Locale precedence is CLI `--locale`, then profile top-level
+`locale`, then `en`. Locale selects Butly's internal prompt and memory-output
+language; it does not translate LoCoMo questions or gold answers. QA answers
+remain English for compatibility with the official token-F1 scorer. A Japanese
+benchmark requires a separately translated dataset and Japanese-compatible
+scoring. Evaluation instances disable local `user_prompts.json` overrides for
+reproducibility.
 
 ---
 
@@ -372,8 +392,15 @@ Thin shims that pin a Connection to its Adapter (kept for backward compatibility
 Prompt loading package.
 
 - `prompts.py` — legacy compat wrapper exposing old constants (`SLEEPTIME_SUMMARIZE_PROMPT`, etc.).
-- `__init__.py` — `PromptLoader(locale=None)`:
-  - `get(name, **kwargs)` — resolves `user_prompts.json` → `control/{name}.txt` → `locales/{locale}/{name}.txt` → `locales/en/{name}.txt`.
+- `__init__.py` — `PromptLoader(locale=None, allow_user_overrides=True)`:
+  - control prompts always resolve from `control/{name}.txt` and ignore local
+    overrides;
+  - localized prompts resolve from `user_prompts.json` when allowed, then
+    `locales/{locale}/{name}.txt`, then `locales/en/{name}.txt`;
+  - `resolve_prompt_locale(instance_config)` reads `agent_profile.locale`
+    (or legacy `agent.locale`) before the system fallback;
+  - `user_prompt_overrides_enabled(instance_config)` reads
+    `prompts.allow_user_overrides`, whose normal default is `true`.
   - `get_section_header(key)` — reads `section_headers.yaml`.
 
 **Prompt names:**

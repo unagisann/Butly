@@ -192,6 +192,12 @@ class ButlyBrain:
         self, conversation_text: str, override_config=None
     ) -> str:
         """会話ログをサマリーモデルで要約する（memory.maintain_memory から呼ばれる）"""
+        from butly_core.prompts import (
+            resolve_prompt_locale,
+            user_prompt_overrides_enabled,
+        )
+
+        locale = resolve_prompt_locale(override_config)
         try:
             summary_conf = AI_CONFIG["summary"].copy()
             if override_config and "summary" in override_config:
@@ -212,13 +218,28 @@ class ButlyBrain:
             merged_conf["temperature"] = summary_conf.get("generation_config", {}).get(
                 "temperature", 0.3
             )
+            merged_conf["locale"] = locale
+            merged_conf["allow_user_prompt_overrides"] = (
+                user_prompt_overrides_enabled(override_config)
+            )
+
+            instance_config = (
+                override_config if isinstance(override_config, dict) else {}
+            )
+            agent_profile = instance_config.get("agent_profile") or {}
+            legacy_agent = instance_config.get("agent") or {}
+            merged_conf["agent_name"] = (
+                agent_profile.get("ai_name")
+                or legacy_agent.get("ai_name")
+                or SYSTEM_CONFIG["agent"].get("agent_name", "Butly")
+            )
 
             # Phase 2: dict (connection + model_name) を Provider Factory に渡す
             provider = self._get_provider(summary_conf)
             return provider.summarize(conversation_text, merged_conf)
         except Exception as e:
             print(f"[Brain] Summarize Error: {e}")
-            return "要約なし"
+            return "No summary" if locale != "ja" else "要約なし"
 
     def extract_keywords(self, user_input, override_config=None):
         """ユーザー発言からDB検索用のキーワードを抽出"""
