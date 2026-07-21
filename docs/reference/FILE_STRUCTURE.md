@@ -44,6 +44,8 @@ instances tree. The bundled mini fixture is synthetic.
 - `replay.py` — replay/Sleeptime/independent-or-sequential QA orchestration
   with checkpoint updates and `resume_evaluation()`; interrupted sequential
   questions roll back instance, result, and Trace state before retry.
+  `rerun_qa_from_memory()` clones an independent run's post-Sleeptime instance
+  into a new QA-only run.
 - `progress.py` — flushed CLI/Colab stderr progress; completed Replay,
   Sleeptime, and QA units map to 0–90%, followed by scoring and reporting.
 - `artifacts.py` — JSON/JSONL, Trace copies, and before/after snapshots.
@@ -57,14 +59,15 @@ instances tree. The bundled mini fixture is synthetic.
   validation and corruption detection.
 - `config.py`, `cli.py` — typed CLI configuration (QA mode, sample/session/
   question scope, and locale; rebuildable from `run_config.json` for resume),
-  profile YAML loading, and the `run` / `resume` / `score` / `report`
+  profile YAML loading, and the `run` / `resume` / `rerun-qa` / `score` / `report`
   subcommands. `run` accepts `--qa-mode`, paired `--*-limit` / `--all-*`
   scope flags, and `--locale`, then scores and reports.
 - `profiles/` — Full Local and Fixed Memory Pipeline example profiles;
   top-level `locale` selects the internal prompt and memory-output language.
 - `colab/` — thin notebook limited to Drive, model-server, and CLI calls. Its
-  Parameters cell selects QA mode, locale, and all/limit scope independently
-  for samples, sessions, and questions.
+  Parameters cell selects QA mode, locale, all/limit scope, per-context
+  enablement, per-role temperature, time decay, and an optional source run for
+  same-card QA reruns.
 
 `independent` QA (the comparison default) starts every question from the same
 post-Sleeptime state. `sequential` QA retains QA turns for operational

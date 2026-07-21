@@ -145,6 +145,57 @@ def test_profile_brain_override_applies_to_instance(tmp_path):
     assert instance_config["brain"]["time_decay_rate"] == 0.0
 
 
+def test_profile_context_levels_and_role_temperature_apply_to_instance(tmp_path):
+    profile_path = tmp_path / "ablation.yaml"
+    profile_path.write_text(
+        """chat:
+  generation_config:
+    temperature: 0.0
+context_levels:
+  preset: custom
+  levels:
+    current_time: 'off'
+    mid_term: high
+    session_digest: 'off'
+    rag: high
+""",
+        encoding="utf-8",
+    )
+    config, profile = _resolve_config_and_profile(
+        ReplayConfig(
+            dataset_path=FIXTURE,
+            output_dir=tmp_path,
+            profile_path=profile_path,
+        )
+    )
+    conversation = load_dataset(FIXTURE)[0]
+    workspace = EvaluationWorkspace.create(tmp_path / "runs", run_id="ablation")
+
+    _create_instance(
+        workspace.create_runtime(),
+        conversation,
+        "locomo_ablation",
+        config,
+        profile,
+    )
+
+    instance_config = json.loads(
+        (workspace.instances_dir / "locomo_ablation" / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert instance_config["chat"]["generation_config"]["temperature"] == 0.0
+    assert instance_config["context_levels"] == {
+        "preset": "custom",
+        "levels": {
+            "current_time": "off",
+            "mid_term": "high",
+            "session_digest": "off",
+            "rag": "high",
+        },
+    }
+
+
 def test_locale_resolution_prefers_cli_then_profile_then_english():
     assert resolve_evaluation_locale(" ja ", "en") == "ja"
     assert resolve_evaluation_locale(None, "ja") == "ja"
@@ -227,6 +278,36 @@ def test_cli_all_flags_and_qa_mode_are_parsed():
     assert config.question_limit is None
     assert config.qa_mode == "sequential"
     assert config.locale == "ja"
+
+
+def test_cli_rerun_qa_flags_are_parsed():
+    args = build_parser().parse_args(
+        [
+            "rerun-qa",
+            "--source-run",
+            "/tmp/runs/source-v16",
+            "--dataset",
+            str(FIXTURE),
+            "--output-dir",
+            "/tmp/runs",
+            "--run-id",
+            "source-v16-no-time",
+            "--all-questions",
+            "--profile",
+            "/tmp/no-time.yaml",
+            "--locale",
+            "en",
+        ]
+    )
+
+    assert args.source_run == Path("/tmp/runs/source-v16")
+    assert args.dataset == FIXTURE
+    assert args.output_dir == Path("/tmp/runs")
+    assert args.run_id == "source-v16-no-time"
+    assert args.all_questions is True
+    assert args.question_limit is None
+    assert args.profile == Path("/tmp/no-time.yaml")
+    assert args.qa_mode == "independent"
 
 
 @pytest.mark.parametrize(

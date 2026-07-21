@@ -10,6 +10,7 @@ import os
 import platform
 from pathlib import Path
 import re
+import shutil
 from typing import Optional
 
 from butly_core.core.chronos import CHRONOS_NOW_ENV
@@ -21,6 +22,7 @@ from .checkpoint import (
     STATUS_QA,
     STATUS_REPLAYING,
     Checkpoint,
+    SampleProgress,
 )
 from .config import (
     EvaluationProfile,
@@ -36,6 +38,7 @@ from .workspace import (
     EvaluationWorkspace,
     IndependentQAWorkspace,
     SequentialQARecoveryPoint,
+    WorkspaceError,
 )
 
 
@@ -94,6 +97,160 @@ async def resume_evaluation(
     config, profile = _resolve_config_and_profile(config)
     conversations = _select_conversations(load_dataset(config.dataset_path), config)
     checkpoint = Checkpoint.load(workspace.run_id, workspace.checkpoints_dir)
+    if run_config.get("memory_reused_from_run_id"):
+        _assert_reused_run_checkpoint(
+            workspace,
+            checkpoint,
+            conversations,
+            config.session_limit,
+        )
+    return await _execute(
+        workspace,
+        config,
+        conversations,
+        checkpoint,
+        profile,
+        progress_reporter,
+    )
+
+
+async def rerun_qa_from_memory(
+    source_run_dir: Path,
+    *,
+    dataset_path: Optional[Path] = None,
+    output_dir: Optional[Path] = None,
+    run_id: Optional[str] = None,
+    question_limit: Optional[int] = None,
+    all_questions: bool = False,
+    qa_mode: str = "independent",
+    locale: Optional[str] = None,
+    model_name: Optional[str] = None,
+    connection: Optional[str] = None,
+    profile_path: Optional[Path] = None,
+    progress_reporter: Optional[ProgressReporter] = None,
+) -> EvaluationRunResult:
+    """Clone a completed independent run's memory and execute QA only.
+
+    The source run remains untouched. Its canonical instances are clean
+    post-Sleeptime baselines because independent QA mutates disposable clones.
+    A new profile may override prompt context, retrieval, and model settings in
+    the copied instances before any question is asked.
+    """
+    source_workspace = EvaluationWorkspace.open(
+        source_run_dir,
+        create_missing=False,
+    )
+    source_payload = json.loads(
+        source_workspace.run_config_path.read_text(encoding="utf-8")
+    )
+    source_config = ReplayConfig.from_json_dict(source_payload)
+    if source_config.qa_mode != "independent":
+        raise WorkspaceError(
+            "rerun-qa requires a source run with qa_mode=independent; "
+            "sequential QA mutates the canonical post-Sleeptime instance"
+        )
+
+    selected_sample_ids = tuple(source_payload.get("selected_sample_ids") or ())
+    if not selected_sample_ids:
+        selected_sample_ids = source_config.sample_ids
+    resolved_question_limit = (
+        None
+        if all_questions
+        else (
+            question_limit
+            if question_limit is not None
+            else source_config.question_limit
+        )
+    )
+    config = replace(
+        source_config,
+        dataset_path=(
+            Path(dataset_path)
+            if dataset_path is not None
+            else source_config.dataset_path
+        ),
+        output_dir=(
+            Path(output_dir)
+            if output_dir is not None
+            else source_workspace.run_dir.parent
+        ),
+        run_id=run_id,
+        sample_ids=selected_sample_ids,
+        sample_limit=None if selected_sample_ids else source_config.sample_limit,
+        question_limit=resolved_question_limit,
+        qa_mode=qa_mode,
+        locale=(
+            locale
+            if locale is not None
+            else (None if profile_path is not None else source_config.locale)
+        ),
+        model_name=(
+            model_name if model_name is not None else source_config.model_name
+        ),
+        connection=(
+            connection if connection is not None else source_config.connection
+        ),
+        # A copied instance already contains the source profile. Only an
+        # explicitly supplied profile should be resolved and overlaid.
+        profile_path=Path(profile_path) if profile_path is not None else None,
+        clean=False,
+    )
+    config, profile = _resolve_config_and_profile(config)
+    conversations = _select_conversations(load_dataset(config.dataset_path), config)
+    _verify_reused_dataset(source_workspace, config.dataset_path)
+
+    source_checkpoint = Checkpoint.load(
+        source_workspace.run_id,
+        source_workspace.checkpoints_dir,
+    )
+    for conversation in conversations:
+        _validated_reusable_source(
+            source_workspace,
+            source_checkpoint,
+            conversation,
+            config.session_limit,
+        )
+    workspace = EvaluationWorkspace.create(
+        config.output_dir,
+        run_id=config.run_id,
+        clean=False,
+    )
+    workspace.assert_isolated()
+    _write_run_metadata(workspace, config, conversations)
+    run_payload = json.loads(
+        workspace.run_config_path.read_text(encoding="utf-8")
+    )
+    run_payload.update(
+        {
+            "memory_reused_from_run_id": source_workspace.run_id,
+            "memory_reused_from_run_dir": str(source_workspace.run_dir),
+            "run_sleeptime_per_session": False,
+        }
+    )
+    workspace.write_run_config(run_payload)
+
+    checkpoint = Checkpoint.create(workspace.run_id, workspace.checkpoints_dir)
+    _copy_reusable_memory(
+        source_workspace=source_workspace,
+        source_checkpoint=source_checkpoint,
+        workspace=workspace,
+        checkpoint=checkpoint,
+        conversations=conversations,
+        session_limit=config.session_limit,
+    )
+    _copy_memory_build_logs(source_workspace, workspace)
+
+    runtime = workspace.create_runtime()
+    for conversation in conversations:
+        progress = checkpoint.samples[conversation.sample_id]
+        _configure_instance(
+            runtime,
+            progress.instance_name,
+            config,
+            profile,
+        )
+    checkpoint.status = STATUS_QA
+    checkpoint.save()
     return await _execute(
         workspace,
         config,
@@ -558,6 +715,17 @@ def _create_instance(
     if not success:
         raise RuntimeError(f"Failed to create evaluation instance: {message}")
 
+    _configure_instance(runtime, instance_name, config, profile)
+
+
+def _configure_instance(
+    runtime,
+    instance_name: str,
+    config: ReplayConfig,
+    profile: Optional[EvaluationProfile] = None,
+) -> None:
+    """Apply evaluation-safe config to a new or copied instance."""
+
     instance_config = runtime.instance_manager.get_instance_config(instance_name)
     instance_config.setdefault("sleeptime", {}).setdefault("update_targets", {}).update(
         {
@@ -584,6 +752,164 @@ def _create_instance(
         raise RuntimeError(
             f"Failed to configure evaluation instance: {update_message}"
         )
+
+
+def _verify_reused_dataset(
+    source_workspace: EvaluationWorkspace,
+    dataset_path: Path,
+) -> None:
+    """Refuse to pair reused memory with a changed dataset file."""
+    manifest_path = source_workspace.run_dir / "dataset_manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected_sha256 = manifest["sha256"]
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise WorkspaceError(
+            "rerun-qa requires a readable source dataset_manifest.json with "
+            "a sha256 digest"
+        ) from exc
+    try:
+        actual_sha256 = hashlib.sha256(Path(dataset_path).read_bytes()).hexdigest()
+    except OSError as exc:
+        raise WorkspaceError(
+            f"Could not read the source run's dataset: {dataset_path}"
+        ) from exc
+    if actual_sha256 != expected_sha256:
+        raise WorkspaceError(
+            "The dataset file no longer matches the source run's manifest; "
+            "refusing to reuse memory with different conversations"
+        )
+
+
+def _copy_reusable_memory(
+    *,
+    source_workspace: EvaluationWorkspace,
+    source_checkpoint: Checkpoint,
+    workspace: EvaluationWorkspace,
+    checkpoint: Checkpoint,
+    conversations: list[LocomoConversation],
+    session_limit: Optional[int],
+) -> None:
+    """Copy clean post-Sleeptime instances and pre-complete memory phases."""
+    for conversation in conversations:
+        source_progress, source_instance, session_ids = (
+            _validated_reusable_source(
+                source_workspace,
+                source_checkpoint,
+                conversation,
+                session_limit,
+            )
+        )
+
+        target_instance = workspace.instances_dir / source_progress.instance_name
+        shutil.copytree(source_instance, target_instance)
+        for volatile_name in ("debug_logs", "traces"):
+            volatile_path = target_instance / volatile_name
+            if volatile_path.exists():
+                shutil.rmtree(volatile_path)
+        (target_instance / "session_state.json").unlink(missing_ok=True)
+
+        target_progress = checkpoint.progress_for(
+            conversation.sample_id,
+            source_progress.instance_name,
+        )
+        target_progress.replayed_sessions = list(session_ids)
+        target_progress.sleeptime_completed = list(session_ids)
+        target_progress.qa_completed = 0
+
+    persons_path = source_workspace.data_dir / "persons.json"
+    if persons_path.is_file():
+        shutil.copy2(persons_path, workspace.data_dir / persons_path.name)
+    checkpoint.save()
+
+
+def _validated_reusable_source(
+    source_workspace: EvaluationWorkspace,
+    source_checkpoint: Checkpoint,
+    conversation: LocomoConversation,
+    session_limit: Optional[int],
+) -> tuple[SampleProgress, Path, list[str]]:
+    """Resolve one clean source instance and its completed session IDs."""
+    source_progress = source_checkpoint.samples.get(conversation.sample_id)
+    if source_progress is None:
+        raise WorkspaceError(
+            "Source checkpoint has no progress for sample "
+            f"{conversation.sample_id!r}"
+        )
+    if not _SAFE_INSTANCE_NAME.fullmatch(source_progress.instance_name):
+        raise WorkspaceError(
+            "Invalid instance name in source checkpoint: "
+            f"{source_progress.instance_name!r}"
+        )
+
+    sessions = conversation.sessions[:session_limit]
+    session_ids = [session.session_id for session in sessions]
+    missing_replay = sorted(
+        set(session_ids) - set(source_progress.replayed_sessions)
+    )
+    missing_sleeptime = sorted(
+        set(session_ids) - set(source_progress.sleeptime_completed)
+    )
+    if missing_replay or missing_sleeptime:
+        raise WorkspaceError(
+            "Source run has not completed Replay/Sleeptime for sample "
+            f"{conversation.sample_id!r}: replay={missing_replay}, "
+            f"sleeptime={missing_sleeptime}"
+        )
+
+    source_instance = source_workspace.instances_dir / source_progress.instance_name
+    if not source_instance.is_dir():
+        raise WorkspaceError(f"Source instance not found: {source_instance}")
+    short_term_dir = source_instance / "short_term_json"
+    if short_term_dir.is_dir() and any(short_term_dir.glob("*.json")):
+        raise WorkspaceError(
+            "Source canonical instance is not a clean post-Sleeptime "
+            f"baseline: {source_instance}"
+        )
+    return source_progress, source_instance, session_ids
+
+
+def _assert_reused_run_checkpoint(
+    workspace: EvaluationWorkspace,
+    checkpoint: Checkpoint,
+    conversations: list[LocomoConversation],
+    session_limit: Optional[int],
+) -> None:
+    """Never let resume rebuild memory inside a QA-only reuse run."""
+    for conversation in conversations:
+        progress = checkpoint.samples.get(conversation.sample_id)
+        session_ids = {
+            session.session_id
+            for session in conversation.sessions[:session_limit]
+        }
+        if progress is None or not session_ids.issubset(
+            set(progress.replayed_sessions)
+        ) or not session_ids.issubset(set(progress.sleeptime_completed)):
+            raise WorkspaceError(
+                "A reused-memory run has an incomplete memory checkpoint; "
+                "refusing to execute Replay/Sleeptime during resume"
+            )
+        if not _SAFE_INSTANCE_NAME.fullmatch(progress.instance_name):
+            raise WorkspaceError(
+                "A reused-memory run has an invalid checkpoint instance name: "
+                f"{progress.instance_name!r}"
+            )
+        if not (workspace.instances_dir / progress.instance_name).is_dir():
+            raise WorkspaceError(
+                "A reused-memory run is missing its copied instance: "
+                f"{progress.instance_name}"
+            )
+
+
+def _copy_memory_build_logs(
+    source_workspace: EvaluationWorkspace,
+    workspace: EvaluationWorkspace,
+) -> None:
+    """Keep source Replay/Sleeptime cost and provenance visible to scoring."""
+    for file_name in ("replay_log.jsonl", "sleeptime_log.jsonl"):
+        source_path = source_workspace.results_dir / file_name
+        if source_path.is_file():
+            shutil.copy2(source_path, workspace.results_dir / file_name)
 
 
 def _write_run_metadata(

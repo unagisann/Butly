@@ -16,6 +16,7 @@ def test_report_includes_qa_mode_locale_and_all_scope():
     run_config = {
         "dataset_path": "/data/locomo10.json",
         "qa_mode": "independent",
+        "memory_reused_from_run_id": "source-v16",
         "locale": "en",
         "sample_limit": None,
         "session_limit": None,
@@ -25,5 +26,6 @@ def test_report_includes_qa_mode_locale_and_all_scope():
     summary = _render(scores, run_config, error_count=0)
 
     assert "- QA mode: independent" in summary
+    assert "- Memory source: source-v16" in summary
     assert "- Prompt locale: en" in summary
     assert "- Scope: samples=all, sessions=all, questions=all" in summary

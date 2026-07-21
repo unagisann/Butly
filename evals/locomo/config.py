@@ -10,7 +10,7 @@ import yaml
 
 
 # モデル role 5種 + instance-config にそのまま流し込む非モデルセクション
-# ("memory": RAG source、"brain": 検索スコアリングの評価用オーバーライド)
+# (memory: RAG source、brain: 検索、context_levels: prompt注入のablation)
 PROFILE_ROLE_SECTIONS = (
     "chat",
     "gatekeeper",
@@ -19,6 +19,7 @@ PROFILE_ROLE_SECTIONS = (
     "embedding",
     "memory",
     "brain",
+    "context_levels",
 )
 QA_MODES = ("independent", "sequential")
 DEFAULT_EVALUATION_LOCALE = "en"

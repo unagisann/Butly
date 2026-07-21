@@ -107,17 +107,17 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | `adapter.py` | `speaker_a=user` / `speaker_b=assistant`変換と元日時・evidence追跡用meta付き保存 |
 | `sleeptime_runner.py` | Stage 1/2の同期実行と`results/sleeptime_log.jsonl`記録 |
 | `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、独立／逐次QAの結果とTraceを保存 |
-| `replay.py` | セッションReplay、Sleeptime、独立／逐次QA、checkpoint更新のオーケストレーション。逐次QAはcheckpoint commit前の中断時にinstance・結果・Traceをrollbackし、`resume_evaluation()`で重複なく途中再開 |
+| `replay.py` | セッションReplay、Sleeptime、独立／逐次QA、checkpoint更新のオーケストレーション。逐次QAはcheckpoint commit前の中断時にinstance・結果・Traceをrollbackし、`resume_evaluation()`で重複なく途中再開。`rerun_qa_from_memory()`は独立runのpost-Sleeptime instanceを新runへ複製してQAだけ再実行 |
 | `artifacts.py` | JSON/JSONL、Traceコピー、セッション前後スナップショットの保存 |
 | `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。`scores.json` / `errors.jsonl`出力 |
 | `stemming.py` | 依存追加なしのPorter (1980) stemmer。公式のnltk stemmerと稀な語で差が出る旨をdocstringに明記 |
 | `report.py` | `scores.json`から`summary.md`を生成 |
 | `checkpoint.py` | セッション/Sleeptime/QA単位のatomicなcheckpoint。run ID照合と破損検出つき |
 | `config.py` | CLI設定DTO（QA mode、sample/session/question範囲、localeを含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
-| `cli.py` | `run` / `resume` / `score` / `report` subcommands。`run`は`--qa-mode`、各`--*-limit` / `--all-*`、`--locale`を受け付け、採点・レポートまで実行 |
+| `cli.py` | `run` / `resume` / `rerun-qa` / `score` / `report` subcommands。`run`は`--qa-mode`、各`--*-limit` / `--all-*`、`--locale`を受け付け、`rerun-qa`は元runを変更せず同じカードでQAを再実行 |
 | `progress.py` | CLI / Colab向けの即時進捗ログ。Replay・Sleeptime・QAの完了unitを0〜90%、採点・レポートを90〜100%としてstderrへ表示 |
 | `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`）。top-level `locale`は内部prompt／memory出力言語、`brain.time_decay_rate`は評価runの検索時間減衰を指定 |
-| `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook。ParametersセルでQA mode、locale、sample/session/questionの全件／上限制御と評価用`TIME_DECAY_RATE`を選択（評価ロジック禁止） |
+| `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook。ParametersセルでQA mode、locale、sample/session/questionの全件／上限制御、context別ON/OFF、role別temperature、`TIME_DECAY_RATE`、同一カード再利用元runを選択（評価ロジック禁止） |
 
 QA modeは、全質問を同じpost-Sleeptime状態から評価する`independent`
 （バージョン比較の既定）と、QAターンを同一instanceへ蓄積する`sequential`

@@ -109,8 +109,13 @@ class EvaluationWorkspace:
         return workspace
 
     @classmethod
-    def open(cls, run_dir: Path) -> "EvaluationWorkspace":
-        """Reattach to an existing run directory (used by resume/score)."""
+    def open(
+        cls,
+        run_dir: Path,
+        *,
+        create_missing: bool = True,
+    ) -> "EvaluationWorkspace":
+        """Reattach to an existing run, optionally without filesystem writes."""
         run_path = Path(run_dir).resolve()
         config_path = run_path / "run_config.json"
         try:
@@ -138,14 +143,15 @@ class EvaluationWorkspace:
             checkpoints_dir=run_path / "checkpoints",
             run_config_path=config_path,
         )
-        for directory in (
-            workspace.instances_dir,
-            workspace.results_dir,
-            workspace.traces_dir,
-            workspace.snapshots_dir,
-            workspace.checkpoints_dir,
-        ):
-            directory.mkdir(parents=True, exist_ok=True)
+        if create_missing:
+            for directory in (
+                workspace.instances_dir,
+                workspace.results_dir,
+                workspace.traces_dir,
+                workspace.snapshots_dir,
+                workspace.checkpoints_dir,
+            ):
+                directory.mkdir(parents=True, exist_ok=True)
         return workspace
 
     def create_runtime(self):

@@ -47,6 +47,8 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         f"- Chat model: {run_config.get('model_name') or 'default'}"
         f" (connection: {run_config.get('connection') or 'default'})",
         f"- QA mode: {run_config.get('qa_mode', 'legacy/unknown')}",
+        f"- Memory source: "
+        f"{run_config.get('memory_reused_from_run_id') or 'built in this run'}",
         f"- Prompt locale: {run_config.get('locale') or 'legacy/unknown'}",
         f"- Scope: samples={_fmt_limit(run_config.get('sample_limit'))}, "
         f"sessions={_fmt_limit(run_config.get('session_limit'))}, "

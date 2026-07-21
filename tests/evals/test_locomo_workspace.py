@@ -1,6 +1,8 @@
 """Isolation guarantees for LoCoMo evaluation workspaces."""
 
 
+import json
+
 import pytest
 
 from evals.locomo.artifacts import copy_latest_trace, safe_artifact_name
@@ -27,6 +29,22 @@ def test_workspace_creates_run_scoped_directories(tmp_path):
     assert workspace.checkpoints_dir.is_dir()
     assert workspace.run_config_path.is_file()
     assert workspace.instances_dir.resolve() != PRODUCTION_INSTANCES_DIR.resolve()
+
+
+def test_workspace_can_open_source_without_creating_missing_directories(tmp_path):
+    run_dir = tmp_path / "read-only-source"
+    run_dir.mkdir()
+    (run_dir / "run_config.json").write_text(
+        json.dumps({"run_id": "read-only-source"}),
+        encoding="utf-8",
+    )
+
+    workspace = EvaluationWorkspace.open(run_dir, create_missing=False)
+
+    assert workspace.run_id == "read-only-source"
+    assert not workspace.instances_dir.exists()
+    assert not workspace.results_dir.exists()
+    assert not workspace.checkpoints_dir.exists()
 
 
 def test_runtime_and_sleeptime_share_injected_paths(tmp_path):

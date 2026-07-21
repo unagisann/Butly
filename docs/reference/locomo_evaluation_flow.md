@@ -159,6 +159,55 @@ An evaluation profile can override retrieval recency through
 old and new cards by semantic similarity alone; it does not change the system
 default for normal instances.
 
+An evaluation profile can set `current_time`, `mid_term`, `session_digest`,
+and `rag` independently under `context_levels.levels` to `high` or `'off'`.
+Fully disabling RAG requires both `rag: 'off'` to suppress prompt injection and
+`brain.use_rag: false` to skip retrieval. The Colab Parameters cell exposes all
+four as booleans and writes both RAG settings. Quote `'off'` in hand-written
+YAML because YAML 1.1 parses an unquoted `off` as boolean false.
+
+The `chat`, `gatekeeper`, `summary`, and `knowledge` roles can each carry an
+independent `generation_config.temperature`. Chat controls final answers,
+gatekeeper controls retrieval decisions, and summary/knowledge operate during
+Sleeptime digest/card construction.
+
+## Rerun QA with the same cards
+
+`rerun-qa` clones a source run's canonical instance into a new run, skips
+Replay and Sleeptime, and starts QA again at question zero.
+
+```bash
+python -m evals.locomo.cli rerun-qa \
+  --source-run ./eval_runs/qwen3_14b_colab_v16 \
+  --dataset /path/to/locomo10.json \
+  --output-dir ./eval_runs \
+  --run-id qwen3_14b_colab_v16_no_time \
+  --all-questions \
+  --profile /path/to/qa-ablation.yaml
+```
+
+The following safety properties apply:
+
+- The source must use `qa_mode=independent`; only independent QA preserves the
+  canonical post-Sleeptime instance.
+- The command verifies the dataset SHA-256, selected-session Replay/Sleeptime
+  checkpoint, and an empty canonical `short_term_json` directory.
+- It never writes to the source. The instance (including its card database)
+  and Replay/Sleeptime logs are copied, while QA results, Traces, and a new
+  checkpoint are created in the destination.
+- `memory_reused_from_run_id` in `run_config.json` records card provenance.
+- Chat/gatekeeper temperatures and context switches affect a QA-only rerun.
+  Summary/knowledge temperatures do not rebuild the already-complete memory.
+- If the dataset moved, `--dataset` can point to its new location; a file whose
+  SHA-256 differs from the source manifest is rejected.
+- Resume stops instead of falling back to Replay/Sleeptime when a reuse run's
+  pre-completed memory checkpoint is missing or incomplete.
+
+In Colab, set `SOURCE_MEMORY_RUN_ID` to the source run ID and choose a new
+`RUN_ID`. Leaving it blank executes the normal Replay → Sleeptime → QA path.
+The sample/session scope stays fixed to the source card corpus; only question
+scope can change.
+
 ## `independent` QA
 
 The goal is to start every question from exactly the same post-Sleeptime state.
@@ -281,7 +330,8 @@ and are deleted after all questions for the sample.
 
 ## CLI and Colab live progress
 
-`run` and `resume` emit flushed progress before and after long model operations.
+`run`, `resume`, and `rerun-qa` emit flushed progress before and after long
+model operations.
 The Colab run cell inherits the child process's stderr, so no notebook-side
 output reader is required.
 

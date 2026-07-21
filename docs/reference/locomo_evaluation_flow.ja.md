@@ -171,6 +171,53 @@ Traceの`memory_probe_layers.vector`では、`fetch_limit: null`が全件検索�
 Colabの既定値`0.0`は新旧カードを意味類似度だけで比較するA/B用であり、
 通常インスタンスのシステム既定値は変更しない。
 
+評価profileの`context_levels.levels`では、`current_time`、`mid_term`、
+`session_digest`、`rag`をそれぞれ`high` / `'off'`にできる。RAGを完全に止める
+場合は、prompt注入を止める`rag: 'off'`に加えて`brain.use_rag: false`で検索自体も
+止める。Colab Parametersセルはこの4項目をbooleanで公開し、生成YAMLへ両方の
+RAG設定を正しく書く。手書きYAMLの`off`はYAML 1.1でbooleanに解釈されるため、
+文字列`'off'`としてquoteする。
+
+`chat`、`gatekeeper`、`summary`、`knowledge`は、それぞれ独立した
+`generation_config.temperature`を持てる。chatは最終回答、gatekeeperは検索判断、
+summaryとknowledgeはSleeptime中のdigest/card生成へ作用する。
+
+## 同じカードでQAだけ再実行
+
+`rerun-qa`は、既存runの正本instanceを新しいrunへ複製し、ReplayとSleeptimeを
+skipしてQAだけを0問目から実行する。
+
+```bash
+python -m evals.locomo.cli rerun-qa \
+  --source-run ./eval_runs/qwen3_14b_colab_v16 \
+  --dataset /path/to/locomo10.json \
+  --output-dir ./eval_runs \
+  --run-id qwen3_14b_colab_v16_no_time \
+  --all-questions \
+  --profile /path/to/qa-ablation.yaml
+```
+
+安全条件と性質は次のとおり。
+
+- 元runは`qa_mode=independent`でなければならない。独立QAだけが正本instanceを
+  post-Sleeptimeのまま不変に保つ。
+- datasetのSHA-256、対象sessionのReplay/Sleeptime checkpoint、正本の
+  `short_term_json`が空であることを検証する。
+- 元runには書き込まない。カードDBを含むinstanceとReplay/Sleeptime logを
+  新runへcopyし、新しいQA結果・Trace・checkpointを作る。
+- `run_config.json`の`memory_reused_from_run_id`がカードの出所を示す。
+- QA-only再実行ではchat/gatekeeper temperatureとcontext切替は変化するが、
+  summary/knowledge temperatureは既に完成したdigest/cardを作り直さないため
+  結果へ作用しない。
+- datasetを移動した場合だけ`--dataset`で新しい場所を指定できる。元run manifestの
+  SHA-256と一致しないファイルは拒否する。
+- 再利用runのresume時にmemory checkpointが欠落・不完全なら、二重投入を避けるため
+  Replay/Sleeptimeへfallbackせず停止する。
+
+Colabでは`SOURCE_MEMORY_RUN_ID`へ元run IDを設定し、`RUN_ID`を新しい値に変える。
+空文字のままなら通常のReplay → Sleeptime → QAを行う。sample/session範囲は元runの
+カード集合に固定され、question範囲だけを変更できる。
+
 ## `independent`: 独立QA
 
 目的は、**すべての質問を完全に同じpost-Sleeptime状態から評価すること**。
@@ -286,7 +333,7 @@ RAG判断のドリフトなどを含む運用耐久評価に向く。
 
 ## CLI / Colabの進捗表示
 
-`run`と`resume`は、長いモデル呼び出しの開始前と完了後に、次の形式で進捗を
+`run`、`resume`、`rerun-qa`は、長いモデル呼び出しの開始前と完了後に、次の形式で進捗を
 stderrへ即時出力する。Colabの実行セルは子プロセスのstderrをそのまま表示するため、
 Notebook側で出力を読み取る処理は不要。
 
