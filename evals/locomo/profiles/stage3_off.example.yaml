@@ -1,0 +1,18 @@
+# Stage 3 (knowledge maturation / memory_nodes) OFF — 同一カード A/B の baseline 側。
+#
+# 使い方 (計画 §10.2 clone A/B):
+#   1. baseline source run を通常どおり Replay する (Stage 3 は既定 OFF):
+#        python -m evals.locomo.cli run --dataset ... --output-dir ... \
+#          --qa-mode independent
+#   2. post-Stage 2 正本を OFF clone へコピーして QA:
+#        python -m evals.locomo.cli rerun-qa --source-run <run_dir> \
+#          --run-id stage3-off --profile evals/locomo/profiles/stage3_off.example.yaml
+#
+# node 生成 (sleeptime.update_targets.knowledge_maturation) と
+# node 注入 (memory.knowledge_maturation_enabled) の両方を明示 OFF に固定する。
+name: stage3_off
+sleeptime:
+  update_targets:
+    knowledge_maturation: false
+memory:
+  knowledge_maturation_enabled: false

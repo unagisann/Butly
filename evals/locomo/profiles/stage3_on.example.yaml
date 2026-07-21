@@ -1,0 +1,23 @@
+# Stage 3 (knowledge maturation / memory_nodes) ON — 同一カード A/B の ON 側。
+#
+# 使い方 (計画 §10.2 clone A/B):
+#   OFF 側と同じ source run から clone し、--stage3-bootstrap でキューを
+#   drain してから QA する:
+#     python -m evals.locomo.cli rerun-qa --source-run <run_dir> \
+#       --run-id stage3-on --stage3-bootstrap \
+#       --profile evals/locomo/profiles/stage3_on.example.yaml
+#
+#   - clone 直後にカード同一性 (id + canonical content hash) を source と照合し、
+#     不一致なら QA 前に失敗終了する (card_identity.json に記録)。
+#   - bootstrap 後にもカード集合が不変であることを再検証する。
+#   - memory.knowledge_maturation_enabled=true で QA 時の active node 注入が有効になる。
+#
+# 参考: per-session で Stage 3 を走らせる統合テスト経路は、通常の run に
+# 本 profile を渡せばよい (sleeptime.update_targets.knowledge_maturation が
+# 再帰マージで有効化され、SleeptimeRunner が Stage 2 成功後に Stage 3 を呼ぶ)。
+name: stage3_on
+sleeptime:
+  update_targets:
+    knowledge_maturation: true
+memory:
+  knowledge_maturation_enabled: true

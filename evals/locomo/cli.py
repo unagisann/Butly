@@ -114,6 +114,12 @@ def build_parser() -> argparse.ArgumentParser:
     rerun_parser.add_argument("--connection")
     rerun_parser.add_argument("--profile", type=Path)
     rerun_parser.add_argument(
+        "--stage3-bootstrap",
+        action="store_true",
+        help="Stage 3 A/B の ON 側: カード同一性検証後に stage3-bootstrap で"
+        "レビューキューを drain してから QA する",
+    )
+    rerun_parser.add_argument(
         "--skip-scoring",
         action="store_true",
         help="Stop after QA; score/report can be re-run separately",
@@ -225,6 +231,7 @@ def _command_rerun_qa(args: argparse.Namespace) -> int:
             model_name=args.model_name,
             connection=args.connection,
             profile_path=args.profile,
+            stage3_bootstrap=args.stage3_bootstrap,
             progress_reporter=progress_reporter,
         )
     )

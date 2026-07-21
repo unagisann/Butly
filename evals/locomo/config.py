@@ -10,7 +10,9 @@ import yaml
 
 
 # モデル role 5種 + instance-config にそのまま流し込む非モデルセクション
-# (memory: RAG source、brain: 検索、context_levels: prompt注入のablation)
+# (memory: RAG source、brain: 検索、context_levels: prompt注入のablation、
+#  sleeptime: update_targets 等の Stage 制御。適用は再帰マージなので
+#  update_targets の 1 キー上書きが他の既定を消さない)
 PROFILE_ROLE_SECTIONS = (
     "chat",
     "gatekeeper",
@@ -20,6 +22,7 @@ PROFILE_ROLE_SECTIONS = (
     "memory",
     "brain",
     "context_levels",
+    "sleeptime",
 )
 QA_MODES = ("independent", "sequential")
 DEFAULT_EVALUATION_LOCALE = "en"

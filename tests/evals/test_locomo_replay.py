@@ -4,9 +4,10 @@ import asyncio
 from io import StringIO
 import json
 import os
+import re
 import sqlite3
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -14,14 +15,17 @@ from butly_core.chat.types import ChatResponse
 from butly_core.core.database import ButlyDatabase
 from evals.locomo.checkpoint import STATUS_QA, Checkpoint
 from evals.locomo.cli import main as cli_main
-from evals.locomo.config import ReplayConfig
+from evals.locomo.config import EvaluationProfile, ReplayConfig
 from evals.locomo.dataset import LocomoConversation, load_dataset
 from evals.locomo.qa_runner import QARunner, build_qa_request
 from evals.locomo.progress import create_console_progress
 from evals.locomo.replay import (
+    _configure_instance,
+    _diff_card_identity,
     _discard_partial_session,
     _create_instance,
     _instance_name,
+    _knowledge_card_identity,
     _resolve_instance_names,
     _write_run_metadata,
     rerun_qa_from_memory,
@@ -60,6 +64,29 @@ class FakeProvider:
         return [1.0, 0.5, 0.25, 0.125]
 
     def classify(self, prompt, config):
+        if "memory_nodes" in prompt and "link_existing" in prompt:
+            # Stage 3 node review: レビューカード全 id を反映した new_node を返す
+            card_ids = re.findall(r'"id": "([^"]+)"', prompt)
+            return json.dumps(
+                {
+                    "reviewed_card_ids": card_ids,
+                    "link_existing": [],
+                    "new_nodes": (
+                        [
+                            {
+                                "kind": "preference",
+                                "subject": "user",
+                                "topic": "pottery",
+                                "statement": "Maya is actively into pottery.",
+                                "confidence": 0.8,
+                                "source_card_ids": card_ids,
+                            }
+                        ]
+                        if card_ids
+                        else []
+                    ),
+                }
+            )
         if "knowledge cards" in prompt or '"ai_importance"' in prompt:
             return json.dumps(
                 [
@@ -874,3 +901,260 @@ def test_sequential_resume_rolls_back_qa_before_unwritten_checkpoint(tmp_path):
         "synthetic-conv-1",
         "locomo_synthetic_conv_1",
     ).qa_completed == 2
+
+
+# ===================================================================
+# Stage 3 (knowledge maturation) — profile merge / per-session / clone A/B
+# ===================================================================
+
+STAGE3_ON_PROFILE_YAML = """name: stage3_on
+sleeptime:
+  update_targets:
+    knowledge_maturation: true
+memory:
+  knowledge_maturation_enabled: true
+"""
+
+
+def test_configure_instance_merges_profile_recursively():
+    runtime = MagicMock()
+    runtime.instance_manager.get_instance_config.return_value = {}
+    runtime.instance_manager.update_instance_config.return_value = (True, "ok")
+    profile = EvaluationProfile(
+        name=None,
+        locale=None,
+        sections={
+            "sleeptime": {"update_targets": {"knowledge_maturation": True}},
+            "memory": {"knowledge_maturation_enabled": True},
+        },
+    )
+    config = ReplayConfig(dataset_path=FIXTURE, output_dir=Path("/tmp"))
+
+    _configure_instance(runtime, "inst", config, profile)
+
+    captured = runtime.instance_manager.update_instance_config.call_args[0][1]
+    targets = captured["sleeptime"]["update_targets"]
+    # 上書き対象の 1 キーだけ変わる
+    assert targets["knowledge_maturation"] is True
+    # 再帰マージ: digest / knowledge_cards 等の既定を消さない
+    assert targets["digest"] is True
+    assert targets["knowledge_cards"] is True
+    assert captured["memory"]["knowledge_maturation_enabled"] is True
+
+
+def test_stage3_profile_runs_per_session(tmp_path):
+    """§10.1: profile で Stage 3 を有効化すると Stage 2 成功後に走り、
+    sleeptime_log に Stage 3 統計が分離記録される。"""
+    fake_provider = FakeProvider()
+    profile_path = tmp_path / "stage3_on.yaml"
+    profile_path.write_text(STAGE3_ON_PROFILE_YAML, encoding="utf-8")
+    config = ReplayConfig(
+        dataset_path=FIXTURE,
+        output_dir=tmp_path,
+        run_id="stage3-per-session",
+        sample_limit=1,
+        session_limit=2,
+        question_limit=1,
+        profile_path=profile_path,
+    )
+
+    with patch(
+        "butly_core.llm.factory.ProviderFactory.create",
+        return_value=fake_provider,
+    ), patch("sleeptime.time.sleep", return_value=None):
+        result = asyncio.run(run_evaluation(config))
+
+    sleeptime_rows = _read_jsonl(
+        result.workspace.results_dir / "sleeptime_log.jsonl"
+    )
+    assert [row["stage_3_status"] for row in sleeptime_rows] == [
+        "completed",
+        "completed",
+    ]
+    assert sleeptime_rows[0]["stage_3_created_nodes"] >= 1
+    assert sleeptime_rows[0]["stage_3_reviewed_cards"] >= 1
+    assert sleeptime_rows[0]["stage_3_llm_calls"] >= 1
+    # Stage 2 の成功判定に Stage 3 が紛れ込まない
+    assert all(row["stage_2_success"] is True for row in sleeptime_rows)
+
+    instance_dir = result.workspace.instances_dir / "locomo_synthetic_conv_1"
+    with sqlite3.connect(instance_dir / "butly_memory.db") as connection:
+        node_count = connection.execute(
+            "SELECT COUNT(*) FROM memory_nodes"
+        ).fetchone()[0]
+        unstamped = connection.execute(
+            """
+            SELECT COUNT(*) FROM knowledge_cards
+            WHERE COALESCE(is_archived, 0) = 0
+              AND (last_matured_content_hash IS NULL
+                   OR last_matured_content_hash <> content_hash)
+            """
+        ).fetchone()[0]
+    assert node_count >= 1
+    assert unstamped == 0  # キューは drain 済み
+
+    instance_config = json.loads(
+        (instance_dir / "config.json").read_text(encoding="utf-8")
+    )
+    assert instance_config["sleeptime"]["update_targets"]["digest"] is True
+    assert (
+        instance_config["sleeptime"]["update_targets"]["knowledge_maturation"]
+        is True
+    )
+
+
+def test_knowledge_card_identity_detects_content_changes(tmp_path):
+    def _card(summary):
+        return {
+            "id": "card-1",
+            "category": "Hobby",
+            "title": "t",
+            "ai_importance": 5,
+            "humanity_importance": 5,
+            "summary": summary,
+            "episode": "e",
+            "raw_reference": "raw",
+        }
+
+    db_a = tmp_path / "a.db"
+    db_b = tmp_path / "b.db"
+    ButlyDatabase(str(db_a)).register_knowledge(_card("same summary"))
+    ButlyDatabase(str(db_b)).register_knowledge(_card("different summary"))
+
+    identity_a = _knowledge_card_identity(db_a)
+    identity_b = _knowledge_card_identity(db_b)
+    assert identity_a["count"] == identity_b["count"] == 1
+    assert identity_a["digest"] != identity_b["digest"]
+    assert "changed=['card-1']" in _diff_card_identity(identity_a, identity_b)
+
+    # 同一内容なら digest 一致
+    db_c = tmp_path / "c.db"
+    ButlyDatabase(str(db_c)).register_knowledge(_card("same summary"))
+    assert _knowledge_card_identity(db_c)["digest"] == identity_a["digest"]
+
+
+def test_rerun_qa_stage3_bootstrap_builds_nodes_on_identical_cards(tmp_path):
+    """§10.2 ON 側: カード同一性検証 → bootstrap → 不変再検証 → QA。"""
+    source_config = ReplayConfig(
+        dataset_path=FIXTURE,
+        output_dir=tmp_path,
+        run_id="ab-source",
+        sample_limit=1,
+        session_limit=1,
+        question_limit=1,
+        qa_mode="independent",
+    )
+    conversation = load_dataset(FIXTURE)[0]
+    source_workspace = EvaluationWorkspace.create(tmp_path, run_id="ab-source")
+    _write_run_metadata(source_workspace, source_config, [conversation])
+    source_instance = source_workspace.instances_dir / "locomo_synthetic_conv_1"
+    _create_instance(
+        source_workspace.create_runtime(),
+        conversation,
+        source_instance.name,
+        source_config,
+    )
+    source_db = source_instance / "butly_memory.db"
+    db = ButlyDatabase(str(source_db))
+    for index in (1, 2):
+        db.register_knowledge(
+            {
+                "id": f"ab-card-{index}",
+                "category": "Hobby",
+                "title": f"Pottery fact {index}",
+                "ai_importance": 6,
+                "humanity_importance": 6,
+                "summary": f"Maya pottery detail {index}.",
+                "episode": "Synthetic evidence.",
+                "raw_reference": "session_0001.json",
+            }
+        )
+    with sqlite3.connect(source_db) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    source_checkpoint = Checkpoint.create(
+        source_workspace.run_id, source_workspace.checkpoints_dir
+    )
+    source_progress = source_checkpoint.progress_for(
+        conversation.sample_id, source_instance.name
+    )
+    source_progress.replayed_sessions = ["session_1"]
+    source_progress.sleeptime_completed = ["session_1"]
+    source_progress.qa_completed = 1
+    source_checkpoint.status = "completed"
+    source_checkpoint.save()
+    (source_workspace.results_dir / "replay_log.jsonl").write_text(
+        '{"status":"succeeded"}\n', encoding="utf-8"
+    )
+    (source_workspace.results_dir / "sleeptime_log.jsonl").write_text(
+        '{"status":"succeeded"}\n', encoding="utf-8"
+    )
+    source_identity_before = _knowledge_card_identity(source_db)
+
+    profile_path = tmp_path / "stage3_on.yaml"
+    profile_path.write_text(STAGE3_ON_PROFILE_YAML, encoding="utf-8")
+
+    async def fake_qa_run(self, **kwargs):
+        return {"question_id": kwargs["question"].question_id}
+
+    fake_provider = FakeProvider()
+    with patch.object(
+        SleeptimeRunner,
+        "run",
+        side_effect=AssertionError("rerun-qa must not run per-session Sleeptime"),
+    ), patch.object(QARunner, "run", fake_qa_run), patch(
+        "butly_core.llm.factory.ProviderFactory.create",
+        return_value=fake_provider,
+    ), patch("sleeptime.time.sleep", return_value=None):
+        rerun = asyncio.run(
+            rerun_qa_from_memory(
+                source_workspace.run_dir,
+                output_dir=tmp_path,
+                run_id="ab-on",
+                stage3_bootstrap=True,
+                profile_path=profile_path,
+            )
+        )
+
+    target_instance = rerun.workspace.instances_dir / rerun.instance_names[0]
+
+    identity = json.loads(
+        (rerun.workspace.run_dir / "card_identity.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    sample_report = identity["synthetic-conv-1"]
+    assert sample_report["card_count"] == 2
+    assert sample_report["stage3_bootstrap"]["status"] == "completed"
+    assert (
+        sample_report["stage3_bootstrap"]["post_bootstrap_digest"]
+        == sample_report["digest"]
+    )
+
+    boot_rows = _read_jsonl(
+        rerun.workspace.results_dir / "stage3_bootstrap_log.jsonl"
+    )
+    assert boot_rows[0]["status"] == "completed"
+    assert boot_rows[0]["applied_cards"] == 2
+
+    with sqlite3.connect(target_instance / "butly_memory.db") as connection:
+        node_count = connection.execute(
+            "SELECT COUNT(*) FROM memory_nodes"
+        ).fetchone()[0]
+    assert node_count >= 1
+
+    # source / clone ともカード集合は post-Stage 2 正本と不変
+    assert (
+        _knowledge_card_identity(source_db)["digest"]
+        == source_identity_before["digest"]
+    )
+    assert (
+        _knowledge_card_identity(target_instance / "butly_memory.db")["digest"]
+        == source_identity_before["digest"]
+    )
+
+    run_config = json.loads(
+        rerun.workspace.run_config_path.read_text(encoding="utf-8")
+    )
+    assert run_config["stage3_bootstrap"] is True
+    # OFF 側 (stage3_bootstrap 無し) と同じ導線でカード同一性 artifact が出る
+    assert rerun.answered_questions == 1

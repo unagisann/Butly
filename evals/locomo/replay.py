@@ -11,8 +11,10 @@ import platform
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 from typing import Optional
 
+from butly_core.core.card_content import compute_content_hash
 from butly_core.core.chronos import CHRONOS_NOW_ENV
 
 from .adapter import ReplayAdapter
@@ -127,6 +129,7 @@ async def rerun_qa_from_memory(
     model_name: Optional[str] = None,
     connection: Optional[str] = None,
     profile_path: Optional[Path] = None,
+    stage3_bootstrap: bool = False,
     progress_reporter: Optional[ProgressReporter] = None,
 ) -> EvaluationRunResult:
     """Clone a completed independent run's memory and execute QA only.
@@ -135,6 +138,11 @@ async def rerun_qa_from_memory(
     post-Sleeptime baselines because independent QA mutates disposable clones.
     A new profile may override prompt context, retrieval, and model settings in
     the copied instances before any question is asked.
+
+    stage3_bootstrap=True は Stage 3 clone A/B の ON 側（§10.2）。
+    コピー直後にカード同一性（id + canonical content hash）を source と照合し、
+    一致した場合のみ stage3-bootstrap でキューを drain してから QA へ進む。
+    bootstrap 後にもカード集合が不変であることを再検証する。
     """
     source_workspace = EvaluationWorkspace.open(
         source_run_dir,
@@ -225,6 +233,7 @@ async def rerun_qa_from_memory(
             "memory_reused_from_run_id": source_workspace.run_id,
             "memory_reused_from_run_dir": str(source_workspace.run_dir),
             "run_sleeptime_per_session": False,
+            "stage3_bootstrap": stage3_bootstrap,
         }
     )
     workspace.write_run_config(run_payload)
@@ -249,6 +258,26 @@ async def rerun_qa_from_memory(
             config,
             profile,
         )
+
+    # §10.2/§10.3: clone のカード集合が post-Stage 2 正本と完全一致することを
+    # QA 前に検証する（OFF/ON 両 clone を同じ正本と照合すれば推移的に同一）。
+    identity_report = _verify_clone_card_identity(
+        source_workspace=source_workspace,
+        workspace=workspace,
+        checkpoint=checkpoint,
+        conversations=conversations,
+    )
+    if stage3_bootstrap:
+        _bootstrap_stage3_clones(
+            workspace=workspace,
+            checkpoint=checkpoint,
+            conversations=conversations,
+            session_limit=config.session_limit,
+            identity_report=identity_report,
+            progress_reporter=progress_reporter,
+        )
+    write_json(workspace.run_dir / "card_identity.json", identity_report)
+
     checkpoint.status = STATUS_QA
     checkpoint.save()
     return await _execute(
@@ -388,6 +417,9 @@ async def _execute(
                 sample_id=conversation.sample_id,
                 session_id=session.session_id,
                 instance_name=instance_name,
+                # Stage 3 の clock は session の元日時を明示注入する
+                # (QA 時だけ設定される CHRONOS_NOW_ENV に依存しない)
+                session_now=session.timestamp,
             )
             snapshot_instance(
                 workspace.instances_dir / instance_name,
@@ -718,6 +750,19 @@ def _create_instance(
     _configure_instance(runtime, instance_name, config, profile)
 
 
+def _merge_profile_section(base: dict, overrides: dict) -> None:
+    """profile セクションを再帰マージする。
+
+    `sleeptime.update_targets.knowledge_maturation` だけの上書きで
+    digest / knowledge_cards 等の既定を消さないため、浅い update は使わない。
+    """
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            _merge_profile_section(base[key], value)
+        else:
+            base[key] = value
+
+
 def _configure_instance(
     runtime,
     instance_name: str,
@@ -739,7 +784,9 @@ def _configure_instance(
     )
     if profile:
         for section, overrides in profile.sections.items():
-            instance_config.setdefault(section, {}).update(overrides)
+            _merge_profile_section(
+                instance_config.setdefault(section, {}), overrides
+            )
     instance_config.setdefault("prompts", {})["allow_user_overrides"] = False
     if config.model_name is not None:
         instance_config.setdefault("chat", {})["model_name"] = config.model_name
@@ -752,6 +799,152 @@ def _configure_instance(
         raise RuntimeError(
             f"Failed to configure evaluation instance: {update_message}"
         )
+
+
+def _knowledge_card_identity(db_path: Path) -> dict:
+    """knowledge_cards の同一性指標（id + §5.2 canonical content hash）を返す。
+
+    保存済み content_hash 列ではなく本文から再計算する。列の欠損・陳腐化が
+    あっても、比較は常にカード本文そのものに基づく。
+    """
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, title, summary, episode, tags, category, source_date
+            FROM knowledge_cards
+            ORDER BY id ASC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    cards = [
+        {"card_id": row["id"], "content_hash": compute_content_hash(dict(row))}
+        for row in rows
+    ]
+    digest = hashlib.sha256(
+        json.dumps(cards, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return {"count": len(cards), "digest": digest, "cards": cards}
+
+
+def _diff_card_identity(source: dict, clone: dict) -> str:
+    source_map = {c["card_id"]: c["content_hash"] for c in source["cards"]}
+    clone_map = {c["card_id"]: c["content_hash"] for c in clone["cards"]}
+    missing = sorted(set(source_map) - set(clone_map))
+    extra = sorted(set(clone_map) - set(source_map))
+    changed = sorted(
+        cid
+        for cid in set(source_map) & set(clone_map)
+        if source_map[cid] != clone_map[cid]
+    )
+    return f"missing={missing} extra={extra} changed={changed}"
+
+
+def _verify_clone_card_identity(
+    *,
+    source_workspace: EvaluationWorkspace,
+    workspace: EvaluationWorkspace,
+    checkpoint: Checkpoint,
+    conversations: list[LocomoConversation],
+) -> dict:
+    """clone のカード集合を source と照合し、不一致なら QA 前に失敗終了する。"""
+    report: dict = {}
+    for conversation in conversations:
+        progress = checkpoint.samples[conversation.sample_id]
+        source_db = (
+            source_workspace.instances_dir
+            / progress.instance_name
+            / "butly_memory.db"
+        )
+        clone_db = (
+            workspace.instances_dir / progress.instance_name / "butly_memory.db"
+        )
+        source_identity = _knowledge_card_identity(source_db)
+        clone_identity = _knowledge_card_identity(clone_db)
+        if source_identity["digest"] != clone_identity["digest"]:
+            raise WorkspaceError(
+                "Cloned knowledge cards do not match the post-Stage 2 source "
+                f"for sample {conversation.sample_id!r}: "
+                + _diff_card_identity(source_identity, clone_identity)
+            )
+        report[conversation.sample_id] = {
+            "instance_name": progress.instance_name,
+            "card_count": source_identity["count"],
+            "digest": source_identity["digest"],
+        }
+    return report
+
+
+def _bootstrap_stage3_clones(
+    *,
+    workspace: EvaluationWorkspace,
+    checkpoint: Checkpoint,
+    conversations: list[LocomoConversation],
+    session_limit: Optional[int],
+    identity_report: dict,
+    progress_reporter: Optional[ProgressReporter],
+) -> None:
+    """ON clone で stage3-bootstrap を実行し、カード集合の不変を再検証する。"""
+    sleeptime = workspace.create_sleeptime()
+    log_path = workspace.results_dir / "stage3_bootstrap_log.jsonl"
+    for conversation in conversations:
+        progress = checkpoint.samples[conversation.sample_id]
+        sessions = conversation.sessions[:session_limit]
+        # QA と同じ clock: 最終会話日の翌日（§10.1 の評価 clock 方針）
+        reference_now = (
+            max(session.timestamp for session in sessions) + timedelta(days=1)
+            if sessions
+            else None
+        )
+        _emit_progress(
+            progress_reporter,
+            0,
+            0,
+            "stage3-bootstrap",
+            f"{conversation.sample_id} draining the review queue",
+        )
+        stats = sleeptime.stage3_bootstrap(
+            progress.instance_name, now=reference_now
+        )
+        append_jsonl(
+            log_path,
+            {
+                "run_id": workspace.run_id,
+                "sample_id": conversation.sample_id,
+                "instance_name": progress.instance_name,
+                **(stats if isinstance(stats, dict) else {"status": "unknown"}),
+            },
+        )
+        if not isinstance(stats, dict) or stats.get("status") != "completed":
+            raise WorkspaceError(
+                "stage3-bootstrap did not complete for sample "
+                f"{conversation.sample_id!r}: "
+                f"{stats.get('status') if isinstance(stats, dict) else stats!r}. "
+                "The ON clone is not a valid A/B arm; fix the failure and re-run."
+            )
+
+        clone_db = (
+            workspace.instances_dir / progress.instance_name / "butly_memory.db"
+        )
+        post_identity = _knowledge_card_identity(clone_db)
+        expected = identity_report[conversation.sample_id]
+        if post_identity["digest"] != expected["digest"]:
+            raise WorkspaceError(
+                "stage3-bootstrap modified knowledge cards for sample "
+                f"{conversation.sample_id!r}; the A/B same-cards invariant "
+                "is broken"
+            )
+        sample_report = identity_report[conversation.sample_id]
+        sample_report["stage3_bootstrap"] = {
+            "status": stats.get("status"),
+            "applied_cards": stats.get("applied_cards"),
+            "created": stats.get("created"),
+            "linked": stats.get("linked"),
+            "llm_calls": stats.get("llm_calls"),
+            "post_bootstrap_digest": post_identity["digest"],
+        }
 
 
 def _verify_reused_dataset(

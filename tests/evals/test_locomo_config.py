@@ -111,6 +111,27 @@ def test_load_profile_rejects_unknown_locale(tmp_path):
         load_profile(path)
 
 
+def test_load_profile_accepts_sleeptime_section(tmp_path):
+    path = tmp_path / "stage3.yaml"
+    path.write_text(
+        "name: stage3_on\n"
+        "sleeptime:\n"
+        "  update_targets:\n"
+        "    knowledge_maturation: true\n"
+        "memory:\n"
+        "  knowledge_maturation_enabled: true\n",
+        encoding="utf-8",
+    )
+
+    profile = load_profile(path)
+
+    assert (
+        profile.sections["sleeptime"]["update_targets"]["knowledge_maturation"]
+        is True
+    )
+    assert profile.sections["memory"]["knowledge_maturation_enabled"] is True
+
+
 def test_profile_brain_override_applies_to_instance(tmp_path):
     profile_path = tmp_path / "profile.yaml"
     profile_path.write_text(
