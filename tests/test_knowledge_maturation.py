@@ -79,6 +79,88 @@ def _insert_card(db_path: str, card_id: str, **overrides):
 
 
 # ===================================================================
+# 0. Canonical content hash (Stage 3 計画 §5.1/§5.2)
+# ===================================================================
+
+class TestCardContentHash:
+    def _card(self, **overrides):
+        base = {
+            "title": "Title",
+            "summary": "Summary",
+            "episode": "Episode",
+            "tags": "a,b",
+            "category": "Tech",
+            "source_date": "2026-01-01",
+        }
+        base.update(overrides)
+        return base
+
+    def test_stable_for_same_content(self):
+        from butly_core.core.card_content import compute_content_hash
+
+        assert compute_content_hash(self._card()) == compute_content_hash(self._card())
+
+    def test_none_and_missing_fields_equal_empty(self):
+        from butly_core.core.card_content import compute_content_hash
+
+        a = compute_content_hash(self._card(episode=None))
+        b = compute_content_hash(self._card(episode=""))
+        c = self._card()
+        del c["episode"]
+        assert a == b == compute_content_hash(c)
+
+    def test_whitespace_and_newline_normalization(self):
+        from butly_core.core.card_content import compute_content_hash
+
+        a = compute_content_hash(self._card(summary="line1\r\nline2"))
+        b = compute_content_hash(self._card(summary="  line1\nline2  "))
+        assert a == b
+
+    def test_content_fields_change_hash(self):
+        from butly_core.core.card_content import compute_content_hash
+
+        base = compute_content_hash(self._card())
+        assert compute_content_hash(self._card(title="Other")) != base
+        assert compute_content_hash(self._card(source_date="2026-02-02")) != base
+
+    def test_non_content_fields_ignored(self):
+        from butly_core.core.card_content import compute_content_hash
+
+        base = compute_content_hash(self._card())
+        noisy = self._card()
+        noisy.update({"usage_count": 99, "is_pinned": 1, "type": "X", "ai_importance": 9})
+        assert compute_content_hash(noisy) == base
+
+    def test_normalize_maturation_time(self):
+        from butly_core.core.card_content import normalize_maturation_time
+
+        fb = "2026-07-21T00:00:00Z"
+        # SQLite CURRENT_TIMESTAMP 形式（UTC 扱い）
+        assert (
+            normalize_maturation_time("2026-01-02 03:04:05", fallback=fb)
+            == "2026-01-02T03:04:05Z"
+        )
+        # offset 付き → UTC へ変換
+        assert (
+            normalize_maturation_time("2026-01-02T12:04:05+09:00", fallback=fb)
+            == "2026-01-02T03:04:05Z"
+        )
+        # 小数秒付き Z
+        assert (
+            normalize_maturation_time("2026-01-02T03:04:05.123Z", fallback=fb)
+            == "2026-01-02T03:04:05Z"
+        )
+        # 日付のみ
+        assert (
+            normalize_maturation_time("2026-01-02", fallback=fb)
+            == "2026-01-02T00:00:00Z"
+        )
+        # parse 不能 → fallback
+        assert normalize_maturation_time("garbage", fallback=fb) == fb
+        assert normalize_maturation_time(None, fallback=fb) == fb
+
+
+# ===================================================================
 # 1. Migration
 # ===================================================================
 
@@ -120,6 +202,185 @@ class TestMigration:
         # 2 回目の init でも壊れない
         ButlyDatabase(db_path=db_path)
         ButlyDatabase(db_path=db_path)
+
+    def test_queue_columns_exist(self, db_path):
+        conn = sqlite3.connect(db_path)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(knowledge_cards)")}
+        run_cards_cols = {
+            r[1] for r in conn.execute("PRAGMA table_info(memory_maturation_run_cards)")
+        }
+        indexes = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")
+        }
+        conn.close()
+        assert {
+            "content_hash",
+            "last_matured_content_hash",
+            "maturation_queued_at",
+            "last_matured_at",
+            "last_matured_run_id",
+        }.issubset(cols)
+        assert {
+            "run_id", "card_id", "content_hash", "status", "error", "diagnostic",
+        }.issubset(run_cards_cols)
+        assert "idx_knowledge_cards_maturation_queue" in indexes
+        assert "idx_memory_maturation_run_cards_run_status" in indexes
+
+
+# ===================================================================
+# 1b. content_hash backfill と書き手統合 (§5.1/§5.2)
+# ===================================================================
+
+class TestContentHashWriters:
+    def test_backfill_on_migration(self, tmp_path):
+        from butly_core.core.database import ButlyDatabase
+        from butly_core.core.card_content import compute_content_hash
+
+        p = str(tmp_path / "m.db")
+        ButlyDatabase(db_path=p)
+        # hash 列を NULL に戻した既存カードを模す
+        _insert_card(p, "old_card", created_at="2026-01-02 03:04:05")
+        conn = sqlite3.connect(p)
+        row = conn.execute(
+            "SELECT content_hash, maturation_queued_at FROM knowledge_cards WHERE id='old_card'"
+        ).fetchone()
+        conn.close()
+        assert row == (None, None)
+
+        # 再 migration で backfill される
+        ButlyDatabase(db_path=p)
+        conn = sqlite3.connect(p)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT * FROM knowledge_cards WHERE id='old_card'"
+        ).fetchone()
+        conn.close()
+        assert row["content_hash"] == compute_content_hash(dict(row))
+        # created_at (UTC 扱い) から正規化された固定長 UTC
+        assert row["maturation_queued_at"] == "2026-01-02T03:04:05Z"
+        assert row["last_matured_content_hash"] is None
+
+    def test_register_knowledge_sets_hash(self, tmp_path):
+        from butly_core.core.database import ButlyDatabase
+
+        p = str(tmp_path / "r.db")
+        db = ButlyDatabase(db_path=p)
+        db.register_knowledge(
+            {
+                "id": "reg_1",
+                "category": "Tech",
+                "title": "t",
+                "summary": "s",
+                "episode": "e",
+                "ai_importance": 5,
+                "humanity_importance": 5,
+                "raw_reference": "raw",
+            }
+        )
+        conn = sqlite3.connect(p)
+        row = conn.execute(
+            "SELECT content_hash, maturation_queued_at FROM knowledge_cards WHERE id='reg_1'"
+        ).fetchone()
+        conn.close()
+        assert row[0] is not None
+        assert row[1] is not None
+
+    def test_update_card_requeues_only_on_content_change(self, tmp_path):
+        from butly_core.core.database import ButlyDatabase
+
+        p = str(tmp_path / "u.db")
+        db = ButlyDatabase(db_path=p)
+        _insert_card(p, "c1")
+        ButlyDatabase(db_path=p)  # backfill
+
+        conn = sqlite3.connect(p)
+        before = conn.execute(
+            "SELECT content_hash, maturation_queued_at FROM knowledge_cards WHERE id='c1'"
+        ).fetchone()
+        conn.close()
+
+        # 本文以外 (ai_importance) の更新では hash / queue 時刻とも不変
+        assert db.update_card("c1", {"ai_importance": 9}) is True
+        conn = sqlite3.connect(p)
+        after_meta = conn.execute(
+            "SELECT content_hash, maturation_queued_at FROM knowledge_cards WHERE id='c1'"
+        ).fetchone()
+        conn.close()
+        assert after_meta == before
+
+        # 本文更新では hash が変わり再キューされる
+        assert db.update_card("c1", {"summary": "totally new"}) is True
+        conn = sqlite3.connect(p)
+        after_content = conn.execute(
+            "SELECT content_hash, maturation_queued_at FROM knowledge_cards WHERE id='c1'"
+        ).fetchone()
+        conn.close()
+        assert after_content[0] != before[0]
+
+    def test_pin_archive_do_not_touch_hash(self, tmp_path):
+        from butly_core.core.database import ButlyDatabase
+
+        p = str(tmp_path / "pin.db")
+        db = ButlyDatabase(db_path=p)
+        _insert_card(p, "c1")
+        ButlyDatabase(db_path=p)  # backfill
+        conn = sqlite3.connect(p)
+        before = conn.execute(
+            "SELECT content_hash, maturation_queued_at FROM knowledge_cards WHERE id='c1'"
+        ).fetchone()
+        conn.close()
+
+        db.toggle_pin("c1", True)
+        db.toggle_archive("c1", True)
+        conn = sqlite3.connect(p)
+        after = conn.execute(
+            "SELECT content_hash, maturation_queued_at FROM knowledge_cards WHERE id='c1'"
+        ).fetchone()
+        conn.close()
+        assert after == before
+
+    def test_insert_knowledge_sets_hash(self, tmp_path):
+        import sleeptime as _sl
+        from butly_core.core.database import ButlyDatabase
+        from butly_core.core.card_content import compute_content_hash
+
+        p = str(tmp_path / "ins.db")
+        ButlyDatabase(db_path=p)
+
+        hk = _sl.ButlySleeptime.__new__(_sl.ButlySleeptime)
+        hk.generate_embedding = lambda *a, **k: None
+        card = {
+            "category": "Tech",
+            "title": "t",
+            "tags": "x",
+            "ai_importance": 5,
+            "humanity_importance": 5,
+            "summary": "s",
+            "episode": "e",
+        }
+        assert hk.insert_knowledge(
+            card, "tech_20260101_001", "inst", "raw_ref", p,
+            source_date="2026-01-01",
+        ) is True
+
+        conn = sqlite3.connect(p)
+        row = conn.execute(
+            "SELECT content_hash, maturation_queued_at FROM knowledge_cards "
+            "WHERE id='tech_20260101_001'"
+        ).fetchone()
+        conn.close()
+        assert row[0] == compute_content_hash(
+            {
+                "title": "t",
+                "summary": "s",
+                "episode": "e",
+                "tags": "x",
+                "category": "Tech",
+                "source_date": "2026-01-01",
+            }
+        )
+        assert row[1] is not None
 
 
 # ===================================================================

@@ -332,15 +332,28 @@ class ButlySleeptime:
         source_date: 元会話の日付 (YYYY-MM-DD)。time decay の基準になる。
         source_files: 生成に使った RAW ファイル名のリスト（遡及参照用）。
         """
+        from butly_core.core.card_content import compute_content_hash, utc_now_stamp
+
         conn = sqlite3.connect(instance_db_path)
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
+
         # Unclassified の場合は理由を要約に含める
         summary_text = card['summary']
         if card['category'] == "Unclassified" and 'reason' in card:
             summary_text = f"【分類不能理由: {card['reason']}】\n{summary_text}"
+
+        # Stage 3 レビューキュー用の版識別子（共通 helper 経由。§5.2）
+        content_hash = compute_content_hash({
+            "title": card['title'],
+            "summary": summary_text,
+            "episode": card['episode'],
+            "tags": card['tags'],
+            "category": card['category'],
+            "source_date": source_date,
+        })
+        queued_at = utc_now_stamp()
 
         # Embedding生成
         content_to_embed = f"Title: {card['title']}\nTags: {card['tags']}\nSummary: {summary_text}"
@@ -360,14 +373,15 @@ class ButlySleeptime:
             INSERT INTO knowledge_cards (
                 id, type, category, title, tags, ai_importance, humanity_importance,
                 summary, episode, count, raw_reference, created_at, updated_at, embedding_blob,
-                source_date, source_files
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_date, source_files, content_hash, maturation_queued_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 db_id, db_type, card['category'], card['title'], card['tags'],
                 card['ai_importance'], card['humanity_importance'],
                 summary_text, card['episode'], 1, raw_ref, now, now, embedding_blob,
                 source_date,
                 json.dumps(source_files, ensure_ascii=False) if source_files else None,
+                content_hash, queued_at,
             ))
             conn.commit()
             return True

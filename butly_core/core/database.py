@@ -2,6 +2,30 @@ import sqlite3
 import os
 from datetime import datetime, timezone, timedelta
 
+from butly_core.core.card_content import (
+    compute_content_hash,
+    normalize_maturation_time,
+    utc_now_stamp,
+)
+
+
+def _table_columns(cursor, table: str) -> set:
+    """PRAGMA table_info でテーブルの既存カラム名集合を返す。"""
+    return {row[1] for row in cursor.execute(f"PRAGMA table_info({table})")}
+
+
+def _ensure_column(cursor, table: str, column: str, decl: str) -> bool:
+    """カラムが無ければ追加する。duplicate 以外の migration エラーは表面化させる。
+
+    従来の try/except OperationalError 方式は duplicate 以外の失敗
+    （ロック・ディスク等）まで握り潰していたため、存在確認してから ALTER する。
+    Returns: 追加した場合 True。
+    """
+    if column in _table_columns(cursor, table):
+        return False
+    cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    return True
+
 
 class ButlyDatabase:
     def __init__(self, db_path="butly_memory.db"):
@@ -50,52 +74,34 @@ class ButlyDatabase:
             )
             """)
 
-            # DB Migration: Add is_pinned and is_archived columns if not exist
-            try:
-                cursor.execute(
-                    "ALTER TABLE knowledge_cards ADD COLUMN is_pinned INTEGER DEFAULT 0;"
-                )
-            except sqlite3.OperationalError:
-                pass
-
-            try:
-                cursor.execute(
-                    "ALTER TABLE knowledge_cards ADD COLUMN is_archived INTEGER DEFAULT 0;"
-                )
-            except sqlite3.OperationalError:
-                pass
-
-            try:
-                cursor.execute(
-                    "ALTER TABLE knowledge_cards ADD COLUMN usage_count INTEGER DEFAULT 0;"
-                )
-            except sqlite3.OperationalError:
-                pass
-
-            try:
-                cursor.execute(
-                    "ALTER TABLE knowledge_cards ADD COLUMN last_counted_at TEXT;"
-                )
-            except sqlite3.OperationalError:
-                pass
+            # DB Migration: knowledge_cards の追加カラム。
+            # PRAGMA table_info で存在確認してから追加し、duplicate 以外の
+            # migration エラーを表面化させる（Stage 3 計画 §3.1）。
+            _ensure_column(cursor, "knowledge_cards", "is_pinned", "INTEGER DEFAULT 0")
+            _ensure_column(cursor, "knowledge_cards", "is_archived", "INTEGER DEFAULT 0")
+            _ensure_column(cursor, "knowledge_cards", "usage_count", "INTEGER DEFAULT 0")
+            _ensure_column(cursor, "knowledge_cards", "last_counted_at", "TEXT")
 
             # source_date: 元会話の日付 (YYYY-MM-DD)。time decay の基準。
             # 履歴インポートや後日の知識化でも「出来事の古さ」で減衰できる。
             # source_files: 生成に使った RAW ファイル名の JSON 配列
             # (memory_archive/2_knowledgeized/ 配下への遡及用)。
-            try:
-                cursor.execute(
-                    "ALTER TABLE knowledge_cards ADD COLUMN source_date TEXT;"
-                )
-            except sqlite3.OperationalError:
-                pass
+            _ensure_column(cursor, "knowledge_cards", "source_date", "TEXT")
+            _ensure_column(cursor, "knowledge_cards", "source_files", "TEXT")
 
-            try:
-                cursor.execute(
-                    "ALTER TABLE knowledge_cards ADD COLUMN source_files TEXT;"
-                )
-            except sqlite3.OperationalError:
-                pass
+            # --- Stage 3 レビューキュー (§5.1) ---
+            # content_hash: prompt に渡す意味内容の SHA-256（版識別子）
+            # last_matured_content_hash: 最後に成功レビューした版。NULL または
+            #   content_hash と不一致ならキュー内
+            # maturation_queued_at: 現在の版がキューへ入った固定長 UTC 時刻（FIFO 用）
+            # last_matured_at / last_matured_run_id: 監査専用（再レビュー判定に使わない）
+            _ensure_column(cursor, "knowledge_cards", "content_hash", "TEXT")
+            _ensure_column(
+                cursor, "knowledge_cards", "last_matured_content_hash", "TEXT"
+            )
+            _ensure_column(cursor, "knowledge_cards", "maturation_queued_at", "TEXT")
+            _ensure_column(cursor, "knowledge_cards", "last_matured_at", "TEXT")
+            _ensure_column(cursor, "knowledge_cards", "last_matured_run_id", "TEXT")
 
             # --- Stage 3: Knowledge Maturation tables ---
             cursor.execute(
@@ -158,6 +164,26 @@ class ButlyDatabase:
             """
             )
 
+            # run に渡したカード版の記録（§5.1）。再開・監査・失敗分類用。
+            # status: queued / applied / no_changes / failed / changed_during_run / abandoned
+            cursor.execute(
+                """
+            CREATE TABLE IF NOT EXISTS memory_maturation_run_cards (
+                run_id TEXT NOT NULL,
+                card_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                error TEXT,
+                diagnostic TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                UNIQUE (run_id, card_id, content_hash),
+                FOREIGN KEY (run_id) REFERENCES memory_maturation_runs(id),
+                FOREIGN KEY (card_id) REFERENCES knowledge_cards(id)
+            )
+            """
+            )
+
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memory_nodes_status_kind_topic "
                 "ON memory_nodes(status, kind, topic)"
@@ -178,8 +204,100 @@ class ButlyDatabase:
                 "CREATE INDEX IF NOT EXISTS idx_knowledge_cards_last_counted_at "
                 "ON knowledge_cards(last_counted_at)"
             )
+            # レビューキュー走査（§5.3 FIFO）と run 追跡用 index
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_knowledge_cards_maturation_queue "
+                "ON knowledge_cards(is_archived, maturation_queued_at)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memory_maturation_run_cards_run_status "
+                "ON memory_maturation_run_cards(run_id, status)"
+            )
+
+            # 既存カードの content_hash / maturation_queued_at backfill（§5.1）。
+            # queued_at は parse 可能な created_at を UTC へ正規化し、不能時は
+            # migration 開始時刻を使う。
+            self._backfill_content_hashes(cursor)
 
             conn.commit()
+
+    @staticmethod
+    def _backfill_content_hashes(cursor) -> int:
+        """content_hash が NULL のカードへ hash と queue 時刻を backfill する。
+
+        Returns: backfill した行数。
+        """
+        rows = cursor.execute(
+            """
+            SELECT id, title, summary, episode, tags, category, source_date, created_at
+            FROM knowledge_cards
+            WHERE content_hash IS NULL
+            """
+        ).fetchall()
+        if not rows:
+            return 0
+        migration_stamp = utc_now_stamp()
+        updates = []
+        for row in rows:
+            card = {
+                "title": row[1],
+                "summary": row[2],
+                "episode": row[3],
+                "tags": row[4],
+                "category": row[5],
+                "source_date": row[6],
+            }
+            content_hash = compute_content_hash(card)
+            queued_at = normalize_maturation_time(row[7], fallback=migration_stamp)
+            updates.append((content_hash, queued_at, row[0]))
+        cursor.executemany(
+            """
+            UPDATE knowledge_cards
+            SET content_hash = ?, maturation_queued_at = ?
+            WHERE id = ? AND content_hash IS NULL
+            """,
+            updates,
+        )
+        return len(updates)
+
+    @staticmethod
+    def refresh_card_content_hash(cursor, card_id, *, now_stamp=None) -> bool:
+        """カード本文の変更後に content_hash を再計算する共通経路（§5.2）。
+
+        hash が変わった時だけ maturation_queued_at を更新する。
+        pin/archive/usage 等、本文を変えない操作からは呼ばなくてよい
+        （呼んでも hash 不変なので queue 時刻は動かない）。
+        Returns: hash が変わって再キューした場合 True。
+        """
+        row = cursor.execute(
+            """
+            SELECT title, summary, episode, tags, category, source_date, content_hash
+            FROM knowledge_cards WHERE id = ?
+            """,
+            (card_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        card = {
+            "title": row[0],
+            "summary": row[1],
+            "episode": row[2],
+            "tags": row[3],
+            "category": row[4],
+            "source_date": row[5],
+        }
+        new_hash = compute_content_hash(card)
+        if new_hash == row[6]:
+            return False
+        cursor.execute(
+            """
+            UPDATE knowledge_cards
+            SET content_hash = ?, maturation_queued_at = ?
+            WHERE id = ?
+            """,
+            (new_hash, now_stamp or utc_now_stamp(), card_id),
+        )
+        return True
 
     def register_knowledge(self, card_data):
         """ナレッジカードをDBに登録または更新する"""
@@ -226,6 +344,7 @@ class ButlyDatabase:
                         card_data["raw_reference"],
                     ),
                 )
+                self.refresh_card_content_hash(cursor, card_data["id"])
 
             # アクセスログの記録
             cursor.execute(
@@ -356,8 +475,12 @@ class ButlyDatabase:
             params.append(card_id)
 
             cursor.execute(query, params)
+            updated = cursor.rowcount > 0
+            if updated:
+                # 本文が変わった版は Stage 3 レビューキューへ再投入する（§5.2）
+                self.refresh_card_content_hash(cursor, card_id)
             conn.commit()
-            return cursor.rowcount > 0
+            return updated
 
     def record_card_usage(self, card_ids: list, dedup_hours: int = 6) -> list:
         """RAG 経由で Brain に渡されたカードの usage_count をインクリメントする。
