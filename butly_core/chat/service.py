@@ -474,22 +474,12 @@ async def _prepare_chat_context(
     components = get_instance_components(instance_name)
     memory = components["memory"]
     brain = components["brain"]
-    chronos = components["chronos"]
-
     # --- 2. インスタンス設定 ---
     instance_config = instance_manager.get_instance_config(instance_name)
 
-    # --- 3. 時刻コンテキスト ---
-    from butly_core.prompts import resolve_prompt_locale
-
-    prompt_locale = resolve_prompt_locale(instance_config)
-    last_ts = memory.get_last_interaction_time()
-    sys_note = chronos.get_system_note(
-        is_holiday=False,
-        last_interaction_time=last_ts,
-        locale=prompt_locale,
-    )
-    full_prompt = f"{sys_note}\n\n{request.text}"
+    # --- 3. ユーザー入力 ---
+    # 現在時刻は context_prefix 側に集約し、質問直前には重複注入しない。
+    full_prompt = request.text
 
     # 外部入口（Discord 等）の reply profile による生成時 style hint。
     # request.metadata に "style_hint" がある場合のみ full_prompt 先頭に注入する。
@@ -502,7 +492,7 @@ async def _prepare_chat_context(
         else None
     )
     if style_hint:
-        full_prompt = f"{sys_note}\n\n[応答スタイル指示: {style_hint}]\n\n{request.text}"
+        full_prompt = f"[応答スタイル指示: {style_hint}]\n\n{request.text}"
 
     # --- 4. Gatekeeper 分類 ---
     history, _ = memory.load_recent_sessions(limit=6)

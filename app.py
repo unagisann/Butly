@@ -2320,7 +2320,7 @@ def render_instance_settings_screen():
         _SECTION_LABELS = {
             "system_instruction": "性格設定 (system_instruction)",
             "key_memory": "根幹記憶 (key_memory)",
-            "label_notes": "ラベル・注意文 (label_notes)",
+            "label_notes": "背景ラベル (label_notes)",
             "current_time": "現在時刻 (current_time)",
             "glossary": "共通言語辞書 (glossary)",
             "mid_term": "中期記憶 (mid_term)",

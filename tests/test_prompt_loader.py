@@ -110,6 +110,12 @@ class TestSectionHeaders:
         loader = PromptLoader(locale="en")
         assert "KEY MEMORY" in loader.get_section_header("key_memory")
 
+    @pytest.mark.parametrize("locale", ["ja", "en"])
+    def test_context_prefix_has_no_global_priority_note(self, locale):
+        """背景ラベルに記憶レイヤー間の固定優先順位を付けない"""
+        loader = PromptLoader(locale=locale)
+        assert "note_context_prefix" not in loader.section_headers
+
     def test_section_header_fallback(self):
         """未定義キーはキー名そのものを返す"""
         loader = PromptLoader(locale="ja")

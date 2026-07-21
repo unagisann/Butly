@@ -76,6 +76,7 @@ class TestStyleHintInjection:
         assert prepared.error is None
         assert "[応答スタイル指示: 簡潔に返してください。]" in prepared.full_prompt
         assert "今日の予定は？" in prepared.full_prompt
+        assert "SYSNOTE" not in prepared.full_prompt
 
     def test_request_text_not_polluted(self, tmp_path):
         prepared, req = asyncio.run(
@@ -87,7 +88,7 @@ class TestStyleHintInjection:
 
     def test_no_metadata_no_hint(self, tmp_path):
         prepared, req = asyncio.run(_prepare(None, tmp_path))
-        assert prepared.full_prompt == "SYSNOTE\n\n今日の予定は？"
+        assert prepared.full_prompt == "今日の予定は？"
         assert "応答スタイル指示" not in prepared.full_prompt
 
     def test_metadata_without_style_hint_no_injection(self, tmp_path):

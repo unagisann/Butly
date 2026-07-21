@@ -33,10 +33,10 @@
 | `low`  | `[Conversation core] {Key_Memory_low.txt}` — no header. Falls back to the normal file if absent. |
 | `off`  | Omitted. |
 
-### `label_notes` (labels / advisories)
+### `label_notes` (background label)
 | Level | Output |
 |---|---|
-| `high` | `[Background information]\n※ Priority order: ...` |
+| `high` | `[Background Info]` |
 | `low`  | Omitted (same as off). |
 | `off`  | Omitted. |
 
@@ -136,9 +136,7 @@ User name: User
 Address form: Master
 
 [user message - context prefix]
-[Background information]
-※ The following supports the current conversation.
-※ Priority order: recent history > ...
+[Background Info]
 
 === CURRENT TIME ===
 2026-04-04 21:00 (Fri)

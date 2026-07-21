@@ -222,7 +222,7 @@ frontend の手書き SSE parser と契約を共有するための正本）。
 
 ```
 1. コンポーネント取得 (Memory / Brain / Chronos)
-2. 時刻コンテキスト生成 (Chronos.get_system_note → full_prompt の冒頭に付加)
+2. ユーザー入力生成（request text + 任意のstyle hint。現在時刻はcontext_prefixだけに注入）
 3. Gatekeeper.classify → tier 判定 + need / need_intent / probe candidates（Gatekeeper 無効時は mid 固定 + use_rag に応じて need を仮設定）
 4. SessionState.increment_turn → ターン数・last_tier 更新
 5. MemoryBlockBuilder.build → 記憶ブロック辞書構築（need 有り + use_rag=True 時のみ brain を渡す）
@@ -885,7 +885,7 @@ localized prompt:
 
 [user turn]
 ─────────────────────────────────────
-⑩ Chronos 日時 + ユーザーメッセージ  ← ChatService が結合した full_prompt
+⑩ ユーザーメッセージ（任意のstyle hint付き） ← ChatService が生成した full_prompt
 
 [history（マルチターン）]
 ───────────────────────────────────
