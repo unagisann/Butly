@@ -105,6 +105,10 @@ SYSTEM_CONFIG = {
         "memory_node_active_threshold": 0.75,
         "memory_node_promotion_threshold": 0.85,
         "memory_node_promotion_min_sources": 2,
+        # --- Stage 3 reflection（§7 staleness 減衰。opt-in） ---
+        "memory_node_decay_enabled": False,
+        "memory_node_stale_days": 30,
+        "memory_node_decay_per_period": 0.05,
     },
     "brain": {
         "search_limit": 3,

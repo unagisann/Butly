@@ -1520,6 +1520,156 @@ class TestStage3Bootstrap:
 
 
 # ===================================================================
+# 7c. Reflection: staleness 減衰 (§7)
+# ===================================================================
+
+class TestStalenessDecay:
+    def _make_node(self, repo, db_path, *, confidence, reinforced_at, status="active"):
+        nid = repo.create_node(kind="fact", statement="s", status=status, confidence=confidence)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "UPDATE memory_nodes SET last_reinforced_at=?, created_at=?, updated_at=? WHERE id=?",
+            (reinforced_at, reinforced_at, reinforced_at, nid),
+        )
+        conn.commit()
+        conn.close()
+        return nid
+
+    def test_decays_once_per_period_and_is_idempotent(self, repo, db_path):
+        from butly_core.core.knowledge_maturation import apply_staleness_decay
+
+        now = datetime(2026, 7, 21, tzinfo=timezone.utc)
+        # 45 日前に補強 → 30 日 1 期間分だけ減衰、余り 15 日は保持
+        nid = self._make_node(
+            repo, db_path, confidence=0.9, reinforced_at="2026-06-06T00:00:00Z"
+        )
+        stats = apply_staleness_decay(
+            db_path, now=now, stale_days=30, decay_per_period=0.05,
+            active_threshold=0.75,
+        )
+        assert stats["decayed"] == 1
+        node = repo.get_node(nid)
+        assert node["confidence"] == pytest.approx(0.85)
+        assert node["last_decay_at"] == "2026-07-06T00:00:00Z"  # 基準 + 1 期間
+
+        # 完了条件: 同一期間の再 run で二重減点しない
+        stats2 = apply_staleness_decay(
+            db_path, now=now, stale_days=30, decay_per_period=0.05,
+            active_threshold=0.75,
+        )
+        assert stats2["decayed"] == 0
+        assert repo.get_node(nid)["confidence"] == pytest.approx(0.85)
+
+        # さらに 15 日進むと（前回の余りと合わせて 1 期間）もう一度だけ減衰
+        later = datetime(2026, 8, 5, tzinfo=timezone.utc)
+        stats3 = apply_staleness_decay(
+            db_path, now=later, stale_days=30, decay_per_period=0.05,
+            active_threshold=0.75,
+        )
+        assert stats3["decayed"] == 1
+        assert repo.get_node(nid)["confidence"] == pytest.approx(0.80)
+
+    def test_multiple_periods_accumulate(self, repo, db_path):
+        from butly_core.core.knowledge_maturation import apply_staleness_decay
+
+        now = datetime(2026, 7, 21, tzinfo=timezone.utc)
+        # 100 日前 → 3 期間分
+        nid = self._make_node(
+            repo, db_path, confidence=0.9, reinforced_at="2026-04-12T00:00:00Z"
+        )
+        apply_staleness_decay(
+            db_path, now=now, stale_days=30, decay_per_period=0.05,
+            active_threshold=0.5,
+        )
+        assert repo.get_node(nid)["confidence"] == pytest.approx(0.75)
+
+    def test_active_demoted_to_uncertain_below_threshold(self, repo, db_path):
+        from butly_core.core.knowledge_maturation import apply_staleness_decay
+
+        now = datetime(2026, 7, 21, tzinfo=timezone.utc)
+        nid = self._make_node(
+            repo, db_path, confidence=0.78, reinforced_at="2026-06-01T00:00:00Z"
+        )
+        stats = apply_staleness_decay(
+            db_path, now=now, stale_days=30, decay_per_period=0.05,
+            active_threshold=0.75,
+        )
+        assert stats["demoted"] == 1
+        node = repo.get_node(nid)
+        assert node["status"] == "uncertain"
+        assert node["confidence"] == pytest.approx(0.73)
+
+    def test_recently_reinforced_not_decayed(self, repo, db_path):
+        from butly_core.core.knowledge_maturation import apply_staleness_decay
+
+        now = datetime(2026, 7, 21, tzinfo=timezone.utc)
+        nid = self._make_node(
+            repo, db_path, confidence=0.9, reinforced_at="2026-07-10T00:00:00Z"
+        )
+        stats = apply_staleness_decay(
+            db_path, now=now, stale_days=30, decay_per_period=0.05,
+            active_threshold=0.75,
+        )
+        assert stats["decayed"] == 0
+        assert repo.get_node(nid)["confidence"] == 0.9
+
+    def test_uncertain_long_neglect_marked_stale_not_deleted(self, repo, db_path):
+        from butly_core.core.knowledge_maturation import apply_staleness_decay
+
+        now = datetime(2026, 7, 21, tzinfo=timezone.utc)
+        nid = self._make_node(
+            repo, db_path, confidence=0.5, status="uncertain",
+            reinforced_at="2026-05-01T00:00:00Z",  # 81 日 ≥ 2 期間
+        )
+        stats = apply_staleness_decay(
+            db_path, now=now, stale_days=30, decay_per_period=0.05,
+            active_threshold=0.75,
+        )
+        assert stats["stale_marked"] == 1
+        node = repo.get_node(nid)
+        assert node is not None  # 削除しない
+        assert json.loads(node["metadata_json"])["stale"] is True
+
+        # 2 回目はマーク済みなので対象外
+        stats2 = apply_staleness_decay(
+            db_path, now=now, stale_days=30, decay_per_period=0.05,
+            active_threshold=0.75,
+        )
+        assert stats2["stale_marked"] == 0
+
+    def test_stage3_run_applies_decay_only_when_enabled(self, tmp_path):
+        import sleeptime as _sl
+        from butly_core.core.database import ButlyDatabase
+        from butly_core.core.memory_nodes import MemoryNodeRepository
+
+        inst_path = _build_instance(tmp_path)
+        db_path = str(inst_path / "butly_memory.db")
+        ButlyDatabase(db_path=db_path)
+        repo = MemoryNodeRepository(db_path)
+        nid = self._make_node(
+            repo, db_path, confidence=0.9, reinforced_at="2026-06-01T00:00:00Z"
+        )
+
+        hk = _make_hk(inst_path)
+        provider = _fake_provider(response=_NO_CHANGES_RESPONSE)
+
+        # 既定 OFF: 減衰しない
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+        assert repo.get_node(nid)["confidence"] == 0.9
+
+        # opt-in ON: run 末に減衰が走る
+        (inst_path / "config.json").write_text(
+            json.dumps({"memory": {"memory_node_decay_enabled": True}}),
+            encoding="utf-8",
+        )
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            totals = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+        assert totals["decay"]["decayed"] == 1
+        assert repo.get_node(nid)["confidence"] == pytest.approx(0.85)
+
+
+# ===================================================================
 # 8. should_run_stage_3 gating
 # ===================================================================
 

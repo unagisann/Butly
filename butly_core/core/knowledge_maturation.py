@@ -748,6 +748,154 @@ def mark_uncertain_nodes(
 
 
 # ----------------------------------------------------------
+# Reflection: staleness 減衰スイープ（§7）
+# ----------------------------------------------------------
+
+def _parse_utc(value: Any) -> datetime | None:
+    """DB の時刻表現（Z / +00:00 / 'YYYY-MM-DD HH:MM:SS'）を UTC datetime にする。"""
+    from datetime import timezone as _tz
+
+    from butly_core.core.card_content import normalize_maturation_time
+
+    normalized = normalize_maturation_time(value, fallback="")
+    if not normalized:
+        return None
+    return datetime.strptime(normalized, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_tz.utc)
+
+
+def apply_staleness_decay(
+    db_path: str,
+    *,
+    now: datetime,
+    stale_days: int,
+    decay_per_period: float,
+    active_threshold: float,
+    run_id: str | None = None,
+) -> dict:
+    """active node へ staleness 減衰を適用する軽量スイープ（LLM 呼び出し無し）。
+
+    - `last_reinforced_at` と `last_decay_at` の後に経過した stale_days 単位の
+      **未適用期間数**から減衰量を計算する。`last_decay_at` は
+      「基準 + 適用期間数 × stale_days」へ進め、余り期間を保持するため、
+      同じ期間に何度 run しても二重減点しない。
+    - active が active_threshold を割ったら uncertain へ降格する。
+    - uncertain の長期放置（2 stale 期間以上）は metadata.stale=true を付けるが
+      削除しない。
+    - 日時は注入された `now` を唯一の基準とする（本番 UTC 実時刻 / 評価 session 時刻）。
+    """
+    from datetime import timedelta, timezone as _tz
+
+    from butly_core.core.card_content import format_maturation_time
+
+    if stale_days <= 0 or decay_per_period <= 0:
+        return {"decayed": 0, "demoted": 0, "stale_marked": 0}
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_tz.utc)
+    now_stamp = format_maturation_time(now)
+    period = timedelta(days=stale_days)
+
+    from butly_core.core.memory_nodes import _op_update_node
+
+    decayed = 0
+    demoted = 0
+    stale_marked = 0
+    conn = _connect(db_path)
+    try:
+        actives = conn.execute(
+            "SELECT * FROM memory_nodes WHERE status = 'active'"
+        ).fetchall()
+        for row in actives:
+            node = dict(row)
+            # 基準は「補強」か「減衰適用」の新しい方のみ。updated_at を含めると
+            # link 等で触っただけの node の減衰クロックがリセットされてしまう。
+            reference = max(
+                (
+                    ts
+                    for ts in (
+                        _parse_utc(node.get("last_reinforced_at")),
+                        _parse_utc(node.get("last_decay_at")),
+                        _parse_utc(node.get("created_at")),
+                    )
+                    if ts is not None
+                ),
+                default=None,
+            )
+            if reference is None or reference > now:
+                continue
+            periods = int((now - reference) / period)
+            if periods < 1:
+                continue
+            new_conf = max(
+                0.0, float(node.get("confidence") or 0.0) - periods * decay_per_period
+            )
+            new_status = None
+            if new_conf < active_threshold:
+                new_status = "uncertain"
+                demoted += 1
+            _op_update_node(
+                conn,
+                node["id"],
+                statement=None,
+                confidence=new_conf,
+                status=new_status,
+                metadata=None,
+                updated_by_run_id=run_id,
+                reinforce=False,
+                now_stamp=now_stamp,
+                last_decay_at=format_maturation_time(reference + periods * period),
+            )
+            decayed += 1
+
+        # uncertain の長期放置に stale フラグ（削除はしない）
+        uncertains = conn.execute(
+            "SELECT * FROM memory_nodes WHERE status = 'uncertain'"
+        ).fetchall()
+        for row in uncertains:
+            node = dict(row)
+            try:
+                metadata = json.loads(node.get("metadata_json") or "{}")
+            except Exception:
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            if metadata.get("stale") is True:
+                continue
+            reference = max(
+                (
+                    ts
+                    for ts in (
+                        _parse_utc(node.get("last_reinforced_at")),
+                        _parse_utc(node.get("updated_at")),
+                        _parse_utc(node.get("created_at")),
+                    )
+                    if ts is not None
+                ),
+                default=None,
+            )
+            if reference is None:
+                continue
+            if now - reference >= 2 * period:
+                metadata["stale"] = True
+                _op_update_node(
+                    conn,
+                    node["id"],
+                    statement=None,
+                    confidence=None,
+                    status=None,
+                    metadata=metadata,
+                    updated_by_run_id=run_id,
+                    reinforce=False,
+                    now_stamp=now_stamp,
+                )
+                stale_marked += 1
+
+        conn.commit()
+    finally:
+        conn.close()
+    return {"decayed": decayed, "demoted": demoted, "stale_marked": stale_marked}
+
+
+# ----------------------------------------------------------
 # Promotion proposals（§8: 提案は常時出力）
 # ----------------------------------------------------------
 

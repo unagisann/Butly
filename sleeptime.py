@@ -1063,6 +1063,15 @@ class ButlySleeptime:
             "promotion_min_sources": int(
                 self._stage_3_param(inst_cfg, "memory_node_promotion_min_sources", 2)
             ),
+            "decay_enabled": bool(
+                self._stage_3_param(inst_cfg, "memory_node_decay_enabled", False)
+            ),
+            "stale_days": int(
+                self._stage_3_param(inst_cfg, "memory_node_stale_days", 30)
+            ),
+            "decay_per_period": float(
+                self._stage_3_param(inst_cfg, "memory_node_decay_per_period", 0.05)
+            ),
         }
 
     def stage_3_mature_knowledge(self, instance_path, now=None):
@@ -1180,6 +1189,26 @@ class ButlySleeptime:
 
             if totals["failed_cards"]:
                 totals["status"] = "partial"
+
+            # reflection: staleness 減衰スイープ（§7。LLM 呼び出し無し・opt-in）
+            if params["decay_enabled"]:
+                try:
+                    decay_stats = km.apply_staleness_decay(
+                        instance_db_path,
+                        now=now_dt,
+                        stale_days=params["stale_days"],
+                        decay_per_period=params["decay_per_period"],
+                        active_threshold=params["active_threshold"],
+                    )
+                    totals["decay"] = decay_stats
+                    if any(decay_stats.values()):
+                        print(
+                            f"[Stage3] Decay sweep: decayed={decay_stats['decayed']} "
+                            f"demoted={decay_stats['demoted']} "
+                            f"stale_marked={decay_stats['stale_marked']}"
+                        )
+                except Exception as de:
+                    print(f"[Stage3] decay sweep skipped: {de}")
 
             backlog = km.count_queue_backlog(instance_db_path)
             totals.update(backlog)

@@ -164,6 +164,11 @@ class ButlyDatabase:
             """
             )
 
+            # --- Stage 3 reflection（§7 staleness 減衰） ---
+            # last_decay_at: 最後に減衰を適用した基準時刻。同じ stale 期間に
+            # 何度 run しても二重減点しないための anchor。
+            _ensure_column(cursor, "memory_nodes", "last_decay_at", "TEXT")
+
             # run に渡したカード版の記録（§5.1）。再開・監査・失敗分類用。
             # status: queued / applied / no_changes / failed / changed_during_run / abandoned
             cursor.execute(
