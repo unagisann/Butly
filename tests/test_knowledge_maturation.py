@@ -1397,6 +1397,129 @@ class TestStage3EndToEnd:
 
 
 # ===================================================================
+# 7b. stage3-bootstrap (§6)
+# ===================================================================
+
+_NO_CHANGES_RESPONSE = '{"link_existing": [], "new_nodes": []}'
+
+
+class TestStage3Bootstrap:
+    def _setup(self, tmp_path, n_cards=5, batch_size=2):
+        from butly_core.core.database import ButlyDatabase
+
+        inst_path = _build_instance(tmp_path)
+        (inst_path / "config.json").write_text(
+            json.dumps(
+                {"memory": {"knowledge_maturation_batch_size": batch_size}}
+            ),
+            encoding="utf-8",
+        )
+        db_path = str(inst_path / "butly_memory.db")
+        ButlyDatabase(db_path=db_path)
+        for i in range(n_cards):
+            _insert_card(
+                db_path, f"bc_{i:03d}", created_at=f"2026-01-{i + 1:02d} 00:00:00"
+            )
+        return inst_path, db_path
+
+    def test_bootstrap_drains_whole_queue(self, tmp_path):
+        import sleeptime as _sl
+
+        inst_path, db_path = self._setup(tmp_path, n_cards=5, batch_size=2)
+        hk = _make_hk(inst_path)
+        provider = _fake_provider(response=_NO_CHANGES_RESPONSE)
+
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            totals = hk.stage3_bootstrap("test_instance", now=_NOW)
+
+        assert totals["status"] == "completed"
+        assert totals["applied_cards"] == 5
+        assert totals["batches"] == 3  # 2 + 2 + 1
+        assert totals["backlog"] == 0
+        conn = sqlite3.connect(db_path)
+        stamped = conn.execute(
+            "SELECT COUNT(*) FROM knowledge_cards WHERE last_matured_content_hash = content_hash"
+        ).fetchone()[0]
+        conn.close()
+        assert stamped == 5
+
+    def test_bootstrap_safety_limit(self, tmp_path):
+        import sleeptime as _sl
+
+        inst_path, db_path = self._setup(tmp_path, n_cards=5, batch_size=2)
+        hk = _make_hk(inst_path)
+        provider = _fake_provider(response=_NO_CHANGES_RESPONSE)
+
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            totals = hk.stage3_bootstrap(
+                "test_instance", now=_NOW, max_cards_override=2
+            )
+
+        assert totals["status"] == "partial"
+        assert totals.get("safety_limit_reached") is True
+        assert totals["applied_cards"] == 2
+        assert totals["backlog"] == 3
+
+    def test_bootstrap_isolates_failing_card_and_continues(self, tmp_path):
+        """1 件の整形失敗でキュー全体を停止させない（§6 単独失敗の隔離）。"""
+        import sleeptime as _sl
+        from butly_core.core.knowledge_maturation import select_queue_cards
+
+        inst_path, db_path = self._setup(tmp_path, n_cards=0, batch_size=3)
+        _insert_card(db_path, "poison_card", created_at="2026-01-01 00:00:00")
+        _insert_card(db_path, "good_a", created_at="2026-01-02 00:00:00")
+        _insert_card(db_path, "good_b", created_at="2026-01-03 00:00:00")
+
+        def _classify(prompt, conf):
+            if "poison_card" in prompt:
+                return "garbage output"
+            return _NO_CHANGES_RESPONSE
+
+        hk = _make_hk(inst_path)
+        provider = _fake_provider()
+        provider.classify.side_effect = _classify
+
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            totals = hk.stage3_bootstrap("test_instance", now=_NOW)
+
+        assert totals["status"] == "partial"
+        assert totals["failed_cards"] == ["poison_card"]
+        assert totals["applied_cards"] == 2
+        # poison はstampされず、次の invocation で再選択できる
+        remaining = [c["id"] for c in select_queue_cards(db_path, batch_size=10)]
+        assert remaining == ["poison_card"]
+
+    def test_bootstrap_resumes_from_queue(self, tmp_path):
+        """安全上限で止めた続きを再実行で drain できる（冪等・再開）。"""
+        import sleeptime as _sl
+
+        inst_path, db_path = self._setup(tmp_path, n_cards=5, batch_size=2)
+        hk = _make_hk(inst_path)
+        provider = _fake_provider(response=_NO_CHANGES_RESPONSE)
+
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            first = hk.stage3_bootstrap(
+                "test_instance", now=_NOW, max_cards_override=2
+            )
+            second = hk.stage3_bootstrap("test_instance", now=_NOW)
+
+        assert first["applied_cards"] == 2
+        assert second["applied_cards"] == 3
+        assert second["status"] == "completed"
+        assert second["backlog"] == 0
+
+    def test_bootstrap_locked(self, tmp_path):
+        from butly_core.core import knowledge_maturation as km
+
+        inst_path, db_path = self._setup(tmp_path, n_cards=1)
+        hk = _make_hk(inst_path)
+        with km.stage3_process_lock(inst_path) as acquired:
+            assert acquired
+            totals = hk.stage3_bootstrap("test_instance", now=_NOW)
+        assert totals["status"] == "locked"
+
+
+# ===================================================================
 # 8. should_run_stage_3 gating
 # ===================================================================
 

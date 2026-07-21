@@ -1372,6 +1372,10 @@ class ButlySleeptime:
         try:
             raw = self._robust_api_call(lambda: provider.classify(prompt, k_conf))
             self._track_llm_usage(provider)
+            if raw is None:
+                # _robust_api_call がリトライ枯渇で None を返した
+                # （classify の正当な空応答は "" であって None ではない）
+                raise RuntimeError("provider retries exhausted")
             pop_meta = getattr(provider, "pop_last_completion_metadata", None)
             meta = pop_meta() if callable(pop_meta) else None
             finish_reason = (
@@ -1581,6 +1585,198 @@ class ButlySleeptime:
                     repo.update_node(nid, status="active", updated_by_run_id=run_id)
                 elif new_conf < candidate_threshold and current_status == "active":
                     repo.update_node(nid, status="candidate", updated_by_run_id=run_id)
+
+    # --- Stage 3: Bootstrap (§6) ---
+    def stage3_bootstrap(self, instance_name, now=None, *, max_cards_override=None):
+        """既存インスタンスのレビューキューを一括 drain する明示 CLI 用エントリ。
+
+        - キューが空になるまで batch_size 単位で通常レビュー（§5.4 共通 executor）
+          を反復する。安全上限 bootstrap_max_cards で総投入カード数を制限。
+        - retryable 失敗は retry → 半分割 → 1 件隔離。隔離カードは
+          **この invocation 内だけ**選択から除外し、版は stamp しないので
+          次回 run / bootstrap で再試行できる。
+        - 冪等・再開可能: batch transaction が commit 済みの版だけ処理済みになる。
+          途中クラッシュしても再実行は未処理版から続く。
+        - 失敗が残れば status="partial" として失敗一覧・未処理数を返す。
+        """
+        from datetime import timezone as _tz
+
+        from butly_core.core.database import ButlyDatabase
+        from butly_core.core.memory_nodes import MemoryNodeRepository
+        from butly_core.core import knowledge_maturation as km
+        from butly_core.core.card_content import format_maturation_time
+
+        instance_dir = self.instances_dir / instance_name
+        instance_db_path = str(instance_dir / "butly_memory.db")
+        if not Path(instance_db_path).exists():
+            print(f"[Stage3][bootstrap] DB not found: {instance_db_path}")
+            return {"status": "no_db", "instance": instance_name}
+
+        now_dt = now or datetime.now(_tz.utc)
+        now_stamp = format_maturation_time(now_dt)
+
+        inst_cfg = self.get_instance_config(instance_name)
+        params = self._stage3_params(inst_cfg)
+        max_cards = (
+            int(max_cards_override)
+            if max_cards_override is not None
+            else params["bootstrap_max_cards"]
+        )
+
+        totals = {
+            "status": "completed",
+            "instance": instance_name,
+            "batches": 0,
+            "llm_calls": 0,
+            "applied_cards": 0,
+            "reviewed_cards": 0,
+            "created": 0,
+            "linked": 0,
+            "superseded": 0,
+            "attempted_cards": 0,
+            "failed_cards": [],
+            "unprocessed_cards": [],
+            "outcomes": [],
+        }
+
+        with km.stage3_process_lock(instance_dir) as acquired:
+            if not acquired:
+                print(
+                    f"[Stage3][bootstrap] Another Stage 3 process holds the lock "
+                    f"for {instance_name}; aborting."
+                )
+                totals["status"] = "locked"
+                return totals
+
+            ButlyDatabase(db_path=instance_db_path)
+            repo = MemoryNodeRepository(instance_db_path)
+            recovered = repo.recover_orphan_runs(instance_name, now_stamp=now_stamp)
+            if recovered:
+                print(
+                    f"[Stage3][bootstrap] Recovered {recovered} orphan running "
+                    f"run(s) as abandoned."
+                )
+
+            try:
+                backfilled = km.preflight_backfill_hashes(
+                    instance_db_path, now_stamp=now_stamp
+                )
+                if backfilled:
+                    print(
+                        f"[Stage3][bootstrap] Preflight backfilled content_hash "
+                        f"for {backfilled} card(s)."
+                    )
+            except km.MaturationPreflightError as exc:
+                print(f"[Stage3][bootstrap] Preflight failed: {exc}")
+                totals["status"] = "preflight_failed"
+                totals["error"] = str(exc)
+                return totals
+
+            start_backlog = km.count_queue_backlog(instance_db_path)
+            print(
+                f"[Stage3][bootstrap] Start: backlog={start_backlog['backlog']} "
+                f"oldest_queued_at={start_backlog['oldest_queued_at']} "
+                f"safety_limit={max_cards}"
+            )
+
+            excluded: set = set()
+            ctx = {
+                "instance_name": instance_name,
+                "db_path": instance_db_path,
+                "repo": repo,
+                "inst_cfg": inst_cfg,
+                "params": params,
+                "now_stamp": now_stamp,
+                "mode": "bootstrap",
+                "extra_calls_used": 0,
+            }
+
+            hit_safety_limit = False
+            while totals["attempted_cards"] < max_cards:
+                batch_limit = min(
+                    params["batch_size"], max_cards - totals["attempted_cards"]
+                )
+                cards = km.select_queue_cards(
+                    instance_db_path,
+                    batch_size=batch_limit,
+                    exclude_ids=tuple(excluded),
+                )
+                if not cards:
+                    break
+
+                # retry/split 予算は run（= batch 反復）ごとにリセットする
+                ctx["extra_calls_used"] = 0
+                stats = self._stage3_process_cards(ctx, cards)
+                self._stage3_merge_stats(totals, stats)
+                totals["attempted_cards"] += len(cards)
+
+                newly_failed = set(stats.get("failed_cards", []))
+                excluded |= newly_failed
+
+                backlog = km.count_queue_backlog(instance_db_path)
+                remaining = max(0, backlog["backlog"] - len(excluded))
+                print(
+                    f"[Stage3][bootstrap] applied {totals['applied_cards']} / "
+                    f"failed {len(totals['failed_cards'])} / remaining {remaining} "
+                    f"(oldest_queued_at={backlog['oldest_queued_at']})"
+                )
+
+                if stats.get("aborted"):
+                    print(
+                        "[Stage3][bootstrap] Provider unrecoverable; "
+                        "stopping early. Re-run to resume from the queue."
+                    )
+                    totals["status"] = "partial"
+                    totals["aborted"] = True
+                    break
+
+                if not stats.get("applied_cards") and not newly_failed:
+                    # 前進の無い反復（予算切れの未処理のみ等）は無限ループ防止で終了
+                    print(
+                        "[Stage3][bootstrap] No progress in this iteration; "
+                        "stopping. Re-run to retry the remaining cards."
+                    )
+                    totals["status"] = "partial"
+                    break
+
+            if totals["attempted_cards"] >= max_cards:
+                hit_safety_limit = True
+
+            end_backlog = km.count_queue_backlog(instance_db_path)
+            totals.update(end_backlog)
+            if totals["failed_cards"] or totals["unprocessed_cards"]:
+                totals["status"] = "partial"
+            if hit_safety_limit and end_backlog["backlog"] > len(excluded):
+                totals["status"] = "partial"
+                totals["safety_limit_reached"] = True
+                print(
+                    f"[Stage3][bootstrap] Safety limit {max_cards} reached with "
+                    f"{end_backlog['backlog']} card(s) still queued."
+                )
+
+            print(
+                f"[Stage3][bootstrap] Done: status={totals['status']} "
+                f"applied={totals['applied_cards']} "
+                f"failed={len(totals['failed_cards'])} "
+                f"backlog={end_backlog['backlog']} llm_calls={totals['llm_calls']}"
+            )
+
+            # promotion proposal は drain 後にまとめて再生成（派生 artifact）
+            try:
+                proposals = km.collect_promotion_proposals(
+                    repo=repo,
+                    confidence_threshold=params["promotion_threshold"],
+                    min_sources=params["promotion_min_sources"],
+                    now_iso=now_stamp,
+                )
+                km.write_promotion_proposals_file(
+                    instance_dir, proposals, now_iso=now_stamp
+                )
+                print(f"[Stage3][bootstrap] Promotion proposals: {len(proposals)}")
+            except Exception as pe:
+                print(f"[Stage3][bootstrap] proposal generation skipped: {pe}")
+
+            return totals
 
     # --- Backup Logic ---
     def backup_database(self, instance_name):
@@ -1943,9 +2139,42 @@ class ButlySleeptime:
 # Global Status Store
 sleeptime_store = {}
 
+def _build_arg_parser():
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Butly Sleeptime housekeeping (デフォルト: 全インスタンス処理)"
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    bootstrap = sub.add_parser(
+        "stage3-bootstrap",
+        help="Stage 3 レビューキューを一括 drain する（計画 §6）",
+    )
+    bootstrap.add_argument("--instance", required=True, help="対象インスタンス名")
+    bootstrap.add_argument(
+        "--max-cards",
+        type=int,
+        default=None,
+        help="安全上限の上書き (既定: knowledge_maturation_bootstrap_max_cards)",
+    )
+    return parser
+
+
 if __name__ == "__main__":
+    import sys
+
+    args = _build_arg_parser().parse_args()
     hk = ButlySleeptime()
-    # 全インスタンスを処理
+
+    if args.command == "stage3-bootstrap":
+        result = hk.stage3_bootstrap(
+            args.instance, max_cards_override=args.max_cards
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        sys.exit(0 if isinstance(result, dict) and result.get("status") == "completed" else 1)
+
+    # サブコマンド無し: 従来どおり全インスタンスを処理
     hk.run()
-    
+
     print("=== All Tasks Completed ===")
