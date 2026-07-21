@@ -84,6 +84,74 @@ class TestQuickVectorSearchErrorPath:
         assert diag["diagnostics"]["fetched_count"] == 0
 
 
+class TestQuickVectorSearchCandidateScope:
+    def test_scores_older_card_outside_keyword_fallback_limit(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        db_path = _make_instance_db(tmp_path)
+        old_match = np.array([1.0, 0.0], dtype=np.float32).tobytes()
+        recent_miss = np.array([0.0, 1.0], dtype=np.float32).tobytes()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO knowledge_cards (
+                    id, category, title, summary, embedding_blob,
+                    created_at, updated_at, source_date
+                ) VALUES (
+                    'old_match', 'Life', 'old match', 's', ?,
+                    '2023-05-01 00:00:00', '2023-05-01 00:00:00',
+                    '2023-05-01'
+                )
+                """,
+                (old_match,),
+            )
+            conn.executemany(
+                """
+                INSERT INTO knowledge_cards (
+                    id, category, title, summary, embedding_blob,
+                    created_at, updated_at, source_date
+                ) VALUES (?, 'Life', ?, 's', ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        f"recent_{index:03d}",
+                        f"recent {index:03d}",
+                        recent_miss,
+                        f"2024-02-{(index % 28) + 1:02d} 00:00:00",
+                        f"2024-02-{(index % 28) + 1:02d} 00:00:00",
+                        f"2024-02-{(index % 28) + 1:02d}",
+                    )
+                    for index in range(50)
+                ],
+            )
+
+        brain = ButlyBrain(tmp_path)
+        monkeypatch.setattr(
+            brain,
+            "get_embedding",
+            lambda text, conf=None: [1.0, 0.0],
+        )
+
+        diag = brain.quick_vector_search_diag(
+            "old fact",
+            "test_inst",
+            limit=1,
+            threshold=0.9,
+            override_config={
+                "brain": {
+                    "fallback_fetch_limit": 50,
+                    "time_decay_rate": 0.0,
+                }
+            },
+        )
+
+        assert [result["id"] for result in diag["results"]] == ["old_match"]
+        assert diag["diagnostics"]["fetch_limit"] is None
+        assert diag["diagnostics"]["fetched_count"] == 51
+
+
 class TestInsertKnowledgeSourceColumns:
     def test_insert_stores_source_date_and_files(self, tmp_path, monkeypatch):
         db_path = _make_instance_db(tmp_path)

@@ -54,3 +54,8 @@ embedding:
 memory:
   rag_source_mode: both
   rag_raw_max_chars: 6000
+
+# Retrieval ablation: score old and new cards by semantic similarity without
+# applying a recency penalty. Keep this fixed between compared runs.
+brain:
+  time_decay_rate: 0.0

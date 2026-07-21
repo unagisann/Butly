@@ -11,20 +11,25 @@ from unittest.mock import patch
 import pytest
 
 from butly_core.chat.types import ChatResponse
+from butly_core.core.database import ButlyDatabase
 from evals.locomo.checkpoint import STATUS_QA, Checkpoint
 from evals.locomo.cli import main as cli_main
 from evals.locomo.config import ReplayConfig
-from evals.locomo.dataset import LocomoConversation
+from evals.locomo.dataset import LocomoConversation, load_dataset
 from evals.locomo.qa_runner import QARunner, build_qa_request
 from evals.locomo.progress import create_console_progress
 from evals.locomo.replay import (
     _discard_partial_session,
+    _create_instance,
     _instance_name,
     _resolve_instance_names,
+    _write_run_metadata,
+    rerun_qa_from_memory,
     resume_evaluation,
     run_evaluation,
 )
 from evals.locomo.sleeptime_runner import SleeptimeRunError, SleeptimeRunner
+from evals.locomo.workspace import EvaluationWorkspace, WorkspaceError
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mini_locomo.json"
@@ -514,6 +519,173 @@ def test_independent_all_questions_reset_history_and_keep_canonical_clean(tmp_pa
             "SELECT COALESCE(SUM(usage_count), 0) FROM knowledge_cards"
         ).fetchone()[0]
     assert usage_total == 0
+
+
+def test_rerun_qa_reuses_exact_cards_without_touching_source(tmp_path):
+    source_config = ReplayConfig(
+        dataset_path=FIXTURE,
+        output_dir=tmp_path,
+        run_id="reuse-source",
+        sample_limit=1,
+        session_limit=1,
+        question_limit=1,
+        qa_mode="independent",
+    )
+    conversation = load_dataset(FIXTURE)[0]
+    source_workspace = EvaluationWorkspace.create(
+        tmp_path,
+        run_id="reuse-source",
+    )
+    _write_run_metadata(source_workspace, source_config, [conversation])
+    source_instance = source_workspace.instances_dir / "locomo_synthetic_conv_1"
+    _create_instance(
+        source_workspace.create_runtime(),
+        conversation,
+        source_instance.name,
+        source_config,
+    )
+    source_db = source_instance / "butly_memory.db"
+    ButlyDatabase(source_db).register_knowledge(
+        {
+            "id": "same-card-1",
+            "category": "Hobby",
+            "title": "Maya learns pottery",
+            "ai_importance": 7,
+            "humanity_importance": 6,
+            "summary": "Maya planned a blue mug and an herb planter.",
+            "episode": "A synthetic test card.",
+            "raw_reference": "session_0001.json",
+        }
+    )
+    with sqlite3.connect(source_db) as connection:
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    source_checkpoint = Checkpoint.create(
+        source_workspace.run_id,
+        source_workspace.checkpoints_dir,
+    )
+    source_progress = source_checkpoint.progress_for(
+        conversation.sample_id,
+        source_instance.name,
+    )
+    source_progress.replayed_sessions = ["session_1"]
+    source_progress.sleeptime_completed = ["session_1"]
+    source_progress.qa_completed = 1
+    source_checkpoint.status = "completed"
+    source_checkpoint.save()
+    (source_workspace.results_dir / "replay_log.jsonl").write_text(
+        '{"status":"succeeded"}\n',
+        encoding="utf-8",
+    )
+    (source_workspace.results_dir / "sleeptime_log.jsonl").write_text(
+        '{"status":"succeeded","knowledge_cards_created":1}\n',
+        encoding="utf-8",
+    )
+    source_db_bytes = source_db.read_bytes()
+
+    profile_path = tmp_path / "qa-ablation.yaml"
+    profile_path.write_text(
+        """locale: en
+chat:
+  generation_config:
+    temperature: 0.0
+gatekeeper:
+  generation_config:
+    temperature: 0.1
+brain:
+  use_rag: false
+context_levels:
+  preset: custom
+  levels:
+    current_time: 'off'
+    mid_term: 'off'
+    session_digest: high
+    rag: 'off'
+""",
+        encoding="utf-8",
+    )
+
+    async def fake_qa_run(self, **kwargs):
+        return {"question_id": kwargs["question"].question_id}
+
+    with patch.object(
+        SleeptimeRunner,
+        "run",
+        side_effect=AssertionError("rerun-qa must not run Sleeptime"),
+    ), patch.object(QARunner, "run", fake_qa_run):
+        rerun = asyncio.run(
+            rerun_qa_from_memory(
+                source_workspace.run_dir,
+                output_dir=tmp_path,
+                run_id="reuse-target",
+                question_limit=2,
+                profile_path=profile_path,
+            )
+        )
+
+    target_instance = rerun.workspace.instances_dir / rerun.instance_names[0]
+    assert rerun.replayed_sessions == 0
+    assert rerun.answered_questions == 2
+    assert source_db.read_bytes() == source_db_bytes
+    assert (target_instance / "butly_memory.db").read_bytes() == source_db_bytes
+    assert not (source_workspace.results_dir / "qa_results.jsonl").exists()
+    assert (
+        rerun.workspace.results_dir / "sleeptime_log.jsonl"
+    ).read_text(encoding="utf-8") == (
+        source_workspace.results_dir / "sleeptime_log.jsonl"
+    ).read_text(encoding="utf-8")
+
+    target_config = json.loads(
+        (target_instance / "config.json").read_text(encoding="utf-8")
+    )
+    assert target_config["chat"]["generation_config"]["temperature"] == 0.0
+    assert (
+        target_config["gatekeeper"]["generation_config"]["temperature"]
+        == 0.1
+    )
+    assert target_config["brain"]["use_rag"] is False
+    assert target_config["context_levels"]["levels"] == {
+        "current_time": "off",
+        "mid_term": "off",
+        "session_digest": "high",
+        "rag": "off",
+    }
+    run_config = json.loads(
+        rerun.workspace.run_config_path.read_text(encoding="utf-8")
+    )
+    assert run_config["memory_reused_from_run_id"] == "reuse-source"
+    assert run_config["run_sleeptime_per_session"] is False
+    checkpoint = Checkpoint.load("reuse-target", rerun.workspace.checkpoints_dir)
+    progress = checkpoint.samples["synthetic-conv-1"]
+    assert progress.replayed_sessions == ["session_1"]
+    assert progress.sleeptime_completed == ["session_1"]
+    assert progress.qa_completed == 2
+
+    progress.sleeptime_completed = []
+    checkpoint.save()
+    with pytest.raises(
+        WorkspaceError,
+        match="refusing to execute Replay/Sleeptime",
+    ):
+        asyncio.run(resume_evaluation(rerun.workspace.run_dir))
+
+
+def test_rerun_qa_rejects_sequential_source(tmp_path):
+    source_dir = tmp_path / "sequential-source"
+    source_dir.mkdir()
+    (source_dir / "run_config.json").write_text(
+        json.dumps(
+            {
+                "run_id": "sequential-source",
+                "dataset_path": str(FIXTURE),
+                "output_dir": str(tmp_path),
+                "qa_mode": "sequential",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WorkspaceError, match="qa_mode=independent"):
+        asyncio.run(rerun_qa_from_memory(source_dir))
 
 
 def test_sequential_mode_keeps_prior_qa_in_history(tmp_path):

@@ -76,6 +76,49 @@ def build_parser() -> argparse.ArgumentParser:
     resume_parser.add_argument("--run-dir", type=Path, required=True)
     resume_parser.add_argument("--skip-scoring", action="store_true")
 
+    rerun_parser = subparsers.add_parser(
+        "rerun-qa",
+        help="Clone an independent run's post-Sleeptime memory and run QA only",
+    )
+    rerun_parser.add_argument("--source-run", type=Path, required=True)
+    rerun_parser.add_argument(
+        "--dataset",
+        type=Path,
+        help="Relocated dataset path; its SHA-256 must match the source run",
+    )
+    rerun_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Parent for the new run (default: the source run's parent)",
+    )
+    rerun_parser.add_argument("--run-id")
+    rerun_question_group = rerun_parser.add_mutually_exclusive_group()
+    rerun_question_group.add_argument("--question-limit", type=_positive_int)
+    rerun_question_group.add_argument(
+        "--all-questions",
+        action="store_true",
+        help="Answer every question; otherwise inherit the source limit",
+    )
+    rerun_parser.add_argument(
+        "--qa-mode",
+        choices=("independent", "sequential"),
+        default="independent",
+        help="QA isolation for the new run (source must be independent)",
+    )
+    rerun_parser.add_argument(
+        "--locale",
+        choices=SUPPORTED_EVALUATION_LOCALES,
+        help="Evaluation prompt locale (overrides profile/source locale)",
+    )
+    rerun_parser.add_argument("--model-name")
+    rerun_parser.add_argument("--connection")
+    rerun_parser.add_argument("--profile", type=Path)
+    rerun_parser.add_argument(
+        "--skip-scoring",
+        action="store_true",
+        help="Stop after QA; score/report can be re-run separately",
+    )
+
     score_parser = subparsers.add_parser(
         "score", help="(Re-)score a finished run from its qa_results.jsonl"
     )
@@ -100,6 +143,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _command_run(args)
     if args.command == "resume":
         return _command_resume(args)
+    if args.command == "rerun-qa":
+        return _command_rerun_qa(args)
     if args.command == "score":
         return _command_score(args)
     if args.command == "report":
@@ -158,6 +203,37 @@ def _command_resume(args: argparse.Namespace) -> int:
     return _finish(
         result,
         dataset=dataset,
+        skip_scoring=args.skip_scoring,
+        progress_reporter=progress_reporter,
+    )
+
+
+def _command_rerun_qa(args: argparse.Namespace) -> int:
+    from .replay import rerun_qa_from_memory
+
+    progress_reporter = create_console_progress()
+    result = asyncio.run(
+        rerun_qa_from_memory(
+            args.source_run,
+            dataset_path=args.dataset,
+            output_dir=args.output_dir,
+            run_id=args.run_id,
+            question_limit=args.question_limit,
+            all_questions=args.all_questions,
+            qa_mode=args.qa_mode,
+            locale=args.locale,
+            model_name=args.model_name,
+            connection=args.connection,
+            profile_path=args.profile,
+            progress_reporter=progress_reporter,
+        )
+    )
+    run_config = json.loads(
+        result.workspace.run_config_path.read_text(encoding="utf-8")
+    )
+    return _finish(
+        result,
+        dataset=Path(run_config["dataset_path"]),
         skip_scoring=args.skip_scoring,
         progress_reporter=progress_reporter,
     )

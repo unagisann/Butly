@@ -80,12 +80,38 @@ python -m evals.locomo.cli run \
 `run` finishes with scoring and a summary; pass `--skip-scoring` to stop after
 QA. `--model-name` and `--connection` override the chat role for QA.
 `--profile <yaml>` applies role sections (`chat` / `gatekeeper` / `summary` /
-`knowledge` / `embedding`) plus the non-model `memory` section
+`knowledge` / `embedding`) plus the non-model `memory`, `brain`, and
+`context_levels` sections
 (e.g. `rag_source_mode: both` to inject original-conversation excerpts next to
-the RAG cards, `rag_raw_max_chars` to cap them) to the evaluation instance
-config — see `profiles/*.example.yaml`.
+the RAG cards, `rag_raw_max_chars` to cap them, or
+`brain.time_decay_rate: 0.0` to disable recency weighting for a retrieval
+ablation) to the evaluation instance config — see `profiles/*.example.yaml`.
+Each model role accepts its own `generation_config.temperature`. Context
+injection can be ablated independently, for example:
 
-`run` and `resume` emit flushed live progress to stderr, so the Colab run cell
+```yaml
+chat:
+  generation_config:
+    temperature: 0.0
+gatekeeper:
+  generation_config:
+    temperature: 0.0
+brain:
+  use_rag: false
+context_levels:
+  preset: custom
+  levels:
+    current_time: 'off'
+    mid_term: high
+    session_digest: high
+    rag: 'off'
+```
+
+Quote `'off'` in hand-written YAML; an unquoted `off` is parsed as boolean
+false by YAML 1.1. To disable RAG completely, set both `brain.use_rag: false`
+(skip retrieval) and `context_levels.levels.rag: 'off'` (skip injection).
+
+`run`, `resume`, and `rerun-qa` emit flushed live progress to stderr, so the Colab run cell
 shows the active sample, session, or question even during long model calls.
 Replay, Sleeptime, and QA each count as one equal work unit and occupy 0–90%;
 scoring occupies 90–96%, and report generation finishes at 100%. The percentage
@@ -138,6 +164,14 @@ The defaults remain one sample, all sessions, and one question. Explicit
 `--all-*` flags make full, potentially expensive runs visible in saved commands
 and Colab parameters.
 
+For an apples-to-apples check against a prior three-session run, keep the same
+model/profile and select one sample, `--session-limit 3`, and
+`--question-limit 10`. Then use a different run ID and change only the session
+scope to `--all-sessions`. Pure vector retrieval scores the instance's complete
+knowledge-card set in both runs; `fallback_fetch_limit` limits only the
+keyword-search fallback path. A vector trace therefore reports
+`fetch_limit: null` and the actual full-card count in `fetched_count`.
+
 ### Evaluation prompt locale
 
 The internal prompt and memory-output locale defaults to English. It can be
@@ -178,6 +212,32 @@ independently of the code change being measured.
 
 Existing run directories are preserved; replacing one requires both the same
 `--run-id` and explicit `--clean`.
+
+To answer questions again with the exact same knowledge-card corpus, clone the
+canonical post-Sleeptime instance into a new run and execute QA only:
+
+```bash
+python -m evals.locomo.cli rerun-qa \
+  --source-run ./eval_runs/<independent-source-run-id> \
+  --dataset /path/to/locomo10.json \
+  --output-dir ./eval_runs \
+  --run-id <new-run-id> \
+  --all-questions \
+  --profile /path/to/new-qa-profile.yaml
+```
+
+`rerun-qa` never writes to the source run and never executes Replay or
+Sleeptime. It verifies the dataset digest and completed session checkpoint,
+copies the source instance and Replay/Sleeptime logs, then starts a new QA
+checkpoint at zero. The source must have used `qa_mode=independent`, because
+only independent QA guarantees that its canonical instance is still the clean
+post-Sleeptime baseline. Chat and gatekeeper temperatures/context switches can
+affect this QA-only rerun; summary and knowledge temperatures cannot, because
+those roles created the already-reused memory during Sleeptime.
+`--dataset` is optional when the source's saved path still exists; use it when
+the run directory or dataset was moved.
+Resuming a reuse run refuses to execute if its pre-completed memory checkpoint
+is missing or incomplete, preventing accidental Replay/Sleeptime duplication.
 
 ```bash
 # continue an interrupted run (skips completed sessions and questions)
@@ -232,9 +292,12 @@ API keys and environment-variable values are never written to these artifacts.
 OpenAI-compatible llama.cpp server per model configured in its `MODELS`
 role map (chat / gatekeeper / summary / knowledge / embedding; roles sharing
 a model share a server). A role may carry a `generation_config` override that
-is written into the generated profile — the gatekeeper default raises
+is written into the generated profile. The Parameters cell exposes separate
+chat, gatekeeper, summary, and knowledge temperatures; the gatekeeper default
+raises
 `max_output_tokens` to 2048 because a reasoning model's thinking can consume
-the stock 512-token budget and return an empty classification. Butly's RAG needs a real embedding endpoint, so the `embedding`
+the stock 512-token budget and return an empty classification. Butly's RAG
+needs a real embedding endpoint, so the `embedding`
 role must point at an embeddings-capable server (llama.cpp with
 `--embeddings`), never at a chat connection. The notebook registers every
 server as a connection, generates `profiles/colab_roles.yaml`, runs the CLI
@@ -243,7 +306,11 @@ Resume cell. llama.cpp is built fresh each session (Drive binary caching was
 removed after repeated shared-library breakage). The notebook must stay
 logic-free: anything beyond setup and CLI invocation belongs in this package.
 Its Parameters cell exposes QA mode, locale, and separate all/limit controls
-for samples, sessions, and questions.
+for samples, sessions, and questions. It also exposes current-time, mid-term,
+session-digest, and RAG context switches. Set `SOURCE_MEMORY_RUN_ID` to an
+existing independent run ID (for example `qwen3_14b_colab_v16`) and choose a
+different `RUN_ID` to route the Run cell through `rerun-qa`; leave it blank for
+normal Replay/Sleeptime.
 
 Profiles set a `connection` per role. Using a user-defined connection (e.g.
 `colab_local`) for every role exercises code paths that built-in providers
