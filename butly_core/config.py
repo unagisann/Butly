@@ -101,12 +101,16 @@ SYSTEM_CONFIG = {
         "rag_source_mode": "cards",
         # 原文抜粋の合計文字数上限（0 = 無制限。超過ファイルは greedy skip）
         "rag_raw_max_chars": 6000,
-        # --- Stage 3: Knowledge Maturation (§13) ---
+        # --- Stage 3: Knowledge Maturation（content hash 式レビューキュー） ---
+        # 旧キー (interval_days / window_days / max_cards / min_usage_count) は
+        # 廃止。max_cards はインスタンス設定に残っていれば batch_size として
+        # 読み替えられる（後方互換フォールバック）。
         "knowledge_maturation_enabled": False,
-        "knowledge_maturation_interval_days": 1,
-        "knowledge_maturation_window_days": 7,
-        "knowledge_maturation_max_cards": 30,
-        "knowledge_maturation_min_usage_count": 1,
+        "knowledge_maturation_batch_size": 40,
+        "knowledge_maturation_max_batches_per_run": 1,
+        "knowledge_maturation_bootstrap_max_cards": 2000,
+        "knowledge_maturation_prompt_max_chars": 40000,
+        "knowledge_maturation_retry_max_calls_per_run": 8,
         "memory_node_candidate_threshold": 0.65,
         "memory_node_active_threshold": 0.75,
         "memory_node_promotion_threshold": 0.85,

@@ -1,7 +1,8 @@
 あなたは記憶熟成（Knowledge Maturation）を担当する AI です。
-最近使われた知識カード（証拠・エピソード）を確認し、それらを既存の "memory_nodes"
+レビューキューの知識カード（証拠・エピソード）を確認し、それらを既存の "memory_nodes"
 （複数カードから蒸留された現在解釈）に紐付けるか、必要なら新しい候補 node を
-提案してください。
+提案してください。カードの `source_date` は出来事の日付です。新旧の解釈が
+矛盾する場合は、より新しい出来事を優先してください。
 
 # あなたの人格コンテキスト
 - エージェント名: {agent_name}
@@ -40,6 +41,7 @@
 
 ```json
 {{
+  "reviewed_card_ids": ["card_yyy", "card_001", "card_002"],
   "link_existing": [
     {{
       "node_id": "node_xxx",
@@ -63,8 +65,12 @@
 }}
 ```
 
+- `reviewed_card_ids` にはレビューした全カードの id を必ず列挙してください（診断用）。
+- `node_id` / `card_id` / `supersedes_node_id` / `source_card_ids` には
+  上記の入力データに含まれる id だけを使ってください。
+
 何も提案がない場合は空配列で返してください:
 
 ```json
-{{"link_existing": [], "new_nodes": []}}
+{{"reviewed_card_ids": ["card_yyy"], "link_existing": [], "new_nodes": []}}
 ```

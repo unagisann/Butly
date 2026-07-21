@@ -31,6 +31,22 @@ class BaseProvider(ABC):
         self._last_token_usage = None
         return usage
 
+    # ==================================================================
+    # completion metadata (finish reason 等) の受け渡し
+    # ==================================================================
+    # classify() の戻り値 str 互換を保ったまま、truncation 終了
+    # (max_tokens / length) を呼び出し側へ伝えるための 1 スロット方式。
+    # token usage と同じく「call 直後に pop」が前提。
+    # 提供しない provider / 経路では None のままでよい。
+
+    def _set_last_completion_metadata(self, metadata: Optional[dict]) -> None:
+        self._last_completion_metadata = metadata or None
+
+    def pop_last_completion_metadata(self) -> Optional[dict]:
+        metadata = getattr(self, "_last_completion_metadata", None)
+        self._last_completion_metadata = None
+        return metadata
+
     @abstractmethod
     def generate(
         self,

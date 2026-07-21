@@ -1020,171 +1020,513 @@ class ButlySleeptime:
             return mem_cfg[key]
         return SYSTEM_CONFIG.get("memory", {}).get(key, default)
 
-    def stage_3_mature_knowledge(self, instance_path):
-        """Stage 3: Knowledge Maturation.
+    def _stage3_params(self, inst_cfg: dict) -> dict:
+        """Stage 3 の設定を解決する（§11 新キー。旧 max_cards は読み替え互換）。"""
+        legacy_batch = int(
+            self._stage_3_param(inst_cfg, "knowledge_maturation_max_cards", 40)
+        )
+        return {
+            "batch_size": int(
+                self._stage_3_param(
+                    inst_cfg, "knowledge_maturation_batch_size", legacy_batch
+                )
+            ),
+            "max_batches_per_run": int(
+                self._stage_3_param(
+                    inst_cfg, "knowledge_maturation_max_batches_per_run", 1
+                )
+            ),
+            "bootstrap_max_cards": int(
+                self._stage_3_param(
+                    inst_cfg, "knowledge_maturation_bootstrap_max_cards", 2000
+                )
+            ),
+            "prompt_max_chars": int(
+                self._stage_3_param(
+                    inst_cfg, "knowledge_maturation_prompt_max_chars", 40000
+                )
+            ),
+            "retry_max_calls": int(
+                self._stage_3_param(
+                    inst_cfg, "knowledge_maturation_retry_max_calls_per_run", 8
+                )
+            ),
+            "candidate_threshold": float(
+                self._stage_3_param(inst_cfg, "memory_node_candidate_threshold", 0.65)
+            ),
+            "active_threshold": float(
+                self._stage_3_param(inst_cfg, "memory_node_active_threshold", 0.75)
+            ),
+            "promotion_threshold": float(
+                self._stage_3_param(inst_cfg, "memory_node_promotion_threshold", 0.85)
+            ),
+            "promotion_min_sources": int(
+                self._stage_3_param(inst_cfg, "memory_node_promotion_min_sources", 2)
+            ),
+        }
 
-        計画書 §6 の手順を実装する:
-          - start_maturation_run
-          - collect_review_cards
-          - LLM 推論 (link / candidate)
-          - apply link_existing / new_nodes / supersede
-          - uncertain status の反映
-          - promotion proposal 出力
-          - complete_maturation_run
+    def stage_3_mature_knowledge(self, instance_path, now=None):
+        """Stage 3: Knowledge Maturation（content hash 式レビューキュー。計画 §5）。
+
+        フロー:
+          1. instance 単位 process lock（non-blocking。取れなければ skip）
+          2. 前 process が残した running run を abandoned として回収
+          3. preflight: 非アーカイブ NULL hash の自己修復 backfill
+          4. FIFO でキューから batch 選択 → LLM → 結果分類 →
+             単一 transaction で node/source/counters/版 stamp/run 完了を commit
+          5. promotion proposal 出力（DB commit 後に再生成可能な派生 artifact）
+
+        now: 評価経路（LoCoMo）が session 時刻を注入するための clock。
+             None なら UTC 実時刻。
         """
+        from datetime import timezone as _tz
+
         from butly_core.core.database import ButlyDatabase
         from butly_core.core.memory_nodes import MemoryNodeRepository
         from butly_core.core import knowledge_maturation as km
+        from butly_core.core.card_content import format_maturation_time
 
-        instance_name = instance_path.name
-        instance_db_path = str(self.instances_dir / instance_name / "butly_memory.db")
+        instance_name = Path(instance_path).name
+        instance_dir = self.instances_dir / instance_name
+        instance_db_path = str(instance_dir / "butly_memory.db")
         if not Path(instance_db_path).exists():
             print(f"[Stage3] DB not found, skipping: {instance_db_path}")
-            return
+            return None
 
-        # DB migration の保証（Stage 3 tables の存在確認）
-        ButlyDatabase(db_path=instance_db_path)
+        now_dt = now or datetime.now(_tz.utc)
+        now_stamp = format_maturation_time(now_dt)
 
-        repo = MemoryNodeRepository(instance_db_path)
         inst_cfg = self.get_instance_config(instance_name)
+        params = self._stage3_params(inst_cfg)
 
-        window_days = int(self._stage_3_param(inst_cfg, "knowledge_maturation_window_days", 7))
-        max_cards = int(self._stage_3_param(inst_cfg, "knowledge_maturation_max_cards", 30))
-        min_usage = int(self._stage_3_param(inst_cfg, "knowledge_maturation_min_usage_count", 1))
-        candidate_threshold = float(
-            self._stage_3_param(inst_cfg, "memory_node_candidate_threshold", 0.65)
-        )
-        active_threshold = float(
-            self._stage_3_param(inst_cfg, "memory_node_active_threshold", 0.75)
-        )
-        promotion_threshold = float(
-            self._stage_3_param(inst_cfg, "memory_node_promotion_threshold", 0.85)
-        )
-        promotion_min_sources = int(
-            self._stage_3_param(inst_cfg, "memory_node_promotion_min_sources", 2)
-        )
+        totals = {
+            "status": "completed",
+            "batches": 0,
+            "llm_calls": 0,
+            "applied_cards": 0,
+            "reviewed_cards": 0,
+            "created": 0,
+            "linked": 0,
+            "superseded": 0,
+            "failed_cards": [],
+            "unprocessed_cards": [],
+            "outcomes": [],
+        }
 
-        # 1. レビュー対象カード収集
-        review_cards = km.collect_review_cards(
-            instance_db_path,
-            window_days=window_days,
-            max_cards=max_cards,
-            min_usage_count=min_usage,
-        )
-        if not review_cards:
-            print(f"[Stage3] No review cards for {instance_name}, skipping.")
-            run_id = repo.start_run(instance_name, metadata={"reason": "no_review_cards"})
-            repo.complete_run(run_id, status="skipped")
-            return
+        with km.stage3_process_lock(instance_dir) as acquired:
+            if not acquired:
+                print(
+                    f"[Stage3] Another Stage 3 process holds the lock for "
+                    f"{instance_name}; skipping."
+                )
+                totals["status"] = "locked"
+                return totals
 
-        # 2. run 開始
-        run_id = repo.start_run(
-            instance_name,
-            metadata={
-                "window_days": window_days,
-                "max_cards": max_cards,
-                "min_usage_count": min_usage,
-            },
-        )
-        print(f"[Stage3] Run started: {run_id} (cards={len(review_cards)})")
+            # migration 保証 + 残骸回収
+            ButlyDatabase(db_path=instance_db_path)
+            repo = MemoryNodeRepository(instance_db_path)
+            recovered = repo.recover_orphan_runs(instance_name, now_stamp=now_stamp)
+            if recovered:
+                print(f"[Stage3] Recovered {recovered} orphan running run(s) as abandoned.")
 
-        try:
-            # 3. 既存 node を取得（superseded は除外）
-            existing_nodes = repo.find_nodes(
-                statuses=["candidate", "active", "uncertain"],
-                limit=200,
+            try:
+                backfilled = km.preflight_backfill_hashes(
+                    instance_db_path, now_stamp=now_stamp
+                )
+                if backfilled:
+                    print(f"[Stage3] Preflight backfilled content_hash for {backfilled} card(s).")
+            except km.MaturationPreflightError as exc:
+                print(f"[Stage3] Preflight failed: {exc}")
+                run_id = repo.start_run(
+                    instance_name,
+                    metadata={"reason": "preflight_failed"},
+                    now_stamp=now_stamp,
+                )
+                repo.fail_run(run_id, str(exc), now_stamp=now_stamp)
+                totals["status"] = "preflight_failed"
+                totals["error"] = str(exc)
+                return totals
+
+            ctx = {
+                "instance_name": instance_name,
+                "db_path": instance_db_path,
+                "repo": repo,
+                "inst_cfg": inst_cfg,
+                "params": params,
+                "now_stamp": now_stamp,
+                "mode": "nightly",
+                "extra_calls_used": 0,
+            }
+
+            for batch_index in range(params["max_batches_per_run"]):
+                cards = km.select_queue_cards(
+                    instance_db_path, batch_size=params["batch_size"]
+                )
+                if not cards:
+                    if batch_index == 0:
+                        print(f"[Stage3] Queue empty for {instance_name}, skipping.")
+                        run_id = repo.start_run(
+                            instance_name,
+                            metadata={"reason": "queue_empty"},
+                            now_stamp=now_stamp,
+                        )
+                        repo.complete_run(run_id, status="skipped", now_stamp=now_stamp)
+                    break
+                stats = self._stage3_process_cards(ctx, cards)
+                self._stage3_merge_stats(totals, stats)
+                if stats.get("aborted"):
+                    totals["status"] = "partial"
+                    break
+
+            if totals["failed_cards"]:
+                totals["status"] = "partial"
+
+            backlog = km.count_queue_backlog(instance_db_path)
+            totals.update(backlog)
+            print(
+                f"[Stage3] Run summary ({instance_name}): status={totals['status']} "
+                f"batches={totals['batches']} applied={totals['applied_cards']} "
+                f"failed={len(totals['failed_cards'])} backlog={backlog['backlog']} "
+                f"oldest_queued_at={backlog['oldest_queued_at']}"
             )
 
-            # 4. LLM 推論
-            loader = self.get_instance_prompt_loader(instance_name)
-            agent_instruction = self.get_instance_instruction(instance_name)
-            agent_key_memory = self.get_instance_key_memory(instance_name)
-
-            prompt = km.build_review_prompt(
-                loader=loader,
-                agent_name=self.get_instance_agent_name(instance_name),
-                system_instruction=agent_instruction,
-                key_memory=agent_key_memory,
-                existing_nodes=existing_nodes,
-                review_cards=review_cards,
-            )
-
-            k_conf = self._resolve_conf(inst_cfg, "knowledge")
-            provider = self._get_provider(k_conf)
-            llm_raw = self._robust_api_call(lambda: provider.classify(prompt, k_conf))
-            self._track_llm_usage(provider)
-            if not llm_raw:
-                print("[Stage3] LLM returned empty output; finishing run as completed (no-op).")
-                repo.update_run_counters(run_id, reviewed_card_count=len(review_cards))
-                repo.complete_run(run_id, status="completed")
-                return
-
-            parsed = km.parse_llm_output(llm_raw)
-
-            # 5. 適用
-            valid_card_ids = {c["id"] for c in review_cards}
-            valid_node_ids = {n["id"] for n in existing_nodes}
-
-            linked, uncertain_ids = km.apply_link_existing(
-                repo=repo,
-                entries=parsed["link_existing"],
-                valid_node_ids=valid_node_ids,
-                valid_card_ids=valid_card_ids,
-                run_id=run_id,
-            )
-
-            # supports が紐付いた node は confidence を緩やかに更新 + 補強日時を打つ
-            self._reinforce_linked_nodes(
-                repo=repo,
-                run_id=run_id,
-                link_entries=parsed["link_existing"],
-                valid_node_ids=valid_node_ids,
-            )
-
-            created, superseded = km.apply_new_nodes(
-                repo=repo,
-                entries=parsed["new_nodes"],
-                valid_card_ids=valid_card_ids,
-                run_id=run_id,
-                candidate_threshold=candidate_threshold,
-                active_threshold=active_threshold,
-            )
-
-            # 矛盾優勢の node を uncertain に
-            km.mark_uncertain_nodes(repo=repo, node_ids=uncertain_ids, run_id=run_id)
-
-            repo.update_run_counters(
-                run_id,
-                reviewed_card_count=len(review_cards),
-                created_node_count=created,
-                linked_source_count=linked,
-                superseded_node_count=superseded,
-            )
-
-            # 6. promotion proposal (§11)
+            # promotion proposal（派生 artifact。§8）
             try:
                 proposals = km.collect_promotion_proposals(
                     repo=repo,
-                    confidence_threshold=promotion_threshold,
-                    min_sources=promotion_min_sources,
+                    confidence_threshold=params["promotion_threshold"],
+                    min_sources=params["promotion_min_sources"],
+                    now_iso=now_stamp,
                 )
-                km.write_promotion_proposals_file(instance_path, proposals)
+                km.write_promotion_proposals_file(
+                    instance_dir, proposals, now_iso=now_stamp
+                )
                 print(f"[Stage3] Promotion proposals: {len(proposals)}")
             except Exception as pe:
                 print(f"[Stage3] proposal generation skipped: {pe}")
 
-            repo.complete_run(run_id, status="completed")
-            print(
-                f"[Stage3] Run completed: linked={linked} created={created} "
-                f"superseded={superseded} uncertain={len(uncertain_ids)}"
-            )
+            return totals
 
+    @staticmethod
+    def _stage3_merge_stats(totals: dict, stats: dict) -> None:
+        totals["batches"] += stats.get("batches", 0)
+        totals["llm_calls"] += stats.get("llm_calls", 0)
+        totals["applied_cards"] += stats.get("applied_cards", 0)
+        totals["reviewed_cards"] += stats.get("reviewed_cards", 0)
+        totals["created"] += stats.get("created", 0)
+        totals["linked"] += stats.get("linked", 0)
+        totals["superseded"] += stats.get("superseded", 0)
+        totals["failed_cards"].extend(stats.get("failed_cards", []))
+        totals["unprocessed_cards"].extend(stats.get("unprocessed_cards", []))
+        totals["outcomes"].extend(stats.get("outcomes", []))
+
+    def _stage3_take_budget(self, ctx: dict) -> bool:
+        """retry/split の追加 LLM 呼び出し予算を 1 消費する（§5.6）。"""
+        if ctx["extra_calls_used"] >= ctx["params"]["retry_max_calls"]:
+            return False
+        ctx["extra_calls_used"] += 1
+        return True
+
+    def _stage3_process_cards(self, ctx: dict, cards: list) -> dict:
+        """1 batch を処理する。retryable 失敗は retry → 半分分割で縮小再試行する。
+
+        予算 (retry_max_calls_per_run) を使い切ったら残りを未処理のまま返す。
+        1 件まで縮小しても失敗するカードは failed_cards として隔離する（§6）。
+        """
+        from butly_core.core import knowledge_maturation as km
+
+        stats = {
+            "batches": 0,
+            "llm_calls": 0,
+            "applied_cards": 0,
+            "reviewed_cards": 0,
+            "created": 0,
+            "linked": 0,
+            "superseded": 0,
+            "failed_cards": [],
+            "unprocessed_cards": [],
+            "outcomes": [],
+            "aborted": False,
+        }
+
+        result = self._stage3_review_batch(ctx, cards)
+        self._stage3_absorb_batch_result(stats, result, cards)
+        outcome = result["outcome"]
+        if outcome in (km.OUTCOME_OK, km.OUTCOME_NO_CHANGES):
+            return stats
+        if outcome == km.OUTCOME_PROVIDER_ERROR:
+            stats["aborted"] = True
+            stats["failed_cards"].extend(c["id"] for c in cards)
+            return stats
+        if outcome == "changed_during_run":
+            # 新版はキューに残っており次 run で再選択される。ここでは再試行しない。
+            return stats
+        if outcome == "db_error":
+            stats["failed_cards"].extend(c["id"] for c in cards)
+            return stats
+
+        # retryable (truncated / empty / parse_error)
+        if outcome in km.RETRYABLE_OUTCOMES:
+            if self._stage3_take_budget(ctx):
+                retry = self._stage3_review_batch(ctx, cards)
+                self._stage3_absorb_batch_result(stats, retry, cards)
+                if retry["outcome"] in (km.OUTCOME_OK, km.OUTCOME_NO_CHANGES):
+                    return stats
+                if retry["outcome"] == km.OUTCOME_PROVIDER_ERROR:
+                    stats["aborted"] = True
+                    stats["failed_cards"].extend(c["id"] for c in cards)
+                    return stats
+                outcome = retry["outcome"]
+
+            if len(cards) > 1:
+                mid = len(cards) // 2
+                for half in (cards[:mid], cards[mid:]):
+                    if not half:
+                        continue
+                    if not self._stage3_take_budget(ctx):
+                        stats["unprocessed_cards"].extend(c["id"] for c in half)
+                        print(
+                            "[Stage3] Retry budget exhausted; "
+                            f"{len(half)} card(s) left unprocessed in queue."
+                        )
+                        continue
+                    sub = self._stage3_process_cards(ctx, half)
+                    self._stage3_merge_stats_into(stats, sub)
+                    if sub.get("aborted"):
+                        stats["aborted"] = True
+                        break
+            else:
+                # 1 件まで縮小しても失敗 → 隔離（stamp しないので次回 run で再試行可能）
+                stats["failed_cards"].append(cards[0]["id"])
+                print(
+                    f"[Stage3] Card {cards[0]['id']} isolated after repeated "
+                    f"{outcome}; it stays in the queue for future runs."
+                )
+        return stats
+
+    @staticmethod
+    def _stage3_merge_stats_into(stats: dict, sub: dict) -> None:
+        stats["batches"] += sub.get("batches", 0)
+        stats["llm_calls"] += sub.get("llm_calls", 0)
+        stats["applied_cards"] += sub.get("applied_cards", 0)
+        stats["reviewed_cards"] += sub.get("reviewed_cards", 0)
+        stats["created"] += sub.get("created", 0)
+        stats["linked"] += sub.get("linked", 0)
+        stats["superseded"] += sub.get("superseded", 0)
+        stats["failed_cards"].extend(sub.get("failed_cards", []))
+        stats["unprocessed_cards"].extend(sub.get("unprocessed_cards", []))
+        stats["outcomes"].extend(sub.get("outcomes", []))
+
+    @staticmethod
+    def _stage3_absorb_batch_result(stats: dict, result: dict, cards: list) -> None:
+        stats["batches"] += 1
+        stats["llm_calls"] += result.get("llm_calls", 0)
+        stats["outcomes"].append(result["outcome"])
+        if result["outcome"] in ("ok", "no_changes"):
+            stats["applied_cards"] += len(cards)
+            stats["reviewed_cards"] += len(cards)
+            stats["created"] += result.get("created", 0)
+            stats["linked"] += result.get("linked", 0)
+            stats["superseded"] += result.get("superseded", 0)
+
+    def _stage3_review_batch(self, ctx: dict, cards: list) -> dict:
+        """1 batch = 1 run。LLM 1 回 → 結果分類 → 成功時のみ単一 transaction 適用。
+
+        失敗時（truncated/empty/parse/provider/db）はカード版を stamp せず、
+        run と run_cards に failed を記録する（§5.4）。
+        """
+        from butly_core.core import knowledge_maturation as km
+        from butly_core.core.memory_nodes import MaturationUnitOfWork
+
+        repo = ctx["repo"]
+        params = ctx["params"]
+        now_stamp = ctx["now_stamp"]
+        instance_name = ctx["instance_name"]
+        card_ids = [c["id"] for c in cards]
+        selected_versions = {c["id"]: c["content_hash"] for c in cards}
+
+        run_id = repo.start_run(
+            instance_name,
+            metadata={"mode": ctx["mode"], "batch_cards": len(cards)},
+            now_stamp=now_stamp,
+        )
+        repo.record_run_cards(
+            run_id,
+            [(cid, selected_versions[cid]) for cid in card_ids],
+            now_stamp=now_stamp,
+        )
+
+        context_nodes = km.select_context_nodes(ctx["db_path"], cards)
+        prompt = km.build_review_prompt(
+            loader=self.get_instance_prompt_loader(instance_name),
+            agent_name=self.get_instance_agent_name(instance_name),
+            system_instruction=self.get_instance_instruction(instance_name),
+            key_memory=self.get_instance_key_memory(instance_name),
+            existing_nodes=context_nodes,
+            review_cards=cards,
+            prompt_max_chars=params["prompt_max_chars"],
+        )
+
+        k_conf = self._resolve_conf(ctx["inst_cfg"], "knowledge")
+        provider = self._get_provider(k_conf)
+        try:
+            raw = self._robust_api_call(lambda: provider.classify(prompt, k_conf))
+            self._track_llm_usage(provider)
+            pop_meta = getattr(provider, "pop_last_completion_metadata", None)
+            meta = pop_meta() if callable(pop_meta) else None
+            finish_reason = (
+                meta.get("finish_reason") if isinstance(meta, dict) else None
+            )
         except Exception as exc:
-            print(f"[Stage3] Run failed: {exc}")
+            error = f"provider_error: {exc}"
+            print(f"[Stage3] {error}")
+            repo.mark_run_cards(
+                run_id, card_ids, status="failed", error=error, now_stamp=now_stamp
+            )
+            repo.fail_run(run_id, error, now_stamp=now_stamp)
+            return {
+                "outcome": km.OUTCOME_PROVIDER_ERROR,
+                "run_id": run_id,
+                "llm_calls": 1,
+                "error": str(exc),
+            }
+
+        outcome, parsed, error = km.classify_review_response(raw, finish_reason)
+        if outcome in km.RETRYABLE_OUTCOMES:
+            message = f"{outcome}: {error}"
+            print(f"[Stage3] {message} (cards={len(cards)})")
+            repo.mark_run_cards(
+                run_id, card_ids, status="failed", error=message, now_stamp=now_stamp
+            )
+            repo.fail_run(run_id, message, now_stamp=now_stamp)
+            return {
+                "outcome": outcome,
+                "run_id": run_id,
+                "llm_calls": 1,
+                "error": error,
+            }
+
+        # ok / no_changes → 単一 transaction で適用（§5.4-4/-5）
+        valid_card_ids = set(card_ids)
+        valid_node_ids = {n["id"] for n in context_nodes}
+        reviewed_diag = km.check_reviewed_card_ids(parsed, valid_card_ids)
+        if reviewed_diag:
+            print(f"[Stage3] Warning: {reviewed_diag}")
+
+        try:
+            changed_ids: list = []
+            counters = {"created": 0, "linked": 0, "superseded": 0}
+            with MaturationUnitOfWork(ctx["db_path"], now_stamp=now_stamp) as uow:
+                current_hashes = uow.get_card_hashes(card_ids)
+                changed_ids = [
+                    cid
+                    for cid in card_ids
+                    if current_hashes.get(cid) != selected_versions[cid]
+                ]
+                if changed_ids:
+                    unchanged = [c for c in card_ids if c not in changed_ids]
+                    uow.mark_run_cards(
+                        run_id, changed_ids, status="changed_during_run"
+                    )
+                    if unchanged:
+                        uow.mark_run_cards(run_id, unchanged, status="abandoned")
+                    uow.fail_run(
+                        run_id, f"changed_during_run: {sorted(changed_ids)}"
+                    )
+                else:
+                    linked, uncertain_ids, diag1 = km.apply_link_existing(
+                        repo=uow,
+                        entries=parsed["link_existing"],
+                        valid_node_ids=valid_node_ids,
+                        valid_card_ids=valid_card_ids,
+                        run_id=run_id,
+                    )
+                    self._reinforce_linked_nodes(
+                        repo=uow,
+                        run_id=run_id,
+                        link_entries=parsed["link_existing"],
+                        valid_node_ids=valid_node_ids,
+                        active_threshold=params["active_threshold"],
+                        candidate_threshold=params["candidate_threshold"],
+                    )
+                    created, superseded, diag2 = km.apply_new_nodes(
+                        repo=uow,
+                        entries=parsed["new_nodes"],
+                        valid_node_ids=valid_node_ids,
+                        valid_card_ids=valid_card_ids,
+                        run_id=run_id,
+                        candidate_threshold=params["candidate_threshold"],
+                        active_threshold=params["active_threshold"],
+                    )
+                    km.mark_uncertain_nodes(
+                        repo=uow, node_ids=uncertain_ids, run_id=run_id
+                    )
+                    uow.update_run_counters(
+                        run_id,
+                        reviewed_card_count=len(cards),
+                        created_node_count=created,
+                        linked_source_count=linked,
+                        superseded_node_count=superseded,
+                    )
+                    diagnostics = [d for d in [reviewed_diag, *diag1, *diag2] if d]
+                    for d in diagnostics:
+                        if d != reviewed_diag:
+                            print(f"[Stage3] Warning: {d}")
+                    card_status = (
+                        "applied" if outcome == km.OUTCOME_OK else "no_changes"
+                    )
+                    uow.mark_run_cards(
+                        run_id,
+                        card_ids,
+                        status=card_status,
+                        diagnostic="; ".join(diagnostics) or None,
+                    )
+                    for cid in card_ids:
+                        uow.stamp_card_version(
+                            card_id=cid,
+                            content_hash=selected_versions[cid],
+                            run_id=run_id,
+                        )
+                    uow.complete_run(run_id, status="completed")
+                    counters = {
+                        "created": created,
+                        "linked": linked,
+                        "superseded": superseded,
+                    }
+        except Exception as exc:
+            error = f"db_error: {exc}"
+            print(f"[Stage3] Apply transaction failed (rolled back): {error}")
             try:
-                repo.fail_run(run_id, error=str(exc))
+                repo.mark_run_cards(
+                    run_id, card_ids, status="failed", error=error, now_stamp=now_stamp
+                )
+                repo.fail_run(run_id, error, now_stamp=now_stamp)
             except Exception:
                 pass
+            return {
+                "outcome": "db_error",
+                "run_id": run_id,
+                "llm_calls": 1,
+                "error": str(exc),
+            }
+
+        if changed_ids:
+            print(
+                f"[Stage3] Batch dropped: content changed during run for "
+                f"{sorted(changed_ids)}; new versions stay queued."
+            )
+            return {
+                "outcome": "changed_during_run",
+                "run_id": run_id,
+                "llm_calls": 1,
+            }
+
+        print(
+            f"[Stage3] Run completed: run={run_id} cards={len(cards)} "
+            f"linked={counters['linked']} created={counters['created']} "
+            f"superseded={counters['superseded']} outcome={outcome}"
+        )
+        return {"outcome": outcome, "run_id": run_id, "llm_calls": 1, **counters}
 
     def _reinforce_linked_nodes(
         self,
@@ -1193,11 +1535,14 @@ class ButlySleeptime:
         run_id: str,
         link_entries: list,
         valid_node_ids: set,
+        active_threshold: float = 0.75,
+        candidate_threshold: float = 0.65,
     ) -> None:
         """supports relation で link された node の confidence をわずかに引き上げ、
-        contradicts であれば下げる。リインフォース日時も更新する。"""
-        from butly_core.core.knowledge_maturation import _coerce_confidence
+        contradicts であれば下げる。リインフォース日時も更新する。
 
+        repo は MemoryNodeRepository / MaturationUnitOfWork のどちらでもよい。
+        """
         deltas: dict[str, float] = {}
         for e in link_entries:
             if not isinstance(e, dict):
@@ -1206,7 +1551,10 @@ class ButlySleeptime:
             if nid not in valid_node_ids:
                 continue
             relation = e.get("relation", "supports")
-            base = _coerce_confidence(e.get("confidence"), 0.5)
+            try:
+                base = max(0.0, min(1.0, float(e.get("confidence", 0.5))))
+            except (TypeError, ValueError):
+                base = 0.5
             if relation == "supports":
                 deltas[nid] = deltas.get(nid, 0.0) + 0.05 + 0.05 * base
             elif relation == "contradicts":
@@ -1227,14 +1575,11 @@ class ButlySleeptime:
                 reinforce=reinforce,
             )
             # confidence の昇降で status を遷移させる
-            mem_cfg = SYSTEM_CONFIG.get("memory", {})
-            active_th = float(mem_cfg.get("memory_node_active_threshold", 0.75))
-            candidate_th = float(mem_cfg.get("memory_node_candidate_threshold", 0.65))
             current_status = node.get("status")
             if current_status not in ("superseded", "uncertain"):
-                if new_conf >= active_th and current_status != "active":
+                if new_conf >= active_threshold and current_status != "active":
                     repo.update_node(nid, status="active", updated_by_run_id=run_id)
-                elif new_conf < candidate_th and current_status == "active":
+                elif new_conf < candidate_threshold and current_status == "active":
                     repo.update_node(nid, status="candidate", updated_by_run_id=run_id)
 
     # --- Backup Logic ---

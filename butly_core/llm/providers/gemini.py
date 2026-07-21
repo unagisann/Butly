@@ -82,6 +82,24 @@ def _extract_gemini_usage(response) -> Optional[dict]:
     return out
 
 
+def _extract_finish_metadata(response) -> Optional[dict]:
+    """candidates[0].finish_reason を dict 化する。取れなければ None。
+
+    Stage 3 の truncation 判定 (`MAX_TOKENS` 等) に使う。enum は name を優先。
+    """
+    candidates = getattr(response, "candidates", None)
+    if not candidates:
+        return None
+    finish_reason = getattr(candidates[0], "finish_reason", None)
+    if finish_reason is None:
+        return None
+    name = getattr(finish_reason, "name", None)
+    text = name if isinstance(name, str) else str(finish_reason)
+    if not text:
+        return None
+    return {"finish_reason": text}
+
+
 class GeminiProvider(BaseProvider):
     """
     Gemini API を使った LLM プロバイダー。
@@ -207,6 +225,7 @@ class GeminiProvider(BaseProvider):
             ),
         )
         self._set_last_token_usage(_extract_gemini_usage(response))
+        self._set_last_completion_metadata(_extract_finish_metadata(response))
         return response.text if response.text else ""
 
     def generate(

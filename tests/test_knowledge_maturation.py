@@ -490,103 +490,302 @@ class TestSourceOps:
 
 
 # ===================================================================
-# 3. collect_review_cards
+# 3. レビューキュー: preflight / FIFO 選択 / backlog (§5.3)
 # ===================================================================
 
-class TestCollectReviewCards:
-    def test_prioritises_usage_count(self, db_path):
-        from butly_core.core.knowledge_maturation import collect_review_cards
+def _backfill(db_path: str):
+    """_insert_card 直挿入分の NULL hash を preflight で自己修復する。"""
+    from butly_core.core.knowledge_maturation import preflight_backfill_hashes
 
-        _insert_card(db_path, "card_hot", usage_count=5)
-        _insert_card(db_path, "card_cold", usage_count=0)
-        _insert_card(db_path, "card_warm", usage_count=2)
+    return preflight_backfill_hashes(db_path)
 
-        cards = collect_review_cards(
-            db_path, window_days=0, max_cards=10, min_usage_count=1
-        )
-        ids = [c["id"] for c in cards]
-        assert "card_hot" in ids
-        assert "card_warm" in ids
-        # min_usage_count=1 のため card_cold は含まれない
-        assert "card_cold" not in ids
-        # 使用回数降順
-        assert ids.index("card_hot") < ids.index("card_warm")
 
-    def test_falls_back_to_access_logs(self, db_path):
-        from butly_core.core.knowledge_maturation import collect_review_cards
+class TestQueueSelection:
+    def test_preflight_self_heals_null_hashes(self, db_path):
+        from butly_core.core.knowledge_maturation import preflight_backfill_hashes
 
-        _insert_card(db_path, "card_recent", usage_count=0)
+        _insert_card(db_path, "c1")
+        _insert_card(db_path, "c_archived")
         conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE knowledge_cards SET is_archived=1 WHERE id='c_archived'")
+        conn.commit()
+        conn.close()
+
+        n = preflight_backfill_hashes(db_path, now_stamp="2026-07-21T00:00:00Z")
+        assert n == 1  # 非アーカイブのみ
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT content_hash, maturation_queued_at FROM knowledge_cards WHERE id='c1'"
+        ).fetchone()
+        conn.close()
+        assert row[0] is not None
+        assert row[1] == "2026-07-21T00:00:00Z"
+
+    def test_fifo_order_oldest_first(self, db_path):
+        from butly_core.core.knowledge_maturation import select_queue_cards
+
+        _insert_card(db_path, "new_hot", usage_count=99, created_at="2026-07-20 00:00:00")
+        _insert_card(db_path, "old_cold", usage_count=0, created_at="2026-01-01 00:00:00")
+        _insert_card(db_path, "mid", usage_count=1, created_at="2026-03-01 00:00:00")
+        from butly_core.core.database import ButlyDatabase
+
+        ButlyDatabase(db_path=db_path)  # backfill queued_at from created_at
+
+        cards = select_queue_cards(db_path, batch_size=2)
+        ids = [c["id"] for c in cards]
+        # 高 usage の新規カードが低 usage の既存カードを追い越さない（被覆保証）
+        assert ids == ["old_cold", "mid"]
+
+    def test_usage_breaks_ties_within_same_queue_time(self, db_path):
+        from butly_core.core.knowledge_maturation import select_queue_cards
+
+        same = "2026-05-01 00:00:00"
+        _insert_card(db_path, "a_low", usage_count=0, created_at=same)
+        _insert_card(db_path, "b_high", usage_count=5, created_at=same)
+        from butly_core.core.database import ButlyDatabase
+
+        ButlyDatabase(db_path=db_path)
+
+        cards = select_queue_cards(db_path, batch_size=2)
+        assert [c["id"] for c in cards] == ["b_high", "a_low"]
+
+    def test_excludes_archived_and_matured(self, db_path):
+        from butly_core.core.knowledge_maturation import select_queue_cards
+
+        _insert_card(db_path, "live")
+        _insert_card(db_path, "archived")
+        _insert_card(db_path, "done")
+        from butly_core.core.database import ButlyDatabase
+
+        ButlyDatabase(db_path=db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE knowledge_cards SET is_archived=1 WHERE id='archived'")
         conn.execute(
-            "INSERT INTO access_logs (card_id, accessed_at) VALUES (?, ?)",
-            ("card_recent", datetime.now().date().isoformat()),
+            "UPDATE knowledge_cards SET last_matured_content_hash=content_hash WHERE id='done'"
         )
         conn.commit()
         conn.close()
 
-        cards = collect_review_cards(
-            db_path, window_days=7, max_cards=5, min_usage_count=99
+        ids = {c["id"] for c in select_queue_cards(db_path, batch_size=10)}
+        assert ids == {"live"}
+
+    def test_content_change_requeues_card(self, db_path):
+        from butly_core.core.database import ButlyDatabase
+        from butly_core.core.knowledge_maturation import select_queue_cards
+
+        _insert_card(db_path, "c1")
+        db = ButlyDatabase(db_path=db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "UPDATE knowledge_cards SET last_matured_content_hash=content_hash WHERE id='c1'"
         )
-        assert any(c["id"] == "card_recent" for c in cards)
+        conn.commit()
+        conn.close()
+        assert select_queue_cards(db_path, batch_size=10) == []
 
-    def test_max_cards_zero(self, db_path):
-        from butly_core.core.knowledge_maturation import collect_review_cards
+        # 本文変更 → 新 hash がキューへ戻る
+        db.update_card("c1", {"summary": "new version"})
+        ids = [c["id"] for c in select_queue_cards(db_path, batch_size=10)]
+        assert ids == ["c1"]
 
-        _insert_card(db_path, "x", usage_count=10)
-        cards = collect_review_cards(db_path, window_days=0, max_cards=0, min_usage_count=0)
-        assert cards == []
+    def test_exclude_ids(self, db_path):
+        from butly_core.core.knowledge_maturation import select_queue_cards
+
+        _insert_card(db_path, "keep")
+        _insert_card(db_path, "skip")
+        from butly_core.core.database import ButlyDatabase
+
+        ButlyDatabase(db_path=db_path)
+        ids = {c["id"] for c in select_queue_cards(db_path, batch_size=10, exclude_ids=["skip"])}
+        assert ids == {"keep"}
+
+    def test_batch_size_zero(self, db_path):
+        from butly_core.core.knowledge_maturation import select_queue_cards
+
+        _insert_card(db_path, "x")
+        assert select_queue_cards(db_path, batch_size=0) == []
+
+    def test_count_queue_backlog(self, db_path):
+        from butly_core.core.knowledge_maturation import count_queue_backlog
+
+        _insert_card(db_path, "a", created_at="2026-01-01 00:00:00")
+        _insert_card(db_path, "b", created_at="2026-02-01 00:00:00")
+        from butly_core.core.database import ButlyDatabase
+
+        ButlyDatabase(db_path=db_path)
+        backlog = count_queue_backlog(db_path)
+        assert backlog["backlog"] == 2
+        assert backlog["oldest_queued_at"] == "2026-01-01T00:00:00Z"
 
 
 # ===================================================================
-# 4. parse_llm_output
+# 4. 厳密 parse と LLM 結果分類 (§5.4)
 # ===================================================================
 
-class TestParseLlmOutput:
+class TestParseReviewOutput:
     def test_extracts_fenced_json(self):
-        from butly_core.core.knowledge_maturation import parse_llm_output
+        from butly_core.core.knowledge_maturation import parse_review_output
 
-        out = parse_llm_output('```json\n{"link_existing": [{"node_id": "n", "card_id": "c"}], "new_nodes": []}\n```')
+        out = parse_review_output(
+            '```json\n{"link_existing": [{"node_id": "n", "card_id": "c"}], "new_nodes": []}\n```'
+        )
         assert out["link_existing"][0]["node_id"] == "n"
+        assert out["link_existing"][0]["relation"] == "supports"
         assert out["new_nodes"] == []
+        assert out["reviewed_card_ids"] is None
 
-    def test_handles_bare_json(self):
-        from butly_core.core.knowledge_maturation import parse_llm_output
+    def test_reviewed_card_ids_normalized(self):
+        from butly_core.core.knowledge_maturation import parse_review_output
 
-        out = parse_llm_output('{"link_existing": [], "new_nodes": [{"statement": "x"}]}')
-        assert out["new_nodes"][0]["statement"] == "x"
+        out = parse_review_output(
+            '{"reviewed_card_ids": ["c1", 42], "link_existing": [], "new_nodes": []}'
+        )
+        assert out["reviewed_card_ids"] == ["c1"]
 
-    def test_invalid_json_returns_empty(self):
-        from butly_core.core.knowledge_maturation import parse_llm_output
+    def test_confidence_string_accepted(self):
+        from butly_core.core.knowledge_maturation import parse_review_output
 
-        out = parse_llm_output("not json at all")
-        assert out == {"link_existing": [], "new_nodes": []}
+        out = parse_review_output(
+            '{"link_existing": [{"node_id": "n", "card_id": "c", "confidence": "0.8"}],'
+            ' "new_nodes": []}'
+        )
+        assert out["link_existing"][0]["confidence"] == 0.8
 
-    def test_normalises_missing_keys(self):
-        from butly_core.core.knowledge_maturation import parse_llm_output
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "not json at all",
+            "{}",  # 必須キー欠落
+            '{"link_existing": {}, "new_nodes": []}',  # 型違反
+            '{"link_existing": [{"card_id": "c"}], "new_nodes": []}',  # node_id 欠落
+            '{"link_existing": [{"node_id": "n", "card_id": "c", "relation": "bogus"}], "new_nodes": []}',
+            '{"link_existing": [], "new_nodes": [{"confidence": 0.9}]}',  # statement 欠落
+            '{"link_existing": [], "new_nodes": [{"statement": "x", "confidence": "high"}]}',
+            '{"link_existing": [], "new_nodes": [{"statement": "x", "source_card_ids": "c1"}]}',
+            '{"link_existing": [], "new_nodes": [], "reviewed_card_ids": "c1"}',
+        ],
+    )
+    def test_schema_violations_raise(self, raw):
+        from butly_core.core.knowledge_maturation import (
+            ReviewParseError,
+            parse_review_output,
+        )
 
-        out = parse_llm_output("{}")
-        assert out == {"link_existing": [], "new_nodes": []}
+        with pytest.raises(ReviewParseError):
+            parse_review_output(raw)
+
+
+class TestClassifyReviewResponse:
+    def test_ok(self):
+        from butly_core.core.knowledge_maturation import classify_review_response
+
+        outcome, parsed, err = classify_review_response(
+            '{"link_existing": [], "new_nodes": [{"statement": "x", "confidence": 0.7}]}'
+        )
+        assert outcome == "ok"
+        assert parsed["new_nodes"]
+        assert err is None
+
+    def test_no_changes(self):
+        from butly_core.core.knowledge_maturation import classify_review_response
+
+        outcome, parsed, err = classify_review_response(
+            '{"link_existing": [], "new_nodes": []}'
+        )
+        assert outcome == "no_changes"
+        assert parsed is not None
+
+    def test_empty_response(self):
+        from butly_core.core.knowledge_maturation import classify_review_response
+
+        assert classify_review_response("")[0] == "empty_response"
+        assert classify_review_response(None)[0] == "empty_response"
+        assert classify_review_response("   ")[0] == "empty_response"
+
+    def test_parse_error(self):
+        from butly_core.core.knowledge_maturation import classify_review_response
+
+        outcome, parsed, err = classify_review_response("garbage")
+        assert outcome == "parse_error"
+        assert parsed is None
+        assert err
+
+    def test_truncation_overrides_valid_json(self):
+        from butly_core.core.knowledge_maturation import classify_review_response
+
+        # provider が truncation を報告したら、本文が parse 可能でも失敗させる
+        for reason in ("MAX_TOKENS", "FinishReason.MAX_TOKENS", "length"):
+            outcome, parsed, err = classify_review_response(
+                '{"link_existing": [], "new_nodes": []}', reason
+            )
+            assert outcome == "truncated_response", reason
+            assert parsed is None
+
+    def test_normal_finish_reasons_accepted(self):
+        from butly_core.core.knowledge_maturation import classify_review_response
+
+        for reason in ("STOP", "stop", None):
+            outcome, _, _ = classify_review_response(
+                '{"link_existing": [], "new_nodes": []}', reason
+            )
+            assert outcome == "no_changes", reason
+
+    def test_check_reviewed_card_ids(self):
+        from butly_core.core.knowledge_maturation import check_reviewed_card_ids
+
+        # 一致 / 未申告は診断なし
+        assert check_reviewed_card_ids({"reviewed_card_ids": ["a", "b"]}, {"a", "b"}) is None
+        assert check_reviewed_card_ids({"reviewed_card_ids": None}, {"a"}) is None
+        # 不足・余分は診断文字列（成功条件にはしない）
+        diag = check_reviewed_card_ids({"reviewed_card_ids": ["a", "x"]}, {"a", "b"})
+        assert "missing=['b']" in diag
+        assert "unknown=['x']" in diag
 
 
 # ===================================================================
 # 5. apply_link_existing / apply_new_nodes
 # ===================================================================
 
+def _link_entry(node_id, card_id, relation="supports", confidence=0.5, note=None):
+    """parse_review_output 正規化後の link_existing entry 形状。"""
+    return {
+        "node_id": node_id,
+        "card_id": card_id,
+        "relation": relation,
+        "confidence": confidence,
+        "note": note,
+    }
+
+
+def _new_node_entry(statement, confidence, **overrides):
+    """parse_review_output 正規化後の new_nodes entry 形状。"""
+    base = {
+        "kind": "preference",
+        "statement": statement,
+        "subject": None,
+        "topic": None,
+        "confidence": confidence,
+        "source_card_ids": [],
+        "supersedes_node_id": None,
+    }
+    base.update(overrides)
+    return base
+
+
 class TestApply:
-    def test_link_existing_skips_invalid_ids(self, repo, db_path):
+    def test_link_existing_rejects_unknown_ids_with_diagnostics(self, repo, db_path):
         from butly_core.core.knowledge_maturation import apply_link_existing
 
         existing = repo.create_node(kind="fact", statement="x")
         _insert_card(db_path, "card_1")
 
         rid = repo.start_run("test")
-        linked, uncertain = apply_link_existing(
+        linked, uncertain, diags = apply_link_existing(
             repo=repo,
             entries=[
-                {"node_id": existing, "card_id": "card_1", "relation": "supports", "confidence": 0.9},
-                {"node_id": "nope", "card_id": "card_1", "relation": "supports"},  # 無効 node
-                {"node_id": existing, "card_id": "missing", "relation": "supports"},  # 無効 card
-                {"node_id": existing, "card_id": "card_1", "relation": "bogus"},  # 無効 relation
+                _link_entry(existing, "card_1", confidence=0.9),
+                _link_entry("nope", "card_1"),  # 入力外 node
+                _link_entry(existing, "missing"),  # 入力外 card
             ],
             valid_node_ids={existing},
             valid_card_ids={"card_1"},
@@ -595,6 +794,9 @@ class TestApply:
         assert linked == 1
         assert uncertain == []
         assert repo.count_sources(existing) == 1
+        assert len(diags) == 2
+        assert any("nope" in d for d in diags)
+        assert any("missing" in d for d in diags)
 
     def test_link_existing_contradicts_marks_uncertain(self, repo, db_path):
         from butly_core.core.knowledge_maturation import apply_link_existing
@@ -604,11 +806,11 @@ class TestApply:
         _insert_card(db_path, "c2")
 
         rid = repo.start_run("test")
-        _, uncertain = apply_link_existing(
+        _, uncertain, _ = apply_link_existing(
             repo=repo,
             entries=[
-                {"node_id": existing, "card_id": "c1", "relation": "contradicts"},
-                {"node_id": existing, "card_id": "c2", "relation": "contradicts"},
+                _link_entry(existing, "c1", relation="contradicts"),
+                _link_entry(existing, "c2", relation="contradicts"),
             ],
             valid_node_ids={existing},
             valid_card_ids={"c1", "c2"},
@@ -621,11 +823,10 @@ class TestApply:
 
         _insert_card(db_path, "c1")
         rid = repo.start_run("test")
-        created, sup = apply_new_nodes(
+        created, sup, _ = apply_new_nodes(
             repo=repo,
-            entries=[
-                {"kind": "preference", "statement": "low conf", "confidence": 0.3, "source_card_ids": ["c1"]},
-            ],
+            entries=[_new_node_entry("low conf", 0.3, source_card_ids=["c1"])],
+            valid_node_ids=set(),
             valid_card_ids={"c1"},
             run_id=rid,
             candidate_threshold=0.65,
@@ -640,16 +841,12 @@ class TestApply:
         _insert_card(db_path, "c1")
         _insert_card(db_path, "c2")
         rid = repo.start_run("test")
-        created, sup = apply_new_nodes(
+        created, sup, _ = apply_new_nodes(
             repo=repo,
             entries=[
-                {
-                    "kind": "preference",
-                    "statement": "stable preference",
-                    "confidence": 0.8,
-                    "source_card_ids": ["c1", "c2"],
-                },
+                _new_node_entry("stable preference", 0.8, source_card_ids=["c1", "c2"]),
             ],
+            valid_node_ids=set(),
             valid_card_ids={"c1", "c2"},
             run_id=rid,
             candidate_threshold=0.65,
@@ -662,6 +859,27 @@ class TestApply:
         # supports source が 2 件
         assert repo.count_sources(actives[0]["id"], relation="supports") == 2
 
+    def test_new_nodes_unknown_source_card_rejected(self, repo, db_path):
+        from butly_core.core.knowledge_maturation import apply_new_nodes
+
+        _insert_card(db_path, "c1")
+        rid = repo.start_run("test")
+        created, _, diags = apply_new_nodes(
+            repo=repo,
+            entries=[
+                _new_node_entry("s", 0.8, source_card_ids=["c1", "outside"]),
+            ],
+            valid_node_ids=set(),
+            valid_card_ids={"c1"},
+            run_id=rid,
+            candidate_threshold=0.65,
+            active_threshold=0.75,
+        )
+        assert created == 1
+        node = repo.find_nodes(statuses=["active"])[0]
+        assert repo.count_sources(node["id"]) == 1  # outside は link されない
+        assert any("outside" in d for d in diags)
+
     def test_supersede_applied(self, repo, db_path):
         from butly_core.core.knowledge_maturation import apply_new_nodes
 
@@ -669,17 +887,14 @@ class TestApply:
         old = repo.create_node(kind="preference", statement="old", status="active")
 
         rid = repo.start_run("test")
-        created, sup = apply_new_nodes(
+        created, sup, _ = apply_new_nodes(
             repo=repo,
             entries=[
-                {
-                    "kind": "preference",
-                    "statement": "new",
-                    "confidence": 0.9,
-                    "source_card_ids": ["c1"],
-                    "supersedes_node_id": old,
-                },
+                _new_node_entry(
+                    "new", 0.9, source_card_ids=["c1"], supersedes_node_id=old
+                ),
             ],
+            valid_node_ids={old},
             valid_card_ids={"c1"},
             run_id=rid,
             candidate_threshold=0.65,
@@ -688,6 +903,31 @@ class TestApply:
         assert created == 1
         assert sup == 1
         assert repo.get_node(old)["status"] == "superseded"
+
+    def test_supersede_outside_input_rejected(self, repo, db_path):
+        from butly_core.core.knowledge_maturation import apply_new_nodes
+
+        _insert_card(db_path, "c1")
+        outside = repo.create_node(kind="preference", statement="old", status="active")
+
+        rid = repo.start_run("test")
+        created, sup, diags = apply_new_nodes(
+            repo=repo,
+            entries=[
+                _new_node_entry(
+                    "new", 0.9, source_card_ids=["c1"], supersedes_node_id=outside
+                ),
+            ],
+            valid_node_ids=set(),  # prompt に載せていない node は入力外
+            valid_card_ids={"c1"},
+            run_id=rid,
+            candidate_threshold=0.65,
+            active_threshold=0.75,
+        )
+        assert created == 1
+        assert sup == 0
+        assert repo.get_node(outside)["status"] == "active"
+        assert any("supersede rejected" in d for d in diags)
 
 
 # ===================================================================
@@ -746,128 +986,302 @@ class TestPromotionProposals:
         )
         assert proposals == []
 
+    def test_source_date_preferred_over_created_at(self, repo, db_path):
+        """同日 bootstrap（created_at 同日）でも source_date が複数日なら昇格候補（§7）。"""
+        from butly_core.core.knowledge_maturation import collect_promotion_proposals
+
+        nid = repo.create_node(kind="preference", statement="s", status="active", confidence=0.9)
+        same = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _insert_card(db_path, "c1", created_at=same)
+        _insert_card(db_path, "c2", created_at=same)
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE knowledge_cards SET source_date='2026-01-01' WHERE id='c1'")
+        conn.execute("UPDATE knowledge_cards SET source_date='2026-01-05' WHERE id='c2'")
+        conn.commit()
+        conn.close()
+        repo.upsert_source(node_id=nid, card_id="c1", relation="supports")
+        repo.upsert_source(node_id=nid, card_id="c2", relation="supports")
+
+        assert repo.distinct_support_days(nid) == 2
+        proposals = collect_promotion_proposals(
+            repo=repo, confidence_threshold=0.85, min_sources=2
+        )
+        assert len(proposals) == 1
+
+    def test_pagination_covers_beyond_200(self, repo, db_path):
+        """LIMIT 200 撤去: eligible node が 200 を超えても全件評価される（§8）。"""
+        from butly_core.core.knowledge_maturation import collect_promotion_proposals
+
+        _insert_card(db_path, "c1", created_at="2026-01-01 00:00:00")
+        _insert_card(db_path, "c2", created_at="2026-01-05 00:00:00")
+        node_ids = []
+        for i in range(205):
+            nid = repo.create_node(
+                kind="fact", statement=f"s{i}", status="active", confidence=0.9
+            )
+            node_ids.append(nid)
+        for nid in node_ids:
+            repo.upsert_source(node_id=nid, card_id="c1", relation="supports")
+            repo.upsert_source(node_id=nid, card_id="c2", relation="supports")
+
+        proposals = collect_promotion_proposals(
+            repo=repo, confidence_threshold=0.85, min_sources=2
+        )
+        assert len(proposals) == 205
+
+
+# ===================================================================
+# 6b. 既存 node 文脈のスコープ化 (§5.5)
+# ===================================================================
+
+class TestSelectContextNodes:
+    def test_linked_nodes_first_then_vocab_then_recent(self, repo, db_path):
+        from butly_core.core.knowledge_maturation import select_context_nodes
+
+        _insert_card(db_path, "c1", title="coffee brewing", tags="coffee,hobby")
+        linked = repo.create_node(kind="fact", statement="linked node")
+        repo.upsert_source(node_id=linked, card_id="c1", relation="supports")
+        vocab = repo.create_node(
+            kind="preference", statement="user enjoys coffee in the morning"
+        )
+        recent = repo.create_node(kind="other", statement="unrelated stuff")
+        superseded = repo.create_node(kind="fact", statement="dead", status="superseded")
+
+        cards = [{"id": "c1", "title": "coffee brewing", "tags": "coffee,hobby", "category": "Hobby"}]
+        nodes = select_context_nodes(db_path, cards, limit=10)
+        ids = [n["id"] for n in nodes]
+        assert ids[0] == linked
+        assert ids.index(linked) < ids.index(vocab) < ids.index(recent)
+        assert superseded not in ids
+
+    def test_limit_respected(self, repo, db_path):
+        from butly_core.core.knowledge_maturation import select_context_nodes
+
+        for i in range(6):
+            repo.create_node(kind="fact", statement=f"s{i}")
+        nodes = select_context_nodes(db_path, [], limit=3)
+        assert len(nodes) == 3
+
 
 # ===================================================================
 # 7. End-to-end stage_3_mature_knowledge (LLM モック)
 # ===================================================================
 
+from datetime import timezone as _tz
+
+_NOW = datetime(2026, 7, 21, 12, 0, 0, tzinfo=_tz.utc)
+
+_GOOD_RESPONSE = json.dumps(
+    {
+        "reviewed_card_ids": ["c_001", "c_002"],
+        "link_existing": [],
+        "new_nodes": [
+            {
+                "kind": "preference",
+                "subject": "user",
+                "topic": "food",
+                "statement": "ユーザーはフルーツが好き",
+                "confidence": 0.8,
+                "source_card_ids": ["c_001", "c_002"],
+            }
+        ],
+    },
+    ensure_ascii=False,
+)
+
+
+def _build_instance(tmp_path: Path, instance_name: str = "test_instance") -> Path:
+    instances_dir = tmp_path / "butly_core" / "instances"
+    inst = instances_dir / instance_name
+    inst.mkdir(parents=True)
+    (inst / "system_instruction.txt").write_text("テスト用 AI", encoding="utf-8")
+    (inst / "Key_Memory.txt").write_text("テストユーザー", encoding="utf-8")
+    return inst
+
+
+def _make_hk(inst_path: Path):
+    import sleeptime as _sl
+
+    hk = _sl.ButlySleeptime.__new__(_sl.ButlySleeptime)
+    hk.instances_dir = inst_path.parent
+    hk.instruction = "fallback instruction"
+    hk.key_memory = "fallback memory"
+    return hk
+
+
+def _fake_provider(response=_GOOD_RESPONSE):
+    provider = MagicMock()
+    provider.classify.return_value = response
+    provider.pop_last_completion_metadata.return_value = None
+    provider.pop_last_token_usage.return_value = None
+    return provider
+
+
 class TestStage3EndToEnd:
-    def _build_instance(self, tmp_path: Path, instance_name: str = "test_instance") -> Path:
-        instances_dir = tmp_path / "butly_core" / "instances"
-        inst = instances_dir / instance_name
-        inst.mkdir(parents=True)
-        (inst / "system_instruction.txt").write_text("テスト用 AI", encoding="utf-8")
-        (inst / "Key_Memory.txt").write_text("テストユーザー", encoding="utf-8")
-        return inst
-
-    def test_run_creates_nodes_and_completes(self, tmp_path, monkeypatch):
+    def _setup(self, tmp_path, cards=("c_001", "c_002")):
         from butly_core.core.database import ButlyDatabase
-        import sleeptime as _sl
 
-        inst_path = self._build_instance(tmp_path)
+        inst_path = _build_instance(tmp_path)
         db_path = str(inst_path / "butly_memory.db")
         ButlyDatabase(db_path=db_path)
-        _insert_card(db_path, "c_001", usage_count=3)
-        _insert_card(db_path, "c_002", usage_count=2)
+        for cid in cards:
+            _insert_card(db_path, cid)
+        return inst_path, db_path
 
-        # INSTANCES_DIR を tmp に差し替え
-        monkeypatch.setattr(_sl, "INSTANCES_DIR", inst_path.parent)
-
-        hk = _sl.ButlySleeptime.__new__(_sl.ButlySleeptime)
-        hk.instances_dir = inst_path.parent
-        hk.instruction = "fallback instruction"
-        hk.key_memory = "fallback memory"
-
-        # provider をモック化: link + new_node を返す
-        fake_response = json.dumps(
-            {
-                "link_existing": [],
-                "new_nodes": [
-                    {
-                        "kind": "preference",
-                        "subject": "user",
-                        "topic": "food",
-                        "statement": "ユーザーはフルーツが好き",
-                        "confidence": 0.8,
-                        "source_card_ids": ["c_001", "c_002"],
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        )
-
-        fake_provider = MagicMock()
-        fake_provider.classify.return_value = fake_response
-
-        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=fake_provider):
-            hk.stage_3_mature_knowledge(inst_path)
-
-        # node が 1 つ作られている
+    def test_run_creates_nodes_completes_and_stamps(self, tmp_path):
+        import sleeptime as _sl
         from butly_core.core.memory_nodes import MemoryNodeRepository
+
+        inst_path, db_path = self._setup(tmp_path)
+        hk = _make_hk(inst_path)
+        provider = _fake_provider()
+
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            totals = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+
+        assert totals["status"] == "completed"
+        assert totals["applied_cards"] == 2
+        assert totals["created"] == 1
+        assert totals["backlog"] == 0
 
         repo = MemoryNodeRepository(db_path)
         nodes = repo.find_nodes(statuses=["active", "candidate"])
         assert len(nodes) == 1
-        n = nodes[0]
-        assert n["status"] == "active"
-        assert n["statement"] == "ユーザーはフルーツが好き"
-        assert repo.count_sources(n["id"], relation="supports") == 2
+        assert nodes[0]["status"] == "active"
+        assert repo.count_sources(nodes[0]["id"], relation="supports") == 2
 
-        # run table に completed として記録されている
         conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            "SELECT status, created_node_count, linked_source_count FROM memory_maturation_runs"
+        conn.row_factory = sqlite3.Row
+        run = conn.execute(
+            "SELECT * FROM memory_maturation_runs WHERE status='completed'"
         ).fetchone()
+        assert run["reviewed_card_count"] == 2
+        assert run["created_node_count"] == 1
+        run_cards = conn.execute(
+            "SELECT status FROM memory_maturation_run_cards WHERE run_id=?",
+            (run["id"],),
+        ).fetchall()
+        assert {r["status"] for r in run_cards} == {"applied"}
+        stamped = conn.execute(
+            """
+            SELECT COUNT(*) FROM knowledge_cards
+            WHERE last_matured_content_hash = content_hash
+              AND last_matured_run_id = ?
+              AND last_matured_at = '2026-07-21T12:00:00Z'
+            """,
+            (run["id"],),
+        ).fetchone()[0]
         conn.close()
-        assert row[0] == "completed"
-        assert row[1] == 1
+        assert stamped == 2
 
-    def test_run_skipped_when_no_review_cards(self, tmp_path, monkeypatch):
-        from butly_core.core.database import ButlyDatabase
+    def test_second_run_reviews_zero_cards(self, tmp_path):
+        """完了条件: 本文無変更の 2 回目 run は reviewed_card_count == 0。"""
         import sleeptime as _sl
 
-        inst_path = self._build_instance(tmp_path)
-        db_path = str(inst_path / "butly_memory.db")
-        ButlyDatabase(db_path=db_path)
-        # カードを入れない
+        inst_path, db_path = self._setup(tmp_path)
+        hk = _make_hk(inst_path)
+        provider = _fake_provider()
 
-        monkeypatch.setattr(_sl, "INSTANCES_DIR", inst_path.parent)
-        hk = _sl.ButlySleeptime.__new__(_sl.ButlySleeptime)
-        hk.instances_dir = inst_path.parent
-        hk.instruction = "x"
-        hk.key_memory = "y"
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+            totals2 = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
 
-        hk.stage_3_mature_knowledge(inst_path)
+        assert provider.classify.call_count == 1  # 2 回目は LLM を呼ばない
+        assert totals2["applied_cards"] == 0
+        assert totals2["reviewed_cards"] == 0
+        conn = sqlite3.connect(db_path)
+        statuses = [
+            r[0]
+            for r in conn.execute("SELECT status FROM memory_maturation_runs")
+        ]
+        conn.close()
+        assert statuses.count("skipped") == 1
+
+    def test_content_change_triggers_rereview(self, tmp_path):
+        import sleeptime as _sl
+        from butly_core.core.database import ButlyDatabase
+
+        inst_path, db_path = self._setup(tmp_path)
+        hk = _make_hk(inst_path)
+        provider = _fake_provider()
+
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+            ButlyDatabase(db_path=db_path).update_card(
+                "c_001", {"summary": "changed content"}
+            )
+            totals = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+
+        assert provider.classify.call_count == 2
+        assert totals["applied_cards"] == 1  # 変更された 1 枚だけ再レビュー
+
+    def test_run_skipped_when_queue_empty(self, tmp_path):
+        inst_path, db_path = self._setup(tmp_path, cards=())
+        hk = _make_hk(inst_path)
+
+        totals = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+        assert totals["batches"] == 0
 
         conn = sqlite3.connect(db_path)
-        row = conn.execute(
-            "SELECT status FROM memory_maturation_runs"
-        ).fetchone()
+        row = conn.execute("SELECT status FROM memory_maturation_runs").fetchone()
         conn.close()
         assert row[0] == "skipped"
 
-    def test_run_failure_recorded(self, tmp_path, monkeypatch):
-        from butly_core.core.database import ButlyDatabase
+    def test_parse_error_keeps_cards_in_queue(self, tmp_path):
+        import sleeptime as _sl
+        from butly_core.core.knowledge_maturation import select_queue_cards
+
+        inst_path, db_path = self._setup(tmp_path)
+        hk = _make_hk(inst_path)
+        provider = _fake_provider(response="not json at all")
+
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            totals = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+
+        assert totals["status"] == "partial"
+        assert set(totals["failed_cards"]) == {"c_001", "c_002"}
+        # retry → 分割 → 1 件でも失敗、を経て複数回呼ばれる
+        assert provider.classify.call_count > 1
+        # カード版は stamp されずキューに残る
+        assert len(select_queue_cards(db_path, batch_size=10)) == 2
+        conn = sqlite3.connect(db_path)
+        failed_runs = conn.execute(
+            "SELECT COUNT(*) FROM memory_maturation_runs WHERE status='failed'"
+        ).fetchone()[0]
+        conn.close()
+        assert failed_runs > 0
+
+    def test_truncated_response_not_stamped(self, tmp_path):
+        """provider が truncation を報告したら、本文が parse 可能でも失敗（§5.4）。"""
+        import sleeptime as _sl
+        from butly_core.core.knowledge_maturation import select_queue_cards
+
+        inst_path, db_path = self._setup(tmp_path)
+        hk = _make_hk(inst_path)
+        provider = _fake_provider()
+        provider.pop_last_completion_metadata.return_value = {
+            "finish_reason": "MAX_TOKENS"
+        }
+
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            totals = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+
+        assert totals["applied_cards"] == 0
+        assert "truncated_response" in totals["outcomes"]
+        assert len(select_queue_cards(db_path, batch_size=10)) == 2
+
+    def test_provider_error_recorded_and_aborts(self, tmp_path):
         import sleeptime as _sl
 
-        inst_path = self._build_instance(tmp_path)
-        db_path = str(inst_path / "butly_memory.db")
-        ButlyDatabase(db_path=db_path)
-        _insert_card(db_path, "c1", usage_count=2)
+        inst_path, db_path = self._setup(tmp_path)
+        hk = _make_hk(inst_path)
+        provider = _fake_provider()
+        provider.classify.side_effect = RuntimeError("LLM exploded")
 
-        monkeypatch.setattr(_sl, "INSTANCES_DIR", inst_path.parent)
-        hk = _sl.ButlySleeptime.__new__(_sl.ButlySleeptime)
-        hk.instances_dir = inst_path.parent
-        hk.instruction = "x"
-        hk.key_memory = "y"
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            totals = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
 
-        # provider が例外を投げる
-        fake_provider = MagicMock()
-        fake_provider.classify.side_effect = RuntimeError("LLM exploded")
-
-        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=fake_provider):
-            hk.stage_3_mature_knowledge(inst_path)
-
+        assert totals["status"] == "partial"
         conn = sqlite3.connect(db_path)
         row = conn.execute(
             "SELECT status, error FROM memory_maturation_runs"
@@ -875,6 +1289,111 @@ class TestStage3EndToEnd:
         conn.close()
         assert row[0] == "failed"
         assert "LLM exploded" in (row[1] or "")
+
+    def test_lock_skips_concurrent_run(self, tmp_path):
+        from butly_core.core import knowledge_maturation as km
+
+        inst_path, db_path = self._setup(tmp_path)
+        hk = _make_hk(inst_path)
+
+        with km.stage3_process_lock(inst_path) as acquired:
+            assert acquired is True
+            totals = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+        assert totals["status"] == "locked"
+        assert totals["batches"] == 0
+
+    def test_orphan_running_run_recovered_as_abandoned(self, tmp_path):
+        import sleeptime as _sl
+        from butly_core.core.memory_nodes import MemoryNodeRepository
+
+        inst_path, db_path = self._setup(tmp_path)
+        repo = MemoryNodeRepository(db_path)
+        orphan_id = repo.start_run("test_instance", metadata={"crashed": True})
+        repo.record_run_cards(orphan_id, [("c_001", "deadbeef")])
+
+        hk = _make_hk(inst_path)
+        provider = _fake_provider()
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+
+        run = repo.get_run(orphan_id)
+        assert run["status"] == "abandoned"
+        cards = repo.list_run_cards(orphan_id)
+        assert all(c["status"] == "abandoned" for c in cards)
+
+    def test_changed_during_run_leaves_new_version_queued(self, tmp_path):
+        """LLM 呼び出し中に本文が編集されたら batch を適用しない（§5.4-5）。"""
+        import sleeptime as _sl
+        from butly_core.core.database import ButlyDatabase
+        from butly_core.core.knowledge_maturation import select_queue_cards
+        from butly_core.core.memory_nodes import MemoryNodeRepository
+
+        inst_path, db_path = self._setup(tmp_path)
+        hk = _make_hk(inst_path)
+
+        def _mutate_then_respond(prompt, conf):
+            ButlyDatabase(db_path=db_path).update_card(
+                "c_001", {"summary": "edited during llm call"}
+            )
+            return _GOOD_RESPONSE
+
+        provider = _fake_provider()
+        provider.classify.side_effect = _mutate_then_respond
+
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            totals = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+
+        assert "changed_during_run" in totals["outcomes"]
+        assert totals["applied_cards"] == 0
+        # node は一切作られていない
+        repo = MemoryNodeRepository(db_path)
+        assert repo.find_nodes(statuses=["active", "candidate"]) == []
+        # 新版はキューに残る（c_002 も未処理のまま）
+        assert len(select_queue_cards(db_path, batch_size=10)) == 2
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT card_id, status FROM memory_maturation_run_cards"
+        ).fetchall()
+        conn.close()
+        by_card = {r["card_id"]: r["status"] for r in rows}
+        assert by_card["c_001"] == "changed_during_run"
+        assert by_card["c_002"] == "abandoned"
+
+    def test_crash_during_apply_rolls_back_and_retry_has_no_duplicates(self, tmp_path):
+        """完了条件: 適用途中の中断を再試行しても node/source/counter が重複しない。"""
+        import sleeptime as _sl
+        from butly_core.core.memory_nodes import (
+            MaturationUnitOfWork,
+            MemoryNodeRepository,
+        )
+
+        inst_path, db_path = self._setup(tmp_path)
+        hk = _make_hk(inst_path)
+        provider = _fake_provider()
+
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            with patch.object(
+                MaturationUnitOfWork,
+                "stamp_card_version",
+                side_effect=RuntimeError("simulated crash"),
+            ):
+                totals1 = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+            totals2 = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+
+        assert "db_error" in totals1["outcomes"]
+        repo = MemoryNodeRepository(db_path)
+        # rollback により 1 回分だけ適用されている
+        nodes = repo.find_nodes(statuses=["active", "candidate"])
+        assert len(nodes) == 1
+        assert repo.count_sources(nodes[0]["id"], relation="supports") == 2
+        assert totals2["applied_cards"] == 2
+        conn = sqlite3.connect(db_path)
+        completed = conn.execute(
+            "SELECT COUNT(*) FROM memory_maturation_runs WHERE status='completed'"
+        ).fetchone()[0]
+        conn.close()
+        assert completed == 1
 
 
 # ===================================================================

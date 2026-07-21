@@ -262,6 +262,12 @@ class OpenAICompatAdapter(BaseProvider):
         kwargs["model"] = model
         resp = self.client.chat.completions.create(**kwargs)
         self._set_last_token_usage(compat.extract_token_usage(resp))
+        finish_reason = (
+            getattr(resp.choices[0], "finish_reason", None) if resp.choices else None
+        )
+        self._set_last_completion_metadata(
+            {"finish_reason": finish_reason} if isinstance(finish_reason, str) else None
+        )
         return resp.choices[0].message.content if resp.choices else ""
 
     def generate(

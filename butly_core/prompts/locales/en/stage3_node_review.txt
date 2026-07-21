@@ -1,7 +1,9 @@
 You are responsible for Knowledge Maturation.
-Review recently used knowledge cards (evidence / episodes), link them to existing
-"memory_nodes" (current-interpretation summaries distilled from multiple cards),
-and propose new candidate nodes only when necessary.
+Review the knowledge cards from the review queue (evidence / episodes), link them
+to existing "memory_nodes" (current-interpretation summaries distilled from
+multiple cards), and propose new candidate nodes only when necessary.
+Each card's `source_date` is the date of the underlying event; when
+interpretations conflict, prefer the more recent event.
 
 # Persona context
 - Agent name: {agent_name}
@@ -40,6 +42,7 @@ Return ONLY this JSON (no extra prose):
 
 ```json
 {{
+  "reviewed_card_ids": ["card_yyy", "card_001", "card_002"],
   "link_existing": [
     {{
       "node_id": "node_xxx",
@@ -63,8 +66,12 @@ Return ONLY this JSON (no extra prose):
 }}
 ```
 
+- Always list every reviewed card id in `reviewed_card_ids` (diagnostics).
+- Use only ids that appear in the inputs above for `node_id` / `card_id` /
+  `supersedes_node_id` / `source_card_ids`.
+
 If there is nothing to propose, return empty arrays:
 
 ```json
-{{"link_existing": [], "new_nodes": []}}
+{{"reviewed_card_ids": ["card_yyy"], "link_existing": [], "new_nodes": []}}
 ```
