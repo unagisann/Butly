@@ -266,14 +266,14 @@ class TestContextPrefixLevels:
         assert result_default == result_normal
 
     def test_label_notes_off(self, memory_manager):
-        """label_notes off でラベル・注意文が消える"""
+        """label_notes off で背景ラベルが消える"""
         blocks = {"tier": "mid", "mid_term": "", "rag_context": "", "session_digest": ""}
         result = build_context_prefix(
             blocks, memory_manager,
             context_levels=self._make_levels(label_notes="off"),
         )
-        # ラベルの "[背景情報]" や "優先順位" が含まれないことを確認
-        assert "優先順位" not in result or "Priority" not in result
+        assert "[背景情報]" not in result
+        assert "[Background Info]" not in result
 
     def test_current_time_low(self, memory_manager):
         """current_time low は時刻のみ1行"""
@@ -428,7 +428,8 @@ class TestLowPresetIntegration:
             context_levels=self._low_levels(),
         )
         # label_notes, glossary, session_digest, tier_info は off
-        assert "優先順位" not in result or True  # label_notes off
+        assert "[背景情報]" not in result
+        assert "[Background Info]" not in result
         assert "GLOSSARY" not in result
         assert "SESSION DIGEST" not in result
         assert "=== TIER INFO" not in result

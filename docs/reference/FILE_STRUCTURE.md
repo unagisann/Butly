@@ -152,7 +152,7 @@ Stateless orchestrator with two entry points:
 
 - `ChatService.execute(request, ...)` — buffered response. Flow:
   1. Get instance components (`Memory` / `Brain` / `Chronos`).
-  2. Build time context (`Chronos.get_system_note` prepended to `full_prompt`).
+  2. Build the user input (`request.text` plus an optional style hint; current time is injected only through the context prefix).
   3. `Gatekeeper.classify()` — tier + need / need_intent / probe candidates. Falls back to `mid` on disable.
   4. `SessionState.increment_turn()`.
   5. `MemoryBlockBuilder.build()` — passes `brain` only when `need` is set AND `use_rag=True`.
@@ -461,7 +461,7 @@ For each turn, the LLM receives a prompt assembled in two halves.
   ⑩ [non-Gemini + use_web_search] WEB SEARCH RESULTS
 
 [user turn]
-  ⑪ Chronos timestamp + user message (ChatService combines as full_prompt)
+  ⑪ User message with an optional style hint (ChatService's full_prompt)
 
 [history (multi-turn)]
   ⑫ last 6 entries from short_term_json

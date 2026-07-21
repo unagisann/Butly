@@ -686,14 +686,8 @@ def build_context_prefix(
 def _build_label_notes(level: str, h) -> str | None:
     if level in ("off", "low"):
         return None
-    parts = []
     label = h("context_prefix_label")
-    if label and label != "context_prefix_label":
-        parts.append(label)
-    note = h("note_context_prefix")
-    if note and note != "note_context_prefix":
-        parts.append(note)
-    return "\n\n".join(parts) if parts else None
+    return label if label and label != "context_prefix_label" else None
 
 
 def _build_current_time(level: str, h, locale: str = "ja") -> str | None:

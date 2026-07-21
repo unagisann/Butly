@@ -5,7 +5,7 @@ build_system_instruction_from_blocks() および build_context_prefix() のユ�
 
 変更後の設計:
   - build_system_instruction_from_blocks(): 不変セクションのみ（SYSTEM INSTRUCTION, KEY MEMORY）
-  - build_context_prefix(): 可変セクション（ラベル, 注意文, CURRENT TIME, MID-TERM, RAG, SESSION DIGEST, TIER INFO）
+  - build_context_prefix(): 可変セクション（ラベル, CURRENT TIME, MID-TERM, RAG, SESSION DIGEST, TIER INFO）
 
 API キー不要。
 """
@@ -657,8 +657,8 @@ class TestContextPrefixSectionOrder:
         # ja=[背景情報], en=[Background Info]
         assert first_line.startswith("[")
 
-    def test_contains_priority_note(self, memory_manager):
-        """context_prefix に優先順位の注意文が含まれる"""
+    def test_omits_global_priority_note(self, memory_manager):
+        """context_prefix は記憶レイヤー間の固定優先順位を指示しない"""
         blocks = {
             "tier": "mid",
             "short_term": [],
@@ -669,8 +669,8 @@ class TestContextPrefixSectionOrder:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        # ja=優先順位, en=Priority
-        assert "優先順位" in result or "Priority" in result
+        assert "優先順位" not in result
+        assert "Priority order" not in result
 
     def test_contains_tier_info(self, memory_manager):
         """context_prefix に TIER INFO が含まれる"""

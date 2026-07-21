@@ -33,11 +33,6 @@ note_session_digest: >-
 tier_mode: "現在の思考モード: {tier}"
 tier_topic: "現在の話題: {topic}"
 
-note_context_prefix: >-
-  ※ 以下は現在の会話を補助する背景情報です。
-  ※ 情報の優先順位: 直近の会話履歴 > Session Digest > 中期記憶 > 過去の記憶(RAG) > 時刻情報
-  ※ 直近の会話と矛盾する場合は、常に直近の会話を優先してください。
-
 context_prefix_label: "[背景情報]"
 
 web_search: >-
