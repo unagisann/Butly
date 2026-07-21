@@ -662,8 +662,9 @@ def apply_new_nodes(
 ) -> tuple[int, int, list[str]]:
     """新規 candidate node を作成し、supersedes 指定があれば旧 node を superseded 化。
 
-    supersedes_node_id が入力（既存 node 文脈）に無い場合は当該 supersede のみ
-    拒否し diagnostics へ記録する（§5.4-3）。
+    参照整合検証（§5.4-3）: source_card_ids または supersedes_node_id が入力
+    （バッチカード / 既存 node 文脈）外の id を含む new_nodes エントリは、
+    副作用を防ぐため**エントリ全体を拒否**し（node を作らず）diagnostics へ記録する。
 
     Returns: (created_count, superseded_count, diagnostics)
     """
@@ -677,17 +678,25 @@ def apply_new_nodes(
             # confidence が低い candidate は作らない
             continue
 
+        source_ids = list(e["source_card_ids"])
+        old_id = e.get("supersedes_node_id") or None
+
+        # 参照整合検証: 入力外 id を参照する new_node はエントリ全体を拒否する。
+        unknown_sources = sorted(
+            {cid for cid in source_ids if cid not in valid_card_ids}
+        )
+        if unknown_sources:
+            diagnostics.append(
+                f"new_nodes rejected: unknown source_card_id(s) {unknown_sources}"
+            )
+            continue
+        if old_id is not None and old_id not in valid_node_ids:
+            diagnostics.append(
+                f"new_nodes rejected: unknown supersedes_node_id {old_id}"
+            )
+            continue
+
         status = "active" if confidence >= active_threshold else "candidate"
-
-        source_ids = []
-        for cid in e["source_card_ids"]:
-            if cid in valid_card_ids:
-                source_ids.append(cid)
-            else:
-                diagnostics.append(
-                    f"new_nodes source rejected: unknown card_id {cid}"
-                )
-
         new_id = repo.create_node(
             kind=e["kind"],
             statement=e["statement"],
@@ -709,13 +718,8 @@ def apply_new_nodes(
                 created_by_run_id=run_id,
             )
 
-        old_id = e.get("supersedes_node_id")
-        if old_id and old_id != new_id:
-            if old_id not in valid_node_ids:
-                diagnostics.append(
-                    f"supersede rejected: unknown node_id {old_id}"
-                )
-            elif repo.supersede_node(
+        if old_id is not None and old_id != new_id:
+            if repo.supersede_node(
                 old_node_id=old_id,
                 new_node_id=new_id,
                 updated_by_run_id=run_id,

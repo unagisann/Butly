@@ -859,12 +859,13 @@ class TestApply:
         # supports source が 2 件
         assert repo.count_sources(actives[0]["id"], relation="supports") == 2
 
-    def test_new_nodes_unknown_source_card_rejected(self, repo, db_path):
+    def test_new_nodes_unknown_source_card_rejects_whole_entry(self, repo, db_path):
+        """入力外 source を含む new_node はエントリ全体を拒否し node を作らない（§5.4-3）。"""
         from butly_core.core.knowledge_maturation import apply_new_nodes
 
         _insert_card(db_path, "c1")
         rid = repo.start_run("test")
-        created, _, diags = apply_new_nodes(
+        created, sup, diags = apply_new_nodes(
             repo=repo,
             entries=[
                 _new_node_entry("s", 0.8, source_card_ids=["c1", "outside"]),
@@ -875,9 +876,32 @@ class TestApply:
             candidate_threshold=0.65,
             active_threshold=0.75,
         )
+        assert created == 0
+        assert sup == 0
+        assert repo.find_nodes(statuses=["active", "candidate"]) == []
+        assert any("outside" in d for d in diags)
+
+    def test_new_nodes_valid_entry_coexists_with_rejected(self, repo, db_path):
+        """拒否は当該エントリのみ。有効エントリは通常どおり作成される。"""
+        from butly_core.core.knowledge_maturation import apply_new_nodes
+
+        _insert_card(db_path, "c1")
+        rid = repo.start_run("test")
+        created, _, diags = apply_new_nodes(
+            repo=repo,
+            entries=[
+                _new_node_entry("bad", 0.8, source_card_ids=["outside"]),
+                _new_node_entry("good", 0.8, source_card_ids=["c1"]),
+            ],
+            valid_node_ids=set(),
+            valid_card_ids={"c1"},
+            run_id=rid,
+            candidate_threshold=0.65,
+            active_threshold=0.75,
+        )
         assert created == 1
         node = repo.find_nodes(statuses=["active"])[0]
-        assert repo.count_sources(node["id"]) == 1  # outside は link されない
+        assert node["statement"] == "good"
         assert any("outside" in d for d in diags)
 
     def test_supersede_applied(self, repo, db_path):
@@ -924,10 +948,12 @@ class TestApply:
             candidate_threshold=0.65,
             active_threshold=0.75,
         )
-        assert created == 1
+        # 入力外 supersede を含むエントリは全体拒否（新 node も作らない）
+        assert created == 0
         assert sup == 0
+        assert repo.find_nodes(statuses=["candidate"]) == []
         assert repo.get_node(outside)["status"] == "active"
-        assert any("supersede rejected" in d for d in diags)
+        assert any("supersedes_node_id" in d for d in diags)
 
 
 # ===================================================================
@@ -1395,6 +1421,71 @@ class TestStage3EndToEnd:
         conn.close()
         assert completed == 1
 
+    def test_stamp_failure_rolls_back_whole_batch(self, tmp_path):
+        """stamp が 1 件でも False なら node だけ commit せず batch 全体を rollback。"""
+        import sleeptime as _sl
+        from butly_core.core.knowledge_maturation import select_queue_cards
+        from butly_core.core.memory_nodes import (
+            MaturationUnitOfWork,
+            MemoryNodeRepository,
+        )
+
+        inst_path, db_path = self._setup(tmp_path)
+        hk = _make_hk(inst_path)
+        provider = _fake_provider()
+
+        real_stamp = MaturationUnitOfWork.stamp_card_version
+
+        def _stamp_c001_fails(self, *, card_id, content_hash, run_id):
+            if card_id == "c_001":
+                return False  # 版が消えた等をシミュレート
+            return real_stamp(
+                self, card_id=card_id, content_hash=content_hash, run_id=run_id
+            )
+
+        with patch.object(_sl.ButlySleeptime, "_get_provider", return_value=provider):
+            with patch.object(
+                MaturationUnitOfWork, "stamp_card_version", _stamp_c001_fails
+            ):
+                totals = hk.stage_3_mature_knowledge(inst_path, now=_NOW)
+
+        assert "db_error" in totals["outcomes"]
+        assert totals["applied_cards"] == 0
+        # node も stamp も巻き戻り、両カードがキューに残る
+        repo = MemoryNodeRepository(db_path)
+        assert repo.find_nodes(statuses=["active", "candidate"]) == []
+        assert len(select_queue_cards(db_path, batch_size=10)) == 2
+
+
+class TestStage3Params:
+    """§11: 旧 max_cards の batch_size 読み替え互換。"""
+
+    def _hk(self):
+        import sleeptime as _sl
+
+        return _sl.ButlySleeptime.__new__(_sl.ButlySleeptime)
+
+    def test_legacy_max_cards_used_as_batch_size(self):
+        params = self._hk()._stage3_params(
+            {"memory": {"knowledge_maturation_max_cards": 7}}
+        )
+        assert params["batch_size"] == 7
+
+    def test_new_batch_size_wins_over_legacy(self):
+        params = self._hk()._stage3_params(
+            {
+                "memory": {
+                    "knowledge_maturation_batch_size": 12,
+                    "knowledge_maturation_max_cards": 7,
+                }
+            }
+        )
+        assert params["batch_size"] == 12
+
+    def test_global_default_when_neither_present(self):
+        params = self._hk()._stage3_params({})
+        assert params["batch_size"] == 40
+
 
 # ===================================================================
 # 7b. stage3-bootstrap (§6)
@@ -1702,6 +1793,51 @@ class TestShouldRunStage3:
             "sleeptime": {"update_targets": {"knowledge_maturation": False}},
         }
         assert hk._should_run_stage_3(cfg) is False
+
+
+class TestRunWithProgressStage3:
+    """Web/UI 経路 (run_with_progress) でも Stage 3 が同じゲートで走る。"""
+
+    def _prepare(self, tmp_path, enabled: bool):
+        import sleeptime as _sl
+
+        inst_path = _build_instance(tmp_path)
+        (inst_path / "config.json").write_text(
+            json.dumps(
+                {
+                    "memory": {"knowledge_maturation_enabled": enabled},
+                    "sleeptime": {
+                        "update_targets": {"knowledge_maturation": enabled}
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        hk = _sl.ButlySleeptime.__new__(_sl.ButlySleeptime)
+        hk.instances_dir = inst_path.parent
+        hk.instruction = "x"
+        hk.key_memory = "y"
+        return _sl, hk
+
+    def test_stage3_runs_when_enabled(self, tmp_path):
+        _sl, hk = self._prepare(tmp_path, enabled=True)
+        with patch.object(_sl.ButlySleeptime, "stage_1_cleanup"), patch.object(
+            _sl.ButlySleeptime, "stage_2_knowledgeize"
+        ), patch.object(_sl.ButlySleeptime, "backup_database"), patch.object(
+            _sl.ButlySleeptime, "stage_3_mature_knowledge"
+        ) as mock_s3:
+            hk.run_with_progress("test_instance")
+        mock_s3.assert_called_once()
+
+    def test_stage3_skipped_when_disabled(self, tmp_path):
+        _sl, hk = self._prepare(tmp_path, enabled=False)
+        with patch.object(_sl.ButlySleeptime, "stage_1_cleanup"), patch.object(
+            _sl.ButlySleeptime, "stage_2_knowledgeize"
+        ), patch.object(_sl.ButlySleeptime, "backup_database"), patch.object(
+            _sl.ButlySleeptime, "stage_3_mature_knowledge"
+        ) as mock_s3:
+            hk.run_with_progress("test_instance")
+        mock_s3.assert_not_called()
 
 
 # ===================================================================

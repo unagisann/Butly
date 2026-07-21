@@ -1022,15 +1022,23 @@ class ButlySleeptime:
 
     def _stage3_params(self, inst_cfg: dict) -> dict:
         """Stage 3 の設定を解決する（§11 新キー。旧 max_cards は読み替え互換）。"""
-        legacy_batch = int(
-            self._stage_3_param(inst_cfg, "knowledge_maturation_max_cards", 40)
-        )
+        # batch_size の優先順位:
+        #   1. instance の新キー knowledge_maturation_batch_size
+        #   2. instance の旧キー knowledge_maturation_max_cards（後方互換）
+        #   3. グローバル新キー既定 40
+        # グローバルには常に新キー既定 40 が入っているため、_stage_3_param の
+        # instance→global フォールバックだけでは instance 側の旧値が握り潰される。
+        mem_cfg = inst_cfg.get("memory", {})
+        if "knowledge_maturation_batch_size" in mem_cfg:
+            batch_size = int(mem_cfg["knowledge_maturation_batch_size"])
+        elif "knowledge_maturation_max_cards" in mem_cfg:
+            batch_size = int(mem_cfg["knowledge_maturation_max_cards"])
+        else:
+            batch_size = int(
+                self._stage_3_param(inst_cfg, "knowledge_maturation_batch_size", 40)
+            )
         return {
-            "batch_size": int(
-                self._stage_3_param(
-                    inst_cfg, "knowledge_maturation_batch_size", legacy_batch
-                )
-            ),
+            "batch_size": batch_size,
             "max_batches_per_run": int(
                 self._stage_3_param(
                     inst_cfg, "knowledge_maturation_max_batches_per_run", 1
@@ -1515,11 +1523,18 @@ class ButlySleeptime:
                         diagnostic="; ".join(diagnostics) or None,
                     )
                     for cid in card_ids:
-                        uow.stamp_card_version(
+                        if not uow.stamp_card_version(
                             card_id=cid,
                             content_hash=selected_versions[cid],
                             run_id=run_id,
-                        )
+                        ):
+                            # BEGIN IMMEDIATE 下で再検証済みなので通常起きない。
+                            # 万一 stamp できない版があれば、node だけ commit して
+                            # カードを未処理のまま取り残さないよう例外で rollback する。
+                            raise RuntimeError(
+                                f"card version stamp failed for {cid}; "
+                                "rolling back batch"
+                            )
                     uow.complete_run(run_id, status="completed")
                     counters = {
                         "created": created,
@@ -2154,8 +2169,16 @@ class ButlySleeptime:
                 self.update_status(instance_name, "running", 85.0, "ナレッジ化をスキップしました")
             else:
                 self.stage_2_knowledgeize(instance_name, db_type)
-            
-            # Phase 3
+
+            # Stage 3: 知識熟成（opt-in。既定 OFF）。CLI の process_instance と
+            # 同じゲートで判定し、Web/UI 実行でも有効時に走らせる。
+            if self._should_run_stage_3(inst_cfg):
+                self.update_status(instance_name, "running", 80.0, "知識の熟成中 (Stage 3)...")
+                self.stage_3_mature_knowledge(instance_path)
+            else:
+                print(f"[Sleeptime] Stage 3 skipped for {instance_name} (knowledge_maturation disabled)")
+
+            # DB バックアップ
             self.update_status(instance_name, "running", 90.0, "データベースのバックアップ中...")
             self.backup_database(instance_name)
             

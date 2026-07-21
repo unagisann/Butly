@@ -1096,7 +1096,13 @@ def test_rerun_qa_stage3_bootstrap_builds_nodes_on_identical_cards(tmp_path):
     async def fake_qa_run(self, **kwargs):
         return {"question_id": kwargs["question"].question_id}
 
-    fake_provider = FakeProvider()
+    class UsageReportingFakeProvider(FakeProvider):
+        """A/B コスト回収を検証するため実測トークンを 1-slot で返す。"""
+
+        def pop_last_token_usage(self):
+            return {"prompt_tokens": 100, "completion_tokens": 20}
+
+    fake_provider = UsageReportingFakeProvider()
     with patch.object(
         SleeptimeRunner,
         "run",
@@ -1135,6 +1141,11 @@ def test_rerun_qa_stage3_bootstrap_builds_nodes_on_identical_cards(tmp_path):
     )
     assert boot_rows[0]["status"] == "completed"
     assert boot_rows[0]["applied_cards"] == 2
+    # A/B コスト比較用に prompt/completion token が回収される (§10.3)
+    assert boot_rows[0]["prompt_tokens"] == 100
+    assert boot_rows[0]["completion_tokens"] == 20
+    assert sample_report["stage3_bootstrap"]["prompt_tokens"] == 100
+    assert sample_report["stage3_bootstrap"]["completion_tokens"] == 20
 
     with sqlite3.connect(target_instance / "butly_memory.db") as connection:
         node_count = connection.execute(

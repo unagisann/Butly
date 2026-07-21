@@ -905,15 +905,24 @@ def _bootstrap_stage3_clones(
             "stage3-bootstrap",
             f"{conversation.sample_id} draining the review queue",
         )
+        # A/B コスト比較用に実測トークンを回収する。事前 pop で前 sample の
+        # 取り残しを捨て、bootstrap 後の pop でこの sample 分だけを取り出す。
+        sleeptime.pop_llm_usage()
         stats = sleeptime.stage3_bootstrap(
             progress.instance_name, now=reference_now
         )
+        usage = sleeptime.pop_llm_usage()
+        usage = usage if isinstance(usage, dict) else {}
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
         append_jsonl(
             log_path,
             {
                 "run_id": workspace.run_id,
                 "sample_id": conversation.sample_id,
                 "instance_name": progress.instance_name,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
                 **(stats if isinstance(stats, dict) else {"status": "unknown"}),
             },
         )
@@ -943,6 +952,8 @@ def _bootstrap_stage3_clones(
             "created": stats.get("created"),
             "linked": stats.get("linked"),
             "llm_calls": stats.get("llm_calls"),
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
             "post_bootstrap_digest": post_identity["digest"],
         }
 

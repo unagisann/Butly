@@ -795,16 +795,29 @@ class MaturationUnitOfWork:
         self.conn: sqlite3.Connection | None = None
 
     def __enter__(self) -> "MaturationUnitOfWork":
-        self.conn = _connect(self.db_path)
+        conn = _connect(self.db_path)
+        try:
+            # 明示 transaction を自前で管理するため autocommit モードにし、
+            # BEGIN IMMEDIATE で RESERVED ロックを即取得する。これで
+            # get_card_hashes の再検証から stamp までが単一 transaction に収まり、
+            # その間の他プロセスによるカード更新を締め出す（§5.4-5 の競合窓を閉じる）。
+            # busy_timeout で、他 writer が居ても即失敗せず短時間待つ。
+            conn.isolation_level = None
+            conn.execute("PRAGMA busy_timeout = 5000;")
+            conn.execute("BEGIN IMMEDIATE;")
+        except Exception:
+            conn.close()
+            raise
+        self.conn = conn
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
         assert self.conn is not None
         try:
             if exc_type is None:
-                self.conn.commit()
+                self.conn.execute("COMMIT")
             else:
-                self.conn.rollback()
+                self.conn.execute("ROLLBACK")
         finally:
             self.conn.close()
             self.conn = None
