@@ -201,6 +201,32 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | `embedding_blob` | BLOB | float32 バイト列（コサイン類似度検索用） |
 | `source_date` | TEXT | 元会話の日付 (YYYY-MM-DD)。検索の time decay はこの「出来事の古さ」を基準に計算（無い旧カードは `created_at` にフォールバック） |
 | `source_files` | TEXT | カード生成に使った RAW ファイル名の JSON 配列。`memory_archive/2_knowledgeized/{date}/` 配下の元会話へ遡及するためのポインタ。`rag_source_mode` が raw/both のとき RAG 原文注入の逆引きに使う |
+| `content_hash` | TEXT | Stage 3 prompt に渡す意味内容（title/summary/episode/tags/category/source_date）を正規化した SHA-256。カード本文の**版識別子**。本文を書く経路（Stage 2 INSERT / `update_card` / `register_knowledge`）は共通 helper（`butly_core/core/card_content.py`）で必ず更新する |
+| `last_matured_content_hash` | TEXT | Stage 3 が最後に**成功レビュー**した版。NULL または `content_hash` と不一致ならレビューキュー内 |
+| `maturation_queued_at` | TEXT | 現在の版がキューへ入った固定長 UTC 時刻（`YYYY-MM-DDTHH:MM:SSZ`）。FIFO 選択の順序キー |
+| `last_matured_at` / `last_matured_run_id` | TEXT | 最終成功時刻と run id（監査専用。再レビュー要否の判定には使わない） |
+
+---
+
+### 8. memory_nodes（Stage 3 / Knowledge Maturation・opt-in）
+
+Stage 1/2 がエピソードを「溜める」層なのに対し、Stage 3 はカード群から
+**現在解釈（memory_nodes）を蒸留**する層。既定 OFF
+（`memory.knowledge_maturation_enabled=False` かつ
+`sleeptime.update_targets.knowledge_maturation=False`）。
+
+| 項目 | 内容 |
+|---|---|
+| **テーブル** | `memory_nodes`（kind/subject/topic/statement/confidence/status/last_decay_at）、`memory_node_sources`（node↔card の supports/contradicts/context リンク）、`memory_maturation_runs`（実行ログ）、`memory_maturation_run_cards`（run に投入したカード版と結果） |
+| **レビューキュー** | content hash 式。非アーカイブかつ `last_matured_content_hash` が NULL または `content_hash` と不一致のカードが対象。`maturation_queued_at` 昇順の FIFO で全カード被覆を保証（usage は同時刻内の tie-break のみ）。本文変更は新 hash として自動で再キューされる |
+| **実行フロー** | instance 単位 process lock（non-blocking flock）→ 前 process が残した `running` run を `abandoned` 回収 → preflight（NULL hash の自己修復 backfill。不能なら run 失敗）→ batch 選択 → LLM（`stage3_node_review` prompt）→ 結果分類 → **単一 SQLite transaction** で node/source 更新・run counters・カード版 stamp・run 完了を commit |
+| **結果分類** | `ok` / `no_changes`（正当な空結果。stamp する）/ `truncated_response`（provider の finish_reason）/ `empty_response` / `parse_error` / `provider_error`（stamp せずキューに残す）。retryable 失敗は有限 retry → batch 半分割 → 1 件隔離。追加 LLM 呼び出しは `knowledge_maturation_retry_max_calls_per_run` で制限 |
+| **同時更新防御** | transaction 開始時に全カードの `content_hash` を再検証。1 件でも変わっていれば batch 全体を適用せず `changed_during_run`。新版はキューに残る |
+| **bootstrap** | `venv/bin/python sleeptime.py stage3-bootstrap --instance <name> [--max-cards N]`。キューが空になるまで batch を反復（安全上限 `knowledge_maturation_bootstrap_max_cards`=2000）。失敗カードは invocation 内だけ隔離し、`partial` として失敗一覧・残数を報告。transaction 単位で冪等・再開可能 |
+| **reflection（減衰）** | `memory_node_decay_enabled=True` のとき run 末に SQL スイープ。`last_reinforced_at`/`last_decay_at` 基準の未適用 stale 期間数（`memory_node_stale_days`=30 単位）× `memory_node_decay_per_period`=0.05 を減点。同一期間の再 run で二重減点しない。active が `memory_node_active_threshold` 割れで uncertain 降格、uncertain の 2 期間以上放置は `metadata.stale=true`（削除しない） |
+| **昇格提案** | active ∧ confidence≥`memory_node_promotion_threshold` ∧ supports≥`memory_node_promotion_min_sources` ∧ 複数日（`source_date` 優先）の node を `memory_node_proposals.json` へ出力（全 eligible node を pagination）。Key Memory への自動反映は未実装（計画 Phase 6） |
+| **Chat/QA 注入** | `knowledge_maturation_enabled=True` のとき、RAG でヒットしたカードに紐づく `status='active'` node を最大 5 件併走注入（カード非ヒット時は node も見えない） |
+| **設定キー** | `knowledge_maturation_batch_size`=40 / `_max_batches_per_run`=1 / `_prompt_max_chars`=40000 / `_retry_max_calls_per_run`=8 / `_bootstrap_max_cards`=2000。旧 `max_cards` はインスタンス設定に残っていれば batch_size として読み替え。旧 `window_days`/`min_usage_count`/`interval_days` は廃止 |
 
 ---
 
@@ -225,13 +251,20 @@ ButlySleeptime.run()
     │     ├── [Step 5] _generate_recent_headlines() → recent_digest_headlines.json（最大 4 見出し）
     │     └── [Step 6] _update_relationship_if_due() → mid_term_relationship.txt（7日間隔）
     │
-    └── stage_2_knowledgeize(instance_path, db_type)
-          ├── ★ skip_knowledge_generation チェック（true ならスキップ）
-          ├── 1_integrated JSON を日付でグループ化
-          ├── ファイル単位でチャンク分割（knowledge_max_input_chars で制御）
-          ├── チャンクごとに ask_gemini_to_summarize() → knowledge_cards 生成
-          ├── 各カードに embedding 生成 → butly_memory.db に INSERT
-          └── 処理済み JSON → 2_knowledgeized/{date}/ へ移動
+    ├── stage_2_knowledgeize(instance_path, db_type)
+    │     ├── ★ skip_knowledge_generation チェック（true ならスキップ）
+    │     ├── 1_integrated JSON を日付でグループ化
+    │     ├── ファイル単位でチャンク分割（knowledge_max_input_chars で制御）
+    │     ├── チャンクごとに ask_gemini_to_summarize() → knowledge_cards 生成
+    │     ├── 各カードに embedding + content_hash 生成 → butly_memory.db に INSERT
+    │     └── 処理済み JSON → 2_knowledgeized/{date}/ へ移動
+    │
+    └── stage_3_mature_knowledge(instance_path)  ← opt-in（§8 参照。既定 OFF）
+          ├── process lock → abandoned 回収 → preflight backfill
+          ├── FIFO batch 選択 → LLM レビュー → 結果分類
+          ├── 単一 transaction で node/source/版 stamp/run 完了を commit
+          ├── （opt-in）staleness 減衰スイープ
+          └── memory_node_proposals.json 出力
 ```
 
 ---

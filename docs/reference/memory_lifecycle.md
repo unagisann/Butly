@@ -204,6 +204,32 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | `embedding_blob` | BLOB | float32 byte array for cosine similarity search |
 | `source_date` | TEXT | Date of the source conversation (YYYY-MM-DD). Search time decay is computed from this "event age" (older cards without it fall back to `created_at`) |
 | `source_files` | TEXT | JSON array of RAW file names the card was generated from; pointer back to the original conversations under `memory_archive/2_knowledgeized/{date}/`. Used to resolve the RAG raw-excerpt injection when `rag_source_mode` is raw/both |
+| `content_hash` | TEXT | SHA-256 over the normalized semantic content passed to the Stage 3 prompt (title/summary/episode/tags/category/source_date) — the card body's **version identifier**. Every body-writing path (Stage 2 INSERT / `update_card` / `register_knowledge`) must update it via the shared helper (`butly_core/core/card_content.py`) |
+| `last_matured_content_hash` | TEXT | The version Stage 3 last **successfully reviewed**. The card is in the review queue while this is NULL or differs from `content_hash` |
+| `maturation_queued_at` | TEXT | Fixed-length UTC time (`YYYY-MM-DDTHH:MM:SSZ`) when the current version entered the queue; the FIFO ordering key |
+| `last_matured_at` / `last_matured_run_id` | TEXT | Last success time and run id (audit only; never used to decide re-review) |
+
+---
+
+### 8. memory_nodes (Stage 3 / Knowledge Maturation, opt-in)
+
+While Stages 1/2 accumulate episodes, Stage 3 distills **current interpretations
+(memory_nodes)** from the card population. Off by default
+(`memory.knowledge_maturation_enabled=False` and
+`sleeptime.update_targets.knowledge_maturation=False`).
+
+| Item | Details |
+|---|---|
+| **Tables** | `memory_nodes` (kind/subject/topic/statement/confidence/status/last_decay_at), `memory_node_sources` (node↔card supports/contradicts/context links), `memory_maturation_runs` (run log), `memory_maturation_run_cards` (card versions fed to a run and their outcome) |
+| **Review queue** | Content-hash based. Non-archived cards whose `last_matured_content_hash` is NULL or differs from `content_hash` are queued. FIFO by `maturation_queued_at` guarantees full coverage (usage only breaks ties within the same queue time). Body edits re-queue the card as a new version automatically |
+| **Run flow** | Per-instance process lock (non-blocking flock) → recover orphan `running` runs as `abandoned` → preflight (self-heal NULL hashes; fail the run if impossible) → select a batch → LLM (`stage3_node_review` prompt) → outcome classification → commit node/source updates, run counters, card-version stamps, and run completion in a **single SQLite transaction** |
+| **Outcome classes** | `ok` / `no_changes` (legitimate empty result; stamped) / `truncated_response` (provider finish_reason) / `empty_response` / `parse_error` / `provider_error` (not stamped; stays queued). Retryable failures get a finite retry → batch halving → single-card isolation; extra LLM calls are capped by `knowledge_maturation_retry_max_calls_per_run` |
+| **Concurrent-edit guard** | All card `content_hash` values are re-verified at transaction start; if any changed, the whole batch is dropped as `changed_during_run` and the new versions stay queued |
+| **Bootstrap** | `venv/bin/python sleeptime.py stage3-bootstrap --instance <name> [--max-cards N]`. Repeats batches until the queue drains (safety cap `knowledge_maturation_bootstrap_max_cards`=2000). Failed cards are isolated only within the invocation; reports `partial` with the failure list and remaining count. Idempotent and resumable at transaction granularity |
+| **Reflection (decay)** | With `memory_node_decay_enabled=True`, a SQL sweep runs at the end of each run: confidence decays by unapplied stale periods (units of `memory_node_stale_days`=30) × `memory_node_decay_per_period`=0.05, anchored on `last_reinforced_at`/`last_decay_at` so repeated runs in the same period never double-decay. Active nodes falling below `memory_node_active_threshold` demote to uncertain; uncertain nodes neglected for 2+ periods get `metadata.stale=true` (never deleted) |
+| **Promotion proposals** | Nodes that are active ∧ confidence≥`memory_node_promotion_threshold` ∧ supports≥`memory_node_promotion_min_sources` ∧ span multiple days (preferring `source_date`) are written to `memory_node_proposals.json` (all eligible nodes, paginated). Automatic Key Memory application is not implemented (plan Phase 6) |
+| **Chat/QA injection** | With `knowledge_maturation_enabled=True`, up to 5 `status='active'` nodes linked to RAG-hit cards ride along (no card hit → no nodes) |
+| **Config keys** | `knowledge_maturation_batch_size`=40 / `_max_batches_per_run`=1 / `_prompt_max_chars`=40000 / `_retry_max_calls_per_run`=8 / `_bootstrap_max_cards`=2000. A legacy `max_cards` left in instance config is read as batch_size; legacy `window_days`/`min_usage_count`/`interval_days` are retired |
 
 ---
 
@@ -228,13 +254,20 @@ ButlySleeptime.run()
     │     ├── [Step 5] _generate_recent_headlines() → recent_digest_headlines.json (up to 4 headlines)
     │     └── [Step 6] _update_relationship_if_due() → mid_term_relationship.txt (7-day interval)
     │
-    └── stage_2_knowledgeize(instance_path, db_type)
-          ├── ★ skip_knowledge_generation check (skip if true)
-          ├── Group 1_integrated JSONs by date
-          ├── Chunk by file boundary (controlled by knowledge_max_input_chars)
-          ├── Per chunk: ask_gemini_to_summarize() → generate knowledge_cards
-          ├── Generate embedding per card → INSERT into butly_memory.db
-          └── Move processed JSONs → 2_knowledgeized/{date}/
+    ├── stage_2_knowledgeize(instance_path, db_type)
+    │     ├── ★ skip_knowledge_generation check (skip if true)
+    │     ├── Group 1_integrated JSONs by date
+    │     ├── Chunk by file boundary (controlled by knowledge_max_input_chars)
+    │     ├── Per chunk: ask_gemini_to_summarize() → generate knowledge_cards
+    │     ├── Generate embedding + content_hash per card → INSERT into butly_memory.db
+    │     └── Move processed JSONs → 2_knowledgeized/{date}/
+    │
+    └── stage_3_mature_knowledge(instance_path)  ← opt-in (see §8; off by default)
+          ├── process lock → recover abandoned runs → preflight backfill
+          ├── FIFO batch selection → LLM review → outcome classification
+          ├── single transaction: nodes/sources/version stamps/run completion
+          ├── (opt-in) staleness decay sweep
+          └── write memory_node_proposals.json
 ```
 
 ---

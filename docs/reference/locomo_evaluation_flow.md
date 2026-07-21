@@ -208,6 +208,58 @@ In Colab, set `SOURCE_MEMORY_RUN_ID` to the source run ID and choose a new
 The sample/session scope stays fixed to the source card corpus; only question
 scope can change.
 
+## Stage 3 (memory_nodes) ON/OFF evaluation
+
+Measuring Stage 3 uses a clone A/B that varies **only the node layer over the
+exact same knowledge-card set** (two full replays would differ through Stage 2
+LLM variance, so that approach is not used).
+
+```bash
+# 1. Baseline source run (Stage 3 stays off by default)
+python -m evals.locomo.cli run --dataset ... --output-dir ./eval_runs \
+  --run-id stage3-source --qa-mode independent --all-questions
+
+# 2. OFF clone: QA over identical cards without nodes
+python -m evals.locomo.cli rerun-qa --source-run ./eval_runs/stage3-source \
+  --run-id stage3-off --profile evals/locomo/profiles/stage3_off.example.yaml
+
+# 3. ON clone: verify card identity → drain the queue via stage3-bootstrap → QA with node injection
+python -m evals.locomo.cli rerun-qa --source-run ./eval_runs/stage3-source \
+  --run-id stage3-on --stage3-bootstrap \
+  --profile evals/locomo/profiles/stage3_on.example.yaml
+```
+
+Properties and artifacts:
+
+- Right after cloning, `knowledge_cards` ids and canonical content hashes
+  (the normalization in `butly_core/core/card_content.py`) are compared with
+  the source; any mismatch fails the run before QA. The result is written to
+  `card_identity.json` in the run directory. Since OFF and ON both verify
+  against the same source, their card sets are transitively identical.
+- `--stage3-bootstrap` is the ON arm. Bootstrap statistics go to
+  `results/stage3_bootstrap_log.jsonl`; any status other than `completed`
+  (including `partial`) invalidates the arm and fails the run. Card identity
+  is re-verified after bootstrap.
+- Bootstrap injects the same clock as QA: the day after the last session.
+- Node injection is enabled by `memory.knowledge_maturation_enabled=true`
+  (the stage3_on profile). Automatic Key Memory application stays off here.
+- Comparison metrics: QA scores (existing scorer), counts/digests in
+  `card_identity.json`, and node/failure/LLM-call counts in
+  `stage3_bootstrap_log.jsonl`.
+
+### Integration path: per-session Stage 3
+
+Passing the `stage3_on` profile to a normal `run` merges its `sleeptime`
+section recursively, and the SleeptimeRunner executes Stage 3 after a
+successful Stage 2, injecting the session's original timestamp as the clock
+(no dependency on `BUTLY_CHRONOS_NOW`, which is only set during QA).
+`sleeptime_log.jsonl` records `stage_3_status` / `stage_3_reviewed_cards` /
+`stage_3_created_nodes` / `stage_3_linked_sources` / `stage_3_failed_cards` /
+`stage_3_llm_calls` / `stage_3_prompt_tokens` / `stage_3_completion_tokens`
+separately from Stages 1/2, so a Stage 3 failure never masquerades as a
+Stage 2 success. This path exists for behavioral testing; the official
+accuracy A/B is the clone procedure above.
+
 ## `independent` QA
 
 The goal is to start every question from exactly the same post-Sleeptime state.

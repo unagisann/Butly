@@ -2,7 +2,10 @@
 
 🌐 **日本語** | English（未作成 — 本 `.ja.md` が正本、`.md` は後日ペア化）
 
-> **ステータス: 提案段階（実装済みベースラインの上に増築）。** 段階移行前提で `planning/active` 管理。
+> **ステータス: Phase 0〜5 実装済み（2026-07-21、ブランチ `claude/stage3-maturation`）。**
+> 残: Phase 5 の実 LoCoMo A/B 実走（導線・profile・検証まで完成、API 実走は未実施）／
+> Phase 6（Key Memory 自動反映。A/B ゲート通過後）／Phase 7（node 独立検索。別計画切り出し可）／
+> Phase 8（クリーンアップ）／§8 の proposal 参照・承認 API 導線（routers/instances.py。Phase 6 と同時が妥当）。
 > 完了条件（§14）を満たしたら `archived` へ移す。
 >
 > 起票: 2026-07-21 / 想定スパン: 段階的・急がない / 利用者: 自分のみ（破壊的変更可）

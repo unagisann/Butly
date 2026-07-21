@@ -218,6 +218,56 @@ Colabでは`SOURCE_MEMORY_RUN_ID`へ元run IDを設定し、`RUN_ID`を新しい
 空文字のままなら通常のReplay → Sleeptime → QAを行う。sample/session範囲は元runの
 カード集合に固定され、question範囲だけを変更できる。
 
+## Stage 3（memory_nodes）の ON/OFF 評価
+
+Stage 3 の効果測定は「完全に同じ knowledge card 集合の上で node 層の有無だけを
+変える」clone A/B を正式手順とする（Stage 2 の LLM 出力揺れを排除するため、
+full replay を 2 本回す方式は使わない）。
+
+```bash
+# 1. baseline source run（Stage 3 は既定 OFF のまま Replay/Sleeptime まで完了）
+python -m evals.locomo.cli run --dataset ... --output-dir ./eval_runs \
+  --run-id stage3-source --qa-mode independent --all-questions
+
+# 2. OFF clone: 同一カードで node 無し QA
+python -m evals.locomo.cli rerun-qa --source-run ./eval_runs/stage3-source \
+  --run-id stage3-off --profile evals/locomo/profiles/stage3_off.example.yaml
+
+# 3. ON clone: カード同一性検証 → stage3-bootstrap でキュー drain → node 注入 QA
+python -m evals.locomo.cli rerun-qa --source-run ./eval_runs/stage3-source \
+  --run-id stage3-on --stage3-bootstrap \
+  --profile evals/locomo/profiles/stage3_on.example.yaml
+```
+
+性質と artifact:
+
+- clone 直後に `knowledge_cards` の id と canonical content hash
+  （`butly_core/core/card_content.py` の §5.2 正規化）を source と照合し、
+  1 件でも不一致なら QA 前に失敗終了する。結果は run 直下の
+  `card_identity.json` に記録される（OFF/ON とも同じ source と照合するため、
+  両者のカード集合は推移的に同一）。
+- `--stage3-bootstrap` は ON 側専用。bootstrap の統計は
+  `results/stage3_bootstrap_log.jsonl` に出力され、`status=completed` 以外
+  （partial 含む）は A/B の腕として無効なので失敗終了する。bootstrap 後にも
+  カード集合の不変を再検証する。
+- bootstrap の clock は QA と同じ「最終会話日の翌日」を注入する。
+- node 注入は `memory.knowledge_maturation_enabled=true`（stage3_on profile）
+  で有効になる。自動 Key Memory 反映はこの評価では常に OFF。
+- 比較指標: QA スコア（既存 scorer）、`card_identity.json` の件数・digest、
+  `stage3_bootstrap_log.jsonl` の node 生成数・失敗数・LLM 呼び出し数。
+
+### per-session で Stage 3 を走らせる統合テスト経路
+
+通常の `run` に `stage3_on` profile を渡すと、profile の `sleeptime` セクションが
+再帰マージで適用され、SleeptimeRunner が Stage 2 成功後に Stage 3 を実行する。
+Stage 3 の clock には session の元日時を注入する（QA 時だけ設定される
+`BUTLY_CHRONOS_NOW` に依存しない）。`sleeptime_log.jsonl` には
+`stage_3_status` / `stage_3_reviewed_cards` / `stage_3_created_nodes` /
+`stage_3_linked_sources` / `stage_3_failed_cards` / `stage_3_llm_calls` /
+`stage_3_prompt_tokens` / `stage_3_completion_tokens` が Stage 1/2 と分離して
+記録され、Stage 3 の失敗が Stage 2 の成功に紛れ込まない。
+この経路は挙動確認用で、正式な精度 A/B は上記 clone 方式を使う。
+
 ## `independent`: 独立QA
 
 目的は、**すべての質問を完全に同じpost-Sleeptime状態から評価すること**。
