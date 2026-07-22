@@ -1169,3 +1169,12 @@ def test_rerun_qa_stage3_bootstrap_builds_nodes_on_identical_cards(tmp_path):
     assert run_config["stage3_bootstrap"] is True
     # OFF 側 (stage3_bootstrap 無し) と同じ導線でカード同一性 artifact が出る
     assert rerun.answered_questions == 1
+
+    # Colab 切断などで durable completion proof が残らなかった ON clone は、
+    # 部分 node のまま QA へ進めず新しい run ID での再実行を要求する。
+    (rerun.workspace.run_dir / "card_identity.json").unlink()
+    with pytest.raises(
+        WorkspaceError,
+        match="potentially partial ON clone",
+    ):
+        asyncio.run(resume_evaluation(rerun.workspace.run_dir))

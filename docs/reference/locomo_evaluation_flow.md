@@ -229,6 +229,21 @@ python -m evals.locomo.cli rerun-qa --source-run ./eval_runs/stage3-source \
   --profile evals/locomo/profiles/stage3_on.example.yaml
 ```
 
+The Colab notebook renders its Parameters cell as a form. `RUN_ID`,
+`SOURCE_MEMORY_RUN_ID`, evaluation scope, and primary paths can be changed
+from the form controls. Choose `RUN_MODE` from this dropdown:
+
+| `RUN_MODE` | Behavior |
+|---|---|
+| `standard` | Normal evaluation. A blank source ID starts at Replay; a source ID keeps the existing QA-only card-reuse behavior |
+| `stage3-source` | Build the formal A/B post-Stage 2 source with Stage 3 explicitly off; source ID must be blank and `QA_MODE=independent` |
+| `stage3-off` | Clone the source's identical cards and run QA without nodes; source ID is required |
+| `stage3-on` | Clone the same source, automatically enable `--stage3-bootstrap` and node injection, then run QA; source ID is required |
+
+Use distinct `RUN_ID` values for OFF and ON, with the same
+`SOURCE_MEMORY_RUN_ID`. `STAGE3_BATCH_SIZE` is exposed for weaker local
+models, and `STAGE3_BOOTSTRAP_MAX_CARDS` controls the safety cap.
+
 Properties and artifacts:
 
 - Right after cloning, `knowledge_cards` ids and canonical content hashes
@@ -240,6 +255,9 @@ Properties and artifacts:
   `results/stage3_bootstrap_log.jsonl`; any status other than `completed`
   (including `partial`) invalidates the arm and fails the run. Card identity
   is re-verified after bootstrap.
+- If Colab disconnects during ON bootstrap before `card_identity.json` contains
+  durable completion proof for every sample, `resume` refuses to continue QA
+  over partial nodes. Re-run the ON arm with a new `RUN_ID`.
 - Bootstrap injects the same clock as QA: the day after the last session.
 - Node injection is enabled by `memory.knowledge_maturation_enabled=true`
   (the stage3_on profile). Automatic Key Memory application stays off here.

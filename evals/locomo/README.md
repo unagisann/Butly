@@ -305,12 +305,16 @@ with artifacts on Drive, and after a runtime disconnect resumes via the
 Resume cell. llama.cpp is built fresh each session (Drive binary caching was
 removed after repeated shared-library breakage). The notebook must stay
 logic-free: anything beyond setup and CLI invocation belongs in this package.
-Its Parameters cell exposes QA mode, locale, and separate all/limit controls
-for samples, sessions, and questions. It also exposes current-time, mid-term,
-session-digest, and RAG context switches. Set `SOURCE_MEMORY_RUN_ID` to an
-existing independent run ID (for example `qwen3_14b_colab_v16`) and choose a
-different `RUN_ID` to route the Run cell through `rerun-qa`; leave it blank for
-normal Replay/Sleeptime.
+Its Parameters cell is rendered as a Colab form and exposes editable `RUN_ID`,
+repository/Drive paths, QA mode, locale, separate all/limit controls, context
+switches, and a `RUN_MODE` dropdown. For a formal Stage 3 A/B, run
+`stage3-source`, then run `stage3-off` and `stage3-on` with distinct run IDs and
+the same `SOURCE_MEMORY_RUN_ID`; the ON mode automatically adds
+`--stage3-bootstrap` and enables node injection. `standard` preserves the prior
+behavior: set `SOURCE_MEMORY_RUN_ID` to route through `rerun-qa`, or leave it
+blank for normal Replay/Sleeptime. If ON bootstrap is interrupted before its
+durable card-identity completion proof is written, Resume refuses partial
+nodes and requires a new ON run ID.
 
 Profiles set a `connection` per role. Using a user-defined connection (e.g.
 `colab_local`) for every role exercises code paths that built-in providers

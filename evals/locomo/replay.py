@@ -99,6 +99,8 @@ async def resume_evaluation(
     config, profile = _resolve_config_and_profile(config)
     conversations = _select_conversations(load_dataset(config.dataset_path), config)
     checkpoint = Checkpoint.load(workspace.run_id, workspace.checkpoints_dir)
+    if run_config.get("stage3_bootstrap"):
+        _assert_stage3_bootstrap_completed(workspace, checkpoint)
     if run_config.get("memory_reused_from_run_id"):
         _assert_reused_run_checkpoint(
             workspace,
@@ -1103,6 +1105,52 @@ def _assert_reused_run_checkpoint(
                 "A reused-memory run is missing its copied instance: "
                 f"{progress.instance_name}"
             )
+
+
+def _assert_stage3_bootstrap_completed(
+    workspace: EvaluationWorkspace,
+    checkpoint: Checkpoint,
+) -> None:
+    """Refuse QA resume unless every Stage 3 clone has a durable completion proof."""
+    identity_path = workspace.run_dir / "card_identity.json"
+    try:
+        identity_report = json.loads(identity_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise WorkspaceError(
+            "Stage 3 bootstrap completion cannot be verified; refusing to "
+            "resume QA from a potentially partial ON clone. Re-run rerun-qa "
+            "with a new run ID."
+        ) from exc
+    if not isinstance(identity_report, dict):
+        raise WorkspaceError(
+            "Stage 3 bootstrap completion proof is malformed; refusing to "
+            "resume QA from a potentially partial ON clone. Re-run rerun-qa "
+            "with a new run ID."
+        )
+
+    invalid_samples = []
+    for sample_id in checkpoint.samples:
+        sample_report = identity_report.get(sample_id, {})
+        if not isinstance(sample_report, dict):
+            invalid_samples.append(sample_id)
+            continue
+        bootstrap = sample_report.get("stage3_bootstrap", {})
+        if not isinstance(bootstrap, dict):
+            invalid_samples.append(sample_id)
+            continue
+        if (
+            bootstrap.get("status") != "completed"
+            or not sample_report.get("digest")
+            or bootstrap.get("post_bootstrap_digest")
+            != sample_report.get("digest")
+        ):
+            invalid_samples.append(sample_id)
+    if invalid_samples:
+        raise WorkspaceError(
+            "Stage 3 bootstrap completion cannot be verified for samples "
+            f"{invalid_samples}; refusing to resume QA from a potentially "
+            "partial ON clone. Re-run rerun-qa with a new run ID."
+        )
 
 
 def _copy_memory_build_logs(

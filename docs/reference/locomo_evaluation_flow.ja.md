@@ -239,6 +239,21 @@ python -m evals.locomo.cli rerun-qa --source-run ./eval_runs/stage3-source \
   --profile evals/locomo/profiles/stage3_on.example.yaml
 ```
 
+Colab NotebookではParametersセルをフォーム表示し、`RUN_ID`、
+`SOURCE_MEMORY_RUN_ID`、評価範囲、主要パスを右側の入力欄から変更できる。
+`RUN_MODE`は次のプルダウンから選ぶ。
+
+| `RUN_MODE` | 動作 |
+|---|---|
+| `standard` | 通常評価。source IDが空ならReplayから実行し、指定時は従来どおりカードを再利用してQAだけ再実行 |
+| `stage3-source` | 正式A/Bのpost-Stage 2正本を作成。Stage 3は明示OFF、source IDは空、`QA_MODE=independent`必須 |
+| `stage3-off` | sourceの同一カードをcloneし、node無しでQA。source ID必須 |
+| `stage3-on` | 同じsourceをcloneし、`--stage3-bootstrap`とnode注入を自動で有効化してQA。source ID必須 |
+
+OFF/ONには異なる`RUN_ID`と同じ`SOURCE_MEMORY_RUN_ID`を設定する。
+ローカルモデル向けに`STAGE3_BATCH_SIZE`、安全上限として
+`STAGE3_BOOTSTRAP_MAX_CARDS`もフォームから変更できる。
+
 性質と artifact:
 
 - clone 直後に `knowledge_cards` の id と canonical content hash
@@ -250,6 +265,9 @@ python -m evals.locomo.cli rerun-qa --source-run ./eval_runs/stage3-source \
   `results/stage3_bootstrap_log.jsonl` に出力され、`status=completed` 以外
   （partial 含む）は A/B の腕として無効なので失敗終了する。bootstrap 後にも
   カード集合の不変を再検証する。
+- ON bootstrap中にColabが切断され、全sampleの完了証跡
+  `card_identity.json`が確定していない場合、`resume`は部分nodeのままQAへ進まず
+  明示的に失敗する。新しい`RUN_ID`でON armを再実行する。
 - bootstrap の clock は QA と同じ「最終会話日の翌日」を注入する。
 - node 注入は `memory.knowledge_maturation_enabled=true`（stage3_on profile）
   で有効になる。自動 Key Memory 反映はこの評価では常に OFF。
