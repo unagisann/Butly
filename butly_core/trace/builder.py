@@ -141,6 +141,7 @@ def build_chat_trace(
     has_attachments: bool = False,
     timing: Optional[Dict[str, Any]] = None,
     token_estimate: Optional[Dict[str, Any]] = None,
+    active_node_trace: Optional[Dict[str, Any]] = None,
     generation_error: Optional[str] = None,
     llm_calls: Optional[List[Dict[str, Any]]] = None,
     turn_id: Optional[int] = None,
@@ -158,6 +159,7 @@ def build_chat_trace(
     memory_blocks = memory_blocks or {}
     timing = timing or {}
     token_estimate = token_estimate or {}
+    active_node_trace = active_node_trace or {}
     llm_calls = list(llm_calls or [])
     chat_gen_rec = next(
         (c for c in llm_calls if c.get("purpose") == "chat_generate"), None
@@ -250,24 +252,68 @@ def build_chat_trace(
     # --- rag (RAG 検索結果の注入有無) ---
     rag_context = memory_blocks.get("rag_context")
     rag_raw = memory_blocks.get("rag_results_raw") or []
+    if not active_node_trace:
+        lookup = memory_blocks.get("active_node_lookup") or {}
+        active_nodes = memory_blocks.get("active_nodes") or []
+        active_node_trace = {
+            "lookup": {
+                "enabled": bool(lookup.get("enabled", False)),
+                "attempted": bool(lookup.get("attempted", False)),
+                "reason": lookup.get("reason"),
+                "candidate_count": int(lookup.get("candidate_count") or 0),
+                "matched_count": int(lookup.get("matched_count") or 0),
+            },
+            "rag_level": None,
+            "prompt_observed": False,
+            "eligible_count": len(active_nodes),
+            "render_candidate_count": None,
+            "prompt_included_count": None,
+            "injection_status": "not_observed" if active_nodes else "no_matches",
+            "nodes": [
+                {
+                    "id": node.get("id"),
+                    "kind": node.get("kind"),
+                    "topic": node.get("topic"),
+                    "statement": str(node.get("statement") or "")
+                    .strip()
+                    .replace("\n", " "),
+                    "confidence": node.get("confidence"),
+                    "source_instance": node.get("source_instance"),
+                    "matched_card_ids": node.get("matched_card_ids") or [],
+                    "render_candidate": None,
+                    "prompt_included": None,
+                }
+                for node in active_nodes
+            ],
+        }
     if rag_context:
         rag_status: TraceStatus = "active"
         rag_summary = f"{len(rag_raw)} 件注入"
         rag_meta: Dict[str, Any] = {
             "query": need,
+            "source_mode": memory_blocks.get("rag_source_mode"),
+            "raw_reference": memory_blocks.get("rag_raw_reference"),
             "result_count": len(rag_raw),
             "results": [
                 {
+                    "id": r.get("id"),
                     "title": summarize_text(r.get("title", ""), 40),
                     "score": r.get("score"),
+                    "source_date": r.get("source_date"),
+                    "source_instance": r.get("source_instance"),
                 }
                 for r in rag_raw[:5]
             ],
+            "active_nodes": active_node_trace,
         }
     else:
         rag_status = "skipped"
         rag_summary = "need=null（長期記憶不要）" if not need else "候補なし/閾値未達"
-        rag_meta = {"reason": rag_summary, "query": need}
+        rag_meta = {
+            "reason": rag_summary,
+            "query": need,
+            "active_nodes": active_node_trace,
+        }
     nodes.append(
         TraceNode(
             id="rag",
@@ -323,6 +369,12 @@ def build_chat_trace(
                 "included": included,
                 "excluded": excluded,
                 "mid_term_mode": memory_blocks.get("mid_term_mode"),
+                "active_node_injection_status": active_node_trace.get(
+                    "injection_status"
+                ),
+                "active_node_prompt_included_count": active_node_trace.get(
+                    "prompt_included_count"
+                ),
             },
         )
     )

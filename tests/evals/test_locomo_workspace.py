@@ -5,7 +5,11 @@ import json
 
 import pytest
 
-from evals.locomo.artifacts import copy_latest_trace, safe_artifact_name
+from evals.locomo.artifacts import (
+    copy_latest_trace,
+    resolve_retrieved_card_ids,
+    safe_artifact_name,
+)
 from evals.locomo.workspace import (
     EvaluationWorkspace,
     IndependentQAWorkspace,
@@ -164,6 +168,18 @@ def test_trace_copy_is_namespaced_by_sample(tmp_path):
     assert second == tmp_path / "run-traces" / "conv-b" / "qa-1.json"
     assert first.is_file()
     assert second.is_file()
+
+
+def test_retrieved_card_ids_prefer_observed_trace_ids(tmp_path):
+    resolved = resolve_retrieved_card_ids(
+        tmp_path / "missing.db",
+        [
+            {"id": "card-2", "title": "duplicate title"},
+            {"id": "card-1", "title": "duplicate title"},
+        ],
+    )
+
+    assert resolved == ["card-2", "card-1"]
 
 
 def test_artifact_names_disambiguate_lossy_sample_ids():

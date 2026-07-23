@@ -242,6 +242,7 @@ frontend の手書き SSE parser と契約を共有するための正本）。
 - `_save_debug_log(instance_dir, payload, max_history=20)` — `debug_logs/` へデバッグ情報を保存
 - `_save_trace(instance_dir, trace_payload, max_history=20)` — `traces/` へ Trace Graph (trace.json) を保存
 - `_build_and_save_trace(...)` — 実行事実 + collector の `llm_calls` から `build_chat_trace()` で TraceGraph を構築し `_save_trace` で保存（issue #51。`SYSTEM_CONFIG["trace"].enabled=false` で保存スキップ。構築/保存失敗は応答に影響させない）。`execute()` / `execute_stream()` は本体全体を `start_collection()` / `reset_collection()`（try/finally）で包む
+- `_build_active_node_trace(...)` — Stage 3 active nodeの検索可否・候補・最大5件の描画対象と、Providerが組み立てた最終prompt内への実在を照合する。`confirmed` / `partial` / `missing` / `context_level_excluded` / `not_observed` / `no_matches` を通常応答・stream共通の `debug_info.rag.active_nodes` に保存
 
 ---
 
@@ -277,7 +278,7 @@ ContextVar に可変 list を入れることで、`run_in_threadpool` / `asyncio
 ChatService の実行事実（gatekeeper 出力・記憶ブロック・Provider 情報・timing・collector の
 `llm_calls`）から `TraceGraph` を再構成する純粋関数。
 
-- `build_chat_trace(..., llm_calls=None)` — `user_message → gatekeeper → (memory_probe / rag / web_search) → context_assembly → provider → llm_call → memory_write → state_update / response` のノードとエッジを構築。RAG 未注入・Web 検索 OFF・Gatekeeper フォールバック・LLM 生成失敗（`generation_error`）等を status で表現する
+- `build_chat_trace(..., llm_calls=None)` — `user_message → gatekeeper → (memory_probe / rag / web_search) → context_assembly → provider → llm_call → memory_write → state_update / response` のノードとエッジを構築。RAG 未注入・Web 検索 OFF・Gatekeeper フォールバック・LLM 生成失敗（`generation_error`）等を status で表現する。RAG metadataにはカードID・日付・参照instance・RAW参照状態に加え、active nodeのlookup結果、紐づくカードID、statement、confidence、最終promptへの注入判定を残す
 - 補助 LLM ノード: `llm_calls` の記録から `llm_context_classifier` / `llm_embedding`（複数回は連番）/ `llm_keyword_extract` / `llm_state_updater` を親ノード（gatekeeper / memory_probe / state_update）にぶら下げて生成。`metadata.aux=True` + `metadata.purpose` を持つ。**main 生成（chat_generate）は新ノードにせず既存 `llm_call` の metadata（prompt_chars 等）を拡充する**
 
 ### `butly_core/trace/filters.py`

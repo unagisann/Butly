@@ -138,6 +138,40 @@ class TestBuildChatTrace:
         assert rag.status == "active"
         assert rag.metadata["result_count"] == 1
         assert rag.metadata["results"][0]["title"] == "Design notes"
+        assert rag.metadata["results"][0]["id"] == 1
+
+    def test_rag_records_confirmed_active_node_injection(self):
+        active_node_trace = {
+            "lookup": {
+                "enabled": True,
+                "attempted": True,
+                "reason": "completed",
+                "candidate_count": 1,
+                "matched_count": 1,
+            },
+            "rag_level": "high",
+            "prompt_observed": True,
+            "eligible_count": 1,
+            "render_candidate_count": 1,
+            "prompt_included_count": 1,
+            "injection_status": "confirmed",
+            "nodes": [
+                {
+                    "id": "node-1",
+                    "statement": "The trip was in June 2023.",
+                    "prompt_included": True,
+                }
+            ],
+        }
+        trace = _full_trace(active_node_trace=active_node_trace)
+
+        rag = next(node for node in trace.nodes if node.id == "rag")
+        context = next(
+            node for node in trace.nodes if node.id == "context_assembly"
+        )
+        assert rag.metadata["active_nodes"] == active_node_trace
+        assert context.metadata["active_node_injection_status"] == "confirmed"
+        assert context.metadata["active_node_prompt_included_count"] == 1
 
     def test_rag_skipped_reason_when_need_null(self):
         trace = _full_trace(

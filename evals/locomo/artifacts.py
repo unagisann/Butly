@@ -104,10 +104,21 @@ def resolve_retrieved_card_ids(
     database_path: Path,
     rag_results: list[dict[str, Any]],
 ) -> list[str]:
-    """Resolve IDs omitted by ChatService debug output using title/episode pairs."""
+    """Prefer observed IDs, falling back to legacy title/episode resolution."""
     database = Path(database_path)
-    if not database.is_file() or not rag_results:
+    if not rag_results:
         return []
+
+    explicit_ids = [
+        str(result["id"])
+        for result in rag_results
+        if result.get("id")
+    ]
+    if len(explicit_ids) == len(rag_results):
+        return explicit_ids
+
+    if not database.is_file():
+        return explicit_ids
     with sqlite3.connect(database) as connection:
         rows = connection.execute(
             "SELECT id, title, episode FROM knowledge_cards ORDER BY id"
@@ -119,6 +130,9 @@ def resolve_retrieved_card_ids(
     ]
     resolved = []
     for result in rag_results:
+        if result.get("id"):
+            resolved.append(str(result["id"]))
+            continue
         title = result.get("title", "")
         episode = result.get("episode", "")
         match_index = next(

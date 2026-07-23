@@ -11,7 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from butly_core.chat.service import _save_debug_log, _build_prompt_full
+from butly_core.chat.service import (
+    _build_active_node_trace,
+    _build_prompt_full,
+    _collect_prompt_text,
+    _save_debug_log,
+)
 
 
 class TestBuildPromptFull:
@@ -54,6 +59,95 @@ class TestBuildPromptFull:
     def test_skips_empty_sections(self):
         items = _build_prompt_full("", "", [], "")
         assert items == []
+
+
+class TestActiveNodeTrace:
+    def _blocks(self):
+        return {
+            "rag_context": "cards",
+            "active_node_lookup": {
+                "enabled": True,
+                "attempted": True,
+                "candidate_count": 3,
+                "matched_count": 1,
+                "reason": "completed",
+            },
+            "active_nodes": [
+                {
+                    "id": "node-1",
+                    "kind": "event",
+                    "topic": "camping",
+                    "statement": "The family camping trip was planned for June 2023.",
+                    "confidence": 1.0,
+                    "source_instance": "locomo_1",
+                    "matched_card_ids": ["card-1", "card-2"],
+                }
+            ],
+        }
+
+    def test_confirms_exact_rendered_fragment_in_gemini_prompt(self):
+        statement = "The family camping trip was planned for June 2023."
+        prompt = _collect_prompt_text(
+            {
+                "system_instruction_full": "system",
+                "context_prefix_full": f"Active nodes\n- {statement} (conf=1.00)",
+                "user_input": "When was the trip?",
+            }
+        )
+
+        trace = _build_active_node_trace(
+            self._blocks(),
+            prompt,
+            rag_level="high",
+        )
+
+        assert trace["injection_status"] == "confirmed"
+        assert trace["prompt_included_count"] == 1
+        assert trace["nodes"][0]["prompt_included"] is True
+        assert trace["nodes"][0]["matched_card_ids"] == ["card-1", "card-2"]
+
+    def test_openai_multimodal_prompt_text_is_observable(self):
+        statement = "The family camping trip was planned for June 2023."
+        prompt = _collect_prompt_text(
+            {
+                "messages_full": [
+                    {"role": "system", "content": "system"},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": f"{statement} (conf=1.00)"},
+                            {"type": "image_url", "image_url": {"url": "data:"}},
+                        ],
+                    },
+                ]
+            }
+        )
+
+        trace = _build_active_node_trace(
+            self._blocks(),
+            prompt,
+            rag_level="high",
+        )
+
+        assert trace["injection_status"] == "confirmed"
+        assert statement in prompt
+
+    def test_distinguishes_context_exclusion_from_missing_prompt_content(self):
+        excluded = _build_active_node_trace(
+            self._blocks(),
+            "observed prompt",
+            rag_level="low",
+        )
+        missing = _build_active_node_trace(
+            self._blocks(),
+            "observed prompt without the node",
+            rag_level="high",
+        )
+
+        assert excluded["injection_status"] == "context_level_excluded"
+        assert excluded["nodes"][0]["prompt_included"] is None
+        assert missing["injection_status"] == "missing"
+        assert missing["nodes"][0]["prompt_included"] is False
 
 
 @pytest.fixture

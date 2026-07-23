@@ -1876,6 +1876,13 @@ class TestActiveNodesInRag:
             override_config={"memory": {"knowledge_maturation_enabled": False}},
         )
         assert "active_nodes" not in blocks
+        assert blocks["active_node_lookup"] == {
+            "enabled": False,
+            "attempted": False,
+            "candidate_count": 1,
+            "matched_count": 0,
+            "reason": "disabled",
+        }
 
     def test_active_nodes_added_when_enabled(self, tmp_path):
         from butly_core.core.database import ButlyDatabase
@@ -1916,3 +1923,11 @@ class TestActiveNodesInRag:
         )
         assert blocks["active_nodes"]
         assert blocks["active_nodes"][0]["statement"] == "user likes fruit"
+        assert blocks["active_nodes"][0]["matched_card_ids"] == ["c1"]
+        assert blocks["active_node_lookup"] == {
+            "enabled": True,
+            "attempted": True,
+            "candidate_count": 1,
+            "matched_count": 1,
+            "reason": "completed",
+        }

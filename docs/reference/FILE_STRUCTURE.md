@@ -168,6 +168,7 @@ Stateless orchestrator with two entry points:
 - `_write_rotating_json(target_dir, payload, max_history, *, log_label)` — shared `latest.json` + `history/{ts}.json` rotation writer.
 - `_save_debug_log(...)` / `_save_trace(...)` — write debug info to `debug_logs/` and the Trace Graph to `traces/`.
 - `_build_and_save_trace(...)` — reconstruct a `TraceGraph` from execution facts via `build_chat_trace()` and persist it (issue #51; build/save failures never affect the response).
+- `_build_active_node_trace(...)` — records whether Stage 3 active-node lookup ran, which of the up-to-five render candidates were present in the Provider's final prompt, and a shared buffered/streaming status: `confirmed`, `partial`, `missing`, `context_level_excluded`, `not_observed`, or `no_matches`.
 
 ---
 
@@ -177,7 +178,7 @@ Trace Graph (issue #51): records and visualizes the answer-generation flow as a 
 
 - `types.py` — Pydantic DTOs: `TraceNode`, `TraceEdge` (serialized with `from`/`to` keys), `TraceGraph`; `NodeType`, `TraceStatus` (`active`/`skipped`/`fallback`/`error`/`warning`), `summarize_text()`.
 - `collector.py` — ContextVar-based per-turn LLM call collector. A mutable list in the ContextVar is shared across `run_in_threadpool` / `asyncio.create_task` context copies, so parallel generation + StateUpdater both record into it. `record_llm_call()` is a no-op when collection is not started. Record points (purpose): `context_classifier`, `state_updater`, `embedding`, `keyword_extract`, `chat_generate`.
-- `builder.py` — `build_chat_trace(..., llm_calls=None)`: pure function reconstructing the graph (`user_message → gatekeeper → memory_probe/rag/web_search → context_assembly → provider → llm_call → memory_write → state_update/response`) from collected facts. Auxiliary LLM nodes (`llm_context_classifier`, `llm_embedding` (numbered when repeated), `llm_keyword_extract`, `llm_state_updater`) hang off their parent stage with `metadata.aux=True` + `metadata.purpose`; the main generation enriches the existing `llm_call` node instead of adding a new one.
+- `builder.py` — `build_chat_trace(..., llm_calls=None)`: pure function reconstructing the graph (`user_message → gatekeeper → memory_probe/rag/web_search → context_assembly → provider → llm_call → memory_write → state_update/response`) from collected facts. Auxiliary LLM nodes (`llm_context_classifier`, `llm_embedding` (numbered when repeated), `llm_keyword_extract`, `llm_state_updater`) hang off their parent stage with `metadata.aux=True` + `metadata.purpose`; the main generation enriches the existing `llm_call` node instead of adding a new one. RAG metadata preserves card IDs/dates/source instances and RAW-reference state, plus active-node lookup details, linked card IDs, statement/confidence, and final-prompt inclusion results.
 - `filters.py` — `filter_trace(trace, *, detail, hidden_nodes)`: display filter. `trace.json` always stores the full graph; `detail="summary"` hides aux LLM nodes, `hidden_nodes` matches by purpose (e.g. `"embedding"`) or node id.
 - `mermaid.py` — `render_mermaid(trace, *, direction="TD", detail="full", hidden_nodes=())`: applies `filter_trace`, then renders; colors nodes by status and distinguishes skipped/fallback/error edges by line style.
 
