@@ -358,6 +358,30 @@ class MemoryBlockBuilder:
         probe = gatekeeper_output.get("memory_probe", {}) if gatekeeper_output else {}
         candidates = probe.get("candidates", [])
         glossary_hits = probe.get("glossary_hits", [])
+        _inst_mem = override_config.get("memory", {}) if override_config else {}
+        _sys_mem = SYSTEM_CONFIG.get("memory", {})
+        _km_enabled = _inst_mem.get(
+            "knowledge_maturation_enabled",
+            _sys_mem.get("knowledge_maturation_enabled", False),
+        )
+
+        active_node_lookup = {
+            "enabled": bool(_km_enabled),
+            "attempted": False,
+            "candidate_count": len(candidates),
+            "matched_count": 0,
+            "reason": "disabled",
+        }
+        if _km_enabled:
+            if not need:
+                active_node_lookup["reason"] = "need_null"
+            elif not candidates:
+                active_node_lookup["reason"] = "no_candidates"
+            elif brain is None:
+                active_node_lookup["reason"] = "brain_unavailable"
+            else:
+                active_node_lookup["reason"] = "completed"
+        blocks["active_node_lookup"] = active_node_lookup
 
         if glossary_hits:
             blocks["glossary_hits"] = glossary_hits
@@ -366,8 +390,6 @@ class MemoryBlockBuilder:
         blocks["_probe_ran"] = bool(probe)
 
         if need and candidates:
-            _inst_mem = override_config.get("memory", {}) if override_config else {}
-            _sys_mem = SYSTEM_CONFIG.get("memory", {})
             h = prompt_loader.get_section_header
 
             rag_lines = [h("rag_cards")]
@@ -459,18 +481,14 @@ class MemoryBlockBuilder:
             blocks["rag_results_raw"] = candidates  # debug_info 用
 
             # --- Stage 3 opt-in: ヒットしたカードに紐づく active node を併走 ---
-            _km_enabled = _inst_mem.get(
-                "knowledge_maturation_enabled",
-                SYSTEM_CONFIG.get("memory", {}).get(
-                    "knowledge_maturation_enabled", False
-                ),
-            )
             if _km_enabled and brain is not None:
                 active_nodes = _lookup_active_nodes_for_candidates(
                     brain=brain,
                     instance_name=instance_name,
                     candidates=candidates,
                 )
+                active_node_lookup["attempted"] = True
+                active_node_lookup["matched_count"] = len(active_nodes)
                 if active_nodes:
                     blocks["active_nodes"] = active_nodes
 
@@ -930,8 +948,15 @@ def _lookup_active_nodes_for_candidates(
             for cid in card_ids:
                 for node in repo.find_active_nodes_for_card(cid):
                     nid = node.get("id")
-                    if nid and nid not in out:
-                        out[nid] = node
+                    if not nid:
+                        continue
+                    if nid not in out:
+                        observed_node = dict(node)
+                        observed_node["source_instance"] = src
+                        observed_node["matched_card_ids"] = [cid]
+                        out[nid] = observed_node
+                    elif cid not in out[nid]["matched_card_ids"]:
+                        out[nid]["matched_card_ids"].append(cid)
         except sqlite3.OperationalError:
             # memory_nodes テーブル未作成 (Stage 3 未実行) — 静かにスキップ
             continue

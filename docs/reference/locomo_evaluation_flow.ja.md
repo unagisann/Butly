@@ -161,6 +161,12 @@ Gatekeeperが`need`を立てた場合、MemoryBlockBuilderがknowledge cardや�
 RAW参照をpromptへ組み込む。生成後、ChatServiceは質問と回答を通常の会話turnとして
 処理対象instanceの`short_term_json`へ保存し、session stateも更新する。
 
+`qa_results.jsonl`の`diagnostics.rag`と質問別Traceには、取得カードの実ID・日付・
+参照instance・RAW参照状態を保存する。Stage 3有効時はactive nodeのlookup理由、
+紐づくカードID、描画対象、最終Provider prompt内への注入判定も保存するため、
+「node未取得」「context levelで除外」「promptへ入ったが回答に未利用」を事後に
+区別できる。完全なprompt本文は評価artifactへ複製しない。
+
 純粋ベクトル検索は、instance内のknowledge cardを新旧に関係なくすべて
 コサイン類似度の計算対象にする。その後で時間減衰・archive補正・閾値判定を適用し、
 上位`limit`件だけをRAG候補として返す。`fallback_fetch_limit`はキーワード検索の

@@ -148,6 +148,13 @@ selected session.
 After generation, ChatService persists the question and answer as a normal
 conversation turn in the target instance and updates session state.
 
+`diagnostics.rag` in `qa_results.jsonl` and each per-question Trace preserve the
+retrieved card IDs, dates, source instances, and RAW-reference state. With Stage 3
+enabled they also record the active-node lookup reason, linked card IDs, render
+candidates, and final-Provider-prompt inclusion result. This distinguishes no
+node match, context-level exclusion, and a node that was injected but not used in
+the answer. The full prompt body is not copied into evaluation artifacts.
+
 Pure vector retrieval scores every knowledge card in the instance regardless
 of age. It then applies time decay, archive weighting, and the score threshold
 before returning the top `limit` RAG candidates. `fallback_fetch_limit` belongs

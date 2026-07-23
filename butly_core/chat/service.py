@@ -89,6 +89,175 @@ def _build_prompt_full(
     return items
 
 
+def _prompt_content_to_text(content: Any) -> str:
+    """Provider debug の message content からテキスト部分だけを取り出す。"""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        text = content.get("text")
+        return text if isinstance(text, str) else ""
+    if isinstance(content, list):
+        return "\n".join(
+            text
+            for item in content
+            if (text := _prompt_content_to_text(item))
+        )
+    return ""
+
+
+def _collect_prompt_text(provider_debug: dict) -> str:
+    """Provider が実際に組み立てた最終プロンプトのテキストを回収する。"""
+    messages = provider_debug.get("messages_full")
+    if isinstance(messages, list) and messages:
+        return "\n".join(
+            text
+            for message in messages
+            if isinstance(message, dict)
+            and (text := _prompt_content_to_text(message.get("content")))
+        )
+
+    return "\n".join(
+        text
+        for key in (
+            "system_instruction_full",
+            "context_prefix_full",
+            "user_input",
+        )
+        if (text := provider_debug.get(key)) and isinstance(text, str)
+    )
+
+
+def _resolve_rag_level(
+    context_levels_cfg: Optional[dict],
+    instance_config: Optional[dict],
+) -> str:
+    """実際の context 設定から RAG セクションの描画レベルを解決する。"""
+    try:
+        from butly_core.core.gatekeeper.memory_builder import _resolve_levels
+
+        levels = _resolve_levels(
+            context_levels_cfg,
+            (instance_config or {}).get("context_order"),
+        )
+        return str(levels.get("rag", "high"))
+    except Exception as e:
+        print(f"[ChatService] RAG context level の観測に失敗、high 扱い: {e}")
+        return "high"
+
+
+def _build_active_node_trace(
+    memory_blocks: Optional[dict],
+    prompt_text: str,
+    *,
+    rag_level: str,
+) -> dict:
+    """active node の検索結果と最終プロンプトへの注入事実を記録する。"""
+    blocks = memory_blocks or {}
+    lookup = blocks.get("active_node_lookup") or {}
+    active_nodes = blocks.get("active_nodes") or []
+    prompt_observed = bool(prompt_text)
+    can_render = bool(blocks.get("rag_context")) and rag_level not in ("off", "low")
+
+    observed_nodes = []
+    for index, node in enumerate(active_nodes):
+        statement = str(node.get("statement") or "").strip().replace("\n", " ")
+        confidence = node.get("confidence")
+        confidence_suffix = (
+            f" (conf={confidence:.2f})"
+            if isinstance(confidence, (int, float))
+            else ""
+        )
+        render_candidate = can_render and index < 5 and bool(statement)
+        prompt_included = (
+            (statement + confidence_suffix) in prompt_text
+            if prompt_observed and render_candidate
+            else None
+        )
+        observed_nodes.append(
+            {
+                "id": node.get("id"),
+                "kind": node.get("kind"),
+                "topic": node.get("topic"),
+                "statement": statement,
+                "confidence": confidence,
+                "source_instance": node.get("source_instance"),
+                "matched_card_ids": node.get("matched_card_ids") or [],
+                "render_candidate": render_candidate,
+                "prompt_included": prompt_included,
+            }
+        )
+
+    render_candidates = [
+        node for node in observed_nodes if node["render_candidate"]
+    ]
+    included_count = sum(
+        node["prompt_included"] is True for node in render_candidates
+    )
+    if not active_nodes:
+        injection_status = "no_matches"
+    elif not render_candidates:
+        injection_status = "context_level_excluded"
+    elif not prompt_observed:
+        injection_status = "not_observed"
+    elif included_count == len(render_candidates):
+        injection_status = "confirmed"
+    elif included_count:
+        injection_status = "partial"
+    else:
+        injection_status = "missing"
+
+    return {
+        "lookup": {
+            "enabled": bool(lookup.get("enabled", False)),
+            "attempted": bool(lookup.get("attempted", False)),
+            "reason": lookup.get("reason"),
+            "candidate_count": int(lookup.get("candidate_count") or 0),
+            "matched_count": int(lookup.get("matched_count") or 0),
+        },
+        "rag_level": rag_level,
+        "prompt_observed": prompt_observed,
+        "eligible_count": len(active_nodes),
+        "render_candidate_count": len(render_candidates),
+        "prompt_included_count": included_count if prompt_observed else None,
+        "injection_status": injection_status,
+        "nodes": observed_nodes,
+    }
+
+
+def _build_rag_debug(
+    *,
+    memory_blocks: Optional[dict],
+    gk_result: dict,
+    prompt_text: str,
+    rag_level: str,
+) -> dict:
+    """通常応答と stream で共通の RAG 観測情報を組み立てる。"""
+    blocks = memory_blocks or {}
+    rag_raw = blocks.get("rag_results_raw") or []
+    results = [
+        {
+            "id": result.get("id"),
+            "title": result.get("title", ""),
+            "score": result.get("score", 0),
+            "episode": result.get("episode", ""),
+            "source_date": result.get("source_date"),
+            "source_instance": result.get("source_instance"),
+        }
+        for result in rag_raw
+    ]
+    return {
+        "query": gk_result.get("need"),
+        "results": results,
+        "source_mode": blocks.get("rag_source_mode"),
+        "raw_reference": blocks.get("rag_raw_reference"),
+        "active_nodes": _build_active_node_trace(
+            blocks,
+            prompt_text,
+            rag_level=rag_level,
+        ),
+    }
+
+
 def _resolve_chat_model_ref(
     instance_config: dict,
     request,
@@ -331,6 +500,11 @@ def _build_and_save_trace(
             has_attachments=prepared.has_attachments,
             timing=debug_info.get("timing"),
             token_estimate=debug_info.get("token_estimate"),
+            active_node_trace=(
+                (debug_info.get("rag") or {}).get("active_nodes")
+                if isinstance(debug_info.get("rag"), dict)
+                else None
+            ),
             generation_error=generation_error,
             llm_calls=get_collected(),
             turn_id=session_dict.get("turn_count"),
@@ -953,33 +1127,14 @@ class ChatService:
         provider_debug = result.debug_info or {}
 
         # トークン概算用のプロンプトテキスト収集
-        total_prompt_text = ""
-        if provider_debug.get("messages_full"):
-            for m in provider_debug["messages_full"]:
-                total_prompt_text += m.get("content", "")
-        elif provider_debug.get("system_instruction_full"):
-            total_prompt_text = (
-                provider_debug.get("system_instruction_full", "")
-                + provider_debug.get("context_prefix_full", "")
-                + provider_debug.get("user_input", "")
-            )
-
-        # RAG 結果がメモリブロックに含まれている場合はそこから取得
-        rag_debug_results = []
-        if memory_blocks and memory_blocks.get("rag_context"):
-            rag_raw = memory_blocks.get("rag_results_raw", [])
-            rag_debug_results = (
-                [
-                    {
-                        "title": r.get("title", ""),
-                        "score": r.get("score", 0),
-                        "episode": r.get("episode", ""),
-                    }
-                    for r in rag_raw
-                ]
-                if rag_raw
-                else []
-            )
+        total_prompt_text = _collect_prompt_text(provider_debug)
+        rag_level = _resolve_rag_level(context_levels_cfg, instance_config)
+        rag_debug = _build_rag_debug(
+            memory_blocks=memory_blocks,
+            gk_result=gk_result,
+            prompt_text=total_prompt_text,
+            rag_level=rag_level,
+        )
 
         result.debug_info = {
             "timing": {
@@ -1016,16 +1171,7 @@ class ChatService:
                 "memory_probe_layers": gk_result.get("memory_probe", {}).get("layers"),
                 "session_state": session_state.to_dict(),
             },
-            "rag": {
-                "query": gk_result.get("need"),
-                "results": rag_debug_results,
-                "source_mode": (
-                    memory_blocks.get("rag_source_mode") if memory_blocks else None
-                ),
-                "raw_reference": (
-                    memory_blocks.get("rag_raw_reference") if memory_blocks else None
-                ),
-            },
+            "rag": rag_debug,
             "prompt": provider_debug.get("messages", []),
             "prompt_full": provider_debug.get("messages_full", []),
             "raw_response": provider_debug.get("raw_response", result.text),
@@ -1331,13 +1477,14 @@ class ChatService:
             en_words = len(re.findall(r"[a-zA-Z]+", text))
             return int(ja_chars * 1.5 + en_words + len(text) * 0.1)
 
-        total_prompt_text = ""
-        if provider_debug.get("system_instruction_full"):
-            total_prompt_text = (
-                provider_debug.get("system_instruction_full", "")
-                + provider_debug.get("context_prefix_full", "")
-                + provider_debug.get("user_input", "")
-            )
+        total_prompt_text = _collect_prompt_text(provider_debug)
+        rag_level = _resolve_rag_level(context_levels_cfg, instance_config)
+        rag_debug = _build_rag_debug(
+            memory_blocks=memory_blocks,
+            gk_result=gk_result,
+            prompt_text=total_prompt_text,
+            rag_level=rag_level,
+        )
 
         _t_total = time.time() - _t_start
 
@@ -1372,7 +1519,7 @@ class ChatService:
                 "memory_probe_status": gk_result.get("memory_probe", {}).get("status"),
                 "session_state": session_state.to_dict(),
             },
-            "rag": {"query": gk_result.get("need"), "results": []},
+            "rag": rag_debug,
             "prompt": [],
             "prompt_full": [],
             "raw_response": full_text,
