@@ -97,7 +97,7 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         f"- RAG trigger rate when correct / incorrect: "
         f"{_fmt(butly.get('rag_trigger_rate_when_correct'))} / "
         f"{_fmt(butly.get('rag_trigger_rate_when_incorrect'))}",
-        f"- Evidence retrieval rate (provenance, chunk-level): "
+        f"- Evidence retrieval rate (provenance, source_files): "
         f"{_fmt(butly.get('evidence_retrieval_rate'))}",
         f"- Retrieved cards per question (mean): "
         f"{_fmt(butly.get('retrieved_cards_mean'), digits=2)}",
