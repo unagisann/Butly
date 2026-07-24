@@ -54,9 +54,17 @@ The relational/emotional significance with the user. Axes: strength of the user'
     "humanity_importance": 1-10,
     "summary": "Objective summary for search (bullet points, line breaks OK; keep 5W1H and event dates)",
     "episode": "{agent_name}'s impression (multiple sentences OK if concise)",
+    "source_files": ["file name(s) this card is based on"],
     "reason": "Only for Unclassified: the reason"
   }}
 ]
+
+# Writing source_files
+The conversation log is split per file by `--- Source: <file name> (timestamp) ---` lines.
+For each card, list **only the file(s) whose text actually contains that card's content**.
+- Copy the file name exactly as it appears in the log (never guess, shorten, or invent one)
+- List several files only when one event genuinely spans them
+- If you cannot tell, use an empty array `[]` (the whole chunk is then treated as the source)
 
 # Guidelines
 **Unclassified**: Classify as much as possible, but if forced classification would reduce information quality, use Unclassified, state the reason, and work it out together with the user.

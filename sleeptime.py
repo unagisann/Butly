@@ -260,6 +260,51 @@ class ButlySleeptime:
             return f"{prefix}{last_num + 1:03d}"
         return f"{prefix}001"
 
+    @staticmethod
+    def resolve_card_source_files(card, chunk_file_names):
+        """カード自己申告の source_files を検証し、(files, granularity) を返す。
+
+        LLM は「そのカードの根拠ファイル」を出力するが、ファイル名を幻覚したり
+        省略したりしうる。チャンクの実ファイル一覧に含まれる名前だけを採用し、
+        1 件も残らなければ従来どおりチャンク全体を根拠として扱う。
+
+        カード単位に絞れると RAG の原文注入が「その日の全会話」ではなく
+        「そのカードを作った会話」だけになり、注入量が大きく減る。
+
+        Returns
+        -------
+        (list[str], str)
+            granularity は "card"（カード単位に確定）/ "chunk"（フォールバック）。
+        """
+        allowed = list(dict.fromkeys(chunk_file_names or []))
+        if not isinstance(card, dict):
+            return allowed, "chunk"
+
+        raw = card.get("source_files")
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            return allowed, "chunk"
+
+        allowed_set = set(allowed)
+        # basename 一致も許容する（LLM がパス付きで書いた場合の救済）
+        picked = []
+        for name in raw:
+            if not isinstance(name, str):
+                continue
+            candidate = name.strip().strip("`\"'")
+            if not candidate:
+                continue
+            if candidate not in allowed_set:
+                candidate = Path(candidate).name
+            if candidate in allowed_set and candidate not in picked:
+                picked.append(candidate)
+
+        if not picked or set(picked) == allowed_set:
+            # 空・全件幻覚・チャンク全体と同義ならフォールバック扱い
+            return allowed, "chunk"
+        return picked, "card"
+
     def ask_gemini_to_summarize(self, session_text, db_type):
         """各インスタンスの視点でナレッジカードを生成する。
         各インスタンス固有の人格・記憶を使用してナレッジ化を行い、
@@ -1868,7 +1913,16 @@ class ButlySleeptime:
              "failures": [{"date", "chunk", "reason"}, ...]}
         """
         print(f"--- Stage 2: Knowledgeize (RAW) for {target_instance} ({db_type}) ---")
-        stats = {"chunks": 0, "failed_chunks": 0, "cards_created": 0, "failures": []}
+        # source_files_card / _chunk: カード単位の根拠に絞れた枚数と、
+        # LLM が特定できずチャンク全体にフォールバックした枚数（RAG 原文注入量に直結）
+        stats = {
+            "chunks": 0,
+            "failed_chunks": 0,
+            "cards_created": 0,
+            "failures": [],
+            "source_files_card": 0,
+            "source_files_chunk": 0,
+        }
 
         instance_dir = self.instances_dir / target_instance
         integrated_dir = instance_dir / "memory_archive" / "1_integrated"
@@ -1996,11 +2050,15 @@ class ButlySleeptime:
                     chunk_file_names = [f.name for f in files_in_batch]
                     for card in cards:
                         db_id = self._get_next_id(db_type, date_str, instance_db_path)
+                        card_files, granularity = self.resolve_card_source_files(
+                            card, chunk_file_names
+                        )
+                        stats[f"source_files_{granularity}"] += 1
                         self.insert_knowledge(
                             card, db_id, db_type,
                             f"{date_str}_raw_combined", instance_db_path,
                             source_date=date_str,
-                            source_files=chunk_file_names,
+                            source_files=card_files,
                         )
                     stats["cards_created"] += len(cards)
                     all_processed_files.extend(files_in_batch)

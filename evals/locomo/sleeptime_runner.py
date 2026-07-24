@@ -40,6 +40,9 @@ class SleeptimeResult:
     llm_prompt_tokens: Optional[int] = None
     llm_completion_tokens: Optional[int] = None
     llm_calls: Optional[int] = None
+    # カード単位の根拠に絞れた枚数 / チャンク全体へフォールバックした枚数
+    knowledge_source_files_card: int = 0
+    knowledge_source_files_chunk: int = 0
     # Stage 3 (knowledge maturation)。Stage 3 の失敗を Stage 2 成功へ
     # 紛れ込ませないため、status / counters / tokens を分離して記録する。
     stage_3_status: str = "disabled"
@@ -70,6 +73,8 @@ class SleeptimeResult:
             "knowledge_chunks": self.knowledge_chunks,
             "knowledge_chunk_failures": self.knowledge_chunk_failures,
             "knowledge_chunk_failure_details": self.knowledge_chunk_failure_details,
+            "knowledge_source_files_card": self.knowledge_source_files_card,
+            "knowledge_source_files_chunk": self.knowledge_source_files_chunk,
             "digest_updated": self.digest_updated,
             "recent_snapshot_updated": self.recent_snapshot_updated,
             "retry_count": self.retry_count,
@@ -199,6 +204,8 @@ class SleeptimeRunner:
             stage_2_status=stage_2_status,
             knowledge_cards_created=max(0, cards_after - cards_before),
             knowledge_chunks=stage_2_stats.get("chunks", 0),
+            knowledge_source_files_card=stage_2_stats.get("source_files_card", 0),
+            knowledge_source_files_chunk=stage_2_stats.get("source_files_chunk", 0),
             knowledge_chunk_failures=stage_2_stats.get("failed_chunks", 0),
             knowledge_chunk_failure_details=stage_2_stats.get("failures", []),
             digest_updated=_read_optional(digest_path) != digest_before,

@@ -346,6 +346,7 @@ def test_stage2_no_cards_archives_raw(tmp_path, monkeypatch):
 
     assert stats == {
         "chunks": 1, "failed_chunks": 0, "cards_created": 0, "failures": [],
+        "source_files_card": 0, "source_files_chunk": 0,
     }
     # 正当な抽出なしは再処理ループを防ぐため処理済みとして移動
     assert not list(integrated.glob("session_*.json"))

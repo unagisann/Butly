@@ -46,9 +46,11 @@ counted in `stage2_chunk_failures` and its session row is marked
 genuinely extracted nothing.
 The evidence-retrieval rate is provenance-based: retrieved card ids are
 resolved through `knowledge_cards.source_files` to the saved-turn files whose
-`locomo_dialog_ids` contain the gold evidence ids. `source_files` carries the
-whole generation chunk rather than card-specific sources, so this is a
-chunk-level provenance metric, not strict per-card evidence. It requires the
+`locomo_dialog_ids` contain the gold evidence ids. Stage 2 asks the extraction
+model which file each card came from and keeps only names that exist in the
+chunk, so `source_files` is per-card when the model can tell and chunk-wide
+otherwise — precision therefore varies per card (`knowledge_source_files_card`
+/ `_chunk` in the summary report the split). It requires the
 run's workspace (instance DB and turn files) and reports n/a without it; the
 dataset argument to `score` is no longer needed.
 

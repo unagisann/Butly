@@ -407,6 +407,14 @@ def _butly_aggregate(
         "knowledge_cards_created": sum(
             row.get("knowledge_cards_created", 0) for row in sleeptime_rows
         ),
+        # カード単位の根拠に絞れた枚数 / チャンク全体へフォールバックした枚数。
+        # card 比率が上がるほど RAG の原文注入が小さくなる
+        "knowledge_source_files_card": sum(
+            row.get("knowledge_source_files_card", 0) for row in sleeptime_rows
+        ),
+        "knowledge_source_files_chunk": sum(
+            row.get("knowledge_source_files_chunk", 0) for row in sleeptime_rows
+        ),
         "sleeptime_failures": sum(
             1 for row in sleeptime_rows if row.get("error")
         ),
@@ -416,7 +424,7 @@ def _butly_aggregate(
         "stage2_chunks": sum(
             row.get("knowledge_chunks", 0) for row in sleeptime_rows
         ),
-        "evidence_metric": "provenance_chunk_level",
+        "evidence_metric": "provenance_source_files",
         "evidence_retrieval_rate": _mean(
             [e["evidence_coverage"] for e in with_evidence]
         ),
@@ -430,7 +438,9 @@ def _load_provenance(run_path: Path, qa_rows: list[dict]) -> Optional[dict]:
     Chains ``retrieved_card_ids`` → ``knowledge_cards.source_files`` →
     saved-turn files → ``meta.locomo_dialog_ids``. ``source_files`` carries
     every file of the generation chunk (not card-specific), so the metric is
-    chunk-level provenance, not strict per-card evidence. Returns None when
+    provenance via source_files. Stage 2 now records per-card sources when the
+    extraction model can identify them (falling back to the whole chunk when it
+    cannot), so precision varies per card. Returns None when
     the run has no workspace (e.g. scoring a copied results directory).
     """
     instances_dir = run_path / "workspace" / "butly_core" / "instances"

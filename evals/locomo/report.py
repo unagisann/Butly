@@ -134,6 +134,9 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         f"{_fmt(butly.get('sleeptime_prompt_tokens_total'), digits=0)}, "
         f"completion total "
         f"{_fmt(butly.get('sleeptime_completion_tokens_total'), digits=0)}",
+        f"- Card source granularity (per-card / chunk-wide): "
+        f"{butly.get('knowledge_source_files_card', 0)} / "
+        f"{butly.get('knowledge_source_files_chunk', 0)}",
         f"- Knowledge cards created by Sleeptime: "
         f"{butly.get('knowledge_cards_created', 0)}",
         f"- Sleeptime failures: {butly.get('sleeptime_failures', 0)}",

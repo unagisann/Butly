@@ -270,3 +270,69 @@ class TestVectorSearchDecayUsesSourceDate:
         assert results[1]["score"] == pytest.approx(
             math.exp(-decay_rate * 386), rel=1e-3
         )
+
+
+class TestResolveCardSourceFiles:
+    """カード自己申告 source_files の検証（幻覚耐性とフォールバック）。
+
+    LLM が「そのカードの根拠ファイル」を出すが、名前を幻覚しうる。実在する
+    チャンク内ファイルだけを採用し、絞れないときはチャンク全体に戻す。
+    """
+
+    CHUNK = ["session_a.json", "session_b.json", "session_c.json"]
+
+    def _resolve(self, card):
+        return ButlySleeptime.resolve_card_source_files(card, self.CHUNK)
+
+    def test_valid_subset_becomes_card_granularity(self):
+        files, gran = self._resolve({"source_files": ["session_b.json"]})
+        assert files == ["session_b.json"]
+        assert gran == "card"
+
+    def test_hallucinated_names_dropped(self):
+        files, gran = self._resolve(
+            {"source_files": ["session_b.json", "does_not_exist.json"]}
+        )
+        assert files == ["session_b.json"]
+        assert gran == "card"
+
+    def test_all_hallucinated_falls_back_to_chunk(self):
+        files, gran = self._resolve({"source_files": ["ghost.json"]})
+        assert files == self.CHUNK
+        assert gran == "chunk"
+
+    def test_missing_or_empty_falls_back_to_chunk(self):
+        for card in ({}, {"source_files": []}, {"source_files": None}):
+            files, gran = self._resolve(card)
+            assert files == self.CHUNK
+            assert gran == "chunk"
+
+    def test_full_set_counts_as_chunk(self):
+        """全ファイルを挙げた＝絞れていないので chunk 扱い"""
+        files, gran = self._resolve({"source_files": list(self.CHUNK)})
+        assert files == self.CHUNK
+        assert gran == "chunk"
+
+    def test_path_prefixed_name_matched_by_basename(self):
+        files, gran = self._resolve(
+            {"source_files": ["2_knowledgeized/2023-05-08/session_c.json"]}
+        )
+        assert files == ["session_c.json"]
+        assert gran == "card"
+
+    def test_string_instead_of_list_accepted(self):
+        files, gran = self._resolve({"source_files": "session_a.json"})
+        assert files == ["session_a.json"]
+        assert gran == "card"
+
+    def test_duplicates_and_noise_normalized(self):
+        files, gran = self._resolve(
+            {"source_files": ["`session_a.json`", "session_a.json", 42, "  "]}
+        )
+        assert files == ["session_a.json"]
+        assert gran == "card"
+
+    def test_non_dict_card_falls_back(self):
+        files, gran = ButlySleeptime.resolve_card_source_files("nope", self.CHUNK)
+        assert files == self.CHUNK
+        assert gran == "chunk"
