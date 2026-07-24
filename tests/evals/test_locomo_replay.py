@@ -49,6 +49,9 @@ def test_qa_system_instruction_is_grounded_and_has_no_unexpanded_slots():
     assert "If any of them directly answers the question" in prompt
     assert "relative to the original conversation" in prompt
     assert "Only answer 'No information available'" in prompt
+    # v3: strict terse-answer format restored (grounding kept)
+    assert "Answer as briefly as possible" in prompt
+    assert "no full" in prompt and "sentence" in prompt
     assert "{context}" not in prompt
     assert "{question}" not in prompt
 
@@ -507,7 +510,7 @@ def test_cli_run_scores_reports_and_applies_profile(tmp_path, capsys):
         / "locomo_synthetic_conv_1"
         / "system_instruction.txt"
     ).read_text(encoding="utf-8")
-    assert "Give a short, direct answer in English" in system_instruction
+    assert "Answer as briefly as possible" in system_instruction
 
     run_config = json.loads(
         (run_dir / "run_config.json").read_text(encoding="utf-8")
