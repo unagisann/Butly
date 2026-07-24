@@ -157,6 +157,13 @@ QA用`ChatRequest`は次の固定ポリシーを使う。
 - 回答は公式scorer互換のため英語の短答
 - 「現在時刻」は選択sessionの最終日時の翌日に固定
 
+評価instanceのSystem Instructionは、prompt内の全memory sectionを回答根拠として扱う。
+特にknowledge card、参照元RAW、active nodeのいずれかが問いへ直接答える場合はその
+情報を使い、元会話日時を基準に時制を解釈する。`No information available`は、
+提供されたどのmemoryにも答えがない場合だけ返す。テンプレートの版は
+`run_config.json`の`qa_prompt_version`へ保存し、異なる版のスコアを同一条件として
+比較しない。
+
 Gatekeeperが`need`を立てた場合、MemoryBlockBuilderがknowledge cardや設定に応じた
 RAW参照をpromptへ組み込む。生成後、ChatServiceは質問と回答を通常の会話turnとして
 処理対象instanceの`short_term_json`へ保存し、session stateも更新する。
@@ -211,6 +218,8 @@ python -m evals.locomo.cli rerun-qa \
   `short_term_json`が空であることを検証する。
 - 元runには書き込まない。カードDBを含むinstanceとReplay/Sleeptime logを
   新runへcopyし、新しいQA結果・Trace・checkpointを作る。
+- copyしたinstanceのLoCoMo回答用System Instructionは現在の
+  `qa_prompt_version`へ更新する。カード・RAW・active nodeは変更しない。
 - `run_config.json`の`memory_reused_from_run_id`がカードの出所を示す。
 - QA-only再実行ではchat/gatekeeper temperatureとcontext切替は変化するが、
   summary/knowledge temperatureは既に完成したdigest/cardを作り直さないため

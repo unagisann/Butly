@@ -20,6 +20,8 @@ from evals.locomo.dataset import LocomoConversation, load_dataset
 from evals.locomo.qa_runner import QARunner, build_qa_request
 from evals.locomo.progress import create_console_progress
 from evals.locomo.replay import (
+    LOCOMO_QA_PROMPT_VERSION,
+    _build_qa_system_instruction,
     _configure_instance,
     _diff_card_identity,
     _discard_partial_session,
@@ -37,6 +39,18 @@ from evals.locomo.workspace import EvaluationWorkspace, WorkspaceError
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mini_locomo.json"
+
+
+def test_qa_system_instruction_is_grounded_and_has_no_unexpanded_slots():
+    prompt = _build_qa_system_instruction("Maya")
+
+    assert prompt.startswith("You are Maya")
+    assert "Related Matured Memories (active nodes)" in prompt
+    assert "If any of them directly answers the question" in prompt
+    assert "relative to the original conversation" in prompt
+    assert "Only answer 'No information available'" in prompt
+    assert "{context}" not in prompt
+    assert "{question}" not in prompt
 
 
 class FakeProvider:
@@ -493,13 +507,14 @@ def test_cli_run_scores_reports_and_applies_profile(tmp_path, capsys):
         / "locomo_synthetic_conv_1"
         / "system_instruction.txt"
     ).read_text(encoding="utf-8")
-    assert "Answer in English" in system_instruction
+    assert "Give a short, direct answer in English" in system_instruction
 
     run_config = json.loads(
         (run_dir / "run_config.json").read_text(encoding="utf-8")
     )
     assert run_config["locale"] == "en"
     assert run_config["qa_mode"] == "independent"
+    assert run_config["qa_prompt_version"] == LOCOMO_QA_PROMPT_VERSION
 
 
 def test_independent_all_questions_reset_history_and_keep_canonical_clean(tmp_path):
@@ -571,6 +586,8 @@ def test_rerun_qa_reuses_exact_cards_without_touching_source(tmp_path):
         source_instance.name,
         source_config,
     )
+    source_instruction = source_instance / "system_instruction.txt"
+    source_instruction.write_text("legacy answer prompt", encoding="utf-8")
     source_db = source_instance / "butly_memory.db"
     ButlyDatabase(source_db).register_knowledge(
         {
@@ -654,6 +671,12 @@ context_levels:
     assert rerun.answered_questions == 2
     assert source_db.read_bytes() == source_db_bytes
     assert (target_instance / "butly_memory.db").read_bytes() == source_db_bytes
+    assert source_instruction.read_text(encoding="utf-8") == "legacy answer prompt"
+    target_instruction = (
+        target_instance / "system_instruction.txt"
+    ).read_text(encoding="utf-8")
+    assert "Related Matured Memories (active nodes)" in target_instruction
+    assert "Only answer 'No information available'" in target_instruction
     assert not (source_workspace.results_dir / "qa_results.jsonl").exists()
     assert (
         rerun.workspace.results_dir / "sleeptime_log.jsonl"
@@ -681,6 +704,7 @@ context_levels:
     )
     assert run_config["memory_reused_from_run_id"] == "reuse-source"
     assert run_config["run_sleeptime_per_session"] is False
+    assert run_config["qa_prompt_version"] == LOCOMO_QA_PROMPT_VERSION
     checkpoint = Checkpoint.load("reuse-target", rerun.workspace.checkpoints_dir)
     progress = checkpoint.samples["synthetic-conv-1"]
     assert progress.replayed_sessions == ["session_1"]
