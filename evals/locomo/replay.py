@@ -48,7 +48,7 @@ _CANONICAL_SAMPLE_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _SAFE_INSTANCE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
 _MAX_READABLE_SLUG_LENGTH = 96
 _MAX_LEGACY_INSTANCE_NAME_LENGTH = 180
-LOCOMO_QA_PROMPT_VERSION = "grounded-memory-v2"
+LOCOMO_QA_PROMPT_VERSION = "grounded-memory-v3"
 
 
 @dataclass(frozen=True)
@@ -746,7 +746,15 @@ def _create_instance(
 
 
 def _build_qa_system_instruction(speaker_b: str) -> str:
-    """Build the versioned, memory-grounded LoCoMo answer policy."""
+    """Build the versioned, memory-grounded LoCoMo answer policy.
+
+    Grounding (use every memory section, interpret tense relative to the
+    conversation date) is combined with a strict terse-answer format. The
+    official LoCoMo scorer is token-F1 over normalized tokens, so a correct
+    fact wrapped in a sentence loses precision — v2 dropped the terseness
+    clause and Gemini regressed from exact facts to full sentences
+    (EM 0.40 -> 0.00). v3 restores the fact-only instruction.
+    """
     return (
         f"You are {speaker_b}, a conversational companion. "
         "Answer the evaluation question using only the memory context supplied "
@@ -757,10 +765,17 @@ def _build_qa_system_instruction(speaker_b: str) -> str:
         "use that information. Memories may describe events from the "
         "perspective of an earlier conversation date. Interpret tense relative "
         "to the original conversation, not the current real-world date. "
-        "Give a short, direct answer in English. Use exact words, names, and "
-        "event dates from the memories whenever possible. If the question asks "
-        "when something happened or was planned, use the date mentioned for "
-        "that event, not the memory record's source date or the current date. "
+        "If the question asks when something happened or was planned, use the "
+        "date mentioned for that event, not the memory record's source date or "
+        "the current date. "
+        # Strict answer format (restored from the pre-v2 prompt):
+        "Answer as briefly as possible: give ONLY the fact asked for — such as "
+        "a date, a name, or a short phrase — with no explanation, no full "
+        "sentence, and no restating of the question. For example, answer "
+        "'2022' rather than 'She painted it in 2022.', and 'Single' rather "
+        "than 'Caroline is single.'. "
+        "Write dates in natural language such as '7 May 2023' (day month "
+        "year), never in ISO format like 2023-05-07. "
         "Only answer 'No information available' when none of the supplied "
         "memories contains information that answers the question. "
         "Do not use external web knowledge."
