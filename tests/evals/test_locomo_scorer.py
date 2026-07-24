@@ -247,8 +247,10 @@ class TestScoreRun:
                         "raw_reference": {
                             "status": "ok",
                             "files": ["s1.json"],
+                            "file_count": 1,
                             "chars": 500,
                             "truncated": False,
+                            "top_k": 1,
                         },
                     },
                 },
@@ -280,6 +282,8 @@ class TestScoreRun:
         }
         assert butly["raw_reference_chars_mean"] == pytest.approx(250)
         assert butly["raw_reference_truncated_rate"] == pytest.approx(0.0)
+        # file_count は ok の行のみ（fallback_cards は None で除外）→ mean=1.0
+        assert butly["raw_reference_files_mean"] == pytest.approx(1.0)
 
     def test_raw_reference_metrics_absent_for_cards_mode(self, tmp_path):
         """raw_reference 無し（cards モード・旧 run）でも集計が壊れない"""

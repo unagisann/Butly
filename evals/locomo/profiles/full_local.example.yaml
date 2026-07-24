@@ -50,10 +50,14 @@ embedding:
 # conversation excerpts they were built from (parent-document retrieval),
 # resolved via each card's source_files. "cards" is the pre-v12 behaviour,
 # "raw" injects only the excerpts. rag_raw_max_chars caps the total excerpt
-# size in characters (0 = unlimited).
+# size in characters (0 = unlimited). rag_raw_top_k limits how many top
+# cards get raw expansion (1 = only the single most relevant card's raw, the
+# rest stay as summaries; 0/negative = every card's raw, greedy up to the
+# char cap = the pre-v20 both behaviour).
 memory:
   rag_source_mode: both
   rag_raw_max_chars: 6000
+  rag_raw_top_k: 1
 
 # Retrieval ablation: score old and new cards by semantic similarity without
 # applying a recency penalty. Keep this fixed between compared runs.

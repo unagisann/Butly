@@ -583,6 +583,7 @@ RAG (`rag_context`) は `need` に連動する独立判定で、tier ではな�
 |---|---|---|
 | `rag_source_mode` | `"cards"` | RAG ブロックに何を注入するか: `"cards"`（カード summary/episode のみ）/ `"raw"`（当時の会話原文抜粋のみ）/ `"both"`（カード + 原文）。解決不能時はカード注入にフォールバック |
 | `rag_raw_max_chars` | 6000 | 原文抜粋の合計文字数上限（ファイル単位の greedy skip。`0` = 無制限） |
+| `rag_raw_top_k` | 1 | 原文を展開する上位カード数。`1` = 最上位カードの原文のみ（残りはサマリ）＝弱い読み手での希釈・needle-in-haystack を避ける。`0`/負値で全カードの原文を greedy 注入。`source_files` を持たない旧カードや上位と同一チャンクの重複カードはスロットを消費しない |
 
 - `build_system_instruction_from_blocks(blocks, memory_manager, use_google_search)` — **不変セクション**（system_instruction + Key_Memory）のみを結合して system_instruction 文字列を生成
 - `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / glossary / mid_term / RAG / session_digest / tier 情報 / Google 検索注意書き / Web 検索結果）を結合し、Provider が会話履歴の先頭に user メッセージとして注入する文字列を生成

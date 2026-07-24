@@ -394,10 +394,42 @@ class TestRAGSourceMode:
             },
         }
 
-    def _build(self, memory_manager, mock_brain, base_dir, mode=None, **kwargs):
+    def _two_card_gk_output(self):
+        """distinct な source_files を持つ2枚（スコア順）。"""
+        return {
+            "tier": "mid",
+            "need": "memory_probe_hit",
+            "search_targets": ["引っ越し"],
+            "memory_probe": {
+                "status": "hit",
+                "candidates": [
+                    {
+                        "id": "top", "title": "引っ越し", "score": 0.9,
+                        "source": "vector", "source_date": "2023-05-08",
+                        "summary": "- 2023-05-08 に引っ越した",
+                        "source_files": json.dumps(["s1.json"]),
+                    },
+                    {
+                        "id": "second", "title": "旅行", "score": 0.6,
+                        "source": "vector", "source_date": "2023-06-09",
+                        "summary": "- 2023-06-09 に旅行した",
+                        "source_files": json.dumps(["s2.json"]),
+                    },
+                ],
+                "glossary_hits": [],
+            },
+        }
+
+    def _build(self, memory_manager, mock_brain, base_dir, mode=None,
+               mem_extra=None, **kwargs):
         from tests.conftest import TEST_INSTANCE_FOLDER
         mock_brain.instances_dir = base_dir / "butly_core" / "instances"
-        override = {"memory": {"rag_source_mode": mode}} if mode else None
+        mem = {}
+        if mode:
+            mem["rag_source_mode"] = mode
+        if mem_extra:
+            mem.update(mem_extra)
+        override = {"memory": mem} if mem else None
         builder = MemoryBlockBuilder()
         return builder.build(
             tier="mid",
@@ -481,6 +513,43 @@ class TestRAGSourceMode:
         assert blocks["rag_source_mode"] == "cards"
         assert self.CARDS_HEADER in blocks["rag_context"]
         assert self.RAW_HEADER_BOTH not in blocks["rag_context"]
+
+    def test_default_top_k_1_injects_only_top_card_raw(
+        self, memory_manager, mock_brain, base_dir
+    ):
+        """既定 rag_raw_top_k=1: 全カードのサマリ + 最上位カードの原文のみ"""
+        self._write_raw_file(base_dir, "2023-05-08", "s1.json", "引っ越したのは最上位")
+        self._write_raw_file(base_dir, "2023-06-09", "s2.json", "旅行したのは二番目")
+        blocks = self._build(
+            memory_manager, mock_brain, base_dir, mode="both",
+            gk_output=self._two_card_gk_output(),
+        )
+
+        rag = blocks["rag_context"]
+        # 両カードのサマリは入る
+        assert "引っ越し" in rag and "旅行" in rag
+        # 原文は最上位カードのみ
+        assert "引っ越したのは最上位" in rag
+        assert "旅行したのは二番目" not in rag
+        assert blocks["rag_raw_reference"]["files"] == ["s1.json"]
+        assert blocks["rag_raw_reference"]["top_k"] == 1
+
+    def test_top_k_0_injects_all_card_raw(
+        self, memory_manager, mock_brain, base_dir
+    ):
+        """rag_raw_top_k=0（従来 both 挙動）: 全カードの原文を注入"""
+        self._write_raw_file(base_dir, "2023-05-08", "s1.json", "引っ越したのは最上位")
+        self._write_raw_file(base_dir, "2023-06-09", "s2.json", "旅行したのは二番目")
+        blocks = self._build(
+            memory_manager, mock_brain, base_dir, mode="both",
+            mem_extra={"rag_raw_top_k": 0},
+            gk_output=self._two_card_gk_output(),
+        )
+
+        rag = blocks["rag_context"]
+        assert "引っ越したのは最上位" in rag
+        assert "旅行したのは二番目" in rag
+        assert blocks["rag_raw_reference"]["files"] == ["s1.json", "s2.json"]
 
 
 # ===================================================================

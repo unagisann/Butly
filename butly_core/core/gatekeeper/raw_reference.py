@@ -21,16 +21,25 @@ from pathlib import Path
 from butly_core.core import turn_meta
 
 
-def collect_source_refs(candidates: list, default_instance: str) -> list:
+def collect_source_refs(
+    candidates: list, default_instance: str, top_k: int | None = None
+) -> list:
     """候補カード（スコア順）から (instance, source_date, file_name) を集める。
 
     順序はカードのスコア順を保つ（文字数上限で切るとき上位カードの原文が残る）。
     同一 instance の同名ファイルは dedup する（同一チャンク由来のカードは
     source_files が丸ごと重複するため）。source_files は DB 上 JSON 文字列
     （list[str]）。欠落・破損はスキップする。
+
+    top_k を指定すると、RAW を展開するカードを「新規ファイルを供給した上位
+    top_k 枚」に絞る（source_files を持たない旧カードや、上位と同一チャンクの
+    重複カードはスロットを消費しない＝スコア順で実質的に raw を持つ上位 top_k
+    枚を採る）。None / 0 以下は全件。カード=検索インデックス／根拠=原文の構成で、
+    最上位の根拠だけに原文を絞りサマリの希釈を避ける用途に使う。
     """
     refs = []
     seen = set()
+    cards_used = 0
     for c in candidates:
         raw = c.get("source_files")
         if not raw:
@@ -46,8 +55,11 @@ def collect_source_refs(candidates: list, default_instance: str) -> list:
             continue
         if not isinstance(names, list):
             continue
+        if top_k is not None and top_k > 0 and cards_used >= top_k:
+            break
         inst = c.get("source_instance") or default_instance
         date = c.get("source_date") or ""
+        added_any = False
         for name in names:
             if not isinstance(name, str) or not name:
                 continue
@@ -56,6 +68,9 @@ def collect_source_refs(candidates: list, default_instance: str) -> list:
                 continue
             seen.add(key)
             refs.append((inst, date, name))
+            added_any = True
+        if added_any:
+            cards_used += 1
     return refs
 
 
@@ -117,6 +132,7 @@ def resolve_raw_reference(
     user_name: str = "User",
     agent_name: str = "AI",
     locale: str = "ja",
+    top_k: int | None = None,
 ):
     """候補カード群に対応する RAW 会話原文の抜粋を構築する。
 
@@ -133,16 +149,18 @@ def resolve_raw_reference(
         （glossary の上限適用と同じ規則）。1 件も入らない場合のみ先頭を切り詰める。
     user_name / agent_name : str
         整形時の話者ラベル。複数話者ログは turn_meta の帰属規則に従う。
+    top_k : int | None
+        RAW を展開する上位カード数。None / 0 以下は全件（collect_source_refs 参照）。
 
     Returns
     -------
     dict | None
         {"text": str, "files": list[str], "missing": list[str],
-         "truncated": bool, "chars": int}
+         "truncated": bool, "chars": int, "top_k": int|None}
         参照可能な RAW が 1 件も無ければ None。
     """
     instances_dir = Path(instances_dir)
-    refs = collect_source_refs(candidates, default_instance)
+    refs = collect_source_refs(candidates, default_instance, top_k=top_k)
     if not refs:
         return None
 
@@ -208,4 +226,5 @@ def resolve_raw_reference(
         "missing": missing,
         "truncated": truncated,
         "chars": len(body),
+        "top_k": top_k,
     }

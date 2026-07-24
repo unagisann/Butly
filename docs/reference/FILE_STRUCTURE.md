@@ -317,6 +317,7 @@ RAG is tier-independent and decided by `need` only.
 |---|---|---|
 | `rag_source_mode` | `"cards"` | what the RAG block injects: `"cards"` (summary/episode only) / `"raw"` (original conversation excerpts only) / `"both"` (cards + excerpts). Falls back to cards when nothing resolves. |
 | `rag_raw_max_chars` | 6000 | total char cap for the excerpts (greedy skip per file; `0` = unlimited) |
+| `rag_raw_top_k` | 1 | how many top cards get raw expansion. `1` = only the single most relevant card's raw (the rest stay as summaries), avoiding needle-in-haystack dilution for weak readers; `0`/negative = every card's raw greedy up to the char cap. Old cards without `source_files` and duplicate same-chunk cards do not consume a slot. |
 
 #### `raw_reference.py`
 Resolves RAG candidate cards back to the RAW conversation JSON they were built from (`source_files` → `memory_archive/2_knowledgeized/{source_date}/` with a `1_integrated/` fallback) and renders prompt-ready excerpts — parent-document retrieval: cards act as the search index, the original text carries the facts. Loaded lazily only when `rag_source_mode` requires raw.

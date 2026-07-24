@@ -118,7 +118,8 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         f"{_fmt_distribution(butly.get('rag_source_mode_distribution'))}",
         f"- RAG raw reference status: "
         f"{_fmt_distribution(butly.get('raw_reference_status_distribution'))}"
-        f" (chars mean {_fmt(butly.get('raw_reference_chars_mean'), digits=0)}, "
+        f" (files mean {_fmt(butly.get('raw_reference_files_mean'), digits=1)}, "
+        f"chars mean {_fmt(butly.get('raw_reference_chars_mean'), digits=0)}, "
         f"truncated rate {_fmt(butly.get('raw_reference_truncated_rate'))})",
         f"- Token usage (API-reported): prompt mean "
         f"{_fmt(butly.get('prompt_tokens_mean'), digits=0)} / total "
