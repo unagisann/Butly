@@ -93,6 +93,57 @@ class TestCollectSourceRefs:
         refs = collect_source_refs(candidates, INST)
         assert refs == [(INST, "2023-05-08", "s1.json")]
 
+    def test_top_k_limits_to_top_cards(self):
+        """top_k=1 は最上位カードの source_files だけを採る"""
+        candidates = [
+            _card("a", "2023-05-08", ["s1.json"], score=0.9),
+            _card("b", "2023-06-09", ["s2.json"], score=0.5),
+            _card("c", "2023-07-10", ["s3.json"], score=0.4),
+        ]
+        assert collect_source_refs(candidates, INST, top_k=1) == [
+            (INST, "2023-05-08", "s1.json"),
+        ]
+        assert collect_source_refs(candidates, INST, top_k=2) == [
+            (INST, "2023-05-08", "s1.json"),
+            (INST, "2023-06-09", "s2.json"),
+        ]
+
+    def test_top_k_zero_or_none_is_all(self):
+        candidates = [
+            _card("a", "2023-05-08", ["s1.json"], score=0.9),
+            _card("b", "2023-06-09", ["s2.json"], score=0.5),
+        ]
+        expected = [
+            (INST, "2023-05-08", "s1.json"),
+            (INST, "2023-06-09", "s2.json"),
+        ]
+        assert collect_source_refs(candidates, INST, top_k=None) == expected
+        assert collect_source_refs(candidates, INST, top_k=0) == expected
+
+    def test_top_k_skips_cards_without_source_files(self):
+        """source_files を持たない上位カードはスロットを消費しない（実質 raw を持つ上位 K 枚）"""
+        candidates = [
+            {"id": "a", "title": "t", "summary": "s", "score": 0.9},  # raw 無し
+            _card("b", "2023-06-09", ["s2.json"], score=0.5),
+            _card("c", "2023-07-10", ["s3.json"], score=0.4),
+        ]
+        assert collect_source_refs(candidates, INST, top_k=1) == [
+            (INST, "2023-06-09", "s2.json"),
+        ]
+
+    def test_top_k_shared_chunk_does_not_waste_slot(self):
+        """上位と同一チャンク（重複ファイル）はスロットを消費せず次カードへ進む"""
+        candidates = [
+            _card("a", "2023-05-08", ["s1.json"], score=0.9),
+            _card("b", "2023-05-08", ["s1.json"], score=0.8),  # 同一チャンク
+            _card("c", "2023-06-09", ["s2.json"], score=0.5),
+        ]
+        # top_k=2: カードa(s1)で1枠、bは全重複で枠を使わず、cで2枠目
+        assert collect_source_refs(candidates, INST, top_k=2) == [
+            (INST, "2023-05-08", "s1.json"),
+            (INST, "2023-06-09", "s2.json"),
+        ]
+
 
 class TestResolveRawReference:
     def test_basic_rendering(self, instances_dir):
@@ -123,6 +174,33 @@ class TestResolveRawReference:
         assert result["missing"] == []
         assert result["truncated"] is False
         assert result["chars"] == len(result["text"])
+
+    def test_top_k_injects_only_top_card_raw(self, instances_dir):
+        """top_k=1 は最上位カードの原文だけを注入する（他はサマリで渡す想定）"""
+        _write_raw(
+            instances_dir, "2023-05-08", "s1.json",
+            [{"role": "user", "parts": ["最上位の記憶"]}], "2023-05-08T09:00:00",
+        )
+        _write_raw(
+            instances_dir, "2023-06-09", "s2.json",
+            [{"role": "user", "parts": ["二番目の記憶"]}], "2023-06-09T09:00:00",
+        )
+        candidates = [
+            _card("a", "2023-05-08", ["s1.json"], score=0.9),
+            _card("b", "2023-06-09", ["s2.json"], score=0.5),
+        ]
+        top1 = resolve_raw_reference(
+            candidates, instances_dir, INST, max_chars=6000, top_k=1
+        )
+        assert top1["files"] == ["s1.json"]
+        assert "最上位の記憶" in top1["text"]
+        assert "二番目の記憶" not in top1["text"]
+        assert top1["top_k"] == 1
+        # top_k=0（全件）では両方入る
+        allrows = resolve_raw_reference(
+            candidates, instances_dir, INST, max_chars=6000, top_k=0
+        )
+        assert allrows["files"] == ["s1.json", "s2.json"]
 
     def test_chronological_display_order(self, instances_dir):
         """スコア順で収集しても表示は時系列順になる"""

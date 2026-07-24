@@ -213,6 +213,9 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
         "raw_reference_status": raw_reference.get("status"),
         "raw_reference_chars": raw_reference.get("chars"),
         "raw_reference_truncated": raw_reference.get("truncated"),
+        "raw_reference_files": raw_reference.get(
+            "file_count", len(raw_reference.get("files") or []) or None
+        ),
         "prompt_tokens": token_usage.get("prompt_tokens"),
         "completion_tokens": token_usage.get("completion_tokens"),
         "total_prompt_tokens": token_usage_total.get("prompt_tokens"),
@@ -333,6 +336,13 @@ def _butly_aggregate(
                 float(bool(e["raw_reference_truncated"]))
                 for e in question_scores
                 if e.get("raw_reference_truncated") is not None
+            ]
+        ),
+        "raw_reference_files_mean": _mean(
+            [
+                e["raw_reference_files"]
+                for e in question_scores
+                if e.get("raw_reference_files") is not None
             ]
         ),
         # API 実測トークン数（provider の usage 由来。旧 run は None）

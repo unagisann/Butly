@@ -450,14 +450,16 @@ class MemoryBlockBuilder:
                 blocks["rag_raw_reference"] = {
                     "status": "ok",
                     "files": raw_ref["files"],
+                    "file_count": len(raw_ref["files"]),
                     "missing": raw_ref["missing"],
                     "truncated": raw_ref["truncated"],
                     "chars": raw_ref["chars"],
+                    "top_k": raw_ref.get("top_k"),
                 }
                 print(
                     f"[Gatekeeper] MemoryBlock: RAG raw reference "
                     f"{len(raw_ref['files'])} files / {raw_ref['chars']} chars "
-                    f"(mode={rag_mode})"
+                    f"(mode={rag_mode}, top_k={raw_ref.get('top_k')})"
                 )
             else:
                 # source_files 無し・ファイル欠落等で解決できない場合はカード注入
@@ -989,6 +991,11 @@ def _resolve_raw_block(
     max_chars = int(
         inst_mem.get("rag_raw_max_chars", sys_mem.get("rag_raw_max_chars", 6000))
     )
+    top_k = inst_mem.get("rag_raw_top_k", sys_mem.get("rag_raw_top_k", 1))
+    try:
+        top_k = int(top_k)
+    except (TypeError, ValueError):
+        top_k = 1
     agent_conf = SYSTEM_CONFIG.get("agent", {})
     conf = override_config or {}
     agent_name = (conf.get("agent_profile") or {}).get("ai_name") or agent_conf.get(
@@ -1009,6 +1016,7 @@ def _resolve_raw_block(
             user_name=user_name,
             agent_name=agent_name,
             locale=locale,
+            top_k=top_k,
         )
     except Exception as e:
         print(f"[Gatekeeper] RAW 参照の解決に失敗: {e}")

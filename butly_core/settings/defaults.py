@@ -91,6 +91,9 @@ SYSTEM_CONFIG = {
         "rag_source_mode": "cards",
         # 原文抜粋の合計文字数上限（0 = 無制限。超過ファイルは greedy skip）
         "rag_raw_max_chars": 6000,
+        # 原文を展開する上位カード数（raw/both 時）。1 = 最上位カードの原文のみ、
+        # 残りはサマリ。0 以下で全カードの原文を greedy 注入（従来の both 挙動）。
+        "rag_raw_top_k": 1,
         # --- Stage 3: Knowledge Maturation（content hash 式レビューキュー） ---
         # 旧キー (interval_days / window_days / max_cards / min_usage_count) は
         # 廃止。max_cards はインスタンス設定に残っていれば batch_size として
