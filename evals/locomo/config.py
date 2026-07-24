@@ -23,6 +23,7 @@ PROFILE_ROLE_SECTIONS = (
     "brain",
     "context_levels",
     "sleeptime",
+    "memory_probe",
 )
 QA_MODES = ("independent", "sequential")
 DEFAULT_EVALUATION_LOCALE = "en"

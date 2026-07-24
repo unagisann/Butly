@@ -56,7 +56,7 @@ embedding:
 # char cap = the pre-v20 both behaviour).
 memory:
   rag_source_mode: both
-  rag_raw_max_chars: 6000
+  rag_raw_max_chars: 2500
   rag_raw_top_k: 1
 
 # Retrieval ablation: score old and new cards by semantic similarity without

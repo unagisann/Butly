@@ -90,7 +90,8 @@ SYSTEM_CONFIG = {
         # "both": カード + 原文。原文はカードの source_files から遅延解決する。
         "rag_source_mode": "cards",
         # 原文抜粋の合計文字数上限（0 = 無制限。超過ファイルは greedy skip）
-        "rag_raw_max_chars": 6000,
+        # config.py AI/SYSTEM_CONFIG と同値に保つ（6000→2500 の経緯はそちら参照）
+        "rag_raw_max_chars": 2500,
         # 原文を展開する上位カード数（raw/both 時）。1 = 最上位カードの原文のみ、
         # 残りはサマリ。0 以下で全カードの原文を greedy 注入（従来の both 挙動）。
         "rag_raw_top_k": 1,

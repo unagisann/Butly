@@ -80,8 +80,8 @@ python -m evals.locomo.cli run \
 `run` finishes with scoring and a summary; pass `--skip-scoring` to stop after
 QA. `--model-name` and `--connection` override the chat role for QA.
 `--profile <yaml>` applies role sections (`chat` / `gatekeeper` / `summary` /
-`knowledge` / `embedding`) plus the non-model `memory`, `brain`, and
-`context_levels` sections
+`knowledge` / `embedding`) plus the non-model `memory`, `brain`,
+`memory_probe`, and `context_levels` sections
 (e.g. `rag_source_mode: both` to inject original-conversation excerpts next to
 the RAG cards, `rag_raw_max_chars` to cap them, `rag_raw_top_k: 1` to give only
 the single most relevant card its raw (the rest stay summaries) instead of

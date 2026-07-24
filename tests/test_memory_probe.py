@@ -852,3 +852,67 @@ class TestGatekeeperIntegration:
         call = mock_gatekeeper.context_classifier.classify.call_args
         assert call.args[2] == ""
         assert result["topic"] == ""
+
+
+# ===================================================================
+# instance/profile による probe 設定の上書き
+# ===================================================================
+
+class TestProbeConfigOverride:
+    """memory_probe / brain 設定が override_config で上書きされるか。
+
+    従来 probe は SYSTEM_CONFIG 直読みで、memory / brain セクションと違い
+    instance ごとの調整ができなかった（LoCoMo profile でも効かない）。
+    """
+
+    @pytest.fixture
+    def probe(self):
+        return MemoryProbe()
+
+    @pytest.fixture
+    def brain(self):
+        brain = MagicMock()
+        brain.quick_vector_search_diag.return_value = {
+            "results": [],
+            "diagnostics": {"threshold": 0.4, "fetched_count": 0,
+                            "passed_threshold": 0, "top_raw_scores": [],
+                            "top_final_scores": []},
+        }
+        brain.extract_keywords.return_value = {"keywords": []}
+        brain.search_knowledge.return_value = []
+        return brain
+
+    def test_vector_search_limit_overridden(self, probe, brain):
+        probe.probe(
+            user_input="前に話したあの件どうなった？",
+            brain=brain,
+            memory_manager=MagicMock(),
+            need_intent="past_fact",
+            override_config={"memory_probe": {"vector_search_limit": 8}},
+        )
+
+        assert brain.quick_vector_search_diag.call_args.kwargs["limit"] == 8
+
+    def test_falls_back_to_system_config(self, probe, brain):
+        probe.probe(
+            user_input="前に話したあの件どうなった？",
+            brain=brain,
+            memory_manager=MagicMock(),
+            need_intent="past_fact",
+        )
+
+        # 既定 (SYSTEM_CONFIG["memory_probe"]["vector_search_limit"]) を使う
+        assert brain.quick_vector_search_diag.call_args.kwargs["limit"] == 3
+
+    def test_deep_search_limit_overridden(self, probe, brain):
+        """Layer 2 の brain.search_limit も override を尊重する"""
+        brain.extract_keywords.return_value = {"keywords": ["日曜"]}
+        probe.probe(
+            user_input="先週の日曜に何をしたか教えて",
+            brain=brain,
+            memory_manager=MagicMock(),
+            need_intent="past_fact",
+            override_config={"brain": {"search_limit": 7}},
+        )
+
+        assert brain.search_knowledge.call_args.kwargs["limit"] == 7

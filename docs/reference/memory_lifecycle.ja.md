@@ -181,7 +181,7 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | **スキーマ** | `knowledge_cards` テーブル（下記参照） |
 | **Embedding** | `title + tags + summary` を `AI_CONFIG["embedding"]["model_name"]` で埋め込み → BLOB保存 |
 | **検索** | `ButlyBrain.search_memories()` がクエリ埋め込みとコサイン類似度でリランキング |
-| **Gatekeeper注入** | `need` が設定された時のみ（tier 非依存）、`MemoryProbe` の candidates から RAG ブロックを構築し LONG-TERM MEMORY として注入。注入ソースは `memory.rag_source_mode` で制御: `"cards"`（既定・カードのみ）/ `"raw"`（当時の会話原文のみ）/ `"both"`（カード + 原文）。raw/both では各カードの `source_files` から RAW 会話 JSON を遅延逆引きし、原文抜粋を合計 `memory.rag_raw_max_chars` 文字（既定 6000、0=無制限、超過ファイルは greedy skip）まで注入する（parent-document retrieval — カード=検索インデックス、事実の根拠=原文）。原文を展開するカード数は `memory.rag_raw_top_k`（既定 1＝最上位カードの原文のみ、残りはサマリ。0/負値で全カード）で絞る。解決不能時はカード注入にフォールバック |
+| **Gatekeeper注入** | `need` が設定された時のみ（tier 非依存）、`MemoryProbe` の candidates から RAG ブロックを構築し LONG-TERM MEMORY として注入。注入ソースは `memory.rag_source_mode` で制御: `"cards"`（既定・カードのみ）/ `"raw"`（当時の会話原文のみ）/ `"both"`（カード + 原文）。raw/both では各カードの `source_files` から RAW 会話 JSON を遅延逆引きし、原文抜粋を合計 `memory.rag_raw_max_chars` 文字（既定 2500、0=無制限、超過ファイルは greedy skip）まで注入する（parent-document retrieval — カード=検索インデックス、事実の根拠=原文）。原文を展開するカード数は `memory.rag_raw_top_k`（既定 1＝最上位カードの原文のみ、残りはサマリ。0/負値で全カード）で絞る。解決不能時はカード注入にフォールバック |
 | **後処理** | 処理済み JSON は `memory_archive/2_knowledgeized/{date}/` へ移動 |
 | **バックアップ** | `butly_core/db_backups/` にローテーション保存（世代数: `backup.generations`） |
 
