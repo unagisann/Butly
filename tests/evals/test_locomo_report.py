@@ -18,6 +18,7 @@ def test_report_includes_qa_mode_locale_and_all_scope():
         "qa_mode": "independent",
         "memory_reused_from_run_id": "source-v16",
         "locale": "en",
+        "qa_prompt_version": "grounded-memory-v2",
         "sample_limit": None,
         "session_limit": None,
         "question_limit": None,
@@ -28,4 +29,5 @@ def test_report_includes_qa_mode_locale_and_all_scope():
     assert "- QA mode: independent" in summary
     assert "- Memory source: source-v16" in summary
     assert "- Prompt locale: en" in summary
+    assert "- QA prompt version: grounded-memory-v2" in summary
     assert "- Scope: samples=all, sessions=all, questions=all" in summary

@@ -48,6 +48,7 @@ _CANONICAL_SAMPLE_ID = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _SAFE_INSTANCE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
 _MAX_READABLE_SLUG_LENGTH = 96
 _MAX_LEGACY_INSTANCE_NAME_LENGTH = 180
+LOCOMO_QA_PROMPT_VERSION = "grounded-memory-v2"
 
 
 @dataclass(frozen=True)
@@ -259,6 +260,7 @@ async def rerun_qa_from_memory(
             progress.instance_name,
             config,
             profile,
+            qa_speaker=conversation.speaker_b,
         )
 
     # §10.2/§10.3: clone のカード集合が post-Stage 2 正本と完全一致することを
@@ -718,22 +720,7 @@ def _create_instance(
     config,
     profile: Optional[EvaluationProfile] = None,
 ) -> None:
-    # 公式LoCoMoプロトコルに合わせ短答を指示する。公式F1は正規化トークンの
-    # 重複で採点するため、説明的な長文は正解を含んでいてもprecisionが潰れる。
-    # 日付も正規化でISO形式(2023-05-07)が1トークンに潰れるため、正解データと
-    # 同じ自然形式(7 May 2023)で答えさせる。
-    template = (
-        f"You are {conversation.speaker_b}, a conversational companion. "
-        "Answer evaluation questions from the memories available to you. "
-        "Answer in English, matching the language of the official LoCoMo "
-        "questions and reference answers. "
-        "Answer as briefly as possible: give only the fact asked for, such as "
-        "a date, a name, or a short phrase, with no explanation or context. "
-        "Write dates in natural format such as '7 May 2023' (day month year), "
-        "never in ISO format like 2023-05-07. "
-        "When the memories do not contain the answer, reply exactly "
-        "'No information available'. Do not use external web knowledge."
-    )
+    template = _build_qa_system_instruction(conversation.speaker_b)
     success, message = runtime.instance_manager.create_instance(
         instance_name,
         template,
@@ -749,7 +736,35 @@ def _create_instance(
     if not success:
         raise RuntimeError(f"Failed to create evaluation instance: {message}")
 
-    _configure_instance(runtime, instance_name, config, profile)
+    _configure_instance(
+        runtime,
+        instance_name,
+        config,
+        profile,
+        qa_speaker=conversation.speaker_b,
+    )
+
+
+def _build_qa_system_instruction(speaker_b: str) -> str:
+    """Build the versioned, memory-grounded LoCoMo answer policy."""
+    return (
+        f"You are {speaker_b}, a conversational companion. "
+        "Answer the evaluation question using only the memory context supplied "
+        "with it. All memory sections supplied in the prompt, including "
+        "'Past Memories (RAG)', 'Source Conversation Excerpts', and "
+        "'Related Matured Memories (active nodes)', count as retrieved "
+        "conversation memories. If any of them directly answers the question, "
+        "use that information. Memories may describe events from the "
+        "perspective of an earlier conversation date. Interpret tense relative "
+        "to the original conversation, not the current real-world date. "
+        "Give a short, direct answer in English. Use exact words, names, and "
+        "event dates from the memories whenever possible. If the question asks "
+        "when something happened or was planned, use the date mentioned for "
+        "that event, not the memory record's source date or the current date. "
+        "Only answer 'No information available' when none of the supplied "
+        "memories contains information that answers the question. "
+        "Do not use external web knowledge."
+    )
 
 
 def _merge_profile_section(base: dict, overrides: dict) -> None:
@@ -770,6 +785,8 @@ def _configure_instance(
     instance_name: str,
     config: ReplayConfig,
     profile: Optional[EvaluationProfile] = None,
+    *,
+    qa_speaker: Optional[str] = None,
 ) -> None:
     """Apply evaluation-safe config to a new or copied instance."""
 
@@ -801,6 +818,15 @@ def _configure_instance(
         raise RuntimeError(
             f"Failed to configure evaluation instance: {update_message}"
         )
+    if qa_speaker is not None:
+        updated, update_message = runtime.instance_manager.update_instruction(
+            instance_name,
+            _build_qa_system_instruction(qa_speaker),
+        )
+        if not updated:
+            raise RuntimeError(
+                f"Failed to update evaluation answer prompt: {update_message}"
+            )
 
 
 def _knowledge_card_identity(db_path: Path) -> dict:
@@ -1174,6 +1200,7 @@ def _write_run_metadata(
             "schema_version": 2,
             "created_at": datetime.now(timezone.utc).isoformat(),
             **config.to_json_dict(),
+            "qa_prompt_version": LOCOMO_QA_PROMPT_VERSION,
             "selected_sample_ids": [item.sample_id for item in conversations],
         }
     )

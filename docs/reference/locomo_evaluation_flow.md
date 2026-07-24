@@ -145,6 +145,14 @@ the original LoCoMo question text, and requests concise English answers for
 official-scorer compatibility. The QA clock is fixed to one day after the last
 selected session.
 
+The evaluation instance System Instruction treats every supplied memory section
+as answer evidence. If a knowledge card, source RAW excerpt, or active node
+directly answers the question, the model is told to use it and interpret tense
+relative to the original conversation date. It may return
+`No information available` only when none of the supplied memories contains the
+answer. `qa_prompt_version` in `run_config.json` records the template version;
+scores from different versions are not the same evaluation condition.
+
 After generation, ChatService persists the question and answer as a normal
 conversation turn in the target instance and updates session state.
 
@@ -202,6 +210,8 @@ The following safety properties apply:
 - It never writes to the source. The instance (including its card database)
   and Replay/Sleeptime logs are copied, while QA results, Traces, and a new
   checkpoint are created in the destination.
+- The copied instance's LoCoMo answer System Instruction is updated to the
+  current `qa_prompt_version`; cards, RAW sources, and active nodes are unchanged.
 - `memory_reused_from_run_id` in `run_config.json` records card provenance.
 - Chat/gatekeeper temperatures and context switches affect a QA-only rerun.
   Summary/knowledge temperatures do not rebuild the already-complete memory.
