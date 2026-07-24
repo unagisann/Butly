@@ -21,6 +21,20 @@ from pathlib import Path
 from butly_core.config import SYSTEM_CONFIG
 
 
+def _resolve_section(section: str, override_config: dict | None) -> dict:
+    """SYSTEM_CONFIG[section] を instance/profile 設定で上書きして返す。
+
+    memory / brain セクションと同じ上書き規則を probe 側にも揃える
+    （従来は SYSTEM_CONFIG 直読みで instance ごとの調整ができなかった）。
+    """
+    conf = dict(SYSTEM_CONFIG.get(section, {}))
+    if override_config:
+        overrides = override_config.get(section)
+        if isinstance(overrides, dict):
+            conf.update(overrides)
+    return conf
+
+
 def should_deep_search(
     user_input, layer1_hits, headline_match, glossary_match, need_intent=None
 ):
@@ -200,7 +214,7 @@ class MemoryProbe:
                 "layers": layers,
             }
 
-        probe_conf = SYSTEM_CONFIG.get("memory_probe", {})
+        probe_conf = _resolve_section("memory_probe", override_config)
         vector_limit = probe_conf.get("vector_search_limit", 3)
         vector_threshold = probe_conf.get("vector_search_threshold", 0.4)
         deep_enabled = probe_conf.get("deep_search_enabled", True)
@@ -555,7 +569,7 @@ class MemoryProbe:
             if not keywords:
                 return {"results": [], "keywords": []}
 
-            limit = SYSTEM_CONFIG["brain"]["search_limit"]
+            limit = _resolve_section("brain", override_config).get("search_limit", 3)
             results = brain.search_knowledge(
                 keywords,
                 user_input,

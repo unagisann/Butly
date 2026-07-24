@@ -316,7 +316,7 @@ RAG is tier-independent and decided by `need` only.
 | key | default | meaning |
 |---|---|---|
 | `rag_source_mode` | `"cards"` | what the RAG block injects: `"cards"` (summary/episode only) / `"raw"` (original conversation excerpts only) / `"both"` (cards + excerpts). Falls back to cards when nothing resolves. |
-| `rag_raw_max_chars` | 6000 | total char cap for the excerpts (greedy skip per file; `0` = unlimited) |
+| `rag_raw_max_chars` | 2500 | total char cap for the excerpts (greedy skip per file; `0` = unlimited). Measured: too much raw dilutes the answer — 2500 beat 6000 on both accuracy and prompt size. Japanese costs 3-5x more tokens per character than English |
 | `rag_raw_top_k` | 1 | how many top cards get raw expansion. `1` = only the single most relevant card's raw (the rest stay as summaries), avoiding needle-in-haystack dilution for weak readers; `0`/negative = every card's raw greedy up to the char cap. Old cards without `source_files` and duplicate same-chunk cards do not consume a slot. |
 
 #### `raw_reference.py`

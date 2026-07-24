@@ -989,7 +989,7 @@ def _resolve_raw_block(
     from butly_core.core.gatekeeper.raw_reference import resolve_raw_reference
 
     max_chars = int(
-        inst_mem.get("rag_raw_max_chars", sys_mem.get("rag_raw_max_chars", 6000))
+        inst_mem.get("rag_raw_max_chars", sys_mem.get("rag_raw_max_chars", 2500))
     )
     top_k = inst_mem.get("rag_raw_top_k", sys_mem.get("rag_raw_top_k", 1))
     try:
