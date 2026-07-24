@@ -200,7 +200,7 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | `humanity_importance` | REAL | 人類にとっての重要度 (0-1) |
 | `embedding_blob` | BLOB | float32 バイト列（コサイン類似度検索用） |
 | `source_date` | TEXT | 元会話の日付 (YYYY-MM-DD)。検索の time decay はこの「出来事の古さ」を基準に計算（無い旧カードは `created_at` にフォールバック） |
-| `source_files` | TEXT | カード生成に使った RAW ファイル名の JSON 配列。`memory_archive/2_knowledgeized/{date}/` 配下の元会話へ遡及するためのポインタ。`rag_source_mode` が raw/both のとき RAG 原文注入の逆引きに使う |
+| `source_files` | TEXT | そのカードの根拠になった RAW ファイル名の JSON 配列。`memory_archive/2_knowledgeized/{date}/` 配下の元会話へ遡及するためのポインタで、`rag_source_mode` が raw/both のとき RAG 原文注入の逆引きに使う。Stage 2 が抽出モデルにカードごとの根拠ファイルを申告させ、チャンク内に実在する名前だけを採用する（幻覚・特定不能時はチャンク全ファイルへフォールバック）。カード単位に絞れるほど RAG の原文注入量が小さくなる |
 | `content_hash` | TEXT | Stage 3 prompt に渡す意味内容（title/summary/episode/tags/category/source_date）を正規化した SHA-256。カード本文の**版識別子**。本文を書く経路（Stage 2 INSERT / `update_card` / `register_knowledge`）は共通 helper（`butly_core/core/card_content.py`）で必ず更新する |
 | `last_matured_content_hash` | TEXT | Stage 3 が最後に**成功レビュー**した版。NULL または `content_hash` と不一致ならレビューキュー内 |
 | `maturation_queued_at` | TEXT | 現在の版がキューへ入った固定長 UTC 時刻（`YYYY-MM-DDTHH:MM:SSZ`）。FIFO 選択の順序キー |

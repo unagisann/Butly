@@ -408,7 +408,7 @@ class TestScoreRun:
         assert by_id["qa-2"]["evidence_coverage"] == pytest.approx(0.0)
         assert by_id["qa-3"]["evidence_coverage"] == pytest.approx(0.0)
         assert scores["butly"]["evidence_retrieval_rate"] == pytest.approx(1 / 3)
-        assert scores["butly"]["evidence_metric"] == "provenance_chunk_level"
+        assert scores["butly"]["evidence_metric"] == "provenance_source_files"
 
     def test_classifier_fallback_and_floor_rates(self, tmp_path):
         rows = [

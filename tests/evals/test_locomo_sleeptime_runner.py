@@ -45,6 +45,48 @@ def test_runner_records_chunk_failures_as_partial(tmp_path):
     assert row["knowledge_chunk_failure_details"][0]["reason"] == "parse_error"
 
 
+def test_runner_records_card_source_granularity(tmp_path):
+    """カード単位に絞れた枚数 / チャンクへ落ちた枚数が log に残る"""
+    stats = {
+        "chunks": 1,
+        "failed_chunks": 0,
+        "cards_created": 5,
+        "failures": [],
+        "source_files_card": 4,
+        "source_files_chunk": 1,
+    }
+    runner = SleeptimeRunner(
+        _mock_sleeptime(tmp_path, stats),
+        run_id="r1",
+        log_path=tmp_path / "sleeptime_log.jsonl",
+    )
+
+    result = runner.run(sample_id="s", session_id="session_1", instance_name="inst")
+
+    assert result.knowledge_source_files_card == 4
+    assert result.knowledge_source_files_chunk == 1
+
+    row = json.loads(
+        (tmp_path / "sleeptime_log.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert row["knowledge_source_files_card"] == 4
+    assert row["knowledge_source_files_chunk"] == 1
+
+
+def test_runner_source_granularity_defaults_to_zero(tmp_path):
+    """旧形式 stats（キー無し）でも落ちない"""
+    runner = SleeptimeRunner(
+        _mock_sleeptime(tmp_path, {"chunks": 1, "failed_chunks": 0, "cards_created": 1}),
+        run_id="r1",
+        log_path=tmp_path / "sleeptime_log.jsonl",
+    )
+
+    result = runner.run(sample_id="s", session_id="session_1", instance_name="inst")
+
+    assert result.knowledge_source_files_card == 0
+    assert result.knowledge_source_files_chunk == 0
+
+
 def test_runner_all_chunks_ok_stays_succeeded(tmp_path):
     stats = {"chunks": 2, "failed_chunks": 0, "cards_created": 5, "failures": []}
     runner = SleeptimeRunner(
