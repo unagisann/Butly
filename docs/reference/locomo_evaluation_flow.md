@@ -253,6 +253,7 @@ from the form controls. Choose `RUN_MODE` from this dropdown:
 | `RUN_MODE` | Behavior |
 |---|---|
 | `standard` | Normal evaluation. A blank source ID starts at Replay; a source ID keeps the existing QA-only card-reuse behavior |
+| `stage3-full` | Single source-free run: execute Replay → Stage 2 → Stage 3 for every session, then inject the nodes created by that run into final QA. This is a production-like integration evaluation, not a same-card A/B |
 | `stage3-source` | Build the formal A/B post-Stage 2 source with Stage 3 explicitly off; source ID must be blank and `QA_MODE=independent` |
 | `stage3-off` | Clone the source's identical cards and run QA without nodes; source ID is required |
 | `stage3-on` | Clone the same source, automatically enable `--stage3-bootstrap` and node injection, then run QA; source ID is required |
@@ -284,15 +285,17 @@ Properties and artifacts:
 
 ### Integration path: per-session Stage 3
 
-Passing the `stage3_on` profile to a normal `run` merges its `sleeptime`
-section recursively, and the SleeptimeRunner executes Stage 3 after a
+Notebook `stage3-full` (or passing the `stage3_on` profile to a normal `run`)
+does not clone a source. It merges the profile's `sleeptime` section
+recursively, and the SleeptimeRunner executes Stage 3 after a
 successful Stage 2, injecting the session's original timestamp as the clock
 (no dependency on `BUTLY_CHRONOS_NOW`, which is only set during QA).
 `sleeptime_log.jsonl` records `stage_3_status` / `stage_3_reviewed_cards` /
 `stage_3_created_nodes` / `stage_3_linked_sources` / `stage_3_failed_cards` /
 `stage_3_llm_calls` / `stage_3_prompt_tokens` / `stage_3_completion_tokens`
 separately from Stages 1/2, so a Stage 3 failure never masquerades as a
-Stage 2 success. This path exists for behavioral testing; the official
+Stage 2 success. This path evaluates production-like node creation during
+memory accumulation and node use in final QA; the official Stage 3-only
 accuracy A/B is the clone procedure above.
 
 ## `independent` QA
