@@ -84,7 +84,7 @@ class TestAgentProfileInjection:
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
         # SI セクションだけを切り出す（KEY MEMORY 以降は KM ブロック）
-        si_end = result.find("=== KEY MEMORY")
+        si_end = result.find("=== CORE MEMORY")
         si_section = result if si_end == -1 else result[:si_end]
 
         # ブロック単位で判定: セクションヘッダ + 構造化ラベルの不在を確認
@@ -281,7 +281,7 @@ class TestReflexInstruction:
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "=== KEY MEMORY" in result
+        assert "=== CORE MEMORY" in result
 
     def test_no_tier_info(self, memory_manager):
         """system_instruction に TIER INFO が含まれない（context_prefix に移動済み）"""
@@ -295,7 +295,7 @@ class TestReflexInstruction:
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "=== TIER INFO" not in result
+        assert "[実行モード]" not in result
 
     def test_no_current_time(self, memory_manager):
         """system_instruction に CURRENT TIME が含まれない（context_prefix に移動済み）"""
@@ -309,7 +309,7 @@ class TestReflexInstruction:
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "=== CURRENT TIME" not in result
+        assert "[現在時刻]" not in result
 
     def test_no_mid_term_section(self, memory_manager):
         """system_instruction に MID-TERM セクションがない"""
@@ -323,8 +323,8 @@ class TestReflexInstruction:
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "=== MID-TERM MEMORY" not in result
-        assert "=== MID-TERM DIGEST" not in result
+        assert "[中期記憶]" not in result
+        assert "[中期要約]" not in result
 
     def test_no_rag_section(self, memory_manager):
         """system_instruction に RAG セクションがない"""
@@ -338,7 +338,7 @@ class TestReflexInstruction:
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "=== LONG-TERM MEMORY" not in result
+        assert "=== RETRIEVED MEMORY" not in result
 
     def test_no_session_digest_section(self, memory_manager):
         """system_instruction に SESSION DIGEST が含まれない"""
@@ -352,7 +352,7 @@ class TestReflexInstruction:
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "=== SESSION DIGEST" not in result
+        assert "[以前のセッション要約]" not in result
 
 
 class TestMidInstruction:
@@ -371,7 +371,7 @@ class TestMidInstruction:
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "=== MID-TERM MEMORY" not in result
+        assert "[中期記憶]" not in result
         assert "昨日の会話ログ" not in result
 
     def test_no_rag_section(self, memory_manager):
@@ -387,7 +387,7 @@ class TestMidInstruction:
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "=== LONG-TERM MEMORY" not in result
+        assert "=== RETRIEVED MEMORY" not in result
 
 
 class TestRAGInstruction:
@@ -406,7 +406,7 @@ class TestRAGInstruction:
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "=== LONG-TERM MEMORY (RAG) ===" not in result
+        assert "=== RETRIEVED MEMORY (検索された記憶) ===" not in result
         assert "テストデータ" not in result
 
     def test_no_tier_info(self, memory_manager):
@@ -422,7 +422,7 @@ class TestRAGInstruction:
 
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
-        assert "=== TIER INFO" not in result
+        assert "[実行モード]" not in result
 
 
 class TestSystemInstructionOrder:
@@ -442,11 +442,11 @@ class TestSystemInstructionOrder:
         result = build_system_instruction_from_blocks(blocks, memory_manager)
 
         idx_sys = result.index("=== SYSTEM INSTRUCTION ===")
-        idx_key = result.index("=== KEY MEMORY")
+        idx_key = result.index("=== CORE MEMORY")
 
         assert idx_sys < idx_key
         # TIER INFO は context_prefix に移動済み
-        assert "=== TIER INFO" not in result
+        assert "[実行モード]" not in result
 
 
 # ==================================================================
@@ -471,7 +471,7 @@ class TestContextPrefixCurrentTime:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== CURRENT TIME" in result
+        assert "[現在時刻]" in result
 
 
 class TestContextPrefixMidTerm:
@@ -490,7 +490,7 @@ class TestContextPrefixMidTerm:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== MID-TERM MEMORY" in result
+        assert "[中期記憶]" in result
         assert "昨日の会話ログ" in result
 
     def test_mid_tier_includes_digest_and_recent_snapshot(self, memory_manager):
@@ -508,9 +508,9 @@ class TestContextPrefixMidTerm:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== MID-TERM DIGEST" in result
+        assert "[中期要約]" in result
         assert "pytest導入" in result
-        assert "=== RECENT SNAPSHOT" in result
+        assert "[近況スナップショット]" in result
         assert "集中モード" in result
 
     def test_reflex_no_mid_term(self, memory_manager):
@@ -526,7 +526,7 @@ class TestContextPrefixMidTerm:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== MID-TERM MEMORY" not in result
+        assert "[中期記憶]" not in result
 
 
 class TestContextPrefixRAG:
@@ -545,7 +545,7 @@ class TestContextPrefixRAG:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== LONG-TERM MEMORY (RAG) ===" in result
+        assert "=== RETRIEVED MEMORY (検索された記憶) ===" in result
         assert "テストデータ" in result
 
     def test_rag_has_reference_annotation(self, memory_manager):
@@ -577,7 +577,7 @@ class TestContextPrefixRAG:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== LONG-TERM MEMORY" not in result
+        assert "=== RETRIEVED MEMORY" not in result
 
 
 class TestContextPrefixSessionDigest:
@@ -597,7 +597,7 @@ class TestContextPrefixSessionDigest:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== SESSION DIGEST" in result
+        assert "[以前のセッション要約]" in result
         assert "天気の話" in result
 
     @pytest.mark.parametrize("tier", ["reflex", "mid"])
@@ -614,7 +614,7 @@ class TestContextPrefixSessionDigest:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== SESSION DIGEST" not in result
+        assert "[以前のセッション要約]" not in result
 
 
 class TestContextPrefixSectionOrder:
@@ -633,11 +633,11 @@ class TestContextPrefixSectionOrder:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        idx_time = result.index("=== CURRENT TIME")
-        idx_mid = result.index("=== MID-TERM MEMORY")
-        idx_rag = result.index("=== LONG-TERM MEMORY")
-        idx_session_digest = result.index("=== SESSION DIGEST")
-        idx_tier = result.index("=== TIER INFO")
+        idx_time = result.index("[現在時刻]")
+        idx_mid = result.index("[中期記憶]")
+        idx_rag = result.index("=== RETRIEVED MEMORY")
+        idx_session_digest = result.index("[以前のセッション要約]")
+        idx_tier = result.index("[実行モード]")
 
         assert idx_time < idx_mid < idx_rag < idx_session_digest < idx_tier
 
@@ -654,8 +654,7 @@ class TestContextPrefixSectionOrder:
         result = build_context_prefix(blocks, memory_manager)
         first_line = result.strip().split("\n")[0]
 
-        # ja=[背景情報], en=[Background Info]
-        assert first_line.startswith("[")
+        assert first_line == "=== CONTEXT (文脈) ==="
 
     def test_omits_global_priority_note(self, memory_manager):
         """context_prefix は記憶レイヤー間の固定優先順位を指示しない"""
@@ -684,7 +683,7 @@ class TestContextPrefixSectionOrder:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== TIER INFO" in result
+        assert "[実行モード]" in result
 
 
 class TestContextPrefixReflex:
@@ -702,7 +701,7 @@ class TestContextPrefixReflex:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== CURRENT TIME" in result
+        assert "[現在時刻]" in result
 
     def test_reflex_no_mid_term_but_rag_allowed(self, memory_manager):
         """reflex では MID-TERM は含まれないが、RAG は need 連動で tier 非依存
@@ -721,8 +720,8 @@ class TestContextPrefixReflex:
 
         result = build_context_prefix(blocks, memory_manager)
 
-        assert "=== MID-TERM MEMORY" not in result
-        assert "=== LONG-TERM MEMORY" in result
+        assert "[中期記憶]" not in result
+        assert "=== RETRIEVED MEMORY" in result
 
 
 # ==================================================================
@@ -749,7 +748,7 @@ class TestContextPrefixGlossary:
             yaml.dump(glossary_data, f, allow_unicode=True, default_flow_style=False)
 
     def test_glossary_in_reflex(self, memory_manager):
-        """reflex でも GLOSSARY が注入される"""
+        """reflex でも SHARED TERMS が注入される"""
         blocks = {
             "tier": "reflex",
             "short_term": [],
@@ -758,7 +757,7 @@ class TestContextPrefixGlossary:
             "rag_context": "",
         }
         result = build_context_prefix(blocks, memory_manager)
-        assert "GLOSSARY" in result
+        assert "SHARED TERMS" in result
         assert "TestTerm" in result
 
     def test_glossary_excludes_archived(self, memory_manager):
@@ -774,7 +773,7 @@ class TestContextPrefixGlossary:
         assert "ArchivedTerm" not in result
 
     def test_glossary_before_mid_term(self, memory_manager):
-        """GLOSSARY が MID-TERM より前に配置される"""
+        """SHARED TERMS が MID-TERM より前に配置される"""
         blocks = {
             "tier": "mid",
             "short_term": [],
@@ -785,12 +784,12 @@ class TestContextPrefixGlossary:
         }
         result = build_context_prefix(blocks, memory_manager)
 
-        idx_glossary = result.index("GLOSSARY")
-        idx_mid = result.index("=== MID-TERM")
+        idx_glossary = result.index("SHARED TERMS")
+        idx_mid = result.index("[中期記憶]")
         assert idx_glossary < idx_mid
 
     def test_glossary_after_current_time(self, memory_manager):
-        """GLOSSARY が CURRENT TIME より後に配置される"""
+        """SHARED TERMS が CURRENT TIME より後に配置される"""
         blocks = {
             "tier": "mid",
             "short_term": [],
@@ -801,12 +800,12 @@ class TestContextPrefixGlossary:
         }
         result = build_context_prefix(blocks, memory_manager)
 
-        idx_time = result.index("=== CURRENT TIME")
-        idx_glossary = result.index("GLOSSARY")
+        idx_time = result.index("[現在時刻]")
+        idx_glossary = result.index("SHARED TERMS")
         assert idx_time < idx_glossary
 
     def test_no_glossary_without_file(self, base_dir, test_instance_dir):
-        """glossary.yaml がない場合は GLOSSARY セクションが出ない"""
+        """glossary.yaml がない場合は SHARED TERMS セクションが出ない"""
         import os
         glossary_file = test_instance_dir / "glossary.yaml"
         if glossary_file.exists():
@@ -822,10 +821,10 @@ class TestContextPrefixGlossary:
             "rag_context": "",
         }
         result = build_context_prefix(blocks, mem)
-        assert "GLOSSARY" not in result
+        assert "SHARED TERMS" not in result
 
     def test_glossary_not_in_system_instruction(self, memory_manager):
-        """system_instruction には GLOSSARY が含まれない"""
+        """system_instruction には SHARED TERMS が含まれない"""
         blocks = {
             "tier": "mid",
             "short_term": [],
@@ -834,4 +833,4 @@ class TestContextPrefixGlossary:
             "rag_context": "",
         }
         result = build_system_instruction_from_blocks(blocks, memory_manager)
-        assert "GLOSSARY" not in result
+        assert "SHARED TERMS" not in result

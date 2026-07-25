@@ -706,8 +706,13 @@ def build_context_prefix(
 def _build_label_notes(level: str, h) -> str | None:
     if level in ("off", "low"):
         return None
-    label = h("context_prefix_label")
-    return label if label and label != "context_prefix_label" else None
+    return "\n".join(
+        (
+            h("context_prefix_label"),
+            h("memory_usage"),
+            h("memory_usage_note"),
+        )
+    )
 
 
 def _build_current_time(level: str, h, locale: str = "ja") -> str | None:
@@ -813,9 +818,6 @@ def _render_glossary(selected: list, h) -> str | None:
 
     if short_hits:
         short_label = h("glossary_short_label")
-        # 未定義時 (key そのものが返るケース) はデフォルト文言を使う
-        if not short_label or short_label == "glossary_short_label":
-            short_label = "用語説明:"
         lines = [short_label]
         for hit in short_hits:
             term = hit.get("term", "")
@@ -825,8 +827,6 @@ def _render_glossary(selected: list, h) -> str | None:
 
     if long_hits:
         long_label = h("glossary_long_label")
-        if not long_label or long_label == "glossary_long_label":
-            long_label = "関連設定:"
         lines = [long_label]
         for hit in long_hits:
             term = hit.get("term", "")
@@ -1062,4 +1062,4 @@ def _build_web_search(blocks: dict, level: str, h) -> str | None:
     if level == "low":
         return web_search_ctx.strip()[:300]
     # high / mid
-    return f"{h('web_search')}\n{web_search_ctx}"
+    return f"{h('web_search')}\n{h('web_search_note')}\n{web_search_ctx}"

@@ -7,7 +7,7 @@ control/locales 分離解決、フォールバック、format変数展開を検�
 
 import pytest
 
-from butly_core.prompts import PromptLoader
+from butly_core.prompts import PromptLoader, REQUIRED_SECTION_HEADER_KEYS
 
 
 class TestPromptLoaderBasic:
@@ -155,32 +155,44 @@ class TestSectionHeaders:
     def test_ja_section_headers(self):
         """日本語 section_headers が読み込める"""
         loader = PromptLoader(locale="ja")
-        assert "KEY MEMORY" in loader.get_section_header("key_memory")
+        assert "CORE MEMORY" in loader.get_section_header("key_memory")
         assert "根幹記憶" in loader.get_section_header("key_memory")
 
     def test_en_section_headers(self):
         """英語 section_headers が読み込める"""
         loader = PromptLoader(locale="en")
-        assert "KEY MEMORY" in loader.get_section_header("key_memory")
+        assert "CORE MEMORY" in loader.get_section_header("key_memory")
+
+    def test_locales_have_the_same_required_keys(self):
+        """英日ロケールが同一の必須キー契約を満たす。"""
+        ja_keys = set(PromptLoader(locale="ja").section_headers)
+        en_keys = set(PromptLoader(locale="en").section_headers)
+
+        assert ja_keys == en_keys
+        assert ja_keys == set(REQUIRED_SECTION_HEADER_KEYS)
 
     @pytest.mark.parametrize(
-        ("locale", "summary_marker", "precision_marker"),
+        ("locale", "date_marker", "summary_marker", "precision_marker"),
         [
-            ("en", "concise representations", "greater precision"),
-            ("ja", "簡潔に表したもの", "細かい精度"),
+            ("en", "source conversation date", "concise representations", "greater precision"),
+            ("ja", "根拠となる会話の日付", "簡潔に表したもの", "細かい精度"),
         ],
     )
     def test_rag_date_note_preserves_evidence_granularity(
         self,
         locale,
+        date_marker,
         summary_marker,
         precision_marker,
     ):
         """RAG日時注記がカードを絶対視せず根拠の粒度を保持させる。"""
-        note = PromptLoader(locale=locale).get_section_header("rag_date_note")
+        loader = PromptLoader(locale=locale)
+        date_note = loader.get_section_header("rag_date_note")
+        usage_note = loader.get_section_header("memory_usage_note")
 
-        assert summary_marker in note
-        assert precision_marker in note
+        assert date_marker in date_note
+        assert precision_marker in date_note
+        assert summary_marker in usage_note
 
     @pytest.mark.parametrize("locale", ["ja", "en"])
     def test_context_prefix_has_no_global_priority_note(self, locale):
@@ -189,9 +201,10 @@ class TestSectionHeaders:
         assert "note_context_prefix" not in loader.section_headers
 
     def test_section_header_fallback(self):
-        """未定義キーはキー名そのものを返す"""
+        """未定義キーはリテラルを混入させずエラーにする"""
         loader = PromptLoader(locale="ja")
-        assert loader.get_section_header("nonexistent_key") == "nonexistent_key"
+        with pytest.raises(KeyError, match="unknown section header"):
+            loader.get_section_header("nonexistent_key")
 
     def test_tier_mode_format(self):
         """tier_mode はフォーマット可能"""

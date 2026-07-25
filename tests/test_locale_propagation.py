@@ -103,7 +103,7 @@ def test_memory_builder_renders_english_rag_from_instance_config(
 
     assert blocks["locale"] == "en"
     assert blocks["allow_user_prompt_overrides"] is False
-    assert blocks["rag_context"].startswith("[Past Memories (RAG)]")
+    assert blocks["rag_context"].startswith("[Relevant Memory Cards]")
     assert "\n- [2023-05-08] Camping plan:" in blocks["rag_context"]
     assert "【" not in blocks["rag_context"]
 

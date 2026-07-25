@@ -39,6 +39,54 @@ _LEGACY_KEY_MAP = {
 # Legacy key → prompt name の逆引き
 _REVERSE_LEGACY_MAP = {v: k for k, v in _LEGACY_KEY_MAP.items()}
 
+REQUIRED_SECTION_HEADER_KEYS = frozenset(
+    {
+        "active_nodes",
+        "context_prefix_label",
+        "conversation_core",
+        "current_time",
+        "glossary",
+        "glossary_long_label",
+        "glossary_short_label",
+        "key_memory",
+        "long_term_memory",
+        "memory_usage",
+        "memory_usage_note",
+        "mid_term_digest",
+        "mid_term_memory",
+        "note_current_time",
+        "note_glossary",
+        "note_google_search",
+        "note_mid_term_digest",
+        "note_rag",
+        "note_recent_snapshot",
+        "note_session_digest",
+        "rag_bullet",
+        "rag_cards",
+        "rag_date_note",
+        "rag_episode_label",
+        "rag_raw",
+        "rag_raw_note",
+        "rag_source_raw",
+        "rag_source_raw_note",
+        "recent_context",
+        "recent_snapshot",
+        "related_memory",
+        "session_digest",
+        "system_instruction",
+        "tier_info",
+        "tier_mode",
+        "tier_topic",
+        "web_search",
+        "web_search_note",
+    }
+)
+
+_REQUIRED_SECTION_HEADER_PLACEHOLDERS = {
+    "tier_mode": "{tier}",
+    "tier_topic": "{topic}",
+}
+
 
 def resolve_prompt_locale(instance_config: Optional[dict] = None) -> str:
     """Resolve prompt locale from an instance config, then the system default."""
@@ -151,12 +199,43 @@ class PromptLoader:
             path = _LOCALES_DIR / loc / "section_headers.yaml"
             if path.exists():
                 with open(path, "r", encoding="utf-8") as f:
-                    return yaml.safe_load(f) or {}
+                    data = yaml.safe_load(f) or {}
+                if not isinstance(data, dict):
+                    raise ValueError(f"section headers must be a mapping: {path}")
+
+                invalid = sorted(
+                    key for key, value in data.items() if not isinstance(value, str)
+                )
+                if invalid:
+                    raise ValueError(
+                        f"section header values must be strings in {path}: "
+                        + ", ".join(invalid)
+                    )
+
+                missing = sorted(REQUIRED_SECTION_HEADER_KEYS - data.keys())
+                if missing:
+                    raise ValueError(
+                        f"missing required section headers in {path}: "
+                        + ", ".join(missing)
+                    )
+
+                for key, placeholder in _REQUIRED_SECTION_HEADER_PLACEHOLDERS.items():
+                    if placeholder not in data[key]:
+                        raise ValueError(
+                            f"section header {key!r} in {path} must contain "
+                            f"{placeholder!r}"
+                        )
+                return data
         return {}
 
     def get_section_header(self, key: str) -> str:
         """セクションヘッダーまたは注釈テキストを取得する。"""
-        return self.section_headers.get(key, key)
+        try:
+            return self.section_headers[key]
+        except KeyError as exc:
+            raise KeyError(
+                f"unknown section header {key!r} for locale {self.locale!r}"
+            ) from exc
 
     # ----------------------------------------------------------
     # Template Resolution
