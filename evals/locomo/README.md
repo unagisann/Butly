@@ -311,7 +311,10 @@ removed after repeated shared-library breakage). The notebook must stay
 logic-free: anything beyond setup and CLI invocation belongs in this package.
 Its Parameters cell is rendered as a Colab form and exposes editable `RUN_ID`,
 repository/Drive paths, QA mode, locale, separate all/limit controls, context
-switches, and a `RUN_MODE` dropdown. For a formal Stage 3 A/B, run
+switches, and a `RUN_MODE` dropdown. `stage3-full` runs Replay → per-session
+Sleeptime Stage 2 → Stage 3 in one source-free run, then evaluates QA with
+the nodes created by that run; this is the production-like integration path,
+not a same-card A/B. For a formal Stage 3 A/B, run
 `stage3-source`, then run `stage3-off` and `stage3-on` with distinct run IDs and
 the same `SOURCE_MEMORY_RUN_ID`; the ON mode automatically adds
 `--stage3-bootstrap` and enables node injection. `standard` preserves the prior

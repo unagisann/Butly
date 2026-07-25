@@ -261,6 +261,7 @@ Colab NotebookではParametersセルをフォーム表示し、`RUN_ID`、
 | `RUN_MODE` | 動作 |
 |---|---|
 | `standard` | 通常評価。source IDが空ならReplayから実行し、指定時は従来どおりカードを再利用してQAだけ再実行 |
+| `stage3-full` | source不要の単一run。各セッションでReplay → Stage 2 → Stage 3を実行し、そのrunで生成したnodeを最終QAへ注入する。実運用相当の統合評価であり、同一カードA/Bではない |
 | `stage3-source` | 正式A/Bのpost-Stage 2正本を作成。Stage 3は明示OFF、source IDは空、`QA_MODE=independent`必須 |
 | `stage3-off` | sourceの同一カードをcloneし、node無しでQA。source ID必須 |
 | `stage3-on` | 同じsourceをcloneし、`--stage3-bootstrap`とnode注入を自動で有効化してQA。source ID必須 |
@@ -291,7 +292,8 @@ OFF/ONには異なる`RUN_ID`と同じ`SOURCE_MEMORY_RUN_ID`を設定する。
 
 ### per-session で Stage 3 を走らせる統合テスト経路
 
-通常の `run` に `stage3_on` profile を渡すと、profile の `sleeptime` セクションが
+Notebookの`stage3-full`（または通常の `run` に `stage3_on` profile）では、
+sourceをcloneせず、profile の `sleeptime` セクションが
 再帰マージで適用され、SleeptimeRunner が Stage 2 成功後に Stage 3 を実行する。
 Stage 3 の clock には session の元日時を注入する（QA 時だけ設定される
 `BUTLY_CHRONOS_NOW` に依存しない）。`sleeptime_log.jsonl` には
@@ -299,7 +301,8 @@ Stage 3 の clock には session の元日時を注入する（QA 時だけ設�
 `stage_3_linked_sources` / `stage_3_failed_cards` / `stage_3_llm_calls` /
 `stage_3_prompt_tokens` / `stage_3_completion_tokens` が Stage 1/2 と分離して
 記録され、Stage 3 の失敗が Stage 2 の成功に紛れ込まない。
-この経路は挙動確認用で、正式な精度 A/B は上記 clone 方式を使う。
+この経路は、実運用と同じく記憶蓄積中にnodeを生成して最終QAで利用する統合評価用。
+Stage 3単独の正式な精度 A/B は上記clone方式を使う。
 
 ## `independent`: 独立QA
 

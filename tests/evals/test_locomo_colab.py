@@ -45,7 +45,8 @@ def test_colab_exposes_qa_scope_mode_and_locale_to_cli():
     assert '# @param {type:"string"}' in run_id_line
     assert (
         "RUN_MODE = 'standard'  # @param "
-        '["standard", "stage3-source", "stage3-off", "stage3-on"]'
+        '["standard", "stage3-full", "stage3-source", "stage3-off", '
+        '"stage3-on"]'
         in parameters
     )
     assert "REPO_URL = 'https://github.com/unagisann/Butly.git'  # @param" in parameters
@@ -81,6 +82,10 @@ def test_colab_exposes_qa_scope_mode_and_locale_to_cli():
     )
     assert "rag='high' if CONTEXT_RAG else 'off'" in parameters
     assert "generation_config=dict(temperature=CHAT_TEMPERATURE)" in parameters
+    assert (
+        "stage3_enabled = RUN_MODE in {'stage3-full', 'stage3-on'}"
+        in parameters
+    )
     assert "knowledge_maturation_enabled=stage3_enabled" in parameters
     assert "knowledge_maturation_batch_size=STAGE3_BATCH_SIZE" in parameters
     assert "'update_targets': {'knowledge_maturation': stage3_enabled}" in parameters
@@ -95,7 +100,12 @@ def test_colab_exposes_qa_scope_mode_and_locale_to_cli():
     assert "'--source-run'" in run
     assert "SOURCE_MEMORY_RUN_ID.strip()" in run
     assert "formal Stage 3 A/B requires QA_MODE=independent" in run
-    assert "stage3-source requires blank SOURCE_MEMORY_RUN_ID" in run
+    assert (
+        "run_mode in {'stage3-full', 'stage3-source'} and "
+        "source_memory_run_id"
+        in run
+    )
+    assert "requires blank SOURCE_MEMORY_RUN_ID" in run
     assert "requires SOURCE_MEMORY_RUN_ID" in run
     assert "command.append('--stage3-bootstrap')" in run
 
@@ -116,9 +126,27 @@ def test_colab_parameters_render_as_a_form_and_resume_rejects_partial_stage3():
     assert "refuses partial nodes" in resume
 
 
+def test_colab_stage3_full_enables_per_session_maturation():
+    parameters = next(cell for cell in _code_cells() if "PROFILE_EXTRAS =" in cell)
+    parameters = parameters.replace(
+        "RUN_MODE = 'standard'",
+        "RUN_MODE = 'stage3-full'",
+        1,
+    )
+    namespace = {}
+
+    exec(compile(parameters, "colab-parameters-cell", "exec"), namespace)
+
+    extras = namespace["PROFILE_EXTRAS"]
+    assert extras["memory"]["knowledge_maturation_enabled"] is True
+    assert extras["memory"]["knowledge_maturation_batch_size"] == 10
+    assert extras["sleeptime"]["update_targets"]["knowledge_maturation"] is True
+
+
 @pytest.mark.parametrize(
     ("run_mode", "source_run_id", "subcommand", "uses_bootstrap"),
     [
+        ("stage3-full", "", "run", False),
         ("stage3-source", "", "run", False),
         ("stage3-off", "source-run", "rerun-qa", False),
         ("stage3-on", "source-run", "rerun-qa", True),
@@ -174,4 +202,26 @@ def test_colab_stage3_on_requires_a_source_run_id():
     }
 
     with pytest.raises(ValueError, match="requires SOURCE_MEMORY_RUN_ID"):
+        exec(compile(run_cell, "colab-run-cell", "exec"), namespace)
+
+
+def test_colab_stage3_full_is_single_run_and_rejects_source_memory():
+    run_cell = next(cell for cell in _code_cells() if "scope_args = []" in cell)
+    namespace = {
+        "ALL_SAMPLES": False,
+        "SAMPLE_LIMIT": 1,
+        "ALL_SESSIONS": False,
+        "SESSION_LIMIT": 1,
+        "ALL_QUESTIONS": False,
+        "QUESTION_LIMIT": 1,
+        "RUN_ID": "stage3-full-run",
+        "RUN_MODE": "stage3-full",
+        "SOURCE_MEMORY_RUN_ID": "source-run",
+        "QA_MODE": "sequential",
+        "LOCALE": "en",
+        "DRIVE_ROOT": "/drive/evals",
+        "DATASET_PATH": "/drive/evals/data/locomo.json",
+    }
+
+    with pytest.raises(ValueError, match="requires blank SOURCE_MEMORY_RUN_ID"):
         exec(compile(run_cell, "colab-run-cell", "exec"), namespace)
