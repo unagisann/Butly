@@ -77,6 +77,25 @@ class TestPromptLoaderFallback:
         template = loader.get_template("sleeptime_summarize")
         assert len(template) > 0
 
+    @pytest.mark.parametrize(
+        ("locale", "primary_marker", "file_marker"),
+        [
+            ("en", "one primary memory unit", "Do not create one card per source file"),
+            ("ja", "1 つの主要な記憶単位", "1 ファイルにつき 1 カード"),
+        ],
+    )
+    def test_sleeptime_card_boundary_rules(
+        self,
+        locale,
+        primary_marker,
+        file_marker,
+    ):
+        """Stage 2 が主要イベント単位で分割し、ファイル単位にはしない。"""
+        template = PromptLoader(locale=locale).get_template("sleeptime_summarize")
+
+        assert primary_marker in template
+        assert file_marker in template
+
     def test_unknown_locale_falls_back_to_en(self):
         """未定義localeは en にフォールバック"""
         loader = PromptLoader(locale="ko")

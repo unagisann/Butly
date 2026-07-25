@@ -177,6 +177,7 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | **書き込み** | Sleeptime Stage 2 (`stage_2_knowledgeize`) — 日付グループ単位でLLMがナレッジカードを抽出しINSERT |
 | **入力** | 1_integrated の生 JSON を日付ごとにまとめたテキスト |
 | **入力チャンク分割** | `knowledge_max_input_chars` が設定されている場合、JSONファイル単位で分割。「次のファイルを追加すると上限超過→ここまでで1チャンク」として処理 |
+| **カード粒度** | 1枚につき1つの主要な記憶単位（出来事・決定・状態変化・継続状態・関係性の進展）。同じ出来事の補足事実は同居できるが、独立した質問への答えになる別イベント・別時点・別の根拠ファイル群は分割する。ファイル境界は保存上の区切りであり、1ファイル=1カードにはしない |
 | **スキップ機能** | `skip_knowledge_generation = true` の場合、Stage 2 を完全にスキップ。RAWデータは 1_integrated に保持され、後日高性能モデルで一括処理可能 |
 | **スキーマ** | `knowledge_cards` テーブル（下記参照） |
 | **Embedding** | `title + tags + summary` を `AI_CONFIG["embedding"]["model_name"]` で埋め込み → BLOB保存 |
@@ -200,7 +201,7 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | `humanity_importance` | REAL | 人類にとっての重要度 (0-1) |
 | `embedding_blob` | BLOB | float32 バイト列（コサイン類似度検索用） |
 | `source_date` | TEXT | 元会話の日付 (YYYY-MM-DD)。検索の time decay はこの「出来事の古さ」を基準に計算（無い旧カードは `created_at` にフォールバック） |
-| `source_files` | TEXT | そのカードの根拠になった RAW ファイル名の JSON 配列。`memory_archive/2_knowledgeized/{date}/` 配下の元会話へ遡及するためのポインタで、`rag_source_mode` が raw/both のとき RAG 原文注入の逆引きに使う。Stage 2 が抽出モデルにカードごとの根拠ファイルを申告させ、チャンク内に実在する名前だけを採用する（幻覚・特定不能時はチャンク全ファイルへフォールバック）。カード単位に絞れるほど RAG の原文注入量が小さくなる |
+| `source_files` | TEXT | そのカードの主要な記憶単位を直接支える RAW ファイル名の JSON 配列。`memory_archive/2_knowledgeized/{date}/` 配下の元会話へ遡及するためのポインタで、`rag_source_mode` が raw/both のとき RAG 原文注入の逆引きに使う。Stage 2 が抽出モデルにカードごとの根拠ファイルを申告させ、チャンク内に実在する名前だけを採用する（幻覚・特定不能時はチャンク全ファイルへフォールバック）。カード単位に絞れるほど RAG の原文注入量が小さくなる |
 | `content_hash` | TEXT | Stage 3 prompt に渡す意味内容（title/summary/episode/tags/category/source_date）を正規化した SHA-256。カード本文の**版識別子**。本文を書く経路（Stage 2 INSERT / `update_card` / `register_knowledge`）は共通 helper（`butly_core/core/card_content.py`）で必ず更新する |
 | `last_matured_content_hash` | TEXT | Stage 3 が最後に**成功レビュー**した版。NULL または `content_hash` と不一致ならレビューキュー内 |
 | `maturation_queued_at` | TEXT | 現在の版がキューへ入った固定長 UTC 時刻（`YYYY-MM-DDTHH:MM:SSZ`）。FIFO 選択の順序キー |

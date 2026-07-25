@@ -180,6 +180,7 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | **Written by** | Sleeptime Stage 2 (`stage_2_knowledgeize`) — LLM extracts knowledge cards per date group, INSERTs into DB |
 | **Input** | Raw JSON from 1_integrated, combined per date |
 | **Input chunking** | When `knowledge_max_input_chars` is set, splits at JSON file boundaries. "Adding the next file would exceed the limit → commit current chunk" |
+| **Card granularity** | One primary memory unit per card (event, decision, status change, ongoing state, or relationship development). Supporting facts about the same event may stay together, but independently retrievable events, time anchors, or source-file subsets are split. File boundaries are storage boundaries, not a one-file-one-card rule |
 | **Skip feature** | When `skip_knowledge_generation = true`, Stage 2 is skipped entirely. RAW data remains in 1_integrated for later batch processing with a higher-capability model |
 | **Schema** | `knowledge_cards` table (see below) |
 | **Embedding** | `title + tags + summary` embedded via `AI_CONFIG["embedding"]["model_name"]` → stored as BLOB |
@@ -203,7 +204,7 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | `humanity_importance` | REAL | Importance to humanity (0-1) |
 | `embedding_blob` | BLOB | float32 byte array for cosine similarity search |
 | `source_date` | TEXT | Date of the source conversation (YYYY-MM-DD). Search time decay is computed from this "event age" (older cards without it fall back to `created_at`) |
-| `source_files` | TEXT | JSON array of the RAW file names this card is based on; pointer back to the original conversations under `memory_archive/2_knowledgeized/{date}/`, used to resolve the RAG raw-excerpt injection when `rag_source_mode` is raw/both. Stage 2 asks the extraction model to name each card's own sources and keeps only names that actually exist in the chunk (hallucinated or unidentifiable ones fall back to the whole chunk). The narrower the per-card sources, the smaller the injected raw excerpt |
+| `source_files` | TEXT | JSON array of the RAW file names that directly support the card's primary memory unit; pointer back to the original conversations under `memory_archive/2_knowledgeized/{date}/`, used to resolve the RAG raw-excerpt injection when `rag_source_mode` is raw/both. Stage 2 asks the extraction model to name each card's own sources and keeps only names that actually exist in the chunk (hallucinated or unidentifiable ones fall back to the whole chunk). The narrower the per-card sources, the smaller the injected raw excerpt |
 | `content_hash` | TEXT | SHA-256 over the normalized semantic content passed to the Stage 3 prompt (title/summary/episode/tags/category/source_date) — the card body's **version identifier**. Every body-writing path (Stage 2 INSERT / `update_card` / `register_knowledge`) must update it via the shared helper (`butly_core/core/card_content.py`) |
 | `last_matured_content_hash` | TEXT | The version Stage 3 last **successfully reviewed**. The card is in the review queue while this is NULL or differs from `content_hash` |
 | `maturation_queued_at` | TEXT | Fixed-length UTC time (`YYYY-MM-DDTHH:MM:SSZ`) when the current version entered the queue; the FIFO ordering key |
