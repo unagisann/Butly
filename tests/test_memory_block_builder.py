@@ -253,7 +253,8 @@ class TestRAGWithNeed:
 
         rag = blocks["rag_context"]
         assert "・[2024-04-08] 陶芸教室: " in rag
-        assert "（各記憶の [YYYY-MM-DD] はその会話が行われた日付）" in rag
+        assert "[YYYY-MM-DD] は、その会話が行われた日付" in rag
+        assert "根拠が示す日付粒度を保ち" in rag
         # 旧形式カードはプレフィックスなしのまま
         assert "・旧カード: " in rag
         # 複数行 summary の継続行はインデントされる

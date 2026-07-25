@@ -36,8 +36,9 @@ The summary is an objective factual record used for search and later reference. 
 - Facts only. Never put impressions, evaluations, or interpretations ("it was striking", "heartwarming", etc.) in the Summary — all of those go to the Episode
 - Write facts as bullet points (line breaks allowed). Multiple sentences are fine
 - Preserve the 5W1H explicitly stated in the source (when, where, who, what, why, how); never drop them through abstraction or summarization
-- Convert relative time expressions (yesterday, last Sunday, last year, next month, etc.) to absolute dates based on the utterance timestamps (e.g. "painted it last year" → "painted it in 2022")
-- Always include when the event happened (the event date) if it can be determined. Do not settle for a duration or starting point like "since 2018" or "for 5 years" — record the date of the event itself (e.g. "Alex moved (2023-05-08)")
+- Convert relative time expressions (yesterday, last Sunday, last year, next month, etc.) using the timestamp of the utterance that contains the expression. Apply this to past events and future plans, and record both the resolved time and the original relationship when useful (e.g. "planning to camp in June 2023, the next month from 25 May 2023")
+- Preserve the source's time granularity when resolving relative expressions. A month-level expression must remain month-level, and a week-level expression must remain a week or supported date range; never invent an exact day or time
+- Always include when the event happened or was planned if it can be determined, at no greater precision than the evidence supports. Do not settle for a duration or starting point like "since 2018" or "for 5 years" when the event time itself is available (e.g. "Alex moved (2023-05-08)")
 - When a person's status facts come up (marital/relationship status, family, job, health, place of residence, etc.), record each as a standalone factual line instead of dissolving it into impressions (e.g. "Alex is single (as of 2023-06-09)")
 
 # Writing the Episode

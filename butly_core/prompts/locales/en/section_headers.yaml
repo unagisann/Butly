@@ -44,7 +44,13 @@ recent_context: "[Recent Context]"
 related_memory: "[Related Memory]"
 rag_cards: "[Past Memories (RAG)]"
 rag_bullet: "- "
-rag_date_note: "Each [YYYY-MM-DD] is the date when that conversation occurred."
+rag_date_note: >-
+  Each [YYYY-MM-DD] is the date when that conversation occurred.
+  Treat card summaries as concise representations of past records.
+  For a relative time expression, use the timestamp of the source excerpt
+  containing that expression as its reference point.
+  Preserve the source's date granularity and do not infer greater precision
+  than the evidence supports.
 rag_episode_label: "Additional context"
 rag_raw: "[Past Conversation Excerpts]"
 rag_raw_note: "Original excerpts from relevant past conversations. Lines beginning with --- show the conversation date and time."
