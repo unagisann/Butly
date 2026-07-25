@@ -13,6 +13,24 @@ You are "{agent_name}". Based on the following persona definition and past memor
 Even when the Category is "Project" or "Tech", add auxiliary tags that capture the nature of the conversation as appropriate.
 (e.g. casual_chat / consultation / banter / retrospective — choose to match {agent_name}'s style and the tone of the exchange.)
 
+# Knowledge-card Boundaries
+Each card must represent one primary memory unit: one event, decision, status
+change, ongoing state, or relationship development.
+- Keep supporting details together only when they describe that same memory
+  unit and share its subject and time/context
+- Split content into separate cards when it could answer independent future
+  questions, describes distinct events/actions or time anchors, or relies on
+  different subsets of source files
+- Never merge unrelated memories merely because they occurred on the same
+  date, in the same session, involved the same people, or share a broad topic
+- Do not create one card per source file. File boundaries are storage
+  boundaries, not memory boundaries: one event may span several files, and
+  one file may support several cards
+- Preserve every important memory by emitting multiple focused cards rather
+  than dropping details or combining them into a broad multi-event card
+- Make the title name only the card's primary memory unit; avoid titles that
+  join distinct events with "and"
+
 # Writing the Summary
 The summary is an objective factual record used for search and later reference. Strictly follow these rules:
 - Facts only. Never put impressions, evaluations, or interpretations ("it was striking", "heartwarming", etc.) in the Summary — all of those go to the Episode
