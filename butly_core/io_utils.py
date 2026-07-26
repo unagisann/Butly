@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Union
+from typing import Iterable, Union
 
 PathLike = Union[str, Path]
 
@@ -65,3 +65,61 @@ def atomic_write_bytes(path: PathLike, data: bytes) -> None:
         except OSError:
             pass
         raise
+
+
+def _restrict_secret_file_permissions(path: Path) -> None:
+    try:
+        path.chmod(0o600)
+    except OSError:
+        # Some platforms/filesystems do not expose POSIX permission bits.
+        pass
+
+
+def _env_assignment_name(line: str) -> str | None:
+    stripped = line.lstrip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return None
+    name, _, _ = stripped.partition("=")
+    return name.strip()
+
+
+def upsert_env_var(path: PathLike, name: str, value: str) -> None:
+    """Add or replace one variable while preserving unrelated ``.env`` lines."""
+    p = Path(path)
+    lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+    updated: list[str] = []
+    replaced = False
+
+    for line in lines:
+        if _env_assignment_name(line) == name:
+            if not replaced:
+                updated.append(f"{name}={value}")
+                replaced = True
+            continue
+        updated.append(line)
+
+    if not replaced:
+        updated.append(f"{name}={value}")
+
+    atomic_write_text(p, "\n".join(updated) + "\n")
+    _restrict_secret_file_permissions(p)
+
+
+def remove_env_vars(path: PathLike, names: Iterable[str]) -> bool:
+    """Remove variables from ``.env`` and preserve comments and blank lines."""
+    p = Path(path)
+    if not p.exists():
+        return False
+
+    names_set = set(names)
+    lines = p.read_text(encoding="utf-8").splitlines()
+    updated = [
+        line for line in lines if _env_assignment_name(line) not in names_set
+    ]
+    if len(updated) == len(lines):
+        return False
+
+    text = "\n".join(updated)
+    atomic_write_text(p, text + ("\n" if text else ""))
+    _restrict_secret_file_permissions(p)
+    return True

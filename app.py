@@ -11,6 +11,13 @@ from butly_core.core.memory import ButlyMemory
 from butly_core.core.brain import ButlyBrain
 from butly_core.core.chronos import ButlyChronos
 from butly_core.core.instance_manager import InstanceManager
+from butly_core.llm.selection import (
+    ModelChoice,
+    ensure_current_in_candidates,
+    find_current_index,
+    normalize_candidates,
+    set_model_choice,
+)
 
 # --- 基本設定 ---
 BASE_DIR = Path(__file__).resolve().parent
@@ -151,6 +158,8 @@ _CONNECTION_ICONS = {
     "openai": "🟩",
     "xai": "🟥",
     "ollama": "🟧",
+    "nanogpt": "💎",
+    "nanogpt-sub": "💎",
 }
 
 
@@ -197,6 +206,57 @@ def _get_role_candidates(api_url: str, role: str) -> list:
         return []
 
 
+@st.cache_data(ttl=30)
+def _get_connections(api_url: str) -> list:
+    """Connection metadata for provider-first model selection."""
+    try:
+        import requests as _req
+
+        resp = _req.get(f"{api_url}/settings/connections", timeout=8)
+        if resp.ok:
+            return resp.json().get("connections", [])
+    except Exception:
+        pass
+
+    try:
+        from butly_core.llm.connections import (
+            is_builtin_connection,
+            list_connections,
+        )
+
+        return [
+            {
+                "id": conn.id,
+                "label": conn.display_label,
+                "api_key_env": conn.api_key_env,
+                "api_key_set": bool(conn.resolve_api_key())
+                if conn.api_key_env
+                else None,
+                "embeddings_supported": conn.embeddings_supported,
+                "is_builtin": is_builtin_connection(conn.id),
+            }
+            for conn in list_connections()
+        ]
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=300)
+def _get_connection_templates(api_url: str) -> list:
+    try:
+        import requests as _req
+
+        resp = _req.get(
+            f"{api_url}/settings/connection_templates",
+            timeout=8,
+        )
+        if resp.ok:
+            return resp.json().get("templates", [])
+    except Exception:
+        pass
+    return []
+
+
 def _candidate_label(c: dict) -> str:
     """候補 dict を表示用ラベル文字列に整形する。"""
     icon = _CONNECTION_ICONS.get(c.get("connection_id"), "🔌")
@@ -206,6 +266,16 @@ def _candidate_label(c: dict) -> str:
     elif c.get("preview"):
         base += "  (preview)"
     return base
+
+
+def _connection_label(connection: dict) -> str:
+    connection_id = connection.get("id", "?")
+    icon = _CONNECTION_ICONS.get(connection_id, "🔌")
+    label = connection.get("label") or connection_id
+    key_status = ""
+    if connection.get("api_key_env"):
+        key_status = "  ✅" if connection.get("api_key_set") else "  🔑未設定"
+    return f"{icon} {label} ({connection_id}){key_status}"
 
 
 def get_provider_label(model_name: str) -> str:
@@ -225,86 +295,429 @@ def get_provider_label(model_name: str) -> str:
 
 
 def _model_selector(
-    label: str, current_value: str, candidates: list, key_prefix: str
-) -> str:
-    """
-    モデル選択の共通ウィジェット。
-    selectbox + 直接入力欄を表示し、最終的なモデル名を返す。
+    label: str,
+    current_value: str,
+    current_connection: str | None,
+    candidates: list,
+    connections: list,
+    key_prefix: str,
+    *,
+    embeddings_only: bool = False,
+) -> ModelChoice:
+    """Select a Connection first, then a model within that Connection."""
+    from butly_core.llm.model_registry import infer_connection_id
 
-    Parameters
-    ----------
-    candidates
-        list[dict] (新形式: /settings/model_candidates 由来) or list[str] (旧互換)。
-        dict の場合は ``{connection_id, model_name, label, deprecated, preview, ...}`` を期待。
-    """
-    # 旧形式 (list[str]) 互換: dict 化して統一処理する
-    normalized: list[dict] = []
-    for c in candidates:
-        if isinstance(c, dict):
-            normalized.append(c)
-        elif isinstance(c, str) and c.strip():
-            normalized.append({"model_name": c, "connection_id": None, "label": c})
+    normalized = normalize_candidates(candidates)
+    for candidate in normalized:
+        if not candidate.get("connection_id"):
+            candidate["connection_id"] = infer_connection_id(
+                candidate["model_name"]
+            )
 
-    model_names = [c.get("model_name") for c in normalized if c.get("model_name")]
-    # 現在値がリストになければ追加（過去に設定したカスタム値の保持）
-    if current_value and current_value not in model_names:
-        normalized.append(
-            {"model_name": current_value, "connection_id": None, "label": current_value}
-        )
-        model_names.append(current_value)
+    resolved_connection = current_connection or infer_connection_id(current_value)
+    if not resolved_connection and current_value:
+        matching_connections = {
+            candidate.get("connection_id")
+            for candidate in normalized
+            if candidate.get("model_name") == current_value
+            and candidate.get("connection_id")
+        }
+        if len(matching_connections) == 1:
+            resolved_connection = matching_connections.pop()
 
-    # selectbox には index を渡す (label は format_func で整形)
-    if not normalized:
-        # 候補ゼロ: 直接入力欄のみ
-        custom = st.text_input(
-            label,
+    current = ModelChoice(resolved_connection, current_value or "")
+    normalized = ensure_current_in_candidates(normalized, current)
+
+    connection_map = {
+        item.get("id"): dict(item)
+        for item in connections
+        if item.get("id")
+    }
+    for candidate in normalized:
+        connection_id = candidate.get("connection_id")
+        if connection_id and connection_id not in connection_map:
+            connection_map[connection_id] = {
+                "id": connection_id,
+                "label": connection_id,
+                "embeddings_supported": True,
+            }
+    if resolved_connection and resolved_connection not in connection_map:
+        connection_map[resolved_connection] = {
+            "id": resolved_connection,
+            "label": resolved_connection,
+            "embeddings_supported": True,
+        }
+
+    provider_ids = []
+    for connection_id, metadata in connection_map.items():
+        if (
+            embeddings_only
+            and not metadata.get("embeddings_supported", True)
+            and connection_id != resolved_connection
+        ):
+            continue
+        provider_ids.append(connection_id)
+
+    if not provider_ids:
+        fallback_model = st.text_input(
+            f"{label} — モデル",
             value=current_value or "",
-            placeholder="例: gemini-2.5-pro / ollama/llama3.2",
-            key=f"{key_prefix}_custom_only",
+            key=f"{key_prefix}_model_only",
         )
-        return custom.strip()
+        return ModelChoice(resolved_connection, fallback_model.strip())
 
-    try:
-        idx = model_names.index(current_value) if current_value in model_names else 0
-    except ValueError:
-        idx = 0
-    selected_idx = st.selectbox(
-        label,
-        options=list(range(len(normalized))),
-        index=idx,
-        key=f"{key_prefix}_select",
-        format_func=lambda i: _candidate_label(normalized[i]),
+    provider_index = (
+        provider_ids.index(resolved_connection)
+        if resolved_connection in provider_ids
+        else 0
     )
-    selected = normalized[selected_idx].get("model_name", "")
-
-    # deprecated 警告
-    if normalized[selected_idx].get("deprecated"):
-        repl = normalized[selected_idx].get("replacement")
-        if repl:
-            st.warning(f"⚠ {selected} は deprecated。代替: {repl}")
-        else:
-            st.warning(f"⚠ {selected} は deprecated。")
-
-    # 直接入力欄
-    custom = st.text_input(
-        "または直接入力:",
-        value="",
-        placeholder="例: ollama/my-model / gemini-2.5-pro",
-        key=f"{key_prefix}_custom",
-        label_visibility="visible",
+    selected_connection = st.selectbox(
+        f"{label} — プロバイダー / Connection",
+        options=provider_ids,
+        index=provider_index,
+        key=f"{key_prefix}_connection",
+        format_func=lambda connection_id: _connection_label(
+            connection_map[connection_id]
+        ),
     )
 
-    final = custom.strip() if custom.strip() else selected
-
-    # connection_id 表示 (新形式 candidate 由来があれば優先)
-    sel_conn = normalized[selected_idx].get("connection_id")
-    if sel_conn and not custom.strip():
-        icon = _CONNECTION_ICONS.get(sel_conn, "🔌")
-        st.caption(f"接続: {icon} {sel_conn}")
+    selected_candidates = [
+        candidate
+        for candidate in normalized
+        if candidate.get("connection_id") == selected_connection
+    ]
+    if selected_candidates:
+        selected_current = ModelChoice(
+            selected_connection,
+            current_value if selected_connection == resolved_connection else "",
+        )
+        model_index = find_current_index(selected_candidates, selected_current)
+        selected_index = st.selectbox(
+            f"{label} — モデル",
+            options=list(range(len(selected_candidates))),
+            index=model_index,
+            key=f"{key_prefix}_model_{selected_connection}",
+            format_func=lambda index: _candidate_label(
+                selected_candidates[index]
+            ),
+        )
+        selected_candidate = selected_candidates[selected_index]
+        selected_model = selected_candidate.get("model_name", "")
+        if selected_candidate.get("deprecated"):
+            replacement = selected_candidate.get("replacement")
+            suffix = f" 代替: {replacement}" if replacement else ""
+            st.warning(f"⚠ {selected_model} は deprecated。{suffix}")
     else:
-        st.caption(f"プロバイダー: {get_provider_label(final)}")
+        selected_model = ""
+        st.caption(
+            "モデル一覧を取得できません。APIキー設定後に再読込するか、"
+            "モデルIDを直接入力してください。"
+        )
 
-    return final
+    custom = st.text_input(
+        "モデルIDを直接入力（任意）",
+        value="",
+        placeholder="例: Qwen/Qwen3-14B",
+        key=f"{key_prefix}_custom_{selected_connection}",
+    ).strip()
+    return ModelChoice(selected_connection, custom or selected_model)
+
+
+def _api_error_detail(response) -> str:
+    try:
+        detail = response.json().get("detail")
+        if isinstance(detail, dict):
+            message = detail.get("message") or str(detail)
+            references = detail.get("references") or []
+            if references:
+                message += f"（参照: {', '.join(references)}）"
+            return message
+        if detail:
+            return str(detail)
+    except Exception:
+        pass
+    return response.text
+
+
+def _render_connection_manager(api_url: str) -> list:
+    """Render generic Connection, secret, test, and template management."""
+    import requests
+
+    connections = _get_connections(api_url)
+    st.subheader("🔌 Connection / APIキー管理")
+    st.caption(
+        "接続先とAPIキーをConnection単位で管理します。キー本体は保存後に"
+        "再表示されません。"
+    )
+
+    with st.expander("既存 Connection", expanded=True):
+        if not connections:
+            st.warning("Connection情報を取得できませんでした。")
+
+        env_users: dict[str, list[str]] = {}
+        for connection in connections:
+            env_name = connection.get("api_key_env")
+            if env_name:
+                env_users.setdefault(env_name, []).append(connection.get("id"))
+
+        for connection in connections:
+            connection_id = connection.get("id")
+            if not connection_id:
+                continue
+            with st.container(border=True):
+                header_cols = st.columns([5, 2, 2])
+                with header_cols[0]:
+                    badge = (
+                        "🔒 built-in"
+                        if connection.get("is_builtin")
+                        else "✏️ user"
+                    )
+                    st.markdown(
+                        f"**{_connection_label(connection)}** · {badge}"
+                    )
+                    if connection.get("base_url"):
+                        st.caption(
+                            f"`{connection['base_url']}` · "
+                            f"`{connection.get('protocol')}`"
+                        )
+                    if connection.get("notes"):
+                        st.caption(connection["notes"])
+                with header_cols[1]:
+                    st.caption(
+                        "Embedding: "
+                        + (
+                            "対応"
+                            if connection.get("embeddings_supported")
+                            else "非対応"
+                        )
+                    )
+                with header_cols[2]:
+                    if st.button(
+                        "📡 疎通テスト",
+                        key=f"test_conn_{connection_id}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            response = requests.post(
+                                f"{api_url}/settings/test_connection",
+                                json={"connection_id": connection_id},
+                                timeout=15,
+                            )
+                            result = response.json() if response.ok else {}
+                            if result.get("status") == "ok":
+                                st.success(
+                                    f"OK: {len(result.get('models') or [])}モデル"
+                                )
+                            else:
+                                st.error(
+                                    result.get("message")
+                                    or _api_error_detail(response)
+                                )
+                        except Exception as exc:
+                            st.error(f"接続エラー: {exc}")
+
+                api_key_env = connection.get("api_key_env")
+                if api_key_env:
+                    if len(env_users.get(api_key_env, [])) > 1:
+                        shared = ", ".join(env_users[api_key_env])
+                        st.caption(
+                            f"🔗 `{api_key_env}` は {shared} で共有されます。"
+                        )
+                    key_cols = st.columns([6, 1, 1])
+                    key_widget = f"connection_secret_{connection_id}"
+                    with key_cols[0]:
+                        api_key = st.text_input(
+                            (
+                                f"{api_key_env} "
+                                + (
+                                    "（設定済み）"
+                                    if connection.get("api_key_set")
+                                    else "（未設定）"
+                                )
+                            ),
+                            type="password",
+                            value="",
+                            key=key_widget,
+                            placeholder="新しいAPIキーを入力",
+                        )
+                    with key_cols[1]:
+                        if st.button(
+                            "🔑 保存",
+                            key=f"save_secret_{connection_id}",
+                            use_container_width=True,
+                        ):
+                            if not api_key:
+                                st.warning("APIキーを入力してください。")
+                            else:
+                                try:
+                                    response = requests.post(
+                                        (
+                                            f"{api_url}/settings/connections/"
+                                            f"{connection_id}/api_key"
+                                        ),
+                                        json={"api_key": api_key},
+                                        timeout=5,
+                                    )
+                                    if response.ok:
+                                        st.session_state.pop(key_widget, None)
+                                        st.cache_data.clear()
+                                        st.success("APIキーを保存しました。")
+                                        st.rerun()
+                                    else:
+                                        st.error(_api_error_detail(response))
+                                except Exception as exc:
+                                    st.error(f"保存エラー: {exc}")
+                    with key_cols[2]:
+                        if st.button(
+                            "解除",
+                            key=f"clear_secret_{connection_id}",
+                            disabled=not connection.get("api_key_set"),
+                            use_container_width=True,
+                        ):
+                            try:
+                                response = requests.delete(
+                                    (
+                                        f"{api_url}/settings/connections/"
+                                        f"{connection_id}/api_key"
+                                    ),
+                                    timeout=5,
+                                )
+                                if response.ok:
+                                    st.cache_data.clear()
+                                    st.success("APIキーを解除しました。")
+                                    st.rerun()
+                                else:
+                                    st.error(_api_error_detail(response))
+                            except Exception as exc:
+                                st.error(f"解除エラー: {exc}")
+                else:
+                    st.caption("🔓 APIキー不要")
+
+                if not connection.get("is_builtin"):
+                    delete_cols = st.columns([5, 2, 1])
+                    with delete_cols[1]:
+                        force_delete = st.checkbox(
+                            "参照中でも強制",
+                            key=f"force_delete_{connection_id}",
+                            help=(
+                                "参照中のモデル設定が壊れる可能性があります。"
+                                "通常は先にモデル割り当てを変更してください。"
+                            ),
+                        )
+                    with delete_cols[2]:
+                        if st.button(
+                            "🗑️ 削除",
+                            key=f"delete_conn_{connection_id}",
+                            use_container_width=True,
+                        ):
+                            try:
+                                response = requests.delete(
+                                    (
+                                        f"{api_url}/settings/connections/"
+                                        f"{connection_id}"
+                                    ),
+                                    params={"force": force_delete},
+                                    timeout=5,
+                                )
+                                if response.ok:
+                                    st.cache_data.clear()
+                                    st.success(
+                                        f"{connection_id} を削除しました。"
+                                    )
+                                    st.rerun()
+                                else:
+                                    st.error(_api_error_detail(response))
+                            except Exception as exc:
+                                st.error(f"削除エラー: {exc}")
+
+    with st.expander("➕ Connectionを追加"):
+        templates = _get_connection_templates(api_url)
+        template_map = {
+            template["id"]: template
+            for template in templates
+            if template.get("id")
+        }
+        template_ids = ["__custom__", *template_map]
+        selected_template_id = st.selectbox(
+            "プロバイダーテンプレート",
+            options=template_ids,
+            format_func=lambda template_id: (
+                "カスタム（OpenAI互換）"
+                if template_id == "__custom__"
+                else template_map[template_id].get("label", template_id)
+            ),
+            key="new_connection_template",
+        )
+        template = template_map.get(selected_template_id, {})
+        widget_suffix = selected_template_id.replace("-", "_")
+
+        if template.get("notes"):
+            st.info(template["notes"])
+
+        form_cols = st.columns(2)
+        with form_cols[0]:
+            new_id = st.text_input(
+                "Connection ID",
+                value=template.get("id", ""),
+                key=f"new_conn_id_{widget_suffix}",
+                help="小文字英数字で開始し、英数字・_・-を使用できます。",
+            )
+            new_label = st.text_input(
+                "表示名",
+                value=template.get("label", ""),
+                key=f"new_conn_label_{widget_suffix}",
+            )
+        with form_cols[1]:
+            new_base_url = st.text_input(
+                "Base URL",
+                value=template.get("base_url", ""),
+                key=f"new_conn_base_url_{widget_suffix}",
+                placeholder="https://example.com/v1",
+            )
+            new_api_key_env = st.text_input(
+                "APIキー環境変数名",
+                value=template.get("api_key_env", ""),
+                key=f"new_conn_api_env_{widget_suffix}",
+                placeholder="EXAMPLE_API_KEY",
+            )
+        new_embeddings = st.checkbox(
+            "Embeddings対応",
+            value=bool(template.get("embeddings_supported", False)),
+            key=f"new_conn_embeddings_{widget_suffix}",
+        )
+
+        if st.button("💾 Connectionを追加", key="add_connection"):
+            payload = {
+                "id": new_id.strip(),
+                "protocol": template.get("protocol", "openai_compat"),
+                "base_url": new_base_url.strip() or None,
+                "api_key_env": new_api_key_env.strip() or None,
+                "label": new_label.strip() or None,
+                "embeddings_supported": bool(new_embeddings),
+                "extra_headers": template.get("extra_headers", {}),
+            }
+            if not payload["id"] or not payload["base_url"]:
+                st.error("Connection IDとBase URLは必須です。")
+            else:
+                try:
+                    response = requests.post(
+                        f"{api_url}/settings/connections",
+                        json=payload,
+                        timeout=5,
+                    )
+                    if response.ok:
+                        st.cache_data.clear()
+                        st.success(
+                            "Connectionを追加しました。"
+                            "一覧からAPIキーを保存してください。"
+                        )
+                        st.rerun()
+                    else:
+                        st.error(_api_error_detail(response))
+                except Exception as exc:
+                    st.error(f"追加エラー: {exc}")
+
+    return connections
 
 
 # --- マネージャー初期化 ---
@@ -848,117 +1261,38 @@ def render_settings_screen():
 
         api_url = st.session_state.api_base_url
 
-        # --- セクション1: APIキー管理 ---
-        st.subheader("🔑 APIキー設定")
+        # --- セクション1: Connection / LLM APIキー管理 ---
+        _provider_connections = _render_connection_manager(api_url)
 
-        # ステータス取得
-        key_status = {
-            "gemini": False,
-            "openai": False,
-            "xai": False,
-            "ollama_web_search": False,
-        }
-        try:
-            status_resp = requests.get(f"{api_url}/settings/api_key_status", timeout=5)
-            if status_resp.ok:
-                key_status = status_resp.json()
-        except Exception:
-            pass
+        st.divider()
 
-        gemini_status = "✅ 設定済み" if key_status.get("gemini") else "❌ 未設定"
-        openai_status = "✅ 設定済み" if key_status.get("openai") else "❌ 未設定"
-        xai_status = "✅ 設定済み" if key_status.get("xai") else "❌ 未設定"
-        ollama_ws_status = (
-            "✅ 設定済み" if key_status.get("ollama_web_search") else "❌ 未設定"
-        )
-        st.caption(
-            f"Gemini: {gemini_status} / OpenAI: {openai_status} / xAI: {xai_status} / Ollama WebSearch: {ollama_ws_status}"
-        )
-
-        col_k1, col_k2, col_k3, col_k4 = st.columns(4)
-        with col_k1:
-            gemini_key = st.text_input(
-                "Google Gemini API Key",
-                type="password",
-                placeholder="AIza...",
-                key="provider_gemini_key",
-            )
-            if st.button("💾 保存", key="save_gemini_key"):
-                if gemini_key:
-                    try:
-                        resp = requests.post(
-                            f"{api_url}/settings/api_key",
-                            json={"api_key": gemini_key, "key_type": "gemini"},
-                            timeout=5,
-                        )
-                        if resp.ok:
-                            st.success("✅ Gemini APIキーを保存しました。")
-                            st.rerun()
-                        else:
-                            st.error(f"保存エラー: {resp.text}")
-                    except Exception as e:
-                        st.error(f"サーバー接続エラー: {e}")
-                else:
-                    st.warning("キーが入力されていません。")
-        with col_k2:
-            openai_key = st.text_input(
-                "OpenAI API Key",
-                type="password",
-                placeholder="sk-...",
-                key="provider_openai_key",
-            )
-            if st.button("💾 保存", key="save_openai_key"):
-                if openai_key:
-                    try:
-                        resp = requests.post(
-                            f"{api_url}/settings/api_key",
-                            json={"api_key": openai_key, "key_type": "openai"},
-                            timeout=5,
-                        )
-                        if resp.ok:
-                            st.success("✅ OpenAI APIキーを保存しました。")
-                            st.rerun()
-                        else:
-                            st.error(f"保存エラー: {resp.text}")
-                    except Exception as e:
-                        st.error(f"サーバー接続エラー: {e}")
-                else:
-                    st.warning("キーが入力されていません。")
-        with col_k3:
-            xai_key = st.text_input(
-                "xAI (Grok) API Key",
-                type="password",
-                placeholder="xai-...",
-                key="provider_xai_key",
-            )
-            if st.button("💾 保存", key="save_xai_key"):
-                if xai_key:
-                    try:
-                        resp = requests.post(
-                            f"{api_url}/settings/api_key",
-                            json={"api_key": xai_key, "key_type": "xai"},
-                            timeout=5,
-                        )
-                        if resp.ok:
-                            st.success("✅ xAI APIキーを保存しました。")
-                            st.rerun()
-                        else:
-                            st.error(f"保存エラー: {resp.text}")
-                    except Exception as e:
-                        st.error(f"サーバー接続エラー: {e}")
-                else:
-                    st.warning("キーが入力されていません。")
-        with col_k4:
+        # LLM Connectionではない検索サービス用キーは独立して管理する。
+        with st.expander("🔎 Ollama Web Search APIキー"):
+            try:
+                status_response = requests.get(
+                    f"{api_url}/settings/api_key_status",
+                    timeout=5,
+                )
+                search_key_set = bool(
+                    status_response.ok
+                    and status_response.json().get("ollama_web_search")
+                )
+            except Exception:
+                search_key_set = False
+            st.caption("✅ 設定済み" if search_key_set else "❌ 未設定")
+            search_key_widget = "provider_ollama_ws_key"
             ollama_ws_key = st.text_input(
                 "Ollama WebSearch API Key",
                 type="password",
-                placeholder="ollama-...",
-                key="provider_ollama_ws_key",
+                value="",
+                key=search_key_widget,
             )
             if st.button("💾 保存", key="save_ollama_ws_key"):
-                if ollama_ws_key:
+                if not ollama_ws_key:
+                    st.warning("キーを入力してください。")
+                else:
                     try:
-                        resp = requests.post(
+                        response = requests.post(
                             f"{api_url}/settings/api_key",
                             json={
                                 "api_key": ollama_ws_key,
@@ -966,15 +1300,14 @@ def render_settings_screen():
                             },
                             timeout=5,
                         )
-                        if resp.ok:
-                            st.success("✅ Ollama WebSearch APIキーを保存しました。")
+                        if response.ok:
+                            st.session_state.pop(search_key_widget, None)
+                            st.success("APIキーを保存しました。")
                             st.rerun()
                         else:
-                            st.error(f"保存エラー: {resp.text}")
-                    except Exception as e:
-                        st.error(f"サーバー接続エラー: {e}")
-                else:
-                    st.warning("キーが入力されていません。")
+                            st.error(_api_error_detail(response))
+                    except Exception as exc:
+                        st.error(f"保存エラー: {exc}")
 
         st.divider()
 
@@ -1029,6 +1362,7 @@ def render_settings_screen():
         ROLE_LABELS = {
             "chat": "Chat (メイン応答)",
             "summary": "Summary (要約)",
+            "knowledge": "Knowledge (知識抽出)",
             "gatekeeper": "Gatekeeper (Tier判定)",
             "embedding": "Embedding (ベクトル化)",
         }
@@ -1036,14 +1370,24 @@ def render_settings_screen():
         provider_ai_cfg = provider_cfg.get("AI_CONFIG", {})
         model_selections = {}
 
-        for role in ["chat", "summary", "gatekeeper", "embedding"]:
-            current_model = provider_ai_cfg.get(role, {}).get("model_name", "")
+        for role in [
+            "chat",
+            "summary",
+            "knowledge",
+            "gatekeeper",
+            "embedding",
+        ]:
+            current_role = provider_ai_cfg.get(role, {})
+            current_model = current_role.get("model_name", "")
             _candidates = _get_role_candidates(api_url, role)
             model_selections[role] = _model_selector(
                 label=ROLE_LABELS[role],
                 current_value=current_model,
+                current_connection=current_role.get("connection"),
                 candidates=_candidates,
+                connections=_provider_connections,
                 key_prefix=f"provider_model_{role}",
+                embeddings_only=(role == "embedding"),
             )
 
         st.divider()
@@ -1079,7 +1423,9 @@ def render_settings_screen():
         if st.button("💾 モデル設定を保存", type="primary", key="save_provider_models"):
             # 空白ガード
             empty_roles = [
-                r for r, m in model_selections.items() if not m or not m.strip()
+                role
+                for role, choice in model_selections.items()
+                if not choice.model_name.strip()
             ]
             if empty_roles:
                 st.error(
@@ -1087,10 +1433,14 @@ def render_settings_screen():
                 )
             else:
                 # provider_cfg のAI_CONFIGを更新
-                for role, model_name in model_selections.items():
-                    provider_ai_cfg.setdefault(role, {})[
-                        "model_name"
-                    ] = model_name.strip()
+                for role, choice in model_selections.items():
+                    set_model_choice(
+                        provider_ai_cfg.setdefault(role, {}),
+                        ModelChoice(
+                            choice.connection_id,
+                            choice.model_name.strip(),
+                        ),
+                    )
                 provider_cfg["AI_CONFIG"] = provider_ai_cfg
                 try:
                     save_resp = requests.post(
@@ -1102,136 +1452,6 @@ def render_settings_screen():
                         st.error(f"保存エラー: {save_resp.text}")
                 except Exception as e:
                     st.error(f"サーバー接続エラー: {e}")
-
-        st.divider()
-
-        # --- セクション3.5: Connection 管理 (Phase 3) ---
-        st.subheader("🔌 Connection 管理")
-        st.caption(
-            "OpenAI 互換 provider (Groq / Together / DeepInfra / OpenRouter / Ollama Remote 等) を "
-            "Connection エントリとして追加できます。built-in (google/openai/xai/ollama) は削除できません。"
-        )
-
-        with st.expander("既存 Connection 一覧", expanded=True):
-            try:
-                _conn_resp = requests.get(f"{api_url}/settings/connections", timeout=5)
-                _conns = (
-                    _conn_resp.json().get("connections", []) if _conn_resp.ok else []
-                )
-            except Exception as e:
-                _conns = []
-                st.error(f"Connection 取得失敗: {e}")
-
-            for _c in _conns:
-                _cid = _c.get("id")
-                _icon = _CONNECTION_ICONS.get(_cid, "🔌")
-                _label = _c.get("label") or _cid
-                _builtin = _c.get("is_builtin")
-                _key_set = _c.get("api_key_set")
-                _key_env = _c.get("api_key_env")
-                cols = st.columns([3, 2, 2, 1, 1])
-                with cols[0]:
-                    badge = "🔒 built-in" if _builtin else "✏️ user"
-                    st.markdown(f"{_icon} **{_cid}** — {_label}  ·  {badge}")
-                    if _c.get("base_url"):
-                        st.caption(
-                            f"`{_c['base_url']}`  protocol=`{_c.get('protocol')}`"
-                        )
-                with cols[1]:
-                    if _key_env:
-                        if _key_set:
-                            st.caption(f"🔑 {_key_env}: ✅")
-                        else:
-                            st.caption(f"🔑 {_key_env}: ❌ 未設定")
-                    else:
-                        st.caption("🔑 auth 不要")
-                with cols[2]:
-                    st.caption(
-                        f"埋め込み: {'対応' if _c.get('embeddings_supported') else '非対応'}"
-                    )
-                with cols[3]:
-                    if st.button("📡 疎通", key=f"test_conn_{_cid}"):
-                        try:
-                            tr = requests.post(
-                                f"{api_url}/settings/test_connection",
-                                json={"connection_id": _cid},
-                                timeout=15,
-                            )
-                            res = tr.json() if tr.ok else {}
-                            if res.get("status") == "ok":
-                                st.success(
-                                    f"✅ OK ({len(res.get('models') or [])} モデル)"
-                                )
-                            else:
-                                st.error(f"❌ {res.get('message', tr.text)}")
-                        except Exception as e:
-                            st.error(f"接続エラー: {e}")
-                with cols[4]:
-                    if not _builtin:
-                        if st.button("🗑️", key=f"del_conn_{_cid}", help="削除"):
-                            try:
-                                dr = requests.delete(
-                                    f"{api_url}/settings/connections/{_cid}",
-                                    timeout=5,
-                                )
-                                if dr.ok:
-                                    st.success(f"{_cid} を削除しました")
-                                    st.cache_data.clear()
-                                    st.rerun()
-                                else:
-                                    st.error(dr.text)
-                            except Exception as e:
-                                st.error(str(e))
-
-        with st.expander("➕ 新規 Connection を追加 (OpenAI 互換)"):
-            new_id = st.text_input(
-                "ID (英数字+ハイフン)", key="new_conn_id", placeholder="例: groq"
-            )
-            new_label = st.text_input(
-                "表示名 (任意)", key="new_conn_label", placeholder="例: Groq"
-            )
-            new_base_url = st.text_input(
-                "Base URL",
-                key="new_conn_base_url",
-                placeholder="https://api.groq.com/openai/v1",
-            )
-            new_api_key_env = st.text_input(
-                "API キー env 変数名 (任意)",
-                key="new_conn_api_env",
-                placeholder="GROQ_API_KEY",
-            )
-            new_emb = st.checkbox(
-                "Embeddings 対応",
-                value=False,
-                key="new_conn_emb",
-                help="このプロバイダーが /embeddings をサポートする場合のみ ON",
-            )
-            if st.button("💾 Connection を追加", key="add_conn"):
-                payload = {
-                    "id": new_id.strip(),
-                    "protocol": "openai_compat",
-                    "base_url": new_base_url.strip() or None,
-                    "api_key_env": new_api_key_env.strip() or None,
-                    "label": new_label.strip() or None,
-                    "embeddings_supported": bool(new_emb),
-                }
-                if not payload["id"] or not payload["base_url"]:
-                    st.error("ID と Base URL は必須です。")
-                else:
-                    try:
-                        ar = requests.post(
-                            f"{api_url}/settings/connections",
-                            json=payload,
-                            timeout=5,
-                        )
-                        if ar.ok:
-                            st.success(f"{payload['id']} を追加しました。")
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            st.error(ar.text)
-                    except Exception as e:
-                        st.error(f"サーバー接続エラー: {e}")
 
         st.divider()
 
@@ -1777,6 +1997,7 @@ def render_instance_settings_screen():
     _knowledge_candidates = _get_role_candidates(api_url, "knowledge")
     _gatekeeper_candidates = _get_role_candidates(api_url, "gatekeeper")
     _embedding_candidates = _get_role_candidates(api_url, "embedding")
+    _instance_connections = _get_connections(api_url)
 
     # =====================
     # タブ分割: 基本設定 / 詳細設定
@@ -1885,10 +2106,12 @@ def render_instance_settings_screen():
         # ---- Chat モデル（メイン応答） ----
         with st.expander("💬 Chat（メイン応答）", expanded=True):
             _chat_gen = config["chat"].get("generation_config", {})
-            model_name = _model_selector(
+            model_choice = _model_selector(
                 "モデル名",
                 config["chat"].get("model_name", "gemini-3.5-flash"),
+                config["chat"].get("connection"),
                 _chat_candidates,
+                _instance_connections,
                 "inst_chat_model",
             )
             temp = st.slider(
@@ -1923,17 +2146,22 @@ def render_instance_settings_screen():
             if _gk_use_global:
                 _gk_default = _global_ai.get("gatekeeper", {})
                 st.info(f"グローバル設定: {_gk_default.get('model_name', '未設定')}")
-                gk_model_name = None
+                gk_model_choice = None
                 gk_temp = None
             else:
                 _gk_cur = config.get("gatekeeper", {})
-                gk_model_name = _model_selector(
+                gk_model_choice = _model_selector(
                     "モデル名",
                     _gk_cur.get(
                         "model_name",
                         _global_ai.get("gatekeeper", {}).get("model_name", ""),
                     ),
+                    _gk_cur.get(
+                        "connection",
+                        _global_ai.get("gatekeeper", {}).get("connection"),
+                    ),
                     _gatekeeper_candidates,
+                    _instance_connections,
                     "inst_gk_model",
                 )
                 gk_temp = st.slider(
@@ -1957,17 +2185,22 @@ def render_instance_settings_screen():
             if _sum_use_global:
                 _sum_default = _global_ai.get("summary", {})
                 st.info(f"グローバル設定: {_sum_default.get('model_name', '未設定')}")
-                sum_model_name = None
+                sum_model_choice = None
                 sum_temp = None
             else:
                 _sum_cur = config.get("summary", {})
-                sum_model_name = _model_selector(
+                sum_model_choice = _model_selector(
                     "モデル名",
                     _sum_cur.get(
                         "model_name",
                         _global_ai.get("summary", {}).get("model_name", ""),
                     ),
+                    _sum_cur.get(
+                        "connection",
+                        _global_ai.get("summary", {}).get("connection"),
+                    ),
                     _summary_candidates,
+                    _instance_connections,
                     "inst_sum_model",
                 )
                 sum_temp = st.slider(
@@ -1991,17 +2224,22 @@ def render_instance_settings_screen():
             if _know_use_global:
                 _know_default = _global_ai.get("knowledge", {})
                 st.info(f"グローバル設定: {_know_default.get('model_name', '未設定')}")
-                know_model_name = None
+                know_model_choice = None
                 know_temp = None
             else:
                 _know_cur = config.get("knowledge", {})
-                know_model_name = _model_selector(
+                know_model_choice = _model_selector(
                     "モデル名",
                     _know_cur.get(
                         "model_name",
                         _global_ai.get("knowledge", {}).get("model_name", ""),
                     ),
+                    _know_cur.get(
+                        "connection",
+                        _global_ai.get("knowledge", {}).get("connection"),
+                    ),
                     _knowledge_candidates,
+                    _instance_connections,
                     "inst_know_model",
                 )
                 know_temp = st.slider(
@@ -2028,17 +2266,23 @@ def render_instance_settings_screen():
             if _emb_use_global:
                 _emb_default = _global_ai.get("embedding", {})
                 st.info(f"グローバル設定: {_emb_default.get('model_name', '未設定')}")
-                emb_model_name = None
+                emb_model_choice = None
             else:
                 _emb_cur = config.get("embedding", {})
-                emb_model_name = _model_selector(
+                emb_model_choice = _model_selector(
                     "モデル名",
                     _emb_cur.get(
                         "model_name",
                         _global_ai.get("embedding", {}).get("model_name", ""),
                     ),
+                    _emb_cur.get(
+                        "connection",
+                        _global_ai.get("embedding", {}).get("connection"),
+                    ),
                     _embedding_candidates,
+                    _instance_connections,
                     "inst_emb_model",
+                    embeddings_only=True,
                 )
 
         st.divider()
@@ -2102,7 +2346,7 @@ def render_instance_settings_screen():
             value=config.get("brain", {}).get("use_rag", True),
             help="OFF にすると過去の記憶DBからの検索を行いません。短期記憶・中期記憶のみで応答します。",
         )
-        _is_gemini_inst = is_gemini_provider(model_name)
+        _is_gemini_inst = model_choice.connection_id == "google"
         if _is_gemini_inst:
             default_gs = st.toggle(
                 "Google検索のデフォルト有効化",
@@ -2812,17 +3056,6 @@ def render_instance_settings_screen():
     # 保存処理（両タブ共通）
     # ==========================================
     if save_basic or save_advanced:
-        from butly_core.llm.model_registry import infer_connection_id
-
-        def _set_model_ref(target: dict, selected_model: str) -> None:
-            """model_name と推定可能な built-in connection を一緒に保存する。"""
-            target["model_name"] = selected_model
-            inferred = infer_connection_id(selected_model)
-            if inferred:
-                target["connection"] = inferred
-            else:
-                target.pop("connection", None)
-
         # Update values
         config["brain"]["default_use_google_search"] = default_gs
         config["brain"]["readable_instances"] = readable_selected
@@ -2833,15 +3066,15 @@ def render_instance_settings_screen():
         config["brain"]["keyword_hit_threshold"] = keyword_thr
 
         # --- Chat ---
-        _set_model_ref(config["chat"], model_name)
+        set_model_choice(config["chat"], model_choice)
         config["chat"].setdefault("generation_config", {})
         config["chat"]["generation_config"]["temperature"] = temp
         config["chat"]["generation_config"]["max_output_tokens"] = max_tokens
 
         # --- Gatekeeper ---
         _gk_save = {"enabled": gk_enabled}
-        if gk_model_name is not None:  # "グローバル設定を使う" がOFF
-            _set_model_ref(_gk_save, gk_model_name)
+        if gk_model_choice is not None:  # "グローバル設定を使う" がOFF
+            set_model_choice(_gk_save, gk_model_choice)
             _gk_save["generation_config"] = {
                 "temperature": gk_temp,
                 "max_output_tokens": 512,
@@ -2849,27 +3082,27 @@ def render_instance_settings_screen():
         config["gatekeeper"] = _gk_save
 
         # --- Summary ---
-        if sum_model_name is not None:
+        if sum_model_choice is not None:
             config["summary"] = {
                 "generation_config": {"temperature": sum_temp},
             }
-            _set_model_ref(config["summary"], sum_model_name)
+            set_model_choice(config["summary"], sum_model_choice)
         else:
             config.pop("summary", None)
 
         # --- Knowledge ---
-        if know_model_name is not None:
+        if know_model_choice is not None:
             config["knowledge"] = {
                 "generation_config": {"temperature": know_temp},
             }
-            _set_model_ref(config["knowledge"], know_model_name)
+            set_model_choice(config["knowledge"], know_model_choice)
         else:
             config.pop("knowledge", None)
 
         # --- Embedding ---
-        if emb_model_name is not None:
+        if emb_model_choice is not None:
             config["embedding"] = {}
-            _set_model_ref(config["embedding"], emb_model_name)
+            set_model_choice(config["embedding"], emb_model_choice)
         else:
             config.pop("embedding", None)
 

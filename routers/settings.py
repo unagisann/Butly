@@ -6,11 +6,12 @@ routers/settings.py
 
 import json
 import os
-from typing import Dict, Any, Optional
+from pathlib import Path
+from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Body, BackgroundTasks
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from butly_core.config import (
     AI_CONFIG,
@@ -18,7 +19,13 @@ from butly_core.config import (
     USER_CONFIG_PATH,
     _recursive_update,
 )
-from butly_core.io_utils import atomic_write_text
+from butly_core.io_utils import (
+    atomic_write_text,
+    remove_env_vars,
+    upsert_env_var,
+)
+from butly_core.settings import clear_settings_cache
+from butly_core.settings.connections import LLMConnection
 import butly_core.prompts as prompts_module
 from butly_core.prompts import USER_PROMPTS_PATH
 
@@ -36,6 +43,10 @@ class SettingsRequest(BaseModel):
 class ApiKeyRequest(BaseModel):
     api_key: str
     key_type: str = "gemini"
+
+
+class ConnectionApiKeyRequest(BaseModel):
+    api_key: str
 
 
 # --- Settings Persistence Helpers ---
@@ -63,6 +74,29 @@ def load_settings_from_file():
 def save_settings_to_file(settings: dict):
     sf = _get_settings_file()
     atomic_write_text(sf, json.dumps(settings, indent=2))
+
+
+def _env_file_path() -> Path:
+    """Return the runtime ``.env`` path, including direct-test fallback."""
+    data_dir = deps.DATA_DIR
+    if data_dir is None:
+        data_dir = USER_CONFIG_PATH.parent
+    return data_dir / ".env"
+
+
+def _validate_api_key_value(value: str) -> str:
+    if any(
+        ord(char) < 32 or 127 <= ord(char) <= 159
+        for char in value
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="APIキーに制御文字を含めることはできません",
+        )
+    key = value.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="APIキーが空です")
+    return key
 
 
 def apply_startup_settings():
@@ -96,9 +130,7 @@ def update_settings(request: SettingsRequest):
 @router.post("/settings/api_key")
 def set_api_key(request: ApiKeyRequest):
     """APIキーをDATA_DIR/.envに書き込み、即座にos.environに反映する。"""
-    key = request.api_key.strip()
-    if not key:
-        raise HTTPException(status_code=400, detail="APIキーが空です")
+    key = _validate_api_key_value(request.api_key)
 
     # key_type → 環境変数名の明示的マッピング
     _KEY_TYPE_MAP = {
@@ -115,21 +147,9 @@ def set_api_key(request: ApiKeyRequest):
             detail=f"不明な key_type: {request.key_type} (有効値: {', '.join(_KEY_TYPE_MAP)})",
         )
 
-    env_path = deps.DATA_DIR / ".env"
-
-    env_vars = {}
-    if env_path.exists():
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, _, v = line.partition("=")
-                env_vars[k.strip()] = v.strip()
-
-    env_vars[env_name] = key
+    env_path = _env_file_path()
+    upsert_env_var(env_path, env_name, key)
     os.environ[env_name] = key
-
-    lines = [f"{k}={v}" for k, v in env_vars.items()]
-    atomic_write_text(env_path, "\n".join(lines) + "\n")
 
     print(f"[Server] {request.key_type} API key updated and saved to {env_path}")
     return {"message": f"{request.key_type} APIキーを保存しました"}
@@ -195,17 +215,22 @@ def get_config():
 
 @router.post("/config")
 def update_config(config_data: Dict[str, Any] = Body(...)):
-    """Update configuration and save to user_config.json."""
+    """Update config sections without erasing unrelated top-level settings."""
     try:
+        persisted = _load_user_config()
+        for section in ("AI_CONFIG", "SYSTEM_CONFIG"):
+            if section in config_data:
+                persisted[section] = config_data[section]
         atomic_write_text(
             USER_CONFIG_PATH,
-            json.dumps(config_data, indent=4, ensure_ascii=False),
+            json.dumps(persisted, indent=4, ensure_ascii=False),
         )
 
         if "AI_CONFIG" in config_data:
             _recursive_update(AI_CONFIG, config_data["AI_CONFIG"])
         if "SYSTEM_CONFIG" in config_data:
             _recursive_update(SYSTEM_CONFIG, config_data["SYSTEM_CONFIG"])
+        clear_settings_cache()
 
         return {"message": "Config updated", "config": get_config()}
     except Exception as e:
@@ -256,21 +281,12 @@ def update_prompts(prompts_data: Dict[str, str] = Body(...)):
 # =====================================================================
 
 
-class ConnectionPayload(BaseModel):
+class ConnectionPayload(LLMConnection):
     """user_config.json の LLM_CONNECTIONS 1 エントリ。"""
 
-    id: str
+    model_config = ConfigDict(extra="forbid")
+
     protocol: str = "openai_compat"
-    base_url: Optional[str] = None
-    base_url_env: Optional[str] = None
-    api_key_env: Optional[str] = None
-    api_key_fallback_envs: list = []
-    label: Optional[str] = None
-    extra_headers: Dict[str, str] = {}
-    embeddings_supported: bool = True
-    embedding_model_env: Optional[str] = None
-    default_embedding_model: Optional[str] = None
-    model_name_strip_prefix: Optional[str] = None
 
 
 def _load_user_config() -> dict:
@@ -288,6 +304,7 @@ def _save_user_config(data: dict) -> None:
         USER_CONFIG_PATH,
         json.dumps(data, indent=4, ensure_ascii=False),
     )
+    clear_settings_cache()
 
 
 def _connection_to_dict(conn) -> dict:
@@ -320,6 +337,18 @@ def list_connections_endpoint():
         d["api_key_set"] = bool(conn.resolve_api_key()) if conn.api_key_env else None
         items.append(d)
     return {"connections": items}
+
+
+@router.get("/settings/connection_templates")
+def list_connection_templates():
+    """Return safe, non-secret templates for common compatible providers."""
+    from butly_core.llm.provider_catalog import list_provider_templates
+
+    return {
+        "templates": [
+            template.to_dict() for template in list_provider_templates()
+        ]
+    }
 
 
 @router.post("/settings/connections")
@@ -367,7 +396,7 @@ def add_connection(payload: ConnectionPayload):
     existing = cfg.get("LLM_CONNECTIONS", []) or []
     if not isinstance(existing, list):
         existing = []
-    entry = payload.model_dump(exclude_none=False)
+    entry = payload.model_dump(mode="json", exclude_none=False)
     # 既存 id は置換、なければ追加
     replaced = False
     for i, e in enumerate(existing):
@@ -386,8 +415,63 @@ def add_connection(payload: ConnectionPayload):
     }
 
 
+def _find_connection_references(
+    value: Any,
+    connection_id: str,
+    prefix: str,
+) -> list[str]:
+    references: list[str] = []
+    if isinstance(value, dict):
+        if value.get("connection") == connection_id:
+            references.append(prefix)
+        for key, child in value.items():
+            references.extend(
+                _find_connection_references(
+                    child,
+                    connection_id,
+                    f"{prefix}.{key}",
+                )
+            )
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            references.extend(
+                _find_connection_references(
+                    child,
+                    connection_id,
+                    f"{prefix}[{index}]",
+                )
+            )
+    return references
+
+
+def _connection_references(connection_id: str) -> list[str]:
+    references = _find_connection_references(
+        AI_CONFIG,
+        connection_id,
+        "AI_CONFIG",
+    )
+
+    instances_dir = deps.INSTANCES_DIR
+    if instances_dir is None or not instances_dir.exists():
+        return sorted(set(references))
+
+    for config_path in sorted(instances_dir.glob("*/config.json")):
+        try:
+            instance_config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        references.extend(
+            _find_connection_references(
+                instance_config,
+                connection_id,
+                f"instance:{config_path.parent.name}",
+            )
+        )
+    return sorted(set(references))
+
+
 @router.delete("/settings/connections/{connection_id}")
-def delete_connection(connection_id: str):
+def delete_connection(connection_id: str, force: bool = False):
     """user 定義 Connection を削除する。built-in は不可。"""
     from butly_core.llm.connections import get_registry, is_builtin_connection
 
@@ -401,7 +485,17 @@ def delete_connection(connection_id: str):
         raise HTTPException(
             status_code=404, detail=f"Connection 未登録: {connection_id}"
         )
-    reg.unregister(connection_id)
+    references = _connection_references(connection_id)
+    if references and not force:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"Connection {connection_id!r} はモデル設定から参照中です"
+                ),
+                "references": references,
+            },
+        )
 
     # user_config.json から除去
     cfg = _load_user_config()
@@ -413,7 +507,85 @@ def delete_connection(connection_id: str):
             if not (isinstance(e, dict) and e.get("id") == connection_id)
         ]
         _save_user_config(cfg)
+    reg.unregister(connection_id)
     return {"message": f"Connection {connection_id!r} を削除しました"}
+
+
+def _require_connection(connection_id: str):
+    from butly_core.llm.connections import try_get_connection
+
+    conn = try_get_connection(connection_id)
+    if conn is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Connection 未登録: {connection_id}",
+        )
+    return conn
+
+
+def _connection_api_key_envs(conn) -> tuple[str, ...]:
+    env_names: list[str] = []
+    if conn.api_key_env:
+        env_names.append(conn.api_key_env)
+    env_names.extend(conn.api_key_fallback_envs)
+    return tuple(dict.fromkeys(env_names))
+
+
+def _connections_using_env_names(env_names: tuple[str, ...]) -> list[str]:
+    from butly_core.llm.connections import list_connections
+
+    target = set(env_names)
+    affected = []
+    for conn in list_connections():
+        if target.intersection(_connection_api_key_envs(conn)):
+            affected.append(conn.id)
+    return affected
+
+
+@router.post("/settings/connections/{connection_id}/api_key")
+def set_connection_api_key(
+    connection_id: str,
+    request: ConnectionApiKeyRequest,
+):
+    """Persist a Connection API key without accepting an env name from UI."""
+    conn = _require_connection(connection_id)
+    if not conn.api_key_env:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Connection {connection_id!r} はAPIキーを使用しません",
+        )
+
+    key = _validate_api_key_value(request.api_key)
+    upsert_env_var(_env_file_path(), conn.api_key_env, key)
+    os.environ[conn.api_key_env] = key
+    affected = _connections_using_env_names((conn.api_key_env,))
+    return {
+        "message": f"Connection {connection_id!r} のAPIキーを保存しました",
+        "api_key_set": True,
+        "affected_connections": affected,
+    }
+
+
+@router.delete("/settings/connections/{connection_id}/api_key")
+def delete_connection_api_key(connection_id: str):
+    """Remove a Connection's primary and fallback API-key env values."""
+    conn = _require_connection(connection_id)
+    env_names = _connection_api_key_envs(conn)
+    if not env_names:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Connection {connection_id!r} はAPIキーを使用しません",
+        )
+
+    remove_env_vars(_env_file_path(), env_names)
+    for env_name in env_names:
+        os.environ.pop(env_name, None)
+    affected = _connections_using_env_names(env_names)
+    return {
+        "message": f"Connection {connection_id!r} のAPIキーを削除しました",
+        "api_key_set": False,
+        "affected_connections": affected,
+    }
 
 
 @router.post("/settings/test_connection")

@@ -2,7 +2,7 @@
 
 🌐 **日本語** | [English](FILE_STRUCTURE.md)
 
-> 最終更新: 2026-07-20
+> 最終更新: 2026-07-26
 
 ---
 
@@ -43,8 +43,10 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 **画面構成:**
 - `render_home_screen()` — ホーム。インスタンス一覧・新規作成
 - `render_chat_screen()` — チャット画面。`POST /chat` で応答取得、デバッグ表示
-- `render_settings_screen()` — グローバル設定・APIキー・プロバイダー設定
-- `render_instance_settings_screen()` — インスタンス個別の性格設定・config 編集
+- `render_settings_screen()` — グローバル設定、汎用Connection/APIキー管理、プロバイダー→モデルの二段階選択
+- `render_instance_settings_screen()` — インスタンス個別の性格設定・config 編集。モデル上書きもConnection→モデルの順に選択
+- `_render_connection_manager()` — built-in / ユーザー定義Connectionの一覧、秘密値を再表示しないAPIキー保存・解除、疎通テスト、テンプレート追加、参照保護付き削除
+- `_model_selector()` — ロールごとにConnectionを先に選び、そのConnectionのモデル候補または直接入力したモデルIDを `ModelChoice` として返す
 - `render_sleeptime_screen()` — Sleeptime の実行・進捗表示
 - `render_database_browser_screen()` — ナレッジカード一覧
 - `render_card_edit_screen()` — カード詳細・編集
@@ -141,7 +143,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 | `instances.py` | `/instances` CRUD、`/config`、`/history`、`/glossary` |
 | `sleeptime.py` | `/sleeptime/run`、`/sleeptime/status`、`/sleeptime/estimate` |
 | `database.py` | `/database/cards` CRUD（ナレッジカード管理） |
-| `settings.py` | `/settings`、`/api-key`、`/config`、`/prompts` |
+| `settings.py` | `/settings`、`/config`、`/prompts`、Connection/APIキー/モデル候補 |
 | `dashboard.py` | `/status`（CPU/MEM）、`/discovery`、`/news` |
 | `devices.py` | `/devices`、`/tv/key`、`/tv/launch`（Fire TV 制御） |
 
@@ -156,6 +158,21 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 - `POST /chat/stream` — SSE ストリーミングエンドポイント。`metadata` → `chunk` → `done` の順にイベントを送出
 - `_sse_event(event_name, data)` — SSE メッセージのフォーマッタ
 - `WebSocket /ws` — 双方向 WebSocket（チャット + AI ステータス通知）
+
+---
+
+### `routers/settings.py`
+
+グローバル設定とStreamlit互換のLLM設定APIを提供する。
+
+- `GET /settings/connections` — built-in / ユーザー定義ConnectionとAPIキー設定状態を返す（秘密値は返さない）
+- `GET /settings/connection_templates` — NanoGPT、Groq、OpenRouter等の秘密値を含まない登録テンプレート
+- `POST /settings/connections` / `DELETE /settings/connections/{id}` — ユーザー定義Connectionの登録・削除。モデル設定から参照中の通常削除は409、`force=true`のみ強制
+- `POST /settings/connections/{id}/api_key` / `DELETE /settings/connections/{id}/api_key` — 登録済みConnectionの環境変数名をサーバー側で解決し、`DATA_DIR/.env` のAPIキーを保存・解除
+- `POST /settings/test_connection` — Connectionの疎通確認
+- `GET /settings/model_candidates` — role別に `(connection_id, model_name)` 候補を返す
+
+詳細は [LLM Connection / APIキー管理](llm_connections.ja.md) を参照。
 
 ---
 
@@ -708,11 +725,32 @@ LLM プロバイダーの抽象化レイヤー。
 LLM の「接続情報」を表現する一級オブジェクトと、そのレジストリ。
 
 - `Connection` (dataclass, frozen)
-  - フィールド: `connection_id` / `protocol` (`"openai_compat"` | `"gemini_native"`) / `display_name` / `base_url_env` / `api_key_env` / `default_base_url` / `model_prefix` 等
-  - `display_label()` / `resolve_base_url()` / `resolve_api_key()` / `strip_model_prefix(model_name)`
+  - フィールド: `id` / `protocol` / `base_url` / `base_url_env` / `api_key_env` / `api_key_fallback_envs` / `label` / `extra_headers` / embedding設定 / `model_name_strip_prefix`
+  - `display_label` / `resolve_base_url()` / `resolve_api_key()` / `strip_model_prefix(model_name)`
 - `ConnectionRegistry` — built-in 4 件（`openai` / `xai` / `ollama` / `google`）+ user_config.json `LLM_CONNECTIONS` 由来のユーザー定義を管理
   - `get(id)` / `require(id)` / `list_all()` / `list_user_defined()` / `is_builtin(id)` / `register(conn, *, overwrite_user=False)` / `unregister(id)` / `reset_to_builtin()`
 - モジュール関数: `get_connection(id)` / `try_get_connection(id)` / `register_connection(conn)` / `list_connections()` / `is_builtin_connection(id)` / `get_registry()`
+- `validate_connection_id()` / `validate_env_name()` / `validate_base_url()` / `validate_extra_headers()` — API登録と設定読込で共有する入力検証
+
+---
+
+### `butly_core/llm/provider_catalog.py`
+
+OpenAI互換サービスをユーザー定義Connectionとして追加するための
+`ProviderTemplate` と初期カタログ。NanoGPTのPay-as-you-go / Proを別Connection
+として定義し、Groq / OpenRouter / Together / DeepInfraも前入力する。
+APIキー値は保持せず、環境変数名だけを公開する。
+
+---
+
+### `butly_core/llm/selection.py`
+
+Web ConsoleのConnection→モデル二段階選択と保存を支えるpure helper。
+
+- `ModelChoice` — `connection_id` と `model_name` を一緒に保持
+- `normalize_candidates()` / `candidate_key()` — 候補をConnectionとの組で正規化・重複排除
+- `ensure_current_in_candidates()` / `find_current_index()` — preset外の保存中モデルを失わず表示
+- `set_model_choice()` — グローバル/インスタンス設定へ `connection` と `model_name` を同時保存
 
 ---
 

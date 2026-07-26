@@ -1,0 +1,209 @@
+# LLM Connection / APIキー管理
+
+🌐 **日本語** | [English](llm_connections.md)
+
+> 最終更新: 2026-07-26
+
+## 概要
+
+Butly は、モデルと接続先を別の値として管理する。
+
+- `Connection`: API の接続先、protocol、認証に使う環境変数など
+- `model_name`: 接続先へ渡すモデル ID
+- `ModelRef`: `connection` と `model_name` の組
+
+たとえば同じモデル ID を OpenAI と NanoGPT の両方が提供していても、
+`connection` を保持するため意図した接続先へ送信できる。旧形式の
+`{"model_name": "..."}` も互換動作するが、新規設定では必ず
+`connection` と `model_name` の両方を保存する。
+
+```json
+{
+  "AI_CONFIG": {
+    "chat": {
+      "connection": "nanogpt-sub",
+      "model_name": "Qwen/Qwen3-14B"
+    }
+  }
+}
+```
+
+## Connection のフィールド
+
+ユーザー定義 Connection は `user_config.json` の `LLM_CONNECTIONS` に保存される。
+APIキーの値はここには保存しない。
+
+| フィールド | 型 / 既定値 | 説明 |
+|---|---|---|
+| `id` | string / 必須 | Connection 識別子。小文字英数字で開始し、小文字英数字・`_`・`-`のみ、最大64文字 |
+| `protocol` | string / 必須 | `openai_compat` または `gemini_native` |
+| `base_url` | string or null | SDK / Adapter が使う絶対 URL |
+| `base_url_env` | string or null | 設定時は、この環境変数の値で `base_url` を上書き |
+| `api_key_env` | string or null | APIキーを読む環境変数名。認証不要なら `null` |
+| `api_key_fallback_envs` | string[] / `[]` | 主環境変数が未設定のとき、順番に試す代替名 |
+| `label` | string or null | Web Console の表示名。未設定なら `id` |
+| `extra_headers` | object / `{}` | 全リクエストへ加える固定ヘッダー。秘密値は入れない |
+| `embeddings_supported` | boolean / `true` | この接続で embedding を許可するか |
+| `embedding_model_env` | string or null | embedding モデル ID を上書きする環境変数名 |
+| `default_embedding_model` | string or null | embedding モデルの最終フォールバック |
+| `model_name_strip_prefix` | string or null | API送信前にモデル ID から除去する接頭辞 |
+
+`google`、`openai`、`xai`、`ollama` は built-in Connection であり、
+ユーザー設定からの上書き・削除はできない。OpenAI互換サービスは通常、
+Providerクラスを追加せず `openai_compat` のユーザー定義 Connection として追加する。
+
+## Web Console での操作
+
+### Connection とAPIキー
+
+1. 設定画面の「Connection / APIキー管理」を開く。
+2. 既存 Connection の状態と接続先を確認する。
+3. 必要なら「Connectionを追加」でテンプレートまたはカスタムを選ぶ。
+4. 登録後、同じ一覧でAPIキーを入力し「保存」を押す。
+5. 「疎通テスト」でモデル一覧を取得できることを確認する。
+
+APIキー入力欄は常に空で表示され、保存済みの値を読み戻さない。
+表示するのは設定済みかどうかだけである。
+
+### プロバイダーからモデルを選ぶ
+
+グローバル設定とインスタンス設定の各ロールでは、次の順に選択する。
+
+1. プロバイダー / Connection
+2. その Connection が提供するモデル
+
+候補はモデルプリセット、現在保存中の値、接続先の `/models` から構成される。
+一覧に無いモデルは「モデルIDを直接入力」で指定できる。保存時は
+`connection` と `model_name` の両方が保存される。
+
+Embeddingロールでは `embeddings_supported=false` の Connection は選択候補から
+除外される。Embedding Connectionまたはモデルを変更した場合、既存ベクトルと
+次元が一致しなくなる可能性があるため `migrate_embeddings.py` で再生成する。
+
+## APIキーの保存と秘密情報
+
+APIキーはバックエンドが実行時の `DATA_DIR/.env` に保存し、同時に現在の
+プロセス環境へ反映する。既存 `.env` のコメント、空行、無関係な設定は保持する。
+同じ環境変数の重複行は保存時に1行へまとめる。
+
+クライアントは Connection ID とキーの値だけを送る。書き込み先の環境変数名は
+登録済み Connection からサーバー側で解決するため、APIキー保存APIで任意の
+環境変数名を指定することはできない。
+
+レスポンスと Connection 一覧は秘密値を返さず、`api_key_set` と
+`affected_connections` だけを返す。ログ、`user_config.json`、スクリーンショット、
+Issue、コミットへキーを含めないこと。
+
+同じ `api_key_env` を複数の Connection が共有する場合、1つから保存したキーは
+全該当 Connection へ反映される。解除は対象 Connection の主環境変数と
+fallback環境変数を削除するため、共有先にも影響する。
+
+Connection の削除とAPIキーの解除は別操作である。不要な秘密値も消す場合は、
+その環境変数を使う他の Connection がないことを確認してから先に解除する。
+
+## 入力検証
+
+登録時と設定読込時に次を検証する。
+
+- `id`: `^[a-z0-9][a-z0-9_-]{0,63}$`
+- 環境変数名: `^[A-Z_][A-Z0-9_]*$`
+- `HOME`、`PATH`、`PYTHONPATH` などの予約済み実行環境名は使用不可
+- `base_url`: 絶対 `http://` または `https://` URL
+- `protocol`: `openai_compat` または `gemini_native`
+- `extra_headers`: キーと値は文字列で、改行を含まない
+- APIキー: 空文字と制御文字を含まない
+
+ユーザー定義 Connection では built-in ID を使用できない。Web Console の
+カスタム追加フォームは現在 `openai_compat` を対象とする。
+
+## 削除時の参照保護
+
+ユーザー定義 Connection がグローバル `AI_CONFIG` またはインスタンスの
+`config.json` から参照されている場合、通常の削除は `409 Conflict` になる。
+先に各モデル割り当てを別 Connection へ変更する。
+
+`DELETE /settings/connections/{connection_id}?force=true` で強制削除できるが、
+参照元の設定は自動修正されない。壊れた `ModelRef` が残るため、参照箇所を
+把握した移行時以外は使用しない。
+
+## Legacy Settings API
+
+以下は Streamlit Web Console が利用する未versionedの互換routeである。
+
+| Method | Route | 用途 |
+|---|---|---|
+| `GET` | `/settings/connections` | built-in + ユーザー定義 Connection とキー設定状態 |
+| `GET` | `/settings/connection_templates` | 秘密値を含まないプロバイダーテンプレート |
+| `POST` | `/settings/connections` | ユーザー定義 Connection の追加または同一IDの更新 |
+| `DELETE` | `/settings/connections/{connection_id}` | ユーザー定義 Connection の削除。参照中は409 |
+| `POST` | `/settings/connections/{connection_id}/api_key` | `{"api_key": "..."}` を保存 |
+| `DELETE` | `/settings/connections/{connection_id}/api_key` | Connectionが参照するキーを解除 |
+| `POST` | `/settings/test_connection` | Connectionの疎通とモデル一覧を確認 |
+| `GET` | `/settings/model_candidates?role=...` | ロール別の `(connection_id, model_name)` 候補 |
+
+APIキー保存・解除レスポンスにキー値は含まれない。
+
+## プロバイダーテンプレート
+
+テンプレートは初期値を入力するだけで、登録後は通常のユーザー定義 Connection
+として扱う。
+
+| ID | Base URL | APIキー環境変数 | Embedding |
+|---|---|---|---|
+| `nanogpt-sub` | `https://nano-gpt.com/api/subscription/v1` | `NANOGPT_API_KEY` | 非対応 |
+| `nanogpt` | `https://nano-gpt.com/api/v1` | `NANOGPT_API_KEY` | 対応 |
+| `groq` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | 非対応 |
+| `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | 非対応 |
+| `together` | `https://api.together.xyz/v1` | `TOGETHER_API_KEY` | 対応 |
+| `deepinfra` | `https://api.deepinfra.com/v1/openai` | `DEEPINFRA_API_KEY` | 対応 |
+
+外部サービスのURL、モデル提供状況、料金は変わり得る。登録前に各サービスの
+公式仕様を確認する。
+
+## NanoGPT
+
+### Pay-as-you-go と Pro を分ける
+
+NanoGPT は用途別に2つの Connectionとして登録する。
+
+- `nanogpt`: Pay-as-you-go。`https://nano-gpt.com/api/v1`
+- `nanogpt-sub`: Pro / Subscription対象モデルに限定する。
+  `https://nano-gpt.com/api/subscription/v1`
+
+両方が同じ `NANOGPT_API_KEY` を共有するため、どちらかの画面で保存すれば
+両方が設定済みになる。片方から解除すると両方へ影響する。
+
+### Proで従量課金overrideを使わない
+
+`nanogpt-sub` は購読対象に限定するための Connection である。次の指定は
+リクエストをPay-as-you-go扱いにして購読対象外の課金を発生させ得るため、
+追加しない。
+
+- `X-Provider`
+- `X-Billing-Mode: paygo`
+- bodyの `billing_mode` / `billingMode`
+- provider指定や `:fast` / `:cheap` などのrouting suffix
+
+Butly の `nanogpt-sub` テンプレートは `extra_headers={}` のままで、
+`embeddings_supported=false` である。
+
+### PAYG embeddingは正確なモデルIDを直接指定する
+
+NanoGPT の通常の `/api/v1/models` はテキスト生成モデルの一覧であり、
+embeddingの正本は `/api/v1/embedding-models` である。そのためWeb Consoleの
+Embeddingモデル候補にNanoGPTのembeddingモデルが自動表示されない場合がある。
+
+`nanogpt` Connectionを選び、「モデルIDを直接入力」へ
+`/api/v1/embedding-models` が返す `id` を正確に入力する。
+例: `text-embedding-3-small`、`BAAI/bge-m3`、
+`Qwen/Qwen3-Embedding-0.6B`。`nanogpt/` のようなButly独自prefixは付けない。
+
+モデル一覧と料金は変わるため、例を固定的な提供保証として扱わない。
+
+### NanoGPT公式資料
+
+- [Text Generation](https://docs.nano-gpt.com/api-reference/text-generation)
+- [Chat Completion](https://docs.nano-gpt.com/api-reference/endpoint/chat-completion)
+- [Models](https://docs.nano-gpt.com/api-reference/endpoint/models)
+- [Embeddings](https://docs.nano-gpt.com/api-reference/endpoint/embeddings)
+- [Pay-As-You-Go Billing Override](https://docs.nano-gpt.com/api-reference/miscellaneous/billing-override)
