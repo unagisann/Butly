@@ -11,6 +11,10 @@ from dotenv import load_dotenv
 from butly_core.trace.collector import record_llm_call
 from butly_core.core.chronos import resolve_now
 from butly_core.core.json_extract import extract_json_str
+from butly_core.llm.embedding_profiles import (
+    QUERY,
+    apply_prefix as apply_embedding_prefix,
+)
 
 # ★設定ファイルのインポート
 try:
@@ -137,13 +141,17 @@ class ButlyBrain:
             conf.update(override_config["embedding"])
         return conf
 
-    def get_embedding(self, text, embedding_conf=None):
+    def get_embedding(self, text, embedding_conf=None, kind=QUERY):
         # Phase 2: connection + model_name の dict 全体を Provider に渡す。
         # Provider 側 (OpenAICompatAdapter) は config["model_name"] を最優先で使う。
         # embedding_conf 未指定時はグローバル AI_CONFIG。instance ごとの
         # embedding を使うには呼び出し側が _resolve_embedding_conf の結果を渡す。
         if embedding_conf is None:
             embedding_conf = AI_CONFIG.get("embedding", {})
+        # 検索用モデルはクエリ側と文書側で prefix 規約が異なる (nomic の
+        # search_query:/search_document: 等)。付け忘れると埋め込みが潰れて
+        # cosine の識別力が落ちるため、モデルに応じた prefix を必ず通す。
+        text = apply_embedding_prefix(text, embedding_conf, kind)
         t0 = time.time()
         try:
             provider = self._get_provider(embedding_conf)

@@ -103,6 +103,23 @@ class ButlyDatabase:
             _ensure_column(cursor, "knowledge_cards", "last_matured_at", "TEXT")
             _ensure_column(cursor, "knowledge_cards", "last_matured_run_id", "TEXT")
 
+            # --- 保存済み embedding の素性（モデル差し替え検知用） ---
+            # 1 行だけ持つ。embedding_blob を書いた側が upsert し、起動時
+            # チェックが現在の設定と突き合わせる。DB と一緒にクローンされる
+            # 必要があるので instance DB 内に置く（eval の workspace 複製で
+            # そのまま付いてくる）。
+            cursor.execute(
+                """
+            CREATE TABLE IF NOT EXISTS embedding_meta (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                model_name TEXT,
+                profile TEXT,
+                dim INTEGER,
+                updated_at TEXT
+            )
+            """
+            )
+
             # --- Stage 3: Knowledge Maturation tables ---
             cursor.execute(
                 """

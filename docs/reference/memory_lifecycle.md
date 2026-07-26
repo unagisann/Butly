@@ -183,8 +183,8 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | **Card granularity** | One primary memory unit per card (event, decision, status change, ongoing state, or relationship development). Supporting facts about the same event may stay together, but independently retrievable events, time anchors, or source-file subsets are split. File boundaries are storage boundaries, not a one-file-one-card rule |
 | **Skip feature** | When `skip_knowledge_generation = true`, Stage 2 is skipped entirely. RAW data remains in 1_integrated for later batch processing with a higher-capability model |
 | **Schema** | `knowledge_cards` table (see below) |
-| **Embedding** | `title + tags + summary` embedded via `AI_CONFIG["embedding"]["model_name"]` → stored as BLOB |
-| **Search** | `ButlyBrain.search_memories()` re-ranks by cosine similarity between query and embedding_blob |
+| **Embedding** | `title + tags + summary` embedded via `AI_CONFIG["embedding"]["model_name"]` → stored as BLOB. The **embedding profile**'s document prefix is applied first (see below) |
+| **Search** | `ButlyBrain.search_memories()` re-ranks by cosine similarity between query and embedding_blob. The query side gets the **query prefix** |
 | **Injected by Gatekeeper** | Whenever `need` is set (tier-independent): RAG block built from MemoryProbe candidates, injected as LONG-TERM MEMORY block. The injected source is controlled by `memory.rag_source_mode`: `"cards"` (default, cards only) / `"raw"` (original conversation excerpts only) / `"both"` (cards + excerpts). For raw/both, each card's `source_files` is lazily resolved back to the RAW conversation JSON and excerpts are injected up to `memory.rag_raw_max_chars` characters in total (default 2500, 0 = unlimited, oversized files are greedy-skipped) — parent-document retrieval: cards act as the search index, the original text carries the facts. `memory.rag_raw_top_k` limits how many top cards get raw (default 1 = only the most relevant card's raw, the rest as summaries; 0/negative = every card). Falls back to card injection when nothing can be resolved |
 | **Post-processing** | Processed JSONs moved to `memory_archive/2_knowledgeized/{date}/` |
 | **Backup** | Rotation backup saved to `butly_core/db_backups/` (generations: `backup.generations`) |
@@ -340,4 +340,49 @@ instances/{name}/
 | Recent headlines extraction | `AI_CONFIG["summary"]["model_name"]` | Generate recent_digest_headlines.json |
 | Knowledge card extraction | `AI_CONFIG["knowledge"]["model_name"]` | Stage 2 RAG DB extraction |
 | Embedding vector generation | `AI_CONFIG["embedding"]["model_name"]` | knowledge_cards.embedding_blob |
+
+---
+
+## Embedding profiles (per-model input conventions)
+
+Most retrieval embedding models require different prefixes on the query side and the
+document side. Omitting them collapses every vector into one cone and destroys cosine
+discrimination (measured: with nomic and no prefixes, **card-to-card cosine averaged
+0.756 while question-to-correct-card averaged 0.733** — unrelated cards were closer to
+each other than a question was to its own answer, so ranking could not work).
+
+`butly_core/llm/embedding_profiles.py` resolves the convention from the model name.
+
+| Profile | Query side | Document side | Models |
+|---|---|---|---|
+| `nomic` | `search_query: ` | `search_document: ` | nomic-embed-text v1/v1.5 |
+| `e5` | `query: ` | `passage: ` | multilingual-e5-* and other E5 models |
+| `bge-instruct` | instruction | none | bge-large/base/small-en |
+| `qwen3-embedding` | instruction | none | Qwen3-Embedding |
+| `bge-m3` / `gemini` / `openai` / `mxbai` | none | none | models that need no prefix |
+| `plain` | none | none | unknown models (fallback) |
+
+**Resolution order** (`resolve_profile`):
+
+1. explicit `embedding.query_prefix` / `embedding.document_prefix` (escape hatch for unknown models)
+2. explicit `embedding.profile` (profile id; `"plain"` disables prefixes)
+3. `embedding.profile` absent or `"auto"` → inferred from `model_name`
+4. otherwise `plain`
+
+Example (works in instance config and eval profiles alike):
+
+```json
+"embedding": {
+  "connection": "local_embedding",
+  "model_name": "nomic-embed-text",
+  "profile": "auto"
+}
+```
+
+**Protection when swapping models**: whoever writes embeddings records `model_name` /
+`profile` / `dim` into the single-row `embedding_meta` table inside the instance DB. The
+startup check (`embedding_check.log_startup_check`) compares it against the current config
+and warns on any difference. **Matching dimensions are not enough** — changing the
+convention (e.g. nomic without prefixes → with prefixes) produces a different space. After
+swapping, run `python migrate_embeddings.py --all` to re-embed.
 | Tier classification | `AI_CONFIG["gatekeeper"]["model_name"]` | ContextClassifier 3-score output |

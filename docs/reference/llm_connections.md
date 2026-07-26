@@ -51,6 +51,14 @@ API-key values are never stored there.
 or deleted. An OpenAI-compatible service normally needs only a user-defined
 `openai_compat` Connection, not a new Provider class.
 
+To point a built-in Connection somewhere else, use its `base_url_env`. For an
+Ollama server on another machine, save the URL under **Ollama (local LLM)** in
+Settings; it is written to `OLLAMA_BASE_URL` in `DATA_DIR/.env` (`POST
+/settings/ollama_url`). The UI and the connection test use the root form
+(`http://<host>:11434`) and the OpenAI-compatible `/v1` suffix is added on save.
+`Connection.resolve_base_url()` reads the environment on every call, so no
+restart is needed.
+
 ## Web Console workflow
 
 ### Connections and API keys

@@ -121,6 +121,167 @@ def _write_run(
     )
 
 
+def _write_source_run(
+    output_dir: Path,
+    run_id: str = "source",
+    *,
+    embedding_meta: dict | None = None,
+    with_vectors: bool = True,
+) -> Path:
+    """rerun-qa の再利用元になる run ディレクトリを作る。
+
+    ``embedding_meta`` を渡すと、その素性でカードが埋め込まれた体にする。
+    """
+    import sqlite3
+    import struct
+
+    run_dir = output_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "run_config.json").write_text(
+        json.dumps({"run_id": run_id}), encoding="utf-8"
+    )
+    inst_dir = run_dir / "workspace" / "butly_core" / "instances" / "locomo_1"
+    inst_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(inst_dir / "butly_memory.db")
+    conn.execute(
+        "CREATE TABLE knowledge_cards (id INTEGER PRIMARY KEY, embedding_blob BLOB)"
+    )
+    blob = struct.pack("<768f", *([0.1] * 768)) if with_vectors else None
+    conn.execute("INSERT INTO knowledge_cards (embedding_blob) VALUES (?)", (blob,))
+    if embedding_meta:
+        conn.execute(
+            "CREATE TABLE embedding_meta ("
+            "id INTEGER PRIMARY KEY CHECK (id = 1), model_name TEXT, "
+            "profile TEXT, dim INTEGER, updated_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO embedding_meta (id, model_name, profile, dim, updated_at) "
+            "VALUES (1, ?, ?, ?, '2026-07-26T00:00:00+00:00')",
+            (
+                embedding_meta["model_name"],
+                embedding_meta["profile"],
+                embedding_meta.get("dim"),
+            ),
+        )
+    conn.commit()
+    conn.close()
+    return run_dir
+
+
+class TestEmbeddingCompatibilityOnReuse:
+    """記憶を再利用する run で、埋め込み空間の食い違いを開始前に弾く。
+
+    rerun-qa は元 run のカードとベクトルをそのまま使う。埋め込みモデルや
+    prefix 規約が変わっていると保存済みベクトルと検索クエリが別空間になり、
+    例外もログも出ないまま検索だけが壊れる（1時間かけて無意味な数字が出る）。
+    """
+
+    def _reuse_request(self, **overrides):
+        base = {"run_mode": "stage3-on", "source_memory_run_id": "source"}
+        base.update(overrides)
+        return _request(**base)
+
+    def test_rejects_source_written_without_prefixes(self, tmp_path):
+        # 素性未記録 = prefix 導入前のベクトル。次元は一致するので
+        # 次元チェックだけでは検知できない。
+        _write_source_run(tmp_path)
+
+        with pytest.raises(EvaluationJobError, match="no recorded profile"):
+            validate_job_request(self._reuse_request(), output_dir=tmp_path)
+
+    def test_rejects_source_with_different_model(self, tmp_path):
+        _write_source_run(
+            tmp_path,
+            embedding_meta={
+                "model_name": "multilingual-e5-large",
+                "profile": "e5",
+                "dim": 1024,
+            },
+        )
+
+        with pytest.raises(EvaluationJobError, match="different model/profile"):
+            validate_job_request(self._reuse_request(), output_dir=tmp_path)
+
+    def test_accepts_matching_source(self, tmp_path):
+        _write_source_run(
+            tmp_path,
+            embedding_meta={
+                "model_name": "nomic-embed-text",
+                "profile": "nomic",
+                "dim": 768,
+            },
+        )
+
+        normalized = validate_job_request(
+            self._reuse_request(), output_dir=tmp_path
+        )
+
+        assert normalized["source_memory_run_id"] == "source"
+        assert normalized["allow_embedding_mismatch"] is False
+
+    def test_override_allows_mismatch(self, tmp_path):
+        _write_source_run(tmp_path)
+
+        normalized = validate_job_request(
+            self._reuse_request(allow_embedding_mismatch=True),
+            output_dir=tmp_path,
+        )
+
+        assert normalized["allow_embedding_mismatch"] is True
+
+    def test_skips_check_when_source_has_no_workspace(self, tmp_path):
+        run_dir = tmp_path / "source"
+        run_dir.mkdir(parents=True)
+        (run_dir / "run_config.json").write_text("{}", encoding="utf-8")
+
+        normalized = validate_job_request(
+            self._reuse_request(), output_dir=tmp_path
+        )
+
+        assert normalized["source_memory_run_id"] == "source"
+
+    def test_fresh_run_is_never_blocked(self, tmp_path):
+        """記憶を作り直す run は元ベクトルを使わないので対象外。"""
+        normalized = validate_job_request(_request(), output_dir=tmp_path)
+
+        assert normalized["source_memory_run_id"] is None
+
+
+class TestEmbeddingProfileInProfilePayload:
+    def test_profile_is_passed_through(self):
+        request = _request()
+        request["role_models"]["embedding"]["profile"] = "e5"
+
+        profile = build_profile_payload(request)
+
+        assert profile["embedding"]["profile"] == "e5"
+
+    def test_explicit_prefixes_are_passed_through(self):
+        request = _request()
+        request["role_models"]["embedding"].update(
+            {"query_prefix": "q: ", "document_prefix": "d: "}
+        )
+
+        profile = build_profile_payload(request)
+
+        assert profile["embedding"]["query_prefix"] == "q: "
+        assert profile["embedding"]["document_prefix"] == "d: "
+
+    def test_absent_profile_stays_absent(self):
+        """既定は auto — profile キー自体を書かない。"""
+        profile = build_profile_payload(_request())
+
+        assert "profile" not in profile["embedding"]
+
+    def test_prefix_keys_ignored_on_other_roles(self):
+        request = _request()
+        request["role_models"]["chat"]["profile"] = "e5"
+
+        profile = build_profile_payload(request)
+
+        assert "profile" not in profile["chat"]
+
+
 def test_build_profile_matches_colab_stage3_controls():
     profile = build_profile_payload(
         _request(

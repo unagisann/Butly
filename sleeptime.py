@@ -12,6 +12,11 @@ from dotenv import load_dotenv
 import numpy as np
 
 from butly_core.core.json_extract import extract_json_array, extract_json_str
+from butly_core.core.embedding_check import record_embedding_meta
+from butly_core.llm.embedding_profiles import (
+    DOCUMENT,
+    apply_prefix as apply_embedding_prefix,
+)
 
 # ★設定ファイルのインポート
 try:
@@ -228,14 +233,21 @@ class ButlySleeptime:
         print(f"[API Failed] Max retries exceeded.")
         return None
 
-    def generate_embedding(self, text, instance_name=None):
+    def resolve_embedding_conf(self, instance_name=None):
+        """instance/global を解決した embedding 設定を返す。"""
+        if instance_name:
+            inst_cfg = self.get_instance_config(instance_name)
+            return self._resolve_conf(inst_cfg, "embedding")
+        return AI_CONFIG["embedding"]
+
+    def generate_embedding(self, text, instance_name=None, kind=DOCUMENT):
         try:
             from butly_core.llm.factory import ProviderFactory
-            if instance_name:
-                inst_cfg = self.get_instance_config(instance_name)
-                emb_conf = self._resolve_conf(inst_cfg, "embedding")
-            else:
-                emb_conf = AI_CONFIG["embedding"]
+            emb_conf = self.resolve_embedding_conf(instance_name)
+            # 書き込み側は文書 (search_document:)、検索側はクエリ
+            # (search_query:) と prefix が異なる。揃っていないと保存済み
+            # ベクトルとクエリベクトルが別空間になる。
+            text = apply_embedding_prefix(text, emb_conf, kind)
             # Phase 2: dict 全体 (connection + model_name) を Factory に渡す
             provider = ProviderFactory.create(emb_conf)
 
@@ -429,6 +441,12 @@ class ButlySleeptime:
                 content_hash, queued_at,
             ))
             conn.commit()
+            if embedding_blob:
+                # どの model/profile で書いたベクトルかを DB に刻む。
+                # 起動時チェックが設定と突き合わせ、差し替えを検知する。
+                record_embedding_meta(
+                    instance_db_path, self.resolve_embedding_conf(db_type)
+                )
             return True
         except Exception as e:
             print(f"[DB Error] {e}")

@@ -180,8 +180,8 @@ SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
 | **カード粒度** | 1枚につき1つの主要な記憶単位（出来事・決定・状態変化・継続状態・関係性の進展）。同じ出来事の補足事実は同居できるが、独立した質問への答えになる別イベント・別時点・別の根拠ファイル群は分割する。ファイル境界は保存上の区切りであり、1ファイル=1カードにはしない |
 | **スキップ機能** | `skip_knowledge_generation = true` の場合、Stage 2 を完全にスキップ。RAWデータは 1_integrated に保持され、後日高性能モデルで一括処理可能 |
 | **スキーマ** | `knowledge_cards` テーブル（下記参照） |
-| **Embedding** | `title + tags + summary` を `AI_CONFIG["embedding"]["model_name"]` で埋め込み → BLOB保存 |
-| **検索** | `ButlyBrain.search_memories()` がクエリ埋め込みとコサイン類似度でリランキング |
+| **Embedding** | `title + tags + summary` を `AI_CONFIG["embedding"]["model_name"]` で埋め込み → BLOB保存。埋め込み前に **embedding プロファイル**の文書側 prefix を付与する（下記） |
+| **検索** | `ButlyBrain.search_memories()` がクエリ埋め込みとコサイン類似度でリランキング。クエリ側には**クエリ用 prefix** を付与する |
 | **Gatekeeper注入** | `need` が設定された時のみ（tier 非依存）、`MemoryProbe` の candidates から RAG ブロックを構築し LONG-TERM MEMORY として注入。注入ソースは `memory.rag_source_mode` で制御: `"cards"`（既定・カードのみ）/ `"raw"`（当時の会話原文のみ）/ `"both"`（カード + 原文）。raw/both では各カードの `source_files` から RAW 会話 JSON を遅延逆引きし、原文抜粋を合計 `memory.rag_raw_max_chars` 文字（既定 2500、0=無制限、超過ファイルは greedy skip）まで注入する（parent-document retrieval — カード=検索インデックス、事実の根拠=原文）。原文を展開するカード数は `memory.rag_raw_top_k`（既定 1＝最上位カードの原文のみ、残りはサマリ。0/負値で全カード）で絞る。解決不能時はカード注入にフォールバック |
 | **後処理** | 処理済み JSON は `memory_archive/2_knowledgeized/{date}/` へ移動 |
 | **バックアップ** | `butly_core/db_backups/` にローテーション保存（世代数: `backup.generations`） |
@@ -337,4 +337,47 @@ instances/{name}/
 | ヘッドライン抽出 | `AI_CONFIG["summary"]["model_name"]` | recent_digest_headlines.json 生成 |
 | ナレッジカード抽出 | `AI_CONFIG["knowledge"]["model_name"]` | Stage 2 RAG DB への抽出 |
 | 埋め込みベクトル生成 | `AI_CONFIG["embedding"]["model_name"]` | knowledge_cards.embedding_blob |
+
+---
+
+## Embedding プロファイル（モデル別の入力規約）
+
+検索用 embedding モデルの多くは、クエリ側と文書側で別の prefix を要求する。付け忘れると
+埋め込みが 1 つの円錐に潰れ、cosine の識別力が失われる（実測: prefix 無しの nomic では
+**カード同士の cosine 平均 0.756 > 質問と正解カードの cosine 平均 0.733** ＝無関係なカード
+同士のほうが近く、ランキングが機能しない）。
+
+`butly_core/llm/embedding_profiles.py` がモデル名から規約を引く。
+
+| プロファイル | クエリ側 | 文書側 | 対象モデル |
+|---|---|---|---|
+| `nomic` | `search_query: ` | `search_document: ` | nomic-embed-text v1/v1.5 |
+| `e5` | `query: ` | `passage: ` | multilingual-e5-* 等 E5 系 |
+| `bge-instruct` | instruction 文 | なし | bge-large/base/small-en |
+| `qwen3-embedding` | instruction 文 | なし | Qwen3-Embedding |
+| `bge-m3` / `gemini` / `openai` / `mxbai` | なし | なし | prefix 不要のモデル |
+| `plain` | なし | なし | 規約不明のモデル（既定） |
+
+**解決順序**（`resolve_profile`）:
+
+1. `embedding.query_prefix` / `embedding.document_prefix` の明示指定（未知モデル向けの脱出ハッチ）
+2. `embedding.profile` の明示指定（プロファイル ID。`"plain"` で無効化）
+3. `embedding.profile` 未指定 or `"auto"` → `model_name` から推定
+4. どれにも当たらなければ `plain`
+
+設定例（instance config / eval profile どちらでも可）:
+
+```json
+"embedding": {
+  "connection": "local_embedding",
+  "model_name": "nomic-embed-text",
+  "profile": "auto"
+}
+```
+
+**モデル差し替え時の保護**: 埋め込みを書いた側は `embedding_meta` テーブル（instance DB 内、1行）に
+`model_name` / `profile` / `dim` を記録する。起動時チェック（`embedding_check.log_startup_check`）が
+現在の設定と突き合わせ、食い違えば警告する。**次元が同じでも規約が変われば別空間**になる
+（例: nomic を prefix 無しから有りへ）ため、次元だけでなくプロファイルも比較する。
+差し替えたら `python migrate_embeddings.py --all` で再生成する。
 | Tier 判定 | `AI_CONFIG["gatekeeper"]["model_name"]` | ContextClassifier 3スコア出力 |

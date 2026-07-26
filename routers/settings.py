@@ -181,6 +181,65 @@ def test_ollama_connection(url: str = Body(..., embed=True)):
         return {"status": "error", "message": str(e)}
 
 
+OLLAMA_BASE_URL_ENV = "OLLAMA_BASE_URL"
+
+
+def _ollama_root_url() -> str:
+    """built-in ollama connection の実効 URL を root 形（/v1 無し）で返す。"""
+    from butly_core.llm.connections import get_connection
+
+    resolved = get_connection("ollama").resolve_base_url() or ""
+    return _strip_v1(resolved)
+
+
+def _strip_v1(url: str) -> str:
+    trimmed = url.rstrip("/")
+    if trimmed.endswith("/v1"):
+        trimmed = trimmed[: -len("/v1")]
+    return trimmed
+
+
+@router.get("/settings/ollama_url")
+def get_ollama_url():
+    """現在の Ollama 接続先を返す。
+
+    UI は root 形（``http://host:11434``）を扱う。接続テストが Ollama ネイティブ
+    API (``/api/tags``) を叩くためで、保存時に OpenAI 互換の ``/v1`` を付ける。
+    """
+    return {
+        "url": _ollama_root_url(),
+        "source": "env" if os.getenv(OLLAMA_BASE_URL_ENV) else "default",
+    }
+
+
+@router.post("/settings/ollama_url")
+def set_ollama_url(url: str = Body(..., embed=True)):
+    """Ollama の接続先を DATA_DIR/.env に保存し、即座に反映する。
+
+    built-in connection は上書き不可なので、正規の逃げ道である
+    ``base_url_env`` (= ``OLLAMA_BASE_URL``) に書き込む。
+    ``Connection.resolve_base_url()`` は毎回 env を読むため再起動は不要。
+    """
+    from butly_core.llm.connections import validate_base_url
+
+    root = _strip_v1(str(url or "").strip())
+    if not root:
+        raise HTTPException(status_code=400, detail="接続先URLが空です")
+    try:
+        validate_base_url(root)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    # 保存するのは OpenAI 互換ベース。UI/接続テストが使う root 形に /v1 を足す。
+    base_url = f"{root}/v1"
+    env_path = _env_file_path()
+    upsert_env_var(env_path, OLLAMA_BASE_URL_ENV, base_url)
+    os.environ[OLLAMA_BASE_URL_ENV] = base_url
+
+    print(f"[Server] Ollama base URL updated to {base_url} (saved to {env_path})")
+    return {"message": "Ollama の接続先を保存しました", "url": root}
+
+
 @router.post("/settings/reindex_embeddings")
 async def reindex_embeddings(
     instance_name: str = Body("__all__", embed=True),

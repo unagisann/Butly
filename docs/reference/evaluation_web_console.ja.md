@@ -32,10 +32,27 @@ subprocessとして呼ぶ薄い管理層である。Replay、Sleeptime、QA、ch
 - Stage 3 batch size / bootstrap最大カード数
 - chat / gatekeeper / summary / knowledge / embeddingの
   Connection→モデル割り当て
+- Embedding prefix 規約（既定 `auto` = モデル名から推定。
+  詳細は [memory_lifecycle.ja.md](memory_lifecycle.ja.md#embedding-プロファイルモデル別の入力規約)）
 - generation temperatureとGatekeeper出力上限
+- 埋め込み不一致の承知実行（`SOURCE_MEMORY_RUN_ID` 指定時のみ表示）
 
 ConnectionとAPIキーは通常のWeb Console設定を共有する。フォームはAPIキー本体を
 受け取らず、評価subprocessがBackendプロセスの環境変数を継承する。
+
+### 記憶を再利用するrunの埋め込み整合チェック
+
+`SOURCE_MEMORY_RUN_ID` を指定した run（`rerun-qa`）は、元runのカードと
+`embedding_blob` をそのまま使う。埋め込みモデルまたは prefix 規約が当時と
+変わっていると、保存済みベクトルと検索クエリが**別空間**になり、例外もログも
+出ないまま検索だけが壊れる。
+
+そのため `POST /evaluations/jobs` は開始前に、元runの workspace 内 instance DB の
+`embedding_meta` を今回の embedding 設定と突き合わせ、食い違えば 400 で弾く。
+**次元が一致していても規約が違えば弾く**（例: prefix 導入前に作られたカード）。
+
+承知の上で走らせる場合は `allow_embedding_mismatch: true`（UI の
+「埋め込み不一致を承知で実行する」）を渡す。その run の検索指標は比較に使えない。
 
 ## ジョブAPI
 

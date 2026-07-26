@@ -770,6 +770,18 @@ Web ConsoleのConnection→モデル二段階選択と保存を支えるpure hel
 
 ---
 
+### `butly_core/llm/embedding_profiles.py`
+Embedding モデル別の入力規約（クエリ/文書 prefix）のレジストリ。付け忘れると埋め込みが 1 つの円錐に潰れて cosine の識別力が失われるため、モデル名から規約を引ける形にしてある。`config.py` から import せず循環を避ける。詳細は [memory_lifecycle.ja.md](memory_lifecycle.ja.md#embedding-プロファイルモデル別の入力規約)。
+
+- `EmbeddingProfile` (dataclass): `id` / `query_prefix` / `document_prefix` / `dim` / `match`（model_name の部分一致パターン）
+- `BUILTIN_EMBEDDING_PROFILES` — `nomic` / `e5` / `bge-instruct` / `bge-m3` / `qwen3-embedding` / `openai` / `gemini` / `mxbai` / `plain`
+- `resolve_profile(embedding_conf)` — 明示 prefix → `profile` キー → model_name 推定 → `plain` の順で解決
+- `apply_prefix(text, conf, kind)` — `QUERY` / `DOCUMENT` に応じた prefix 付与（二重付与ガード付き）
+- `fingerprint(conf)` — `{model_name, profile, dim}`。`embedding_meta` との突き合わせに使う
+- `list_profiles()` / `get_profile(id)` / `register_profile(profile)` / `known_dims()` / `describe(conf)`
+
+---
+
 ### `butly_core/llm/protocols/`
 Protocol Adapter 群。`Connection` を受けて、具体的な API protocol を実装する。`providers/` の各シムから利用される。
 

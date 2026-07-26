@@ -24,6 +24,10 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
+from butly_core.core.embedding_check import record_embedding_meta
+from butly_core.llm.embedding_profiles import DOCUMENT
+from butly_core.llm.embedding_profiles import apply_prefix as apply_embedding_prefix
+from butly_core.llm.embedding_profiles import describe as describe_embedding
 from butly_core.llm.factory import ProviderFactory
 
 
@@ -50,8 +54,11 @@ def migrate_instance(instance_name: str, batch_size: int = 10, dry_run: bool = F
         print(f"[Migration] DB not found: {db_path}")
         return
 
-    model_name = AI_CONFIG["embedding"]["model_name"]
-    provider = ProviderFactory.create(model_name)
+    # connection + model_name の dict 全体を渡す。model_name 文字列だけだと
+    # ユーザー定義 connection を解決できない（sleeptime 側は d9d717c で修正済み）。
+    emb_conf = AI_CONFIG["embedding"]
+    model_name = emb_conf.get("model_name")
+    provider = ProviderFactory.create(emb_conf)
 
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -70,7 +77,10 @@ def migrate_instance(instance_name: str, batch_size: int = 10, dry_run: bool = F
         conn.close()
         return
 
-    print(f"[Migration] {instance_name}: {total} 件の埋め込みを再生成します (model={model_name})")
+    print(
+        f"[Migration] {instance_name}: {total} 件の埋め込みを再生成します "
+        f"({describe_embedding(emb_conf)})"
+    )
 
     if dry_run:
         print("[Migration] Dry-run モード — DB更新はスキップします")
@@ -85,9 +95,11 @@ def migrate_instance(instance_name: str, batch_size: int = 10, dry_run: bool = F
         for row in batch:
             card_id = row["id"]
             content = f"Title: {row['title']}\nTags: {row['tags']}\nSummary: {row['summary']}"
+            # 書き込み側は文書 prefix。Sleeptime の保存経路と同じ規約を通す。
+            content = apply_embedding_prefix(content, emb_conf, DOCUMENT)
 
             try:
-                embedding = provider.embed(content)
+                embedding = provider.embed(content, config=emb_conf)
                 if embedding is None:
                     print(f"  [{card_id}] embed() returned None — skipping")
                     failed += 1
@@ -112,6 +124,8 @@ def migrate_instance(instance_name: str, batch_size: int = 10, dry_run: bool = F
             time.sleep(1)
 
     conn.close()
+    if updated:
+        record_embedding_meta(db_path, emb_conf)
     print(f"[Migration] 完了: {updated} updated, {failed} failed (total {total})")
 
 

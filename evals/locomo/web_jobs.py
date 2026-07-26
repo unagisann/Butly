@@ -17,6 +17,7 @@ from uuid import uuid4
 
 import yaml
 
+from butly_core.core.embedding_check import check_embeddings
 from butly_core.io_utils import atomic_write_text
 
 from .workspace import PROJECT_ROOT
@@ -53,6 +54,40 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def describe_source_embedding_mismatch(
+    source_run_dir: Path, embedding_role: Any
+) -> Optional[str]:
+    """再利用元 run のベクトルが今回の embedding 設定と噛み合うか調べる。
+
+    ``rerun-qa`` は元 run の workspace（カード + embedding_blob）をそのまま
+    使い、QA だけやり直す。埋め込みモデルや prefix 規約が変わっていると、
+    保存済みベクトルと検索クエリが別空間になり、**エラーは出ないまま**
+    検索が壊れる。1時間かけて無意味な数字を出す前に止めたい。
+
+    Returns: 不整合の説明（問題なければ None）。
+    """
+    if not isinstance(embedding_role, dict):
+        return None
+    model_name = str(embedding_role.get("model_name") or "").strip()
+    if not model_name:
+        return None
+
+    instances_dir = source_run_dir / "workspace" / "butly_core" / "instances"
+    if not instances_dir.is_dir():
+        return None
+
+    conf = {k: v for k, v in embedding_role.items() if k != "generation_config"}
+    try:
+        summary = check_embeddings(instances_dir, embedding_conf=conf)
+    except Exception as e:  # pragma: no cover — 判定不能なら通す
+        logger.warning("embedding compatibility check skipped: %s", e)
+        return None
+
+    if summary["actions"]:
+        return f"Source run '{source_run_dir.name}': {summary['actions'][0]}"
+    return None
+
+
 def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
     """Build the same profile sections used by the Colab parameter cell."""
     run_mode = str(request.get("run_mode") or "standard")
@@ -81,6 +116,13 @@ def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
         generation_config = raw_role.get("generation_config")
         if isinstance(generation_config, dict) and generation_config:
             role_config["generation_config"] = dict(generation_config)
+        if role == "embedding":
+            # クエリ/文書 prefix の規約。既定 (auto) はモデル名から推定するが、
+            # 名前から判別できないモデル用に明示指定も通す。
+            for key in ("profile", "query_prefix", "document_prefix"):
+                value = raw_role.get(key)
+                if isinstance(value, str) and value.strip():
+                    role_config[key] = value
         profile[role] = role_config
 
     use_rag = bool(request.get("context_rag", True))
@@ -254,6 +296,20 @@ def validate_job_request(
             f"source evaluation run not found: {source_run_id}"
         )
     normalized["source_memory_run_id"] = source_run_id or None
+
+    allow_mismatch = bool(normalized.get("allow_embedding_mismatch"))
+    normalized["allow_embedding_mismatch"] = allow_mismatch
+    if source_run_id and not allow_mismatch:
+        reason = describe_source_embedding_mismatch(
+            output_dir / source_run_id,
+            (normalized.get("role_models") or {}).get("embedding"),
+        )
+        if reason:
+            raise EvaluationJobError(
+                f"{reason} Re-embed the source workspace or pick a matching "
+                "embedding model. Set allow_embedding_mismatch=true to run "
+                "anyway (retrieval numbers will be meaningless)."
+            )
 
     if (output_dir / run_id).exists():
         raise EvaluationJobConflict(

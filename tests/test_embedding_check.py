@@ -12,6 +12,8 @@ from butly_core.core.embedding_check import (
     KNOWN_EMBEDDING_DIMS,
     check_embeddings,
     log_startup_check,
+    read_embedding_meta,
+    record_embedding_meta,
     scan_instance_dims,
 )
 
@@ -116,7 +118,139 @@ def test_log_startup_check_prints_ok_when_consistent(tmp_path, capsys):
     _make_instance_db(tmp_path / "bravo", dim=3072)
     log_startup_check(tmp_path, configured_model="gemini-embedding-001")
     out = capsys.readouterr().out
-    assert "dimension check OK" in out
+    assert "consistency check OK" in out
+    assert "profile=gemini" in out
+
+
+class TestEmbeddingMeta:
+    """保存済みベクトルの素性記録と、モデル/プロファイル差し替えの検知。
+
+    次元が同じでも入力規約（prefix）が変われば別空間になる。次元チェック
+    だけでは無言で検索が劣化するため、model/profile も突き合わせる。
+    """
+
+    def test_record_and_read_roundtrip(self, tmp_path):
+        _make_instance_db(tmp_path / "alpha", dim=768)
+        db = tmp_path / "alpha" / "butly_memory.db"
+
+        record_embedding_meta(db, {"model_name": "nomic-embed-text"})
+
+        assert read_embedding_meta(db) == {
+            "model_name": "nomic-embed-text",
+            "profile": "nomic",
+            "dim": 768,
+        }
+
+    def test_record_is_upsert(self, tmp_path):
+        _make_instance_db(tmp_path / "alpha", dim=768)
+        db = tmp_path / "alpha" / "butly_memory.db"
+
+        record_embedding_meta(db, {"model_name": "nomic-embed-text"})
+        record_embedding_meta(db, {"model_name": "multilingual-e5-large"})
+
+        meta = read_embedding_meta(db)
+        assert meta["model_name"] == "multilingual-e5-large"
+        with sqlite3.connect(db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM embedding_meta").fetchone()[0] == 1
+
+    def test_read_missing_table_returns_none(self, tmp_path):
+        _make_instance_db(tmp_path / "alpha", dim=768)
+        assert read_embedding_meta(tmp_path / "alpha" / "butly_memory.db") is None
+
+    def test_record_ignores_empty_model(self, tmp_path):
+        _make_instance_db(tmp_path / "alpha", dim=768)
+        db = tmp_path / "alpha" / "butly_memory.db"
+        record_embedding_meta(db, {})
+        assert read_embedding_meta(db) is None
+
+    def test_profile_mismatch_detected_at_same_dim(self, tmp_path):
+        """次元は 768 のままでも prefix 規約が変われば警告する。"""
+        _make_instance_db(tmp_path / "alpha", dim=768)
+        db = tmp_path / "alpha" / "butly_memory.db"
+        record_embedding_meta(
+            db, {"model_name": "nomic-embed-text", "profile": "plain"}
+        )
+
+        s = check_embeddings(
+            tmp_path, embedding_conf={"model_name": "nomic-embed-text"}
+        )
+
+        assert s["mismatch"] is False  # 次元は一致している
+        assert s["profile_mismatch"] is True
+        assert s["configured_profile"] == "nomic"
+        assert "different model/profile" in s["actions"][0]
+        assert "migrate_embeddings.py" in s["actions"][0]
+
+    def test_model_swap_detected(self, tmp_path):
+        _make_instance_db(tmp_path / "alpha", dim=768)
+        db = tmp_path / "alpha" / "butly_memory.db"
+        record_embedding_meta(db, {"model_name": "nomic-embed-text"})
+
+        s = check_embeddings(
+            tmp_path, embedding_conf={"model_name": "multilingual-e5-large"}
+        )
+
+        assert s["profile_mismatch"] is True
+
+    def test_matching_profile_is_quiet(self, tmp_path):
+        _make_instance_db(tmp_path / "alpha", dim=768)
+        db = tmp_path / "alpha" / "butly_memory.db"
+        conf = {"model_name": "nomic-embed-text"}
+        record_embedding_meta(db, conf)
+
+        s = check_embeddings(tmp_path, embedding_conf=conf)
+
+        assert s["profile_mismatch"] is False
+        assert s["actions"] == []
+
+    def test_unstamped_db_flagged_when_profile_needs_prefix(self, tmp_path):
+        """prefix 必須プロファイルで素性未記録 = prefix 導入前のベクトルと見なす。
+
+        次元は一致するので dim チェックでは検知できないケース。
+        """
+        _make_instance_db(tmp_path / "alpha", dim=768)
+
+        s = check_embeddings(
+            tmp_path, embedding_conf={"model_name": "nomic-embed-text"}
+        )
+
+        assert s["mismatch"] is False
+        assert s["profile_mismatch"] is True
+        assert "no recorded profile" in s["actions"][0]
+
+    def test_unstamped_db_quiet_for_prefixless_profile(self, tmp_path):
+        """prefix を使わないモデルなら未記録でも問題ない（誤警告を出さない）。"""
+        _make_instance_db(tmp_path / "alpha", dim=3072)
+
+        s = check_embeddings(
+            tmp_path, embedding_conf={"model_name": "gemini-embedding-2"}
+        )
+
+        assert s["profile_mismatch"] is False
+        assert s["actions"] == []
+
+    def test_empty_db_not_flagged(self, tmp_path):
+        """カードがまだ無い DB は疑わない。"""
+        _make_instance_db(tmp_path / "alpha", dim=None)
+
+        s = check_embeddings(
+            tmp_path, embedding_conf={"model_name": "nomic-embed-text"}
+        )
+
+        assert s["profile_mismatch"] is False
+        assert s["actions"] == []
+
+    def test_configured_model_only_still_works(self, tmp_path):
+        """embedding_conf 未指定でも従来どおり model 名から推定する。"""
+        _make_instance_db(tmp_path / "alpha", dim=768)
+        record_embedding_meta(
+            tmp_path / "alpha" / "butly_memory.db",
+            {"model_name": "nomic-embed-text", "profile": "plain"},
+        )
+
+        s = check_embeddings(tmp_path, configured_model="nomic-embed-text")
+
+        assert s["profile_mismatch"] is True
 
 
 def test_known_dims_table_has_current_default():
