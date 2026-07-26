@@ -70,4 +70,5 @@ flake8_critical.txt
 
 # Local evaluation artifacts
 eval_runs/
+/docs/temp/
 /data/locomo*.json

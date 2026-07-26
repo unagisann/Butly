@@ -108,6 +108,8 @@ cannot target a reused PID.
 
 ```text
 DATA_DIR/eval_runs/
+├─ runs/
+│  └─ <run_id>/
 ├─ jobs/
 │  ├─ <job_id>.json
 │  └─ <job_id>.log
@@ -118,11 +120,12 @@ DATA_DIR/eval_runs/
 `eval_runs/` is ignored by Git. Job JSON and generated profiles contain model
 names, Connection IDs, and evaluation settings, but no API keys.
 
-The run output root is selected in this order:
+The default run output root and history/comparison source is
+`DATA_DIR/eval_runs/runs/`. It changes only when the environment variable is
+set:
 
 1. `BUTLY_EVALUATION_OUTPUT_DIR`;
-2. `docs/temp/` when it exists in a development checkout;
-3. `DATA_DIR/eval_runs/runs/`.
+2. `DATA_DIR/eval_runs/runs/`.
 
 Dataset candidates come from `BUTLY_LOCOMO_DATASET`,
 `data/locomo10.json`, and the synthetic mini fixture. Any Backend-readable

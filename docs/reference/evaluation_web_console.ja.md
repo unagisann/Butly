@@ -103,6 +103,8 @@ Backend再起動後もPIDとprocess作成時刻を照合し、別processへ誤�
 
 ```text
 DATA_DIR/eval_runs/
+├─ runs/
+│  └─ <run_id>/
 ├─ jobs/
 │  ├─ <job_id>.json
 │  └─ <job_id>.log
@@ -113,11 +115,11 @@ DATA_DIR/eval_runs/
 `eval_runs/`はgitignore対象。ジョブJSONと生成profileにはモデル名・Connection ID・
 評価条件を保存するが、APIキーは保存しない。
 
-run成果物の既定保存先は次の優先順位で決まる。
+run成果物と履歴・比較画面の既定参照先は`DATA_DIR/eval_runs/runs/`。
+環境変数を設定した場合だけ保存・参照先を変更する。
 
 1. `BUTLY_EVALUATION_OUTPUT_DIR`
-2. 開発checkoutに`docs/temp/`が存在する場合は`docs/temp/`
-3. それ以外は`DATA_DIR/eval_runs/runs/`
+2. `DATA_DIR/eval_runs/runs/`
 
 dataset候補は`BUTLY_LOCOMO_DATASET`、`data/locomo10.json`、合成mini fixtureから
 検出する。任意のdatasetを使う場合は、Backendから読める絶対パスをフォームへ入力する。

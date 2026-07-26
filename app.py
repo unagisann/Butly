@@ -495,7 +495,7 @@ def _render_connection_manager(api_url: str) -> list:
                     if st.button(
                         "📡 疎通テスト",
                         key=f"test_conn_{connection_id}",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         try:
                             response = requests.post(
@@ -544,7 +544,7 @@ def _render_connection_manager(api_url: str) -> list:
                         if st.button(
                             "🔑 保存",
                             key=f"save_secret_{connection_id}",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             if not api_key:
                                 st.warning("APIキーを入力してください。")
@@ -572,7 +572,7 @@ def _render_connection_manager(api_url: str) -> list:
                             "解除",
                             key=f"clear_secret_{connection_id}",
                             disabled=not connection.get("api_key_set"),
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             try:
                                 response = requests.delete(
@@ -608,7 +608,7 @@ def _render_connection_manager(api_url: str) -> list:
                         if st.button(
                             "🗑️ 削除",
                             key=f"delete_conn_{connection_id}",
-                            use_container_width=True,
+                            width="stretch",
                         ):
                             try:
                                 response = requests.delete(
@@ -923,7 +923,7 @@ def render_home_screen():
         for name in available_instances:
             # st.button()を使った簡易なカード風リスト
             if st.button(
-                f"🤖 {name}", key=f"btn_inst_{name}", use_container_width=True
+                f"🤖 {name}", key=f"btn_inst_{name}", width="stretch"
             ):
                 navigate_to("chat", instance=name)
 
@@ -1984,7 +1984,7 @@ def _render_evaluation_start_form(
     if st.button(
         "▶ 評価を開始",
         type="primary",
-        use_container_width=True,
+        width="stretch",
         disabled=not can_start,
         key="evaluation_start",
     ):
@@ -2073,7 +2073,7 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
         }
         for job in jobs
     ]
-    st.dataframe(job_rows, use_container_width=True, hide_index=True)
+    st.dataframe(job_rows, width="stretch", hide_index=True)
 
     job_ids = [job["job_id"] for job in jobs]
     current_job = st.session_state.get("evaluation_selected_job")
@@ -2111,7 +2111,7 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
             disabled=selected.get("status")
             not in _EVALUATION_ACTIVE_STATUSES,
             key=f"evaluation_stop_{selected_job_id}",
-            use_container_width=True,
+            width="stretch",
         ):
             response = requests.post(
                 f"{api_url}/evaluations/jobs/{selected_job_id}/stop",
@@ -2128,7 +2128,7 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
             disabled=selected.get("status")
             not in _EVALUATION_RESUMABLE_STATUSES,
             key=f"evaluation_resume_{selected_job_id}",
-            use_container_width=True,
+            width="stretch",
         ):
             response = requests.post(
                 f"{api_url}/evaluations/jobs/{selected_job_id}/resume",
@@ -2189,7 +2189,7 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
         }
         for run in runs
     ]
-    st.dataframe(history_rows, use_container_width=True, hide_index=True)
+    st.dataframe(history_rows, width="stretch", hide_index=True)
 
     scoreable = [
         run["run_id"]
@@ -2245,7 +2245,7 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
         for run in comparison.get("runs", [])
     ]
     st.markdown("#### 指標比較")
-    st.dataframe(metric_rows, use_container_width=True, hide_index=True)
+    st.dataframe(metric_rows, width="stretch", hide_index=True)
 
     baseline = comparison.get("baseline_run_id")
     target = comparison.get("comparison_run_id")
@@ -2270,7 +2270,7 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
         )
     st.markdown("#### 問題別差分")
     st.caption("deltaの小さい順（悪化した問題が先）")
-    st.dataframe(question_rows, use_container_width=True, hide_index=True)
+    st.dataframe(question_rows, width="stretch", hide_index=True)
 
 
 def render_evaluation_screen():
@@ -2430,7 +2430,7 @@ def render_sleeptime_screen():
         if group_count == 0:
             st.success("整理する記憶はありません。すべて最新の状態です。")
         else:
-            if st.button("▶ 整理を開始する", type="primary", use_container_width=True):
+            if st.button("▶ 整理を開始する", type="primary", width="stretch"):
                 try:
                     r = requests.post(
                         f"{api_url}/sleeptime/run",
@@ -2619,7 +2619,7 @@ def render_card_edit_screen():
 
     col_a1, col_a2 = st.columns([6, 2])
     with col_a1:
-        if st.button("💾 保存", type="primary", use_container_width=True):
+        if st.button("💾 保存", type="primary", width="stretch"):
             try:
                 update_data = {
                     "title": title,
@@ -3069,7 +3069,7 @@ def render_instance_settings_screen():
         col_a1, col_a2, col_a3 = st.columns([6, 2, 2])
         with col_a2:
             save_basic = st.button(
-                "設定を保存", type="primary", use_container_width=True, key="save_basic"
+                "設定を保存", type="primary", width="stretch", key="save_basic"
             )
         with col_a3:
             with st.popover("🗑️ インスタンスを完全に削除"):
@@ -3730,7 +3730,7 @@ def render_instance_settings_screen():
                 except Exception as e:
                     st.error(f"保存エラー: {e}")
 
-        if st.button("💾 Glossary を保存", key="gl_save", use_container_width=True):
+        if st.button("💾 Glossary を保存", key="gl_save", width="stretch"):
             # スキーマバージョンを 2 に上げる (priority / 複数行 definition 対応)
             save_data = {"version": 2, "entries": gl_entries}
             try:
@@ -3751,7 +3751,7 @@ def render_instance_settings_screen():
         st.divider()
 
         # Sleeptime Button
-        if st.button("🧹 記憶の整理 (Sleeptime)", use_container_width=True):
+        if st.button("🧹 記憶の整理 (Sleeptime)", width="stretch"):
             st.session_state.sleeptime_instance = instance_name
             navigate_to("sleeptime")
         st.caption("短期記憶を整理し、知識カードとして長期記憶に保存します。")
@@ -3770,7 +3770,7 @@ def render_instance_settings_screen():
         with rename_col2:
             st.write("")
             st.write("")
-            if st.button("変更", key="btn_rename", use_container_width=True):
+            if st.button("変更", key="btn_rename", width="stretch"):
                 if new_inst_name and new_inst_name != instance_name:
                     try:
                         ren_resp = requests.post(
@@ -3804,7 +3804,7 @@ def render_instance_settings_screen():
             save_advanced = st.button(
                 "設定を保存",
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 key="save_advanced",
             )
 
