@@ -52,6 +52,12 @@ APIキーの値はここには保存しない。
 ユーザー設定からの上書き・削除はできない。OpenAI互換サービスは通常、
 Providerクラスを追加せず `openai_compat` のユーザー定義 Connection として追加する。
 
+built-in の接続先を変えたい場合は `base_url_env` を使う。Ollama を別PCで
+動かしている場合は設定画面の「Ollama (ローカルLLM)」で接続先URLを保存すると、
+`DATA_DIR/.env` の `OLLAMA_BASE_URL` に書き込まれる（`POST /settings/ollama_url`）。
+UI と接続テストは root 形（`http://<ホスト>:11434`）を扱い、保存時に OpenAI 互換の
+`/v1` を付ける。`Connection.resolve_base_url()` は毎回 env を読むため再起動は不要。
+
 ## Web Console での操作
 
 ### Connection とAPIキー

@@ -1328,12 +1328,42 @@ def render_settings_screen():
         except Exception:
             provider_cfg = {"AI_CONFIG": {}, "SYSTEM_CONFIG": {}}
 
+        # 保存済みの接続先を初期値にする（別PCの Ollama を指したまま維持する）
+        try:
+            saved_ollama = requests.get(
+                f"{api_url}/settings/ollama_url", timeout=5
+            ).json()
+        except Exception:
+            saved_ollama = {}
+        current_ollama_url = saved_ollama.get("url") or "http://localhost:11434"
+
         ollama_url = st.text_input(
             "接続先URL",
-            value="http://localhost:11434",
+            value=current_ollama_url,
             placeholder="http://localhost:11434",
             key="ollama_url",
+            help=(
+                "別PCのOllamaを使う場合は http://<ホスト>:11434 を指定して保存します。"
+                "保存先は DATA_DIR/.env の OLLAMA_BASE_URL で、再起動は不要です。"
+            ),
         )
+        if saved_ollama.get("source") == "default":
+            st.caption("未保存（既定の localhost を使用中）")
+
+        if st.button("💾 接続先を保存", key="save_ollama_url"):
+            try:
+                resp = requests.post(
+                    f"{api_url}/settings/ollama_url",
+                    json={"url": ollama_url},
+                    timeout=10,
+                )
+                if resp.ok:
+                    st.success("接続先を保存しました。")
+                    st.rerun()
+                else:
+                    st.error(_api_error_detail(resp))
+            except Exception as e:
+                st.error(f"保存エラー: {e}")
         if st.button("🔍 接続テスト", key="test_ollama"):
             try:
                 resp = requests.post(
@@ -1615,6 +1645,33 @@ def _evaluation_role_models(
     return choices
 
 
+def _evaluation_embedding_profile(model_name: str) -> str | None:
+    """Embedding の prefix 規約セレクタ。戻り値 None は auto（モデル名から推定）。
+
+    prefix を付け忘れると埋め込みが 1 つの円錐に潰れて検索が機能しなくなる。
+    通常は auto で足りるが、名前から判別できないモデル用に手動指定を残す。
+    """
+    from butly_core.llm.embedding_profiles import describe, list_profiles
+
+    options = ["auto"] + [p.id for p in list_profiles()]
+    selected = st.selectbox(
+        "Embedding prefix 規約",
+        options,
+        index=0,
+        key="evaluation_embedding_profile",
+        help=(
+            "auto はモデル名から推定します（nomic → search_query:/"
+            "search_document:、E5 → query:/passage: など）。"
+            "推定できないモデルだけ手動で選んでください。"
+        ),
+    )
+    conf = {"model_name": model_name}
+    if selected != "auto":
+        conf["profile"] = selected
+    st.caption(f"適用される規約: {describe(conf)}")
+    return None if selected == "auto" else selected
+
+
 def _render_evaluation_start_form(
     api_url: str,
     evaluation_config: dict,
@@ -1716,6 +1773,19 @@ def _render_evaluation_start_form(
         )
         if source_required and not source_memory_run_id:
             st.warning(f"{run_mode} ではSOURCE_MEMORY_RUN_IDが必須です。")
+    allow_embedding_mismatch = False
+    if source_memory_run_id:
+        allow_embedding_mismatch = st.checkbox(
+            "埋め込み不一致を承知で実行する",
+            value=False,
+            key="evaluation_allow_embedding_mismatch",
+            help=(
+                "元runのカードは、そのとき使った埋め込みモデルと prefix 規約で"
+                "ベクトル化されています。現在の設定と食い違うと、保存済み"
+                "ベクトルと検索クエリが別空間になり検索が無言で壊れます。"
+                "既定では開始前に弾きます。"
+            ),
+        )
     elif run_mode == "stage3-full":
         st.info("Stage3ノード作成とQAを1回のrunで実行します。")
     else:
@@ -1857,6 +1927,9 @@ def _render_evaluation_start_form(
             provider_config,
             connections,
         )
+        embedding_profile = _evaluation_embedding_profile(
+            role_choices["embedding"].model_name
+        )
         st.markdown("##### Temperature / output")
         generation_values = {}
         generation_cols = st.columns(4)
@@ -1926,6 +1999,8 @@ def _render_evaluation_start_form(
                 "model_name": choice.model_name.strip(),
                 "generation_config": generation_values.get(role, {}),
             }
+            if role == "embedding" and embedding_profile:
+                role_models[role]["profile"] = embedding_profile
         if empty_roles:
             st.error(
                 "モデルが未設定のロールがあります: "
@@ -1955,6 +2030,7 @@ def _render_evaluation_start_form(
                 stage3_bootstrap_max_cards
             ),
             "role_models": role_models,
+            "allow_embedding_mismatch": allow_embedding_mismatch,
         }
         try:
             response = requests.post(
