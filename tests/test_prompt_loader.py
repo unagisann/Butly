@@ -96,6 +96,40 @@ class TestPromptLoaderFallback:
         assert primary_marker in template
         assert file_marker in template
 
+    @pytest.mark.parametrize(
+        ("locale", "anchor_marker", "granularity_marker", "source_date_marker"),
+        [
+            (
+                "en",
+                "timestamp of the utterance",
+                "source's time granularity",
+                "not necessarily the date of the event",
+            ),
+            (
+                "ja",
+                "その表現を含む発言のタイムスタンプ",
+                "原文の時間粒度",
+                "必ずしも出来事の日付ではありません",
+            ),
+        ],
+    )
+    def test_temporal_memory_prompt_rules(
+        self,
+        locale,
+        anchor_marker,
+        granularity_marker,
+        source_date_marker,
+    ):
+        """Stage 2/3 が会話日時を基準に原文の時間粒度を保持する。"""
+        loader = PromptLoader(locale=locale)
+
+        summarize = loader.get_template("sleeptime_summarize")
+        maturation = loader.get_template("stage3_node_review")
+
+        assert anchor_marker in summarize
+        assert granularity_marker in summarize
+        assert source_date_marker in maturation
+
     def test_unknown_locale_falls_back_to_en(self):
         """未定義localeは en にフォールバック"""
         loader = PromptLoader(locale="ko")
@@ -128,6 +162,25 @@ class TestSectionHeaders:
         """英語 section_headers が読み込める"""
         loader = PromptLoader(locale="en")
         assert "KEY MEMORY" in loader.get_section_header("key_memory")
+
+    @pytest.mark.parametrize(
+        ("locale", "summary_marker", "precision_marker"),
+        [
+            ("en", "concise representations", "greater precision"),
+            ("ja", "簡潔に表したもの", "細かい精度"),
+        ],
+    )
+    def test_rag_date_note_preserves_evidence_granularity(
+        self,
+        locale,
+        summary_marker,
+        precision_marker,
+    ):
+        """RAG日時注記がカードを絶対視せず根拠の粒度を保持させる。"""
+        note = PromptLoader(locale=locale).get_section_header("rag_date_note")
+
+        assert summary_marker in note
+        assert precision_marker in note
 
     @pytest.mark.parametrize("locale", ["ja", "en"])
     def test_context_prefix_has_no_global_priority_note(self, locale):
