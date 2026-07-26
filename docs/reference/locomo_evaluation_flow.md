@@ -262,6 +262,14 @@ Use distinct `RUN_ID` values for OFF and ON, with the same
 `SOURCE_MEMORY_RUN_ID`. `STAGE3_BATCH_SIZE` is exposed for weaker local
 models, and `STAGE3_BOOTSTRAP_MAX_CARDS` controls the safety cap.
 
+The same parameters are available from the Butly Web Console `📊` screen.
+The Web implementation builds a profile and CLI arguments rather than
+reimplementing Notebook evaluation logic. It displays durable CLI progress,
+can resume a stopped checkpoint, and compares saved-run metrics and
+per-question deltas. See
+[LoCoMo Evaluation Web Console](evaluation_web_console.md) for the API, state
+transitions, and storage rules.
+
 Properties and artifacts:
 
 - Right after cloning, `knowledge_cards` ids and canonical content hashes

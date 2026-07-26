@@ -180,6 +180,7 @@ from routers import (
     database,
     devices,
     dashboard,
+    evaluations,
     line as line_router,
     pairing,
 )
@@ -205,6 +206,7 @@ app = create_app(
         database.router,
         devices.router,
         dashboard.router,
+        evaluations.router,
         line_router.router,
         pairing.router,
     ],
