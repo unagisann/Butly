@@ -151,15 +151,19 @@ async def lifespan(app: FastAPI):
     if not deps.INSTANCES_DIR.exists():
         deps.INSTANCES_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 埋め込みベクトルの次元一致チェック（警告のみ、起動は止めない）
+    # 埋め込みベクトルの次元/プロファイル一致チェック（警告のみ、起動は止めない）
     try:
         from butly_core.config import AI_CONFIG
         from butly_core.core.embedding_check import log_startup_check
 
-        configured_model = AI_CONFIG.get("embedding", {}).get("model_name")
-        log_startup_check(deps.INSTANCES_DIR, configured_model)
+        embedding_conf = AI_CONFIG.get("embedding", {})
+        log_startup_check(
+            deps.INSTANCES_DIR,
+            embedding_conf.get("model_name"),
+            embedding_conf,
+        )
     except Exception as e:
-        print(f"[Server] Embedding dim check skipped: {e}")
+        print(f"[Server] Embedding check skipped: {e}")
 
     print("Butly Server Started.")
     yield
