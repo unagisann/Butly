@@ -32,11 +32,32 @@ The start form covers:
 - Stage 3 batch size and bootstrap card cap;
 - Connection-then-model selection for chat, gatekeeper, summary, knowledge,
   and embedding;
-- role temperatures and the Gatekeeper output limit.
+- the embedding prefix convention (defaults to `auto`, inferred from the model
+  name — see
+  [memory_lifecycle.md](memory_lifecycle.md#embedding-profiles-per-model-input-conventions));
+- role temperatures and the Gatekeeper output limit;
+- an "run despite embedding mismatch" override, shown only when
+  `SOURCE_MEMORY_RUN_ID` is set.
 
 Connections and API keys are shared with the normal Web Console. The form
 never receives key values. The evaluation subprocess inherits the Backend
 process environment.
+
+### Embedding compatibility check for memory-reusing runs
+
+A run with `SOURCE_MEMORY_RUN_ID` (`rerun-qa`) reuses the source run's cards and
+`embedding_blob` values as-is. If the embedding model or its prefix convention
+changed since then, stored vectors and query vectors live in **different
+spaces** and retrieval breaks silently — no exception, no log line.
+
+`POST /evaluations/jobs` therefore compares the `embedding_meta` of the source
+run's workspace instance DBs against the requested embedding config before
+starting, and rejects the job with 400 on any difference. **Matching dimensions
+are not enough** — a changed convention (e.g. cards built before prefixes were
+applied) is rejected too.
+
+Pass `allow_embedding_mismatch: true` (the UI checkbox) to run anyway. Retrieval
+metrics from such a run cannot be compared against others.
 
 ## Job API
 

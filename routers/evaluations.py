@@ -25,6 +25,11 @@ class RoleModelRequest(BaseModel):
     connection: Optional[str] = None
     model_name: str
     generation_config: dict[str, Any] = Field(default_factory=dict)
+    # embedding ロールのみ。クエリ/文書 prefix の規約。
+    # 既定 (auto) はモデル名から推定する。
+    profile: Optional[str] = None
+    query_prefix: Optional[str] = None
+    document_prefix: Optional[str] = None
 
 
 class EvaluationStartRequest(BaseModel):
@@ -56,6 +61,9 @@ class EvaluationStartRequest(BaseModel):
     stage3_batch_size: int = Field(default=10, ge=1)
     stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
     role_models: dict[str, RoleModelRequest] = Field(default_factory=dict)
+    # 記憶を再利用する run で、保存済みベクトルと embedding 設定が
+    # 食い違っていても実行する（既定は事前に弾く）。
+    allow_embedding_mismatch: bool = False
 
 
 class RunCompareRequest(BaseModel):
