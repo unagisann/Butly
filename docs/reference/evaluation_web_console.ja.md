@@ -130,7 +130,7 @@ dataset候補は`BUTLY_LOCOMO_DATASET`、`data/locomo10.json`、合成mini fixtu
 
 - official overall
 - question count、exact match、answer containment
-- evidence retrieval rate
+- evidence retrieval rate、**RAG発火率、分類器fallback率**
 - 平均latency
 - prompt / completion token
 - knowledge card作成数、Sleeptime failure
@@ -139,3 +139,16 @@ dataset候補は`BUTLY_LOCOMO_DATASET`、`data/locomo10.json`、合成mini fixtu
 比較APIは先頭runをbaseline、末尾runを主比較対象とし、共通
 `question_id`ごとに`official_score`のdeltaと各predictionを返す。
 画面はdelta昇順で表示するため、悪化した問題を先に確認できる。
+
+### 検索指標の読み方
+
+`evidence retrieval rate` は**全問で割った値**である。RAGが発火しなかった問は
+0として数えるため、**検索品質が変わらなくても発火率が下がれば一緒に下がる**。
+必ず `rag_trigger` と並べて読む。
+
+`classifier fallback rate` が高いrunは、ContextClassifierが空応答やパース失敗で
+倒れて `need_intent` が立たず、RAGが丸ごと不発になっている。画面は 0.2 以上の
+runを警告表示する。典型的な原因はGatekeeperがthinkingを出すモデル
+（Qwen3等）で、`max output tokens` が小さいこと。分類JSONを書く前に上限へ
+達して content が空になる。新規評価フォームは、この組み合わせを検知して
+開始前に警告する（推奨 2048 以上）。

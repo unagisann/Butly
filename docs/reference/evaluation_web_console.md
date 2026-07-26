@@ -135,10 +135,25 @@ absolute dataset path may be entered manually.
 
 History scans `*/run_config.json` below the output root. When `scores.json`
 exists it shows overall score, question count, exact match, containment,
-evidence retrieval, mean latency, token totals, card count, Sleeptime
-failures, source run, QA mode, and scope.
+evidence retrieval, **RAG trigger rate, classifier fallback rate**, mean
+latency, token totals, card count, Sleeptime failures, source run, QA mode,
+and scope.
 
 The first selected run is the baseline and the last is the primary comparison
 target. The API joins questions by `question_id` and returns the
 `official_score` delta plus each prediction. The UI sorts by ascending delta
 so regressions appear first.
+
+### Reading the retrieval metrics
+
+`evidence retrieval rate` is averaged over **all** questions. Questions where
+RAG never fired count as zero, so the number drops when the trigger rate drops
+even if retrieval quality is unchanged. Always read it next to `rag_trigger`.
+
+A high `classifier fallback rate` means the ContextClassifier fell over (empty
+response or parse error), so `need_intent` was never set and RAG was skipped
+entirely. The UI flags runs at or above 0.2. The usual cause is a Gatekeeper
+model that emits thinking (Qwen3 and friends) with a small `max output tokens`:
+the budget is spent before the classification JSON is written and the content
+comes back empty. The start form warns about that combination up front
+(2048 or more is recommended).

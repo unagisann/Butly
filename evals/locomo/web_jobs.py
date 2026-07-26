@@ -88,6 +88,59 @@ def describe_source_embedding_mismatch(
     return None
 
 
+# Gatekeeper が thinking を出すモデルだと、分類 JSON を書く前に出力上限へ
+# 到達して content が空になる。実測では Qwen3-14B が 512 トークンを thinking で
+# 使い切り、classifier fallback 77.9% (empty_response=135) → need_intent が
+# 立たず RAG が 33% しか発火しない、という壊れ方をした。
+# ベストエフォートの名前判定。増やすときは「既定で thinking するモデル」だけ。
+_REASONING_MODEL_PATTERNS = (
+    "qwen3",
+    "qwq",
+    "deepseek-r1",
+    "magistral",
+    "phi-4-reasoning",
+    "exaone-deep",
+    "gpt-oss",
+    "minimax-m1",
+    "thinking",
+    "-reasoning",
+)
+RECOMMENDED_REASONING_MAX_OUTPUT_TOKENS = 2048
+
+
+def looks_like_reasoning_model(model_name: Any) -> bool:
+    """既定で thinking を出すモデルらしいかを名前から判定する（best-effort）。"""
+    if not isinstance(model_name, str):
+        return False
+    name = model_name.lower()
+    if "non-reasoning" in name:
+        return False
+    return any(pattern in name for pattern in _REASONING_MODEL_PATTERNS)
+
+
+def gatekeeper_token_warning(
+    model_name: Any, max_output_tokens: Any
+) -> Optional[str]:
+    """Gatekeeper の出力上限が thinking に食われそうなら警告文を返す。
+
+    Returns: 警告文（問題なければ None）。
+    """
+    if not looks_like_reasoning_model(model_name):
+        return None
+    try:
+        limit = int(max_output_tokens)
+    except (TypeError, ValueError):
+        return None
+    if limit >= RECOMMENDED_REASONING_MAX_OUTPUT_TOKENS:
+        return None
+    return (
+        f"Gatekeeper の {model_name} は thinking を出すモデルです。"
+        f"max output tokens={limit} だと分類 JSON を書く前に上限へ達し、"
+        "空応答→need_intent が立たず RAG が発火しなくなります"
+        f"（{RECOMMENDED_REASONING_MAX_OUTPUT_TOKENS} 以上を推奨）。"
+    )
+
+
 def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
     """Build the same profile sections used by the Colab parameter cell."""
     run_mode = str(request.get("run_mode") or "standard")
@@ -850,6 +903,14 @@ class EvaluationJobManager:
             ),
             "evidence_retrieval_rate": butly_scores.get(
                 "evidence_retrieval_rate"
+            ),
+            # evidence は「全問」で割った値なので、RAG が発火しなかった run では
+            # 検索品質と無関係に下がる。分母を読み違えないよう発火率を併記する。
+            "rag_trigger_rate": butly_scores.get("rag_trigger_rate"),
+            # 分類器が空応答/パース失敗で倒れると need_intent が立たず RAG が
+            # 丸ごと不発になる（Reasoning モデル + 小さい出力上限で起きる）。
+            "classifier_fallback_rate": butly_scores.get(
+                "classifier_fallback_rate"
             ),
             "latency_ms_mean": butly_scores.get("latency_ms_mean"),
             "prompt_tokens_total": butly_scores.get("prompt_tokens_total"),

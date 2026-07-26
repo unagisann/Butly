@@ -572,3 +572,90 @@ def test_run_history_and_question_comparison(tmp_path):
     assert comparison["comparison_run_id"] == "b"
     assert comparison["questions"][0]["delta"] == 0.5
     assert comparison["questions"][0]["runs"]["b"]["prediction"] == "Monday"
+
+
+class TestGatekeeperTokenWarning:
+    """Reasoning モデル + 小さい出力上限の組み合わせを事前に警告する。
+
+    v25 の実測: Qwen3-14B / max_output_tokens=512 で thinking が上限を食い切り、
+    classifier fallback 77.9% (empty_response=135) → RAG 発火 33% まで低下した。
+    """
+
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "qwen/qwen3-14b",
+            "Qwen3-32B",
+            "deepseek-r1",
+            "qwq-32b",
+            "gpt-oss-120b",
+            "glm-4.6-thinking",
+            "grok-4.20-0309-reasoning",
+        ],
+    )
+    def test_warns_for_reasoning_models_below_recommendation(self, model_name):
+        message = web_jobs.gatekeeper_token_warning(model_name, 512)
+
+        assert message is not None
+        assert "2048" in message
+
+    def test_quiet_at_or_above_recommendation(self):
+        assert web_jobs.gatekeeper_token_warning("qwen/qwen3-14b", 2048) is None
+        assert web_jobs.gatekeeper_token_warning("qwen/qwen3-14b", 4096) is None
+
+    @pytest.mark.parametrize(
+        "model_name",
+        [
+            "gemini-3.1-flash-lite",
+            "gpt-4.1-mini",
+            "grok-4.20-0309-non-reasoning",
+            "nomic-embed-text",
+            "",
+            None,
+        ],
+    )
+    def test_quiet_for_non_reasoning_models(self, model_name):
+        assert web_jobs.gatekeeper_token_warning(model_name, 512) is None
+
+    def test_ignores_unparsable_limit(self):
+        assert web_jobs.gatekeeper_token_warning("qwen3-14b", None) is None
+        assert web_jobs.gatekeeper_token_warning("qwen3-14b", "abc") is None
+
+
+class TestRunSummaryExposesRetrievalDiagnostics:
+    """evidence の分母を読み違えないよう、発火率と分類器の状態を履歴に出す。"""
+
+    def test_history_row_includes_rag_and_classifier_rates(self, tmp_path):
+        manager = EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+            project_root=Path(__file__).parents[1],
+        )
+        run_dir = tmp_path / "runs" / "v25"
+        run_dir.mkdir(parents=True)
+        (run_dir / "run_config.json").write_text(
+            json.dumps({"run_id": "v25"}), encoding="utf-8"
+        )
+        (run_dir / "scores.json").write_text(
+            json.dumps(
+                {
+                    "run_id": "v25",
+                    "question_count": 199,
+                    "official": {"overall": 0.404},
+                    "auxiliary": {},
+                    "butly": {
+                        "evidence_retrieval_rate": 0.219,
+                        "rag_trigger_rate": 0.332,
+                        "classifier_fallback_rate": 0.779,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        rows = manager.list_runs()
+
+        row = next(r for r in rows if r["run_id"] == "v25")
+        assert row["rag_trigger_rate"] == 0.332
+        assert row["classifier_fallback_rate"] == 0.779
+        assert row["evidence_retrieval_rate"] == 0.219

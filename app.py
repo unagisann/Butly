@@ -1975,6 +1975,13 @@ def _render_evaluation_start_form(
         generation_values["gatekeeper"]["max_output_tokens"] = int(
             gatekeeper_max_tokens
         )
+        from evals.locomo.web_jobs import gatekeeper_token_warning
+
+        _token_warning = gatekeeper_token_warning(
+            role_choices["gatekeeper"].model_name, gatekeeper_max_tokens
+        )
+        if _token_warning:
+            st.warning(_token_warning)
 
     can_start = bool(
         dataset_path.strip()
@@ -2181,6 +2188,8 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
             "questions": run.get("question_count"),
             "exact_match": run.get("exact_match_rate"),
             "evidence": run.get("evidence_retrieval_rate"),
+            "rag_trigger": run.get("rag_trigger_rate"),
+            "clf_fallback": run.get("classifier_fallback_rate"),
             "latency_ms": run.get("latency_ms_mean"),
             "prompt_tokens": run.get("prompt_tokens_total"),
             "cards": run.get("knowledge_cards_created"),
@@ -2190,6 +2199,20 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
         for run in runs
     ]
     st.dataframe(history_rows, width="stretch", hide_index=True)
+    st.caption(
+        "evidence は全問で割った値です。rag_trigger が低い run では検索品質と"
+        "無関係に下がるため、2列を併せて読んでください。"
+    )
+    broken = [
+        run.get("run_id")
+        for run in runs
+        if (run.get("classifier_fallback_rate") or 0) >= 0.2
+    ]
+    if broken:
+        st.warning(
+            "分類器が高頻度で fallback した run があります（need_intent が立たず"
+            "RAG が不発になっている可能性）: " + ", ".join(str(r) for r in broken)
+        )
 
     scoreable = [
         run["run_id"]
@@ -2236,6 +2259,8 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
             "exact_match": run.get("exact_match_rate"),
             "containment": run.get("answer_containment_rate"),
             "evidence": run.get("evidence_retrieval_rate"),
+            "rag_trigger": run.get("rag_trigger_rate"),
+            "clf_fallback": run.get("classifier_fallback_rate"),
             "latency_ms": run.get("latency_ms_mean"),
             "prompt_tokens": run.get("prompt_tokens_total"),
             "completion_tokens": run.get("completion_tokens_total"),
