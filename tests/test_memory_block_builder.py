@@ -253,7 +253,7 @@ class TestRAGWithNeed:
 
         rag = blocks["rag_context"]
         assert "・[2024-04-08] 陶芸教室: " in rag
-        assert "[YYYY-MM-DD] は、その会話が行われた日付" in rag
+        assert "[YYYY-MM-DD] は、説明された出来事の日付とは限らず" in rag
         assert "根拠が示す日付粒度を保ち" in rag
         # 旧形式カードはプレフィックスなしのまま
         assert "・旧カード: " in rag
@@ -348,9 +348,9 @@ class TestBlockStructure:
 class TestRAGSourceMode:
     """rag_source_mode（cards / raw / both）による RAG ブロック構築テスト"""
 
-    RAW_HEADER_BOTH = "【記憶の元になった当時の会話（抜粋）】"
-    RAW_HEADER_ONLY = "【過去の記憶（当時の会話・抜粋）】"
-    CARDS_HEADER = "【過去の記憶（RAG）】"
+    RAW_HEADER_BOTH = "[根拠となる会話抜粋]"
+    RAW_HEADER_ONLY = "[関連する会話抜粋]"
+    CARDS_HEADER = "[関連する記憶カード]"
 
     def _write_raw_file(self, base_dir, date, name, text):
         from tests.conftest import TEST_INSTANCE_FOLDER

@@ -190,13 +190,13 @@ class TestEndToEndFlow:
         instruction = build_system_instruction_from_blocks(blocks, memory_manager)
 
         assert "=== SYSTEM INSTRUCTION ===" in instruction
-        assert "=== KEY MEMORY" in instruction
+        assert "=== CORE MEMORY" in instruction
         # TIER INFO は context_prefix に移動済み
-        assert "=== TIER INFO" not in instruction
+        assert "[実行モード]" not in instruction
 
         # 5. context_prefix 構築
         context = build_context_prefix(blocks, memory_manager)
-        assert "=== TIER INFO" in context
+        assert "[実行モード]" in context
         assert tier in context
 
 
