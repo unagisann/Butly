@@ -12,9 +12,11 @@
         "  xai     : xAI Grok (OpenAI 互換, XAI_API_KEY)",
         "  ollama  : Ollama local (OLLAMA_BASE_URL, 認証不要)",
         "",
-        "■ User 定義 connection は LLM_CONNECTIONS で追加 (下の Groq 例参照)。",
+        "■ User 定義 connection は LLM_CONNECTIONS で追加 (下の例参照)。",
         "  Groq / Together / DeepInfra / OpenRouter などの OpenAI 互換 provider は",
         "  Connection エントリだけで使えます (Provider クラス追加不要)。",
+        "  NanoGPT は Pay-as-you-go / Pro を別Connectionにし、同じ",
+        "  NANOGPT_API_KEYを共有します。Proには従量課金overrideを追加しません。",
         "",
         "■ 旧形式 (model_name only) も互換動作: prefix から connection を自動推定。",
         "  例: \"chat\": {\"model_name\": \"gpt-4o\"} → connection=openai に推定",
@@ -33,6 +35,26 @@
     },
 
     "_LLM_CONNECTIONS_example": [
+        {
+            "_comment": "NanoGPT Pay-as-you-go。Embeddingは /api/v1/embedding-models が返す正確なIDを指定。",
+            "id": "nanogpt",
+            "protocol": "openai_compat",
+            "base_url": "https://nano-gpt.com/api/v1",
+            "api_key_env": "NANOGPT_API_KEY",
+            "label": "NanoGPT (Pay-as-you-go)",
+            "extra_headers": {},
+            "embeddings_supported": true
+        },
+        {
+            "_comment": "NanoGPT Pro。X-Provider / X-Billing-Mode等の従量課金overrideを追加しない。",
+            "id": "nanogpt-sub",
+            "protocol": "openai_compat",
+            "base_url": "https://nano-gpt.com/api/subscription/v1",
+            "api_key_env": "NANOGPT_API_KEY",
+            "label": "NanoGPT Pro (Subscription)",
+            "extra_headers": {},
+            "embeddings_supported": false
+        },
         {
             "_comment": "Groq (OpenAI 互換) を Butly に追加する例。このキーを LLM_CONNECTIONS にリネームして使用。",
             "id": "groq",

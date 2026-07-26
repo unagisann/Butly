@@ -22,6 +22,7 @@ Documents are grouped by purpose:
 - [Desktop sidecar specification](reference/desktop_sidecar.md)
 - [Context Levels](reference/context_levels.md)
 - [Gatekeeper I/O Specification](reference/gatekeeper_io_summary.md)
+- [LLM Connections and API-key management](reference/llm_connections.md)
 - [Memory Lifecycle](reference/memory_lifecycle.md)
 - [LoCoMo Evaluation Data and QA Flow](reference/locomo_evaluation_flow.md)
 

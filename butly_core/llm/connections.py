@@ -8,18 +8,78 @@ Connection は「どこに繋ぐか」「どの protocol で喋るか」「ど�
 
 - ``openai`` / ``xai`` / ``ollama`` / ``google`` は built-in (常駐)。
 - それ以外 (``groq`` 等の OpenAI 互換 provider) は user_config.json の
-  ``LLM_CONNECTIONS`` ブロックから register() される (Phase 2 で対応)。
-
-Phase 1 範囲では built-in 4 件のみ。
+  ``LLM_CONNECTIONS`` ブロックまたは Web Console から register() される。
 """
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Literal, Optional
+from urllib.parse import urlparse
 
 ProtocolId = Literal["openai_compat", "gemini_native"]
+
+_CONNECTION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_ENV_NAME_RE = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+_RESERVED_ENV_NAMES = frozenset(
+    {
+        "CODEX_HOME",
+        "HOME",
+        "LOGNAME",
+        "OLDPWD",
+        "PATH",
+        "PWD",
+        "PYTHONHOME",
+        "PYTHONPATH",
+        "SHELL",
+        "USER",
+        "VIRTUAL_ENV",
+    }
+)
+
+
+def validate_connection_id(value: str) -> str:
+    if not isinstance(value, str) or not _CONNECTION_ID_RE.fullmatch(value):
+        raise ValueError("connection id must match ^[a-z0-9][a-z0-9_-]{0,63}$")
+    return value
+
+
+def validate_env_name(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _ENV_NAME_RE.fullmatch(value):
+        raise ValueError(
+            "environment variable name must match ^[A-Z_][A-Z0-9_]*$"
+        )
+    if value in _RESERVED_ENV_NAMES:
+        raise ValueError(f"reserved environment variable name is not allowed: {value}")
+    return value
+
+
+def validate_base_url(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("base_url must be a string")
+    if "\r" in value or "\n" in value:
+        raise ValueError("base_url must not contain newlines")
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("base_url must be an absolute http:// or https:// URL")
+    return value
+
+
+def validate_extra_headers(value: dict[str, str]) -> dict[str, str]:
+    if not isinstance(value, dict):
+        raise ValueError("extra_headers must be an object")
+    for key, header_value in value.items():
+        if not isinstance(key, str) or not isinstance(header_value, str):
+            raise ValueError("extra_headers keys and values must be strings")
+        if any(char in key or char in header_value for char in ("\r", "\n")):
+            raise ValueError("extra_headers must not contain newlines")
+    return value
 
 
 # =====================================================================
@@ -71,6 +131,20 @@ class Connection:
     embedding_model_env: Optional[str] = None
     default_embedding_model: Optional[str] = None
     model_name_strip_prefix: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        validate_connection_id(self.id)
+        if self.protocol not in ("openai_compat", "gemini_native"):
+            raise ValueError(
+                f"Unsupported connection protocol: {self.protocol!r}"
+            )
+        validate_base_url(self.base_url)
+        validate_env_name(self.base_url_env)
+        validate_env_name(self.api_key_env)
+        validate_env_name(self.embedding_model_env)
+        for fallback in self.api_key_fallback_envs:
+            validate_env_name(fallback)
+        validate_extra_headers(self.extra_headers)
 
     @property
     def display_label(self) -> str:
