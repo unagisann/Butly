@@ -355,8 +355,6 @@ class EvaluationJobManager:
             resolved_output = Path(output_dir)
         elif configured_output:
             resolved_output = Path(configured_output).expanduser()
-        elif (self.project_root / "docs" / "temp").is_dir():
-            resolved_output = self.project_root / "docs" / "temp"
         else:
             resolved_output = self.data_dir / "eval_runs" / "runs"
         self.output_dir = resolved_output.resolve()

@@ -412,6 +412,23 @@ def test_manager_persists_non_secret_profile_and_job_state(
     )
 
 
+def test_manager_defaults_to_eval_runs_even_when_docs_temp_exists(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv("BUTLY_EVALUATION_OUTPUT_DIR", raising=False)
+    project_root = tmp_path / "project"
+    (project_root / "docs" / "temp").mkdir(parents=True)
+    data_dir = tmp_path / "data"
+
+    manager = EvaluationJobManager(
+        data_dir,
+        project_root=project_root,
+    )
+
+    assert manager.output_dir == (data_dir / "eval_runs" / "runs").resolve()
+
+
 def test_manager_rejects_second_active_job(tmp_path, monkeypatch):
     manager = EvaluationJobManager(
         tmp_path / "data",
