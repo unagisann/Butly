@@ -270,6 +270,12 @@ OFF/ONには異なる`RUN_ID`と同じ`SOURCE_MEMORY_RUN_ID`を設定する。
 ローカルモデル向けに`STAGE3_BATCH_SIZE`、安全上限として
 `STAGE3_BOOTSTRAP_MAX_CARDS`もフォームから変更できる。
 
+同じパラメータはButly Web Consoleの`📊`画面からも設定できる。Web版は
+Notebookの評価ロジックを移植せず、生成profileと引数を既存CLIへ渡す。
+CLIの進捗を永続ログから表示し、停止後はcheckpointからresumeできる。保存済み
+runの主要指標と問題別deltaも画面上で比較できる。API・状態遷移・保存先の詳細は
+[LoCoMo Evaluation Web Console](evaluation_web_console.ja.md)を参照。
+
 性質と artifact:
 
 - clone 直後に `knowledge_cards` の id と canonical content hash

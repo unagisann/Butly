@@ -44,6 +44,7 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 - `render_home_screen()` — ホーム。インスタンス一覧・新規作成
 - `render_chat_screen()` — チャット画面。`POST /chat` で応答取得、デバッグ表示
 - `render_settings_screen()` — グローバル設定、汎用Connection/APIキー管理、プロバイダー→モデルの二段階選択
+- `render_evaluation_screen()` — LoCoMo評価フォーム、ジョブ停止・再開・ログ、run履歴・問題別スコア比較
 - `render_instance_settings_screen()` — インスタンス個別の性格設定・config 編集。モデル上書きもConnection→モデルの順に選択
 - `_render_connection_manager()` — built-in / ユーザー定義Connectionの一覧、秘密値を再表示しないAPIキー保存・解除、疎通テスト、テンプレート追加、参照保護付き削除
 - `_model_selector()` — ロールごとにConnectionを先に選び、そのConnectionのモデル候補または直接入力したモデルIDを `ModelChoice` として返す
@@ -118,6 +119,7 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | `config.py` | CLI設定DTO（QA mode、sample/session/question範囲、localeを含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
 | `cli.py` | `run` / `resume` / `rerun-qa` / `score` / `report` subcommands。`run`は`--qa-mode`、各`--*-limit` / `--all-*`、`--locale`を受け付け、`rerun-qa`は元runを変更せず同じカードでQAを再実行 |
 | `progress.py` | CLI / Colab向けの即時進捗ログ。Replay・Sleeptime・QAの完了unitを0〜90%、採点・レポートを90〜100%としてstderrへ表示 |
+| `web_jobs.py` | Web Console用の永続subprocessジョブ管理。CLI command/profile生成、進捗ログ解析、停止・resume、既存run走査・スコア比較 |
 | `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`）。top-level `locale`は内部prompt／memory出力言語、`brain.time_decay_rate`は評価runの検索時間減衰を指定 |
 | `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook。ParametersセルでQA mode、locale、sample/session/questionの全件／上限制御、context別ON/OFF、role別temperature、`TIME_DECAY_RATE`、同一カード再利用元runを選択（評価ロジック禁止） |
 
@@ -144,6 +146,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 | `sleeptime.py` | `/sleeptime/run`、`/sleeptime/status`、`/sleeptime/estimate` |
 | `database.py` | `/database/cards` CRUD（ナレッジカード管理） |
 | `settings.py` | `/settings`、`/config`、`/prompts`、Connection/APIキー/モデル候補 |
+| `evaluations.py` | `/evaluations/jobs`開始・状態・停止・再開、ログ、run履歴・比較（Streamlit評価Console用） |
 | `dashboard.py` | `/status`（CPU/MEM）、`/discovery`、`/news` |
 | `devices.py` | `/devices`、`/tv/key`、`/tv/launch`（Fire TV 制御） |
 

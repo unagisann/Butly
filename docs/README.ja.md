@@ -22,6 +22,7 @@
 - [Desktop sidecar 仕様](reference/desktop_sidecar.ja.md)
 - [context_levels 仕様](reference/context_levels.ja.md)
 - [Gatekeeper 入出力仕様](reference/gatekeeper_io_summary.ja.md)
+- [LoCoMo Evaluation Web Console](reference/evaluation_web_console.ja.md)
 - [LLM Connection / APIキー管理](reference/llm_connections.ja.md)
 - [記憶ライフサイクル](reference/memory_lifecycle.ja.md)
 - [LoCoMo評価のデータ保存・QA実行フロー](reference/locomo_evaluation_flow.ja.md)
