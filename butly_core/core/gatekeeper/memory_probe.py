@@ -258,7 +258,8 @@ class MemoryProbe:
                 f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"
             )
         elif not deep_enabled or not (
-            intent_wants_memory or injection_policy == "retrieval_assisted"
+            intent_wants_memory
+            or injection_policy in ("retrieval_assisted", "candidates")
         ):
             # Layer 2 は LLM 呼び出し（vector モードのキーワード抽出）を伴うので、
             # 「検索しても注入され得ない」ケースでは走らせない。常時検索は
@@ -367,15 +368,24 @@ class MemoryProbe:
     ) -> tuple:
         """検索結果をプロンプトへ注入してよいかを判定する（計画書 §3.3）。
 
-        RRF は候補の順位付けであって絶対的な関連性判定ではないので、
-        「候補があるから入れる」はしない。intent_gated は従来どおり分類器の
-        判定に従い、retrieval_assisted は分類器が null でもベクトルと BM25 の
-        双方が同じカードを支持したときだけ昇格させる。
+        - ``intent_gated``: 従来どおり分類器の判定に従う
+        - ``retrieval_assisted``: ベクトルと BM25 の双方が同じカードを支持した
+          ときだけ昇格させる（hybrid 専用。vector では発火しない）
+        - ``candidates``: 候補があれば注入する
+
+        ``candidates`` が乱暴に見えるのは承知のうえで、v26 の実測に基づく:
+        cosine 絶対値・順位差・BM25 一致のどれも、注入すべき問（cat1-4）と
+        LoCoMo cat5 の adversarial 問を分離できなかった。cat5 は実在する話題の
+        主語や属性だけを差し替えて作られているので、検索側の信号では原理的に
+        見分けられない。一方で読み手は、既に記憶が注入されている cat5 42問でも
+        正解率 0.810 を保っており（未注入5問は 0.800）、誤注入の実害は小さい。
         """
         if not candidates:
             return False, "no_candidates"
         if intent_wants_memory:
             return True, "intent"
+        if injection_policy == "candidates":
+            return True, "candidates"
         if injection_policy != "retrieval_assisted":
             return False, "intent_gated"
         if any(c.get("retrieval_source") == "both" for c in candidates):

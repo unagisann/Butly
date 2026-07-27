@@ -63,9 +63,9 @@ class EvaluationStartRequest(BaseModel):
     # --- 検索設定（検索改修計画 §3.5）。hybrid は eval で先行検証する ---
     search_mode: Literal["vector", "hybrid"] = "vector"
     retrieval_execution: Literal["always", "intent_gated"] = "always"
-    injection_policy: Literal["intent_gated", "retrieval_assisted"] = (
-        "intent_gated"
-    )
+    injection_policy: Literal[
+        "intent_gated", "retrieval_assisted", "candidates"
+    ] = "intent_gated"
     bm25_candidates: int = Field(default=20, ge=1)
     vector_candidates: int = Field(default=20, ge=1)
     rrf_k: int = Field(default=60, ge=1)

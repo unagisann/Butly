@@ -1,7 +1,8 @@
 # 検索改修計画（ハイブリッド検索 / RRF / 近傍展開）
 
 対象: ナレッジカード検索（`ButlyBrain` の Layer 1 / Layer 2 と `MemoryProbe`）
-状態: Phase 1A 実装済み（既定は `search_mode=vector` のまま。A/B 未実施）
+状態: Phase 1A 実装済み・offline A/B 完了。**hybrid は昇格せず既定 `vector` のまま**
+（§8 参照）。次は Phase 1B（常時検索 + `injection_policy=candidates`）の QA A/B
 最終更新: 2026-07-27
 
 ---
@@ -243,10 +244,13 @@ Quick Retrievalは`need_intent`に関係なく全質問で実行する。一方�
    - 検索は常時実行する
    - 注入条件は現行どおり `need_intent=past_fact/relationship` と候補あり
    - ランキング変更の効果を、注入判定変更と混ぜずに測る
-2. **Phase 1B**: `injection_policy=retrieval_assisted`（実験）
-   - 分類器がnullでも、意味のあるBM25ヒットとベクトルの双方が同じカードを
-     支持した場合など、強い検索根拠があれば注入候補に昇格する
-   - cat5の誤注入を必ずA/Bで確認する
+2. **Phase 1B**: 分類器 null の問への注入を実験する
+   - `injection_policy=retrieval_assisted`: ベクトルと BM25 の双方が同じカードを
+     支持したときだけ昇格（hybrid 専用。vector では発火しない）
+   - `injection_policy=candidates`: 候補があれば注入する。**§8 の実測で、検索側の
+     どの信号も cat5 の adversarial 問を分離できなかったため、ゲートを作る代わりに
+     これを A/B で測る**
+   - cat5の誤注入を必ずA/Bで確認する（実測では読み手が耐えている＝リスクは小さい）
 
 初期実装は逐次実行でよい。正しさを確認後、ContextClassifierとQuick Retrievalを
 並列化して検索レイテンシを隠す。
@@ -288,7 +292,7 @@ relevance gateを後続検討する。
 | `brain` | `bm25_min_weak_df` | 5 | df がこの件数未満なら弱い語にしない（少件数DBの保護） |
 | `brain` | `bm25_scan_limit` | 500 | df 計算と語境界検証のためにスキャンする最大ヒット数 |
 | `memory_probe` | `retrieval_execution` | `"always"` | Quick Retrievalを全質問で実行 |
-| `memory_probe` | `injection_policy` | `"intent_gated"` | 初期は検索と注入判定を分離して現行条件を維持 |
+| `memory_probe` | `injection_policy` | `"intent_gated"` | 初期は検索と注入判定を分離して現行条件を維持。`retrieval_assisted`（hybrid専用）/ `candidates`（候補があれば注入）を eval で比較 |
 
 **出力件数はどれが効くのか（経路ごとに固定）**:
 
@@ -474,7 +478,71 @@ QA評価は同一記憶に対して測る（v23で確立した手順）。カー
 複製workspaceをmigrateし、全カードの`embedding_meta.text_recipe`と実設定が一致してから
 評価する。
 
-### Phase 1A 実装直後の offline 実測（2026-07-27）
+### Phase 1A の A/B 結果（2026-07-27）— **hybrid は既定へ昇格しない**
+
+v26 workspace（カード107枚 / oracle カードがある cat1-4 139問）で、embedding を
+1回だけ回してランキングをキャッシュし、融合方式だけを差し替えて比較した:
+
+| strategy | @1 | @3 | @20 | hit@3 | hit@20 |
+|---|---:|---:|---:|---:|---:|
+| **vector only** | 0.4862 | **0.6906** | 0.8363 | **107** | 126 |
+| bm25 only | 0.4101 | 0.5270 | 0.7302 | 79 | 113 |
+| RRF 1:1（実装した既定） | 0.4466 | 0.6457 | 0.8405 | 99 | 127 |
+| RRF 2:1（vector 優位） | 0.4742 | 0.6577 | 0.8363 | 100 | 126 |
+| RRF 3:1 | 0.4814 | 0.6523 | 0.8363 | 100 | 126 |
+| cascade（vector top3 を固定して BM25 を後ろへ） | 0.4862 | 0.6906 | 0.8189 | 107 | 125 |
+
+**top3 の相補性**: both 74 / vector のみ 33 / **BM25 のみ 5** / どちらも外し 27。
+
+読み方:
+
+- BM25 が top3 で単独救済するのは **5問**、対して vector 単独は 33問。等重み RRF は
+  その5問を取りに行って **8問を落とす**（107→99）。重みを 3:1 まで振っても
+  vector 単独に届かない
+- k=20 ではほぼ互角（0.8363 → 0.8405）。BM25 が候補プールへ足す情報は 1問分
+- **§8 の昇格条件1（Recall@3 が +5pt）を満たすどころか -4.5pt。よって既定は
+  `vector` のまま**。hybrid の実装は残し、日本語運用・別 embedding での再評価に備える
+- BM25 が救った5問には計画書 §0 が挙げた `What types of pottery have Melanie and
+  her kids made?` が含まれる。**狙った問は実際に直るが、代償のほうが大きい**
+
+### 本当のボトルネックは検索順位ではなかった
+
+| 対象（oracle 139問） | coverage | hit |
+|---|---:|---:|
+| v26 で実際に注入されたカード | 0.6331 | 99 |
+| **常時検索（`retrieval_execution=always`）の vector top3** | **0.6906** | **107** |
+
+差の8問は**すべて「分類器が null で検索が走らなかった」問**（注入ミスではない）。
+現在スコア平均 0.062。つまり ev=0 の主因はランキングではなく**検索前のゲート**で、
+BM25 なしで（`search_mode=vector` のまま）取り返せる。
+
+### 注入ゲートは作れない（実測）
+
+`need_intent=null` の19問（cat1-4 が14、cat5 が5）に対し、注入してよいかを
+検索側の信号で判定できるか試した:
+
+| ゲート候補 | 結果 |
+|---|---|
+| cosine 絶対値 | cat1-4（当たり）0.696–0.840 に対し cat5 は 0.706–0.762。**完全に重なる** |
+| 順位差（top1 - top2） | 平均 0.044 vs 0.020。分布は重なりゲートにならない |
+| BM25 一致（vector top3 ∩ BM25 top-k） | **cat5 5問すべてが一致**。分離ゼロ |
+
+LoCoMo cat5 は実在する話題の主語・属性だけを差し替えて作られている
+（例: 実在するのは Caroline のネックレスなのに `What does Melanie's necklace
+symbolize?`）。**検索側の信号では原理的に見分けられない**。
+
+一方、誤注入の実害は小さいことも実測できた:
+
+| cat5 47問 | accuracy |
+|---|---:|
+| 既に記憶が注入されている 42問 | **0.810** |
+| 注入されていない 5問 | 0.800 |
+
+読み手は無関係な記憶を渡されても "No information" を維持できている。
+したがって `injection_policy` に **`candidates`（候補があれば注入）** を追加し、
+ゲートを作る代わりに A/B で是非を測る。
+
+### Phase 1A 実装直後の offline 実測（BM25 単独・参考）
 
 v26 の workspace（カード107枚）に対し、**BM25 単独**（ベクトル・RRF なし）で
 `retrieval_recall` を測った。LLM 呼び出しなし・embedding なしの純オフライン計測:
@@ -542,6 +610,11 @@ v26 の workspace（カード107枚）に対し、**BM25 単独**（ベクトル
 8. RAWヒットはカード経由だけでなく、独立した根拠excerptとして直接注入する
 9. **BM25候補には3段の補正を必ず通す**（語境界検証 / df ゲート / 候補数上限）。
    trigram の素の挙動をそのまま順位付けに使わない
+9b. **hybrid は既定にしない**（2026-07-27 の A/B 結果）。RRF は vector の良い順位を
+   BM25 候補で薄め、@3 で -4.5pt。機能はフラグの奥に残し、日本語運用・別 embedding で
+   再評価する
+9c. **注入ゲートは検索側の信号では作れない**（cosine / 順位差 / BM25 一致がいずれも
+   cat5 と分離しない）。`candidates` policy で A/B し、読み手の耐性で判断する
 10. **2文字CJK語は既知の制約**。LIKE 補助候補で最低限救うが、日本語の字面一致は
     LoCoMo では検証されない。既定を `hybrid` へ昇格しても、この点は
     「英語で検証済み・日本語は未検証」と扱う
@@ -556,12 +629,17 @@ v26 の workspace（カード107枚）に対し、**BM25 単独**（ベクトル
 
 Phase 1だけで独立して価値があり、他はPhase 1の結果を見てから優先度を決める。
 
-1. Phase 1A（FTS5 / RRF / 常時検索 / intent-gated注入）を実装
-2. offline retrieval replayでvectorとhybridを比較
-3. 改善した構成だけ同一記憶でQA評価
-4. Phase 1Bとしてretrieval-assisted注入をcat5込みでA/B
-5. 残ったevidence=0を「カード内にある / カードに無い」に再分類
-6. 数字に応じてPhase 2・3・5の順序を決め、rerankerは最後に判断
+1. ~~Phase 1A（FTS5 / RRF / 常時検索 / intent-gated注入）を実装~~ 完了
+2. ~~offline retrieval replayでvectorとhybridを比較~~ 完了 → **hybrid は @3 で -4.5pt。既定は `vector` のまま**
+3. **次**: Phase 1B を QA で A/B する
+   （`search_mode=vector` + `retrieval_execution=always` + `injection_policy=candidates`）。
+   検索は既に届いている8問（現在スコア 0.062）を注入まで通すのが狙い。
+   期待は cat1-4 で +0.02 前後、cat5 の低下は 1問以内
+4. 残ったevidence=0を「カード内にある / カードに無い」に再分類
+5. **Phase 4（リランカー）の優先度を上げる**。vector は @3 で 0.6906 だが
+   @20 では 0.8363 まで届いており、順位付けだけで19問ぶんの余地がある。
+   Phase 2（episode）と合わせて次の候補
+6. Phase 5（RAWのembedding）は「カードに無い」問の割合を再測定してから判断
 
 ### Phase 1 で追加するテスト
 

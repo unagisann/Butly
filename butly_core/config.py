@@ -159,7 +159,8 @@ SYSTEM_CONFIG = {
         "deep_search_enabled": True,
         # 検索実行と注入判定の分離（検索改修計画 §3.3）。正は settings/defaults.py。
         "retrieval_execution": "always",  # "always" | "intent_gated"
-        "injection_policy": "intent_gated",  # "intent_gated" | "retrieval_assisted"
+        # "intent_gated" | "retrieval_assisted" | "candidates"
+        "injection_policy": "intent_gated",
     },
     "gatekeeper": {
         # tier 判定閾値: rc<=tier_rc_threshold AND cn<=tier_cn_threshold → reflex、それ以外 → mid

@@ -158,7 +158,11 @@ SYSTEM_CONFIG = {
         #                      "intent_gated" = 旧挙動（past_fact/relationship のみ）
         # injection_policy: "intent_gated" = 旧挙動どおり need_intent で注入判定
         #                   "retrieval_assisted" = 分類器が null でも強い検索根拠
-        #                     （BM25 とベクトルが同じカードを支持）なら注入
+        #                     （BM25 とベクトルが同じカードを支持）なら注入。hybrid 専用
+        #                   "candidates" = 候補があれば注入する（分類器の判定を使わない）。
+        #                     v26 の実測では、cosine・順位差・BM25 一致のいずれも
+        #                     「注入すべき問」と cat5 の adversarial 問を分離できなかった。
+        #                     retrieval 側に効くゲートが無いので、候補の有無だけで決める
         "retrieval_execution": "always",
         "injection_policy": "intent_gated",
     },

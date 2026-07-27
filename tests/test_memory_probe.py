@@ -548,6 +548,46 @@ class TestNeedIntentGating:
         assert result["retrieval"]["injection_reason"] == "retrieval_assisted"
         assert result["retrieval"]["need_hint"] == "past_fact"
 
+    def test_candidates_policy_injects_without_intent(
+        self, probe, brain_with_vector, mm_with_glossary
+    ):
+        """injection_policy=candidates: 分類器 null でも候補があれば注入する。
+
+        v26 実測で cosine・順位差・BM25 一致のどれも cat5 の adversarial 問を
+        分離できず、検索側のゲートが作れなかったための policy（§3.3）。
+        """
+        result = probe.probe(
+            user_input="Gatekeeperの話",
+            brain=brain_with_vector,
+            memory_manager=mm_with_glossary,
+            need_intent=None,
+            override_config={"memory_probe": {"injection_policy": "candidates"}},
+        )
+
+        assert len(result["candidates"]) == 1
+        assert result["retrieval"]["injection_reason"] == "candidates"
+        assert result["retrieval"]["need_hint"] == "past_fact"
+
+    def test_candidates_policy_still_needs_candidates(
+        self, probe, brain_with_vector, mm_with_glossary
+    ):
+        brain_with_vector.quick_vector_search_diag.return_value = {
+            "results": [],
+            "diagnostics": {"mode": "vector"},
+        }
+        brain_with_vector.extract_keywords.return_value = {"keywords": []}
+
+        result = probe.probe(
+            user_input="Gatekeeperの話",
+            brain=brain_with_vector,
+            memory_manager=mm_with_glossary,
+            need_intent=None,
+            override_config={"memory_probe": {"injection_policy": "candidates"}},
+        )
+
+        assert result["candidates"] == []
+        assert result["retrieval"]["injection_reason"] == "no_candidates"
+
     def test_retrieval_assisted_rejects_weak_evidence(
         self, probe, brain_with_vector, mm_with_glossary
     ):

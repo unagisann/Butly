@@ -554,7 +554,8 @@ LLM 呼び出しなしの事実ベース記憶検索。**検索の実行と、�
 | 値 | 挙動 |
 |---|---|
 | `intent_gated`（既定） | 従来どおり `need_intent ∈ {past_fact, relationship}` のときだけ候補を注入する |
-| `retrieval_assisted` | 分類器が null でも、ベクトルと BM25 の**双方が同じカードを支持**（`retrieval_source="both"`）していれば注入候補へ昇格し、`retrieval.need_hint="past_fact"` を返す |
+| `retrieval_assisted` | 分類器が null でも、ベクトルと BM25 の**双方が同じカードを支持**（`retrieval_source="both"`）していれば注入候補へ昇格し、`retrieval.need_hint="past_fact"` を返す（hybrid 専用。vector では発火しない） |
+| `candidates` | 候補があれば注入する。v26 実測で cosine・順位差・BM25 一致のどれも LoCoMo cat5 の adversarial 問を分離できず、検索側にゲートを作れなかったため（読み手は無関係な記憶に耐えている: cat5 の注入済42問で 0.810 / 未注入5問で 0.800） |
 
 注入しない場合、返却の `candidates` は空になる（下流の挙動は従来と同じ）。検索自体の結果は `retrieved_candidates` と `retrieval` に残るので、「検索は届いていたが注入しなかった」ケースを観測できる。`memory_manager=None` のときは Glossary をスキップ、`brain=None` のときは検索をスキップする。
 

@@ -1913,11 +1913,12 @@ def _render_evaluation_start_form(
             injection_policy = st.selectbox(
                 "Injection policy",
                 options=evaluation_config.get("injection_policies")
-                or ["intent_gated", "retrieval_assisted"],
+                or ["intent_gated", "retrieval_assisted", "candidates"],
                 key="evaluation_injection_policy",
                 help=(
-                    "retrieval_assisted は分類器 null でも"
-                    "ベクトルと BM25 の両方が支持した候補を注入する"
+                    "retrieval_assisted は分類器 null でもベクトルと BM25 の"
+                    "両方が支持した候補を注入する（hybrid 専用）。"
+                    "candidates は候補があれば注入する"
                 ),
             )
         bm25_candidates = 20

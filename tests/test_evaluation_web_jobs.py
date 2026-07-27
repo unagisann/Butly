@@ -401,6 +401,7 @@ class TestSearchSettingsInProfile:
         assert config["injection_policies"] == [
             "intent_gated",
             "retrieval_assisted",
+            "candidates",
         ]
 
 
