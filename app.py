@@ -2250,6 +2250,102 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
         st.rerun()
 
 
+def _render_retrieval_replay(api_url: str, runs: list) -> None:
+    """QA を回さずに検索だけ比較する（検索改修計画 §8 の足切り）。"""
+    import requests
+
+    replayable = [
+        run["run_id"]
+        for run in runs
+        if run.get("run_id") and run.get("question_count")
+    ]
+    if not replayable:
+        return
+
+    with st.expander("検索だけ比較（offline retrieval replay）", expanded=False):
+        st.caption(
+            "回答を生成せず、同じカードに対する Recall@k だけを測ります。"
+            "bm25 は embedding を呼ばないので即終わります。vector / hybrid は"
+            "質問1件につき embedding を1回呼ぶため、199問なら数分かかります。"
+        )
+        replay_cols = st.columns([2, 2, 1])
+        with replay_cols[0]:
+            target_run = st.selectbox(
+                "対象run",
+                options=replayable,
+                key="evaluation_replay_run",
+            )
+        with replay_cols[1]:
+            modes = st.multiselect(
+                "モード",
+                options=["bm25", "vector", "hybrid"],
+                default=["bm25"],
+                key="evaluation_replay_modes",
+            )
+        with replay_cols[2]:
+            replay_limit = st.number_input(
+                "候補数",
+                min_value=1,
+                max_value=100,
+                value=20,
+                step=1,
+                key="evaluation_replay_limit",
+            )
+        if st.button(
+            "検索を比較",
+            disabled=not modes,
+            key="evaluation_replay_start",
+        ):
+            with st.spinner("検索を実行中…"):
+                try:
+                    response = requests.post(
+                        f"{api_url}/evaluations/runs/retrieval-replay",
+                        json={
+                            "run_id": target_run,
+                            "modes": modes,
+                            "limit": int(replay_limit),
+                        },
+                        timeout=1800,
+                    )
+                    if response.ok:
+                        st.session_state.evaluation_replay_result = (
+                            response.json()
+                        )
+                    else:
+                        st.error(_api_error_detail(response))
+                except Exception as exc:
+                    st.error(f"replayエラー: {exc}")
+
+        result = st.session_state.get("evaluation_replay_result")
+        if not result:
+            return
+        st.caption(
+            f"{result.get('run')} / oracleカードがある問: "
+            f"{result.get('oracle_questions')}"
+        )
+        rows = []
+        for mode in ("bm25", "vector", "hybrid"):
+            stats = result.get(mode)
+            if not isinstance(stats, dict):
+                continue
+            rows.append(
+                {
+                    "mode": mode,
+                    "recall@1": stats.get("recall_at_1"),
+                    "recall@3": stats.get("recall_at_3"),
+                    "recall@20": stats.get("recall_at_20"),
+                    "hit@3": stats.get("hit_at_3"),
+                    "hit@20": stats.get("hit_at_20"),
+                }
+            )
+        st.dataframe(rows, width="stretch", hide_index=True)
+        st.caption(
+            "recall は「上位k候補が evidence ターンを覆った割合」の平均、"
+            "hit は1件でも覆えた問数です。結果は run 直下の "
+            "retrieval_replay.json にも保存されます。"
+        )
+
+
 def _render_evaluation_history(api_url: str, runs: list) -> None:
     import requests
 
@@ -2295,6 +2391,8 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
             "分類器が高頻度で fallback した run があります（need_intent が立たず"
             "RAG が不発になっている可能性）: " + ", ".join(str(r) for r in broken)
         )
+
+    _render_retrieval_replay(api_url, runs)
 
     scoreable = [
         run["run_id"]

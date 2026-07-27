@@ -40,6 +40,11 @@ class FakeManager:
     def compare_runs(self, run_ids):
         return {"run_ids": run_ids}
 
+    def retrieval_replay(self, run_id, modes, *, limit):
+        if run_id == "missing":
+            raise KeyError(run_id)
+        return {"run": run_id, "modes": modes, "limit": limit}
+
 
 def _start_request():
     return evaluations.EvaluationStartRequest(
@@ -69,6 +74,16 @@ def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
         evaluations.RunCompareRequest(run_ids=["run-a", "run-b"])
     )
     assert compared["run_ids"] == ["run-a", "run-b"]
+    replayed = evaluations.replay_run_retrieval(
+        evaluations.RetrievalReplayRequest(
+            run_id="run-a", modes=["bm25", "hybrid"], limit=5
+        )
+    )
+    assert replayed == {
+        "run": "run-a",
+        "modes": ["bm25", "hybrid"],
+        "limit": 5,
+    }
 
 
 def test_evaluation_endpoints_translate_conflicts_and_missing_jobs(monkeypatch):
@@ -88,3 +103,13 @@ def test_evaluation_endpoints_translate_conflicts_and_missing_jobs(monkeypatch):
         assert exc.status_code == 404
     else:
         raise AssertionError("missing job was not translated")
+
+    try:
+        evaluations.replay_run_retrieval(
+            evaluations.RetrievalReplayRequest(run_id="missing")
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 404
+        assert "評価run" in exc.detail
+    else:
+        raise AssertionError("missing run was not translated")

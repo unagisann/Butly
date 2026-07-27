@@ -183,6 +183,12 @@ override `bm25_candidates` / `vector_candidates` / `rrf_k` / `bm25_weights` /
 `score` is the **RRF score** and cosine moves to `vector_score`; each candidate
 also carries `retrieval_source` (vector/bm25/both) and both ranks.
 
+The run-history section has an "offline retrieval replay" panel
+(`POST /evaluations/runs/retrieval-replay`) that compares Recall@1/3/20 for
+`bm25` / `vector` / `hybrid` without generating answers; the result is also
+written to `retrieval_replay.json` inside the run. `bm25` needs no embedding
+calls; `vector` / `hybrid` call the embedding model once per question.
+
 The Web Console exposes `search_mode` / `retrieval_execution` /
 `injection_policy` under "検索設定（ハイブリッド検索 A/B）"; `hybrid` additionally
 reveals `bm25_candidates` / `vector_candidates` / `rrf_k` /

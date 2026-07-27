@@ -120,7 +120,7 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | `config.py` | CLI設定DTO（QA mode、sample/session/question範囲、localeを含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
 | `cli.py` | `run` / `resume` / `rerun-qa` / `score` / `report` subcommands。`run`は`--qa-mode`、各`--*-limit` / `--all-*`、`--locale`を受け付け、`rerun-qa`は元runを変更せず同じカードでQAを再実行 |
 | `progress.py` | CLI / Colab向けの即時進捗ログ。Replay・Sleeptime・QAの完了unitを0〜90%、採点・レポートを90〜100%としてstderrへ表示 |
-| `web_jobs.py` | Web Console用の永続subprocessジョブ管理。CLI command/profile生成、進捗ログ解析、停止・resume、既存run走査・スコア比較 |
+| `web_jobs.py` | Web Console用の永続subprocessジョブ管理。CLI command/profile生成（検索設定を含む）、進捗ログ解析、停止・resume、既存run走査・スコア比較、offline retrieval replayの実行 |
 | `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`）。top-level `locale`は内部prompt／memory出力言語、`brain.time_decay_rate`は評価runの検索時間減衰を指定 |
 | `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook。ParametersセルでQA mode、locale、sample/session/questionの全件／上限制御、context別ON/OFF、role別temperature、`TIME_DECAY_RATE`、同一カード再利用元runを選択（評価ロジック禁止） |
 

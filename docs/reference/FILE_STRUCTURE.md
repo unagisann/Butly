@@ -48,8 +48,9 @@ instances tree. The bundled mini fixture is synthetic.
   into a new QA-only run.
 - `progress.py` — flushed CLI/Colab stderr progress; completed Replay,
   Sleeptime, and QA units map to 0–90%, followed by scoring and reporting.
-- `web_jobs.py` — durable Web Console subprocess jobs: CLI/profile building,
-  progress-log parsing, stop/resume, saved-run discovery, and score comparison.
+- `web_jobs.py` — durable Web Console subprocess jobs: CLI/profile building
+  (including retrieval settings), progress-log parsing, stop/resume, saved-run
+  discovery, score comparison, and offline retrieval replay.
 - `artifacts.py` — JSON/JSONL, Trace copies, and before/after snapshots.
 - `scorer.py` — official-compatible scoring (normalized + stemmed token F1,
   per-category rules, no-information detection) plus Butly-specific metrics

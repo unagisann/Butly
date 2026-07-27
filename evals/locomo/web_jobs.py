@@ -33,6 +33,7 @@ RUN_MODES = (
     "stage3-on",
 )
 SEARCH_MODES = ("vector", "hybrid")
+RETRIEVAL_REPLAY_MODES = ("bm25", "vector", "hybrid")
 RETRIEVAL_EXECUTIONS = ("always", "intent_gated")
 INJECTION_POLICIES = ("intent_gated", "retrieval_assisted")
 ACTIVE_JOB_STATUSES = frozenset({"queued", "running", "stopping"})
@@ -683,6 +684,76 @@ class EvaluationJobManager:
             key=lambda item: item.get("created_at") or "",
             reverse=True,
         )
+
+    def retrieval_replay(
+        self,
+        run_id: str,
+        modes: list[str],
+        *,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """既存 run の記憶に対して検索だけを回し、Recall@k を比較する。
+
+        QA を回す前の足切り（検索改修計画 §8）。``bm25`` は embedding を
+        呼ばないので即返る。``vector`` / ``hybrid`` は質問1件につき embedding を
+        1回呼ぶため、run の規模に比例して時間がかかる。
+        結果は run 直下の ``retrieval_replay.json`` に残す。
+        """
+        from evals.locomo.retrieval_replay import evaluate
+
+        if not _SAFE_RUN_ID.fullmatch(run_id):
+            raise EvaluationJobError(f"invalid run_id: {run_id}")
+        unknown = [m for m in modes if m not in RETRIEVAL_REPLAY_MODES]
+        if not modes or unknown:
+            raise EvaluationJobError(
+                f"modes must be a subset of {list(RETRIEVAL_REPLAY_MODES)}"
+            )
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise EvaluationJobError("limit must be a positive integer")
+
+        run_dir = self.output_dir / run_id
+        if not (run_dir / "run_config.json").is_file():
+            raise KeyError(run_id)
+
+        override_config = self._run_profile_sections(run_dir)
+        try:
+            result = evaluate(
+                run_dir,
+                list(modes),
+                limit=limit,
+                override_config=override_config,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise EvaluationJobError(str(exc)) from exc
+
+        result["generated_at"] = utc_now()
+        result["limit"] = limit
+        atomic_write_text(
+            run_dir / "retrieval_replay.json",
+            json.dumps(result, ensure_ascii=False, indent=2),
+        )
+        return result
+
+    def _run_profile_sections(self, run_dir: Path) -> dict[str, Any]:
+        """run が使った profile の section を読む（embedding 接続の再現用）。
+
+        profile が消えていても replay 自体は続ける（その場合はグローバル設定の
+        embedding が使われる）。
+        """
+        config = self._read_json(run_dir / "run_config.json") or {}
+        profile_path = config.get("profile_path")
+        if not profile_path:
+            return {}
+        path = Path(str(profile_path))
+        if not path.is_file():
+            return {}
+        try:
+            from evals.locomo.config import load_profile
+
+            return dict(load_profile(path).sections)
+        except (OSError, ValueError) as exc:
+            print(f"[Evaluation] profile 読み込み失敗 ({path}): {exc}")
+            return {}
 
     def compare_runs(self, run_ids: list[str]) -> dict[str, Any]:
         if len(run_ids) < 2:

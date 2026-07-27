@@ -404,6 +404,148 @@ class TestSearchSettingsInProfile:
         ]
 
 
+class TestRetrievalReplayEndpointBacking:
+    """QA を回さずに検索だけ比較する（検索改修計画 §8）。"""
+
+    def _write_run(self, output_dir: Path, run_id: str = "v26") -> Path:
+        import sqlite3
+
+        from butly_core.core.database import ButlyDatabase
+
+        run_dir = output_dir / run_id
+        (run_dir / "results").mkdir(parents=True)
+        instance_dir = (
+            run_dir / "workspace" / "butly_core" / "instances" / "conv_1"
+        )
+        (instance_dir / "short_term_json").mkdir(parents=True)
+
+        db_path = instance_dir / "butly_memory.db"
+        ButlyDatabase(db_path=str(db_path))
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO knowledge_cards (id, category, title, summary, "
+            "source_files) VALUES (?, ?, ?, ?, ?)",
+            ("k1", "Life", "Pottery workshop", "made mugs",
+             json.dumps(["session_0001.json"])),
+        )
+        conn.commit()
+        conn.close()
+
+        (instance_dir / "short_term_json" / "session_0001.json").write_text(
+            json.dumps({
+                "messages": [{
+                    "role": "user",
+                    "parts": ["We made mugs."],
+                    "meta": {"locomo_dialog_ids": ["D1:1"]},
+                }]
+            }),
+            encoding="utf-8",
+        )
+        (run_dir / "results" / "qa_results.jsonl").write_text(
+            json.dumps({
+                "question_id": "qa-1",
+                "question": "What pottery did they make?",
+                "category": 2,
+                "instance_name": "conv_1",
+                "evidence": ["D1:1"],
+                "retrieved_card_ids": [],
+            }) + "\n",
+            encoding="utf-8",
+        )
+        (run_dir / "run_config.json").write_text(
+            json.dumps({"run_id": run_id}), encoding="utf-8"
+        )
+        return run_dir
+
+    def _manager(self, tmp_path: Path) -> EvaluationJobManager:
+        return EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+            project_root=Path(__file__).parents[1],
+        )
+
+    def test_bm25_replay_returns_recall_and_persists(self, tmp_path):
+        manager = self._manager(tmp_path)
+        run_dir = self._write_run(tmp_path / "runs")
+
+        result = manager.retrieval_replay("v26", ["bm25"])
+
+        assert result["oracle_questions"] == 1
+        assert result["bm25"]["recall_at_3"] == pytest.approx(1.0)
+        saved = json.loads(
+            (run_dir / "retrieval_replay.json").read_text(encoding="utf-8")
+        )
+        assert saved["bm25"] == result["bm25"]
+        assert saved["limit"] == 20
+
+    def test_unknown_run_raises_key_error(self, tmp_path):
+        manager = self._manager(tmp_path)
+
+        with pytest.raises(KeyError):
+            manager.retrieval_replay("missing", ["bm25"])
+
+    @pytest.mark.parametrize(
+        ("run_id", "modes", "limit", "message"),
+        [
+            ("../escape", ["bm25"], 20, "invalid run_id"),
+            ("v26", ["keyword"], 20, "modes must be a subset"),
+            ("v26", [], 20, "modes must be a subset"),
+            ("v26", ["bm25"], 0, "limit must be a positive integer"),
+        ],
+    )
+    def test_rejects_bad_arguments(
+        self, tmp_path, run_id, modes, limit, message
+    ):
+        manager = self._manager(tmp_path)
+        self._write_run(tmp_path / "runs")
+
+        with pytest.raises(EvaluationJobError, match=message):
+            manager.retrieval_replay(run_id, modes, limit=limit)
+
+    def test_run_without_workspace_reports_error(self, tmp_path):
+        manager = self._manager(tmp_path)
+        run_dir = tmp_path / "runs" / "bare"
+        (run_dir / "results").mkdir(parents=True)
+        (run_dir / "run_config.json").write_text("{}", encoding="utf-8")
+        (run_dir / "results" / "qa_results.jsonl").write_text(
+            "", encoding="utf-8"
+        )
+
+        with pytest.raises(EvaluationJobError):
+            manager.retrieval_replay("bare", ["bm25"])
+
+    def test_missing_profile_does_not_block_replay(self, tmp_path):
+        manager = self._manager(tmp_path)
+        run_dir = self._write_run(tmp_path / "runs")
+        (run_dir / "run_config.json").write_text(
+            json.dumps({
+                "run_id": "v26",
+                "profile_path": str(tmp_path / "gone.yaml"),
+            }),
+            encoding="utf-8",
+        )
+
+        result = manager.retrieval_replay("v26", ["bm25"])
+
+        assert result["bm25"]["questions"] == 1
+
+    def test_profile_sections_are_used(self, tmp_path):
+        manager = self._manager(tmp_path)
+        run_dir = self._write_run(tmp_path / "runs")
+        profile_path = tmp_path / "profile.yaml"
+        profile_path.write_text(
+            "name: p\nbrain:\n  bm25_max_df_ratio: 0.9\n", encoding="utf-8"
+        )
+        (run_dir / "run_config.json").write_text(
+            json.dumps({"run_id": "v26", "profile_path": str(profile_path)}),
+            encoding="utf-8",
+        )
+
+        assert manager._run_profile_sections(run_dir)["brain"] == {
+            "bm25_max_df_ratio": 0.9
+        }
+
+
 def test_build_fresh_command_preserves_all_scope_flags(tmp_path):
     command = build_job_command(
         _request(

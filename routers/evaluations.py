@@ -82,6 +82,18 @@ class RunCompareRequest(BaseModel):
     run_ids: list[str] = Field(min_length=2, max_length=8)
 
 
+class RetrievalReplayRequest(BaseModel):
+    """検索だけを回して Recall@k を比べる（QA トークンを使わない足切り）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    modes: list[Literal["bm25", "vector", "hybrid"]] = Field(
+        default_factory=lambda: ["bm25"], min_length=1, max_length=3
+    )
+    limit: int = Field(default=20, ge=1, le=100)
+
+
 _manager: Optional[EvaluationJobManager] = None
 _manager_data_dir: Optional[Path] = None
 
@@ -170,6 +182,27 @@ def list_evaluation_runs() -> dict[str, Any]:
         "output_dir": str(_get_manager().output_dir),
         "runs": _get_manager().list_runs(),
     }
+
+
+@router.post("/runs/retrieval-replay")
+def replay_run_retrieval(request: RetrievalReplayRequest) -> dict[str, Any]:
+    """既存 run の記憶に対して検索だけ再実行する。
+
+    ``bm25`` は embedding を呼ばないので即返る。``vector`` / ``hybrid`` は
+    質問1件につき embedding を1回呼ぶため、応答まで分単位でかかりうる。
+    """
+    try:
+        return _get_manager().retrieval_replay(
+            request.run_id,
+            list(request.modes),
+            limit=request.limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"評価runが見つかりません: {request.run_id}"
+        ) from exc
+    except EvaluationJobError as exc:
+        raise _translate_error(exc) from exc
 
 
 @router.post("/runs/compare")

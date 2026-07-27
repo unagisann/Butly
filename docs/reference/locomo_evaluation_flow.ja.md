@@ -193,6 +193,12 @@ RRFで融合する検索へ切り替えられる（既定は`vector`）。profil
 hybridの候補dictでは`score`が**RRFスコア**になり、cosineは`vector_score`へ入る。
 `retrieval_source`（vector/bm25/both）と両者の順位も残る。
 
+Run履歴の「検索だけ比較（offline retrieval replay）」から、回答生成なしで
+`bm25` / `vector` / `hybrid` のRecall@1/3/20を比べられる
+（`POST /evaluations/runs/retrieval-replay`）。結果はrun直下の
+`retrieval_replay.json`にも残る。`bm25`はembeddingを呼ばないので即終わるが、
+`vector` / `hybrid`は質問1件につきembeddingを1回呼ぶ。
+
 Webコンソールの「検索設定（ハイブリッド検索 A/B）」から
 `search_mode` / `retrieval_execution` / `injection_policy` を選べる。
 `hybrid`のときだけ`bm25_candidates` / `vector_candidates` / `rrf_k` /
