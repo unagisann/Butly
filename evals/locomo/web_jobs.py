@@ -32,6 +32,9 @@ RUN_MODES = (
     "stage3-off",
     "stage3-on",
 )
+SEARCH_MODES = ("vector", "hybrid")
+RETRIEVAL_EXECUTIONS = ("always", "intent_gated")
+INJECTION_POLICIES = ("intent_gated", "retrieval_assisted")
 ACTIVE_JOB_STATUSES = frozenset({"queued", "running", "stopping"})
 RESUMABLE_JOB_STATUSES = frozenset({"stopped", "failed", "interrupted"})
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -184,9 +187,32 @@ def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
         "rag_raw_max_chars": int(request.get("rag_raw_max_chars", 2500)),
         "rag_raw_top_k": int(request.get("rag_raw_top_k", 1)),
     }
+    search_mode = str(request.get("search_mode") or "vector")
     profile["brain"] = {
         "time_decay_rate": float(request.get("time_decay_rate", 0.0)),
         "use_rag": use_rag,
+        "search_mode": search_mode,
+    }
+    if search_mode == "hybrid":
+        # BM25 側のパラメータは hybrid のときだけ書く。vector run の profile に
+        # 無関係なキーを残さない（run 間 diff を読みやすくするため）。
+        profile["brain"].update(
+            {
+                "bm25_candidates": int(request.get("bm25_candidates", 20)),
+                "vector_candidates": int(request.get("vector_candidates", 20)),
+                "rrf_k": int(request.get("rrf_k", 60)),
+                "bm25_max_df_ratio": float(
+                    request.get("bm25_max_df_ratio", 0.5)
+                ),
+            }
+        )
+    profile["memory_probe"] = {
+        "retrieval_execution": str(
+            request.get("retrieval_execution") or "always"
+        ),
+        "injection_policy": str(
+            request.get("injection_policy") or "intent_gated"
+        ),
     }
     profile["context_levels"] = {
         "preset": "custom",
@@ -387,6 +413,35 @@ def validate_job_request(
             raise EvaluationJobError(f"{name} must be at least 1")
         if name.endswith("_limit") and value < 1:
             raise EvaluationJobError(f"{name} must be at least 1 or null")
+
+    # --- 検索設定（検索改修計画 §3.5） ---
+    for name, allowed, default in (
+        ("search_mode", SEARCH_MODES, "vector"),
+        ("retrieval_execution", RETRIEVAL_EXECUTIONS, "always"),
+        ("injection_policy", INJECTION_POLICIES, "intent_gated"),
+    ):
+        value = str(normalized.get(name) or default)
+        if value not in allowed:
+            raise EvaluationJobError(f"unsupported {name}: {value}")
+        normalized[name] = value
+
+    for name, default in (
+        ("bm25_candidates", 20),
+        ("vector_candidates", 20),
+        ("rrf_k", 60),
+    ):
+        value = normalized.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise EvaluationJobError(f"{name} must be a positive integer")
+        normalized[name] = value
+
+    df_ratio = normalized.get("bm25_max_df_ratio", 0.5)
+    if isinstance(df_ratio, bool) or not isinstance(df_ratio, (int, float)):
+        raise EvaluationJobError("bm25_max_df_ratio must be a number")
+    if not 0.0 < float(df_ratio) <= 1.0:
+        raise EvaluationJobError("bm25_max_df_ratio must be in (0.0, 1.0]")
+    normalized["bm25_max_df_ratio"] = float(df_ratio)
+
     return normalized
 
 
@@ -441,6 +496,9 @@ class EvaluationJobManager:
             "output_dir": str(self.output_dir),
             "dataset_candidates": candidates,
             "run_modes": list(RUN_MODES),
+            "search_modes": list(SEARCH_MODES),
+            "retrieval_executions": list(RETRIEVAL_EXECUTIONS),
+            "injection_policies": list(INJECTION_POLICIES),
         }
 
     def start(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -907,6 +965,12 @@ class EvaluationJobManager:
             # evidence は「全問」で割った値なので、RAG が発火しなかった run では
             # 検索品質と無関係に下がる。分母を読み違えないよう発火率を併記する。
             "rag_trigger_rate": butly_scores.get("rag_trigger_rate"),
+            # 検索は走ったが注入しなかった run（retrieval_execution=always）を
+            # 読めるようにする。ランキング品質は recall で見る（evidence は
+            # 注入されたカードでしか測っていない）。
+            "search_execution_rate": butly_scores.get("search_execution_rate"),
+            "retrieval_recall_at_3": butly_scores.get("retrieval_recall_at_3"),
+            "bm25_rescue_rate": butly_scores.get("bm25_rescue_rate"),
             # 分類器が空応答/パース失敗で倒れると need_intent が立たず RAG が
             # 丸ごと不発になる（Reasoning モデル + 小さい出力上限で起きる）。
             "classifier_fallback_rate": butly_scores.get(

@@ -299,6 +299,7 @@ def test_build_profile_matches_colab_stage3_controls():
     assert profile["brain"] == {
         "time_decay_rate": 0.25,
         "use_rag": True,
+        "search_mode": "vector",
     }
     assert profile["context_levels"]["levels"]["mid_term"] == "off"
     assert profile["memory"]["rag_raw_top_k"] == 1
@@ -306,6 +307,101 @@ def test_build_profile_matches_colab_stage3_controls():
     assert profile["sleeptime"]["update_targets"] == {
         "knowledge_maturation": True
     }
+
+
+class TestSearchSettingsInProfile:
+    """Web Console から hybrid の A/B を回せること（検索改修計画 §3.5）"""
+
+    def test_vector_run_omits_bm25_params(self):
+        profile = build_profile_payload(_request())
+
+        assert profile["brain"]["search_mode"] == "vector"
+        assert "bm25_candidates" not in profile["brain"]
+        assert profile["memory_probe"] == {
+            "retrieval_execution": "always",
+            "injection_policy": "intent_gated",
+        }
+
+    def test_hybrid_run_writes_bm25_params(self):
+        profile = build_profile_payload(
+            _request(
+                search_mode="hybrid",
+                bm25_candidates=30,
+                vector_candidates=15,
+                rrf_k=40,
+                bm25_max_df_ratio=0.4,
+                injection_policy="retrieval_assisted",
+                retrieval_execution="intent_gated",
+            )
+        )
+
+        assert profile["brain"]["search_mode"] == "hybrid"
+        assert profile["brain"]["bm25_candidates"] == 30
+        assert profile["brain"]["vector_candidates"] == 15
+        assert profile["brain"]["rrf_k"] == 40
+        assert profile["brain"]["bm25_max_df_ratio"] == pytest.approx(0.4)
+        assert profile["memory_probe"] == {
+            "retrieval_execution": "intent_gated",
+            "injection_policy": "retrieval_assisted",
+        }
+
+    def test_profile_sections_are_applicable_to_instance_config(self):
+        """profile へ書いたセクションが eval 側で適用対象になっている"""
+        from evals.locomo.config import PROFILE_ROLE_SECTIONS
+
+        profile = build_profile_payload(_request(search_mode="hybrid"))
+        for section in ("brain", "memory_probe"):
+            assert section in profile
+            assert section in PROFILE_ROLE_SECTIONS
+
+    def test_validate_fills_defaults(self, tmp_path):
+        request = _request()
+        for key in (
+            "search_mode",
+            "retrieval_execution",
+            "injection_policy",
+            "bm25_candidates",
+            "rrf_k",
+            "bm25_max_df_ratio",
+        ):
+            request.pop(key, None)
+
+        normalized = validate_job_request(request, output_dir=tmp_path)
+
+        assert normalized["search_mode"] == "vector"
+        assert normalized["retrieval_execution"] == "always"
+        assert normalized["injection_policy"] == "intent_gated"
+        assert normalized["bm25_candidates"] == 20
+        assert normalized["rrf_k"] == 60
+        assert normalized["bm25_max_df_ratio"] == pytest.approx(0.5)
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"search_mode": "bm25"}, "unsupported search_mode"),
+            ({"injection_policy": "always"}, "unsupported injection_policy"),
+            ({"retrieval_execution": "never"}, "unsupported retrieval_execution"),
+            ({"bm25_candidates": 0}, "bm25_candidates must be a positive"),
+            ({"bm25_max_df_ratio": 1.5}, "bm25_max_df_ratio must be in"),
+        ],
+    )
+    def test_validate_rejects_bad_search_settings(
+        self, tmp_path, overrides, message
+    ):
+        with pytest.raises(EvaluationJobError, match=message):
+            validate_job_request(_request(**overrides), output_dir=tmp_path)
+
+    def test_config_exposes_choices(self, tmp_path):
+        manager = EvaluationJobManager(tmp_path)
+
+        config = manager.config()
+
+        assert config["search_modes"] == ["vector", "hybrid"]
+        assert config["retrieval_executions"] == ["always", "intent_gated"]
+        assert config["injection_policies"] == [
+            "intent_gated",
+            "retrieval_assisted",
+        ]
 
 
 def test_build_fresh_command_preserves_all_scope_flags(tmp_path):
@@ -659,3 +755,41 @@ class TestRunSummaryExposesRetrievalDiagnostics:
         assert row["rag_trigger_rate"] == 0.332
         assert row["classifier_fallback_rate"] == 0.779
         assert row["evidence_retrieval_rate"] == 0.219
+        # 旧 run（検索指標なし）は None のまま落ちない
+        assert row["search_execution_rate"] is None
+        assert row["retrieval_recall_at_3"] is None
+
+    def test_history_row_includes_retrieval_metrics(self, tmp_path):
+        manager = EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+            project_root=Path(__file__).parents[1],
+        )
+        run_dir = tmp_path / "runs" / "v27"
+        run_dir.mkdir(parents=True)
+        (run_dir / "run_config.json").write_text(
+            json.dumps({"run_id": "v27"}), encoding="utf-8"
+        )
+        (run_dir / "scores.json").write_text(
+            json.dumps(
+                {
+                    "run_id": "v27",
+                    "question_count": 199,
+                    "official": {"overall": 0.41},
+                    "auxiliary": {},
+                    "butly": {
+                        "rag_trigger_rate": 0.9,
+                        "search_execution_rate": 1.0,
+                        "retrieval_recall_at_3": 0.61,
+                        "bm25_rescue_rate": 0.18,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        row = next(r for r in manager.list_runs() if r["run_id"] == "v27")
+
+        assert row["search_execution_rate"] == 1.0
+        assert row["retrieval_recall_at_3"] == 0.61
+        assert row["bm25_rescue_rate"] == 0.18

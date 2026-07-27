@@ -183,6 +183,13 @@ override `bm25_candidates` / `vector_candidates` / `rrf_k` / `bm25_weights` /
 `score` is the **RRF score** and cosine moves to `vector_score`; each candidate
 also carries `retrieval_source` (vector/bm25/both) and both ranks.
 
+The Web Console exposes `search_mode` / `retrieval_execution` /
+`injection_policy` under "検索設定（ハイブリッド検索 A/B）"; `hybrid` additionally
+reveals `bm25_candidates` / `vector_candidates` / `rrf_k` /
+`bm25_max_df_ratio`. Those land in the profile YAML's `brain` and
+`memory_probe` sections (BM25 keys are omitted from `vector` runs), and the run
+history / comparison tables gain `search_exec`, `recall@3`, and `bm25_rescue`.
+
 Retrieval execution and prompt injection are controlled independently by
 `memory_probe.retrieval_execution` (default `always`) and
 `memory_probe.injection_policy` (default `intent_gated`). With `always`, Quick

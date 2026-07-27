@@ -60,6 +60,16 @@ class EvaluationStartRequest(BaseModel):
     rag_raw_max_chars: int = Field(default=2500, ge=0)
     stage3_batch_size: int = Field(default=10, ge=1)
     stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
+    # --- 検索設定（検索改修計画 §3.5）。hybrid は eval で先行検証する ---
+    search_mode: Literal["vector", "hybrid"] = "vector"
+    retrieval_execution: Literal["always", "intent_gated"] = "always"
+    injection_policy: Literal["intent_gated", "retrieval_assisted"] = (
+        "intent_gated"
+    )
+    bm25_candidates: int = Field(default=20, ge=1)
+    vector_candidates: int = Field(default=20, ge=1)
+    rrf_k: int = Field(default=60, ge=1)
+    bm25_max_df_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
     role_models: dict[str, RoleModelRequest] = Field(default_factory=dict)
     # 記憶を再利用する run で、保存済みベクトルと embedding 設定が
     # 食い違っていても実行する（既定は事前に弾く）。

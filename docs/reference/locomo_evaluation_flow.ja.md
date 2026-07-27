@@ -193,6 +193,13 @@ RRFで融合する検索へ切り替えられる（既定は`vector`）。profil
 hybridの候補dictでは`score`が**RRFスコア**になり、cosineは`vector_score`へ入る。
 `retrieval_source`（vector/bm25/both）と両者の順位も残る。
 
+Webコンソールの「検索設定（ハイブリッド検索 A/B）」から
+`search_mode` / `retrieval_execution` / `injection_policy` を選べる。
+`hybrid`のときだけ`bm25_candidates` / `vector_candidates` / `rrf_k` /
+`bm25_max_df_ratio`の入力欄が出て、profile YAMLの`brain`・`memory_probe`
+セクションへ書き込まれる（`vector` runのprofileにBM25キーは残さない）。
+run履歴と比較表には`search_exec` / `recall@3` / `bm25_rescue`列が並ぶ。
+
 検索の実行と注入判定は`memory_probe.retrieval_execution`（既定`always`）と
 `memory_probe.injection_policy`（既定`intent_gated`）で独立に制御する。
 `always`では`need_intent=null`の問でもQuick Retrievalが走るため、

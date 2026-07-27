@@ -1888,6 +1888,78 @@ def _render_evaluation_start_form(
                 key="evaluation_time_decay_rate",
             )
 
+    with st.expander("検索設定（ハイブリッド検索 A/B）", expanded=False):
+        st.caption(
+            "search_mode=hybrid で BM25(FTS5/trigram) とベクトルを RRF 融合する。"
+            "検索の実行と注入判定は別設定。"
+        )
+        search_cols = st.columns(3)
+        with search_cols[0]:
+            search_mode = st.selectbox(
+                "Search mode",
+                options=evaluation_config.get("search_modes")
+                or ["vector", "hybrid"],
+                key="evaluation_search_mode",
+            )
+        with search_cols[1]:
+            retrieval_execution = st.selectbox(
+                "Retrieval execution",
+                options=evaluation_config.get("retrieval_executions")
+                or ["always", "intent_gated"],
+                key="evaluation_retrieval_execution",
+                help="always=全質問で検索 / intent_gated=分類器が past_fact 等の時だけ",
+            )
+        with search_cols[2]:
+            injection_policy = st.selectbox(
+                "Injection policy",
+                options=evaluation_config.get("injection_policies")
+                or ["intent_gated", "retrieval_assisted"],
+                key="evaluation_injection_policy",
+                help=(
+                    "retrieval_assisted は分類器 null でも"
+                    "ベクトルと BM25 の両方が支持した候補を注入する"
+                ),
+            )
+        bm25_candidates = 20
+        vector_candidates = 20
+        rrf_k = 60
+        bm25_max_df_ratio = 0.5
+        if search_mode == "hybrid":
+            hybrid_cols = st.columns(4)
+            with hybrid_cols[0]:
+                bm25_candidates = st.number_input(
+                    "BM25 candidates",
+                    min_value=1,
+                    value=20,
+                    step=1,
+                    key="evaluation_bm25_candidates",
+                )
+            with hybrid_cols[1]:
+                vector_candidates = st.number_input(
+                    "Vector candidates",
+                    min_value=1,
+                    value=20,
+                    step=1,
+                    key="evaluation_vector_candidates",
+                )
+            with hybrid_cols[2]:
+                rrf_k = st.number_input(
+                    "RRF k",
+                    min_value=1,
+                    value=60,
+                    step=1,
+                    key="evaluation_rrf_k",
+                )
+            with hybrid_cols[3]:
+                bm25_max_df_ratio = st.number_input(
+                    "BM25 max df ratio",
+                    min_value=0.05,
+                    max_value=1.0,
+                    value=0.5,
+                    step=0.05,
+                    key="evaluation_bm25_max_df_ratio",
+                )
+
     stage3_batch_size = 10
     stage3_bootstrap_max_cards = 2000
     if run_mode != "standard":
@@ -2032,6 +2104,13 @@ def _render_evaluation_start_form(
             "rag_source_mode": rag_source_mode,
             "rag_raw_top_k": int(rag_raw_top_k),
             "rag_raw_max_chars": int(rag_raw_max_chars),
+            "search_mode": search_mode,
+            "retrieval_execution": retrieval_execution,
+            "injection_policy": injection_policy,
+            "bm25_candidates": int(bm25_candidates),
+            "vector_candidates": int(vector_candidates),
+            "rrf_k": int(rrf_k),
+            "bm25_max_df_ratio": float(bm25_max_df_ratio),
             "stage3_batch_size": int(stage3_batch_size),
             "stage3_bootstrap_max_cards": int(
                 stage3_bootstrap_max_cards
@@ -2189,6 +2268,8 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
             "exact_match": run.get("exact_match_rate"),
             "evidence": run.get("evidence_retrieval_rate"),
             "rag_trigger": run.get("rag_trigger_rate"),
+            "search_exec": run.get("search_execution_rate"),
+            "recall@3": run.get("retrieval_recall_at_3"),
             "clf_fallback": run.get("classifier_fallback_rate"),
             "latency_ms": run.get("latency_ms_mean"),
             "prompt_tokens": run.get("prompt_tokens_total"),
@@ -2201,7 +2282,8 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
     st.dataframe(history_rows, width="stretch", hide_index=True)
     st.caption(
         "evidence は全問で割った値です。rag_trigger が低い run では検索品質と"
-        "無関係に下がるため、2列を併せて読んでください。"
+        "無関係に下がるため、2列を併せて読んでください。search_exec は検索の"
+        "実行率（注入率とは別）、recall@3 は注入前の候補で測ったランキング品質です。"
     )
     broken = [
         run.get("run_id")
@@ -2260,6 +2342,9 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
             "containment": run.get("answer_containment_rate"),
             "evidence": run.get("evidence_retrieval_rate"),
             "rag_trigger": run.get("rag_trigger_rate"),
+            "search_exec": run.get("search_execution_rate"),
+            "recall@3": run.get("retrieval_recall_at_3"),
+            "bm25_rescue": run.get("bm25_rescue_rate"),
             "clf_fallback": run.get("classifier_fallback_rate"),
             "latency_ms": run.get("latency_ms_mean"),
             "prompt_tokens": run.get("prompt_tokens_total"),
