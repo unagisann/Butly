@@ -493,6 +493,21 @@ class EvaluationJobManager:
             resolved = candidate.resolve()
             if resolved.is_file() and str(resolved) not in candidates:
                 candidates.append(str(resolved))
+        with self._lock:
+            previous_records = [
+                record
+                for record in self._records.values()
+                if isinstance(record.get("request"), dict)
+            ]
+            latest = (
+                max(
+                    previous_records,
+                    key=lambda record: record.get("created_at") or "",
+                )
+                if previous_records
+                else None
+            )
+            last_request = dict(latest["request"]) if latest is not None else None
         return {
             "output_dir": str(self.output_dir),
             "dataset_candidates": candidates,
@@ -500,6 +515,9 @@ class EvaluationJobManager:
             "search_modes": list(SEARCH_MODES),
             "retrieval_executions": list(RETRIEVAL_EXECUTIONS),
             "injection_policies": list(INJECTION_POLICIES),
+            # APIキー本体はrequestへ入らない。前回のフォーム設定をBackend再起動後も
+            # 復元できるよう、永続job recordの正規化済みrequestを返す。
+            "last_request": last_request,
         }
 
     def start(self, request: dict[str, Any]) -> dict[str, Any]:

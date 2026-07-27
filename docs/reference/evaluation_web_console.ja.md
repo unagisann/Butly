@@ -40,6 +40,13 @@ subprocessとして呼ぶ薄い管理層である。Replay、Sleeptime、QA、ch
 ConnectionとAPIキーは通常のWeb Console設定を共有する。フォームはAPIキー本体を
 受け取らず、評価subprocessがBackendプロセスの環境変数を継承する。
 
+新規評価フォームは、最後に開始したWeb評価jobの正規化済みrequestを初期値として
+自動的に引き継ぐ。対象はdataset、run mode、再利用元、評価範囲、RAG・検索・Stage 3
+設定、モデル割り当て、temperature、出力上限である。job recordは永続化されるため、
+StreamlitまたはBackendの再起動後も復元できる。重複を避けるため`RUN_ID`だけは
+末尾が`_vNN`なら次番号、それ以外は時刻ベースの候補へ更新する。
+`allow_embedding_mismatch`は危険な承知操作なので引き継がず、runごとにOFFへ戻す。
+
 ### 記憶を再利用するrunの埋め込み整合チェック
 
 `SOURCE_MEMORY_RUN_ID` を指定した run（`rerun-qa`）は、元runのカードと
@@ -60,7 +67,7 @@ legacy Web Console用Backendに次を追加する。
 
 | Method | Path | 動作 |
 |---|---|---|
-| `GET` | `/evaluations/config` | run保存先、dataset候補、run mode |
+| `GET` | `/evaluations/config` | run保存先、dataset候補、run mode、最後の評価request |
 | `POST` | `/evaluations/jobs` | 新しい評価を開始 |
 | `GET` | `/evaluations/jobs` | ジョブ一覧 |
 | `GET` | `/evaluations/jobs/{job_id}` | 状態・進捗 |

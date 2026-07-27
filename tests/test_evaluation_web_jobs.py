@@ -403,6 +403,31 @@ class TestSearchSettingsInProfile:
             "retrieval_assisted",
             "candidates",
         ]
+        assert config["last_request"] is None
+
+    def test_config_exposes_latest_job_request(self, tmp_path):
+        manager = EvaluationJobManager(tmp_path)
+        older = {
+            "created_at": "2026-07-26T00:00:00+00:00",
+            "request": _request(run_id="web-v25", question_limit=10),
+        }
+        latest = {
+            "created_at": "2026-07-27T00:00:00+00:00",
+            "request": _request(
+                run_id="web-v26",
+                question_limit=None,
+                search_mode="vector",
+                retrieval_execution="always",
+            ),
+        }
+        manager._records = {"older": older, "latest": latest}
+
+        previous = manager.config()["last_request"]
+
+        assert previous["run_id"] == "web-v26"
+        assert previous["question_limit"] is None
+        assert previous["search_mode"] == "vector"
+        assert previous["role_models"]["chat"]["connection"] == "nanogpt-sub"
 
 
 class TestRetrievalReplayEndpointBacking:

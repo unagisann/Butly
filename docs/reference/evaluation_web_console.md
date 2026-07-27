@@ -43,6 +43,14 @@ Connections and API keys are shared with the normal Web Console. The form
 never receives key values. The evaluation subprocess inherits the Backend
 process environment.
 
+The new-evaluation form automatically uses the last Web job's normalized
+request as its initial state. This restores the dataset, run mode, source run,
+scope, RAG, retrieval, Stage 3, role-model, temperature, and output-limit
+settings even after Streamlit or the Backend restarts. To avoid collisions,
+only `RUN_ID` changes: a trailing `_vNN` is incremented, otherwise a
+time-based suggestion is generated. `allow_embedding_mismatch` is a hazardous
+per-run acknowledgement and always resets to off.
+
 ### Embedding compatibility check for memory-reusing runs
 
 A run with `SOURCE_MEMORY_RUN_ID` (`rerun-qa`) reuses the source run's cards and
@@ -65,7 +73,7 @@ The legacy Web Console Backend exposes:
 
 | Method | Path | Behavior |
 |---|---|---|
-| `GET` | `/evaluations/config` | Output root, dataset candidates, and run modes |
+| `GET` | `/evaluations/config` | Output root, dataset candidates, run modes, and the last evaluation request |
 | `POST` | `/evaluations/jobs` | Start a run |
 | `GET` | `/evaluations/jobs` | List jobs |
 | `GET` | `/evaluations/jobs/{job_id}` | Read status and progress |

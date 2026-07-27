@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 import asyncio
 import os
+import re
 
 # 自作モジュールのインポート
 from butly_core.core.memory import ButlyMemory
@@ -1609,6 +1610,36 @@ _EVALUATION_ACTIVE_STATUSES = {"queued", "running", "stopping"}
 _EVALUATION_RESUMABLE_STATUSES = {"stopped", "failed", "interrupted"}
 
 
+def _evaluation_option_index(options: list, value) -> int:
+    """Return a safe Streamlit selectbox index for a persisted value."""
+    try:
+        return options.index(value)
+    except ValueError:
+        return 0
+
+
+def _evaluation_next_run_id(previous_run_id: str, existing_run_ids: list) -> str:
+    """Suggest a unique run id while preserving a trailing ``_vNN`` series."""
+    existing = {str(run_id) for run_id in existing_run_ids if run_id}
+    match = re.fullmatch(r"(.+_v)(\d+)", previous_run_id or "")
+    if match:
+        prefix, digits = match.groups()
+        number = int(digits) + 1
+        while True:
+            candidate = f"{prefix}{number:0{len(digits)}d}"
+            if candidate not in existing:
+                return candidate
+            number += 1
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = f"web_eval_{timestamp}"
+    suffix = 2
+    while candidate in existing:
+        candidate = f"web_eval_{timestamp}_{suffix}"
+        suffix += 1
+    return candidate
+
+
 def _evaluation_get(api_url: str, path: str) -> dict:
     import requests
 
@@ -1645,7 +1676,10 @@ def _evaluation_role_models(
     return choices
 
 
-def _evaluation_embedding_profile(model_name: str) -> str | None:
+def _evaluation_embedding_profile(
+    model_name: str,
+    current_profile: str | None = None,
+) -> str | None:
     """Embedding の prefix 規約セレクタ。戻り値 None は auto（モデル名から推定）。
 
     prefix を付け忘れると埋め込みが 1 つの円錐に潰れて検索が機能しなくなる。
@@ -1654,10 +1688,13 @@ def _evaluation_embedding_profile(model_name: str) -> str | None:
     from butly_core.llm.embedding_profiles import describe, list_profiles
 
     options = ["auto"] + [p.id for p in list_profiles()]
+    selected_profile = current_profile or "auto"
+    if selected_profile not in options:
+        options.append(selected_profile)
     selected = st.selectbox(
         "Embedding prefix 規約",
         options,
-        index=0,
+        index=_evaluation_option_index(options, selected_profile),
         key="evaluation_embedding_profile",
         help=(
             "auto はモデル名から推定します（nomic → search_query:/"
@@ -1686,13 +1723,49 @@ def _render_evaluation_start_form(
     )
 
     dataset_candidates = evaluation_config.get("dataset_candidates") or []
+    run_ids = [
+        run.get("run_id")
+        for run in runs
+        if run.get("run_id")
+    ]
+    previous_request = evaluation_config.get("last_request")
+    if not isinstance(previous_request, dict):
+        previous_request = {}
+    previous_run_id = str(previous_request.get("run_id") or "")
+
+    pending_run_id = st.session_state.pop(
+        "evaluation_pending_run_id",
+        None,
+    )
+    if pending_run_id:
+        st.session_state.evaluation_run_id = pending_run_id
+        st.session_state.evaluation_default_run_id = pending_run_id
+        # このチェックは検索結果を壊し得る危険な承知操作なので、runごとに確認する。
+        st.session_state.pop(
+            "evaluation_allow_embedding_mismatch",
+            None,
+        )
+
     if "evaluation_dataset_path" not in st.session_state:
         st.session_state.evaluation_dataset_path = (
-            dataset_candidates[0] if dataset_candidates else ""
+            str(previous_request.get("dataset_path") or "")
+            or (dataset_candidates[0] if dataset_candidates else "")
         )
     if "evaluation_default_run_id" not in st.session_state:
-        st.session_state.evaluation_default_run_id = (
-            f"web_eval_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        st.session_state.evaluation_default_run_id = _evaluation_next_run_id(
+            previous_run_id,
+            run_ids,
+        )
+    if "evaluation_run_id" not in st.session_state:
+        st.session_state.evaluation_run_id = (
+            st.session_state.evaluation_default_run_id
+        )
+
+    if previous_run_id:
+        st.caption(
+            f"前回の評価 `{previous_run_id}` の設定を引き継いでいます。"
+            "RUN_IDは次の候補へ更新し、埋め込み不一致の承知チェックだけは"
+            "安全のため毎回OFFに戻します。"
         )
 
     if dataset_candidates:
@@ -1717,19 +1790,22 @@ def _render_evaluation_start_form(
     with top_cols[0]:
         run_id = st.text_input(
             "RUN_ID",
-            value=st.session_state.evaluation_default_run_id,
             key="evaluation_run_id",
         )
+        run_mode_options = evaluation_config.get("run_modes") or [
+            "standard",
+            "stage3-full",
+            "stage3-source",
+            "stage3-off",
+            "stage3-on",
+        ]
         run_mode = st.selectbox(
             "RUN_MODE",
-            options=evaluation_config.get("run_modes")
-            or [
-                "standard",
-                "stage3-full",
-                "stage3-source",
-                "stage3-off",
-                "stage3-on",
-            ],
+            options=run_mode_options,
+            index=_evaluation_option_index(
+                run_mode_options,
+                previous_request.get("run_mode", "standard"),
+            ),
             key="evaluation_run_mode",
         )
     with top_cols[1]:
@@ -1738,33 +1814,46 @@ def _render_evaluation_start_form(
             "stage3-off",
             "stage3-on",
         }
+        qa_mode_options = (
+            ["independent"]
+            if formal_stage3
+            else ["independent", "sequential"]
+        )
         qa_mode = st.selectbox(
             "QA_MODE",
-            options=["independent"] if formal_stage3 else [
-                "independent",
-                "sequential",
-            ],
+            options=qa_mode_options,
+            index=_evaluation_option_index(
+                qa_mode_options,
+                previous_request.get("qa_mode", "independent"),
+            ),
             key="evaluation_qa_mode",
         )
+        locale_options = ["en", "ja"]
         locale = st.selectbox(
             "LOCALE",
-            options=["en", "ja"],
+            options=locale_options,
+            index=_evaluation_option_index(
+                locale_options,
+                previous_request.get("locale", "en"),
+            ),
             key="evaluation_locale",
         )
 
-    run_ids = [
-        run.get("run_id")
-        for run in runs
-        if run.get("run_id")
-    ]
     source_required = run_mode in {"stage3-off", "stage3-on"}
     source_allowed = run_mode not in {"stage3-full", "stage3-source"}
     source_memory_run_id = ""
     if source_allowed:
         source_options = ["", *run_ids]
+        previous_source = str(
+            previous_request.get("source_memory_run_id") or ""
+        )
         source_memory_run_id = st.selectbox(
             "SOURCE_MEMORY_RUN_ID",
             options=source_options,
+            index=_evaluation_option_index(
+                source_options,
+                previous_source,
+            ),
             format_func=lambda value: value or "（新規にReplay/Sleeptimeを実行）",
             key="evaluation_source_run",
             help=(
@@ -1808,10 +1897,20 @@ def _render_evaluation_start_form(
         scope_cols,
         scope_defaults.items(),
     ):
+        previous_limit = previous_request.get(f"{dimension}_limit")
+        if f"{dimension}_limit" in previous_request:
+            use_all_default = previous_limit is None
+            limit_default = (
+                defaults[1]
+                if previous_limit is None
+                else int(previous_limit)
+            )
+        else:
+            use_all_default, limit_default = defaults
         with column:
             use_all = st.checkbox(
                 f"ALL_{scope_labels[dimension].upper()}",
-                value=defaults[0],
+                value=use_all_default,
                 key=f"evaluation_all_{dimension}",
                 disabled=bool(source_memory_run_id)
                 and dimension in {"sample", "session"},
@@ -1819,7 +1918,7 @@ def _render_evaluation_start_form(
             limit = st.number_input(
                 f"{scope_labels[dimension]} limit",
                 min_value=1,
-                value=defaults[1],
+                value=limit_default,
                 step=1,
                 key=f"evaluation_{dimension}_limit",
                 disabled=use_all
@@ -1835,39 +1934,50 @@ def _render_evaluation_start_form(
         with context_cols[0]:
             context_current_time = st.checkbox(
                 "Current Time",
-                value=True,
+                value=bool(
+                    previous_request.get("context_current_time", True)
+                ),
                 key="evaluation_context_current_time",
             )
         with context_cols[1]:
             context_mid_term = st.checkbox(
                 "Mid-term",
-                value=True,
+                value=bool(
+                    previous_request.get("context_mid_term", True)
+                ),
                 key="evaluation_context_mid_term",
             )
         with context_cols[2]:
             context_session_digest = st.checkbox(
                 "Session Digest",
-                value=True,
+                value=bool(
+                    previous_request.get("context_session_digest", True)
+                ),
                 key="evaluation_context_session_digest",
             )
         with context_cols[3]:
             context_rag = st.checkbox(
                 "RAG",
-                value=True,
+                value=bool(previous_request.get("context_rag", True)),
                 key="evaluation_context_rag",
             )
         rag_cols = st.columns(4)
         with rag_cols[0]:
+            rag_source_options = ["both", "cards", "raw"]
             rag_source_mode = st.selectbox(
                 "RAG source",
-                options=["both", "cards", "raw"],
+                options=rag_source_options,
+                index=_evaluation_option_index(
+                    rag_source_options,
+                    previous_request.get("rag_source_mode", "both"),
+                ),
                 key="evaluation_rag_source_mode",
             )
         with rag_cols[1]:
             rag_raw_top_k = st.number_input(
                 "RAW top-k",
                 min_value=0,
-                value=1,
+                value=int(previous_request.get("rag_raw_top_k", 1)),
                 step=1,
                 key="evaluation_rag_raw_top_k",
             )
@@ -1875,7 +1985,9 @@ def _render_evaluation_start_form(
             rag_raw_max_chars = st.number_input(
                 "RAW max chars",
                 min_value=0,
-                value=2500,
+                value=int(
+                    previous_request.get("rag_raw_max_chars", 2500)
+                ),
                 step=100,
                 key="evaluation_rag_raw_max_chars",
             )
@@ -1883,7 +1995,9 @@ def _render_evaluation_start_form(
             time_decay_rate = st.number_input(
                 "Time decay rate",
                 min_value=0.0,
-                value=0.0,
+                value=float(
+                    previous_request.get("time_decay_rate", 0.0)
+                ),
                 step=0.01,
                 key="evaluation_time_decay_rate",
             )
@@ -1895,25 +2009,52 @@ def _render_evaluation_start_form(
         )
         search_cols = st.columns(3)
         with search_cols[0]:
+            search_mode_options = (
+                evaluation_config.get("search_modes")
+                or ["vector", "hybrid"]
+            )
             search_mode = st.selectbox(
                 "Search mode",
-                options=evaluation_config.get("search_modes")
-                or ["vector", "hybrid"],
+                options=search_mode_options,
+                index=_evaluation_option_index(
+                    search_mode_options,
+                    previous_request.get("search_mode", "vector"),
+                ),
                 key="evaluation_search_mode",
             )
         with search_cols[1]:
+            retrieval_execution_options = (
+                evaluation_config.get("retrieval_executions")
+                or ["always", "intent_gated"]
+            )
             retrieval_execution = st.selectbox(
                 "Retrieval execution",
-                options=evaluation_config.get("retrieval_executions")
-                or ["always", "intent_gated"],
+                options=retrieval_execution_options,
+                index=_evaluation_option_index(
+                    retrieval_execution_options,
+                    previous_request.get(
+                        "retrieval_execution",
+                        "always",
+                    ),
+                ),
                 key="evaluation_retrieval_execution",
                 help="always=全質問で検索 / intent_gated=分類器が past_fact 等の時だけ",
             )
         with search_cols[2]:
+            injection_policy_options = (
+                evaluation_config.get("injection_policies")
+                or ["intent_gated", "retrieval_assisted", "candidates"]
+            )
             injection_policy = st.selectbox(
                 "Injection policy",
-                options=evaluation_config.get("injection_policies")
-                or ["intent_gated", "retrieval_assisted", "candidates"],
+                options=injection_policy_options,
+                index=_evaluation_option_index(
+                    injection_policy_options,
+                    previous_request.get(
+                        "injection_policy",
+                        "intent_gated",
+                    ),
+                ),
                 key="evaluation_injection_policy",
                 help=(
                     "retrieval_assisted は分類器 null でもベクトルと BM25 の"
@@ -1921,17 +2062,23 @@ def _render_evaluation_start_form(
                     "candidates は候補があれば注入する"
                 ),
             )
-        bm25_candidates = 20
-        vector_candidates = 20
-        rrf_k = 60
-        bm25_max_df_ratio = 0.5
+        bm25_candidates = int(
+            previous_request.get("bm25_candidates", 20)
+        )
+        vector_candidates = int(
+            previous_request.get("vector_candidates", 20)
+        )
+        rrf_k = int(previous_request.get("rrf_k", 60))
+        bm25_max_df_ratio = float(
+            previous_request.get("bm25_max_df_ratio", 0.5)
+        )
         if search_mode == "hybrid":
             hybrid_cols = st.columns(4)
             with hybrid_cols[0]:
                 bm25_candidates = st.number_input(
                     "BM25 candidates",
                     min_value=1,
-                    value=20,
+                    value=bm25_candidates,
                     step=1,
                     key="evaluation_bm25_candidates",
                 )
@@ -1939,7 +2086,7 @@ def _render_evaluation_start_form(
                 vector_candidates = st.number_input(
                     "Vector candidates",
                     min_value=1,
-                    value=20,
+                    value=vector_candidates,
                     step=1,
                     key="evaluation_vector_candidates",
                 )
@@ -1947,7 +2094,7 @@ def _render_evaluation_start_form(
                 rrf_k = st.number_input(
                     "RRF k",
                     min_value=1,
-                    value=60,
+                    value=rrf_k,
                     step=1,
                     key="evaluation_rrf_k",
                 )
@@ -1956,13 +2103,17 @@ def _render_evaluation_start_form(
                     "BM25 max df ratio",
                     min_value=0.05,
                     max_value=1.0,
-                    value=0.5,
+                    value=bm25_max_df_ratio,
                     step=0.05,
                     key="evaluation_bm25_max_df_ratio",
                 )
 
-    stage3_batch_size = 10
-    stage3_bootstrap_max_cards = 2000
+    stage3_batch_size = int(
+        previous_request.get("stage3_batch_size", 10)
+    )
+    stage3_bootstrap_max_cards = int(
+        previous_request.get("stage3_bootstrap_max_cards", 2000)
+    )
     if run_mode != "standard":
         with st.expander("Stage3設定"):
             stage3_cols = st.columns(2)
@@ -1970,7 +2121,7 @@ def _render_evaluation_start_form(
                 stage3_batch_size = st.number_input(
                     "Batch size",
                     min_value=1,
-                    value=10,
+                    value=stage3_batch_size,
                     step=1,
                     key="evaluation_stage3_batch_size",
                 )
@@ -1978,7 +2129,7 @@ def _render_evaluation_start_form(
                 stage3_bootstrap_max_cards = st.number_input(
                     "Bootstrap max cards",
                     min_value=1,
-                    value=2000,
+                    value=stage3_bootstrap_max_cards,
                     step=10,
                     key="evaluation_stage3_bootstrap_max_cards",
                 )
@@ -1992,6 +2143,16 @@ def _render_evaluation_start_form(
         )
     except Exception:
         provider_config = {}
+    provider_config = {
+        role: dict(config)
+        for role, config in provider_config.items()
+        if isinstance(config, dict)
+    }
+    previous_role_models = previous_request.get("role_models") or {}
+    if isinstance(previous_role_models, dict):
+        for role, config in previous_role_models.items():
+            if isinstance(config, dict):
+                provider_config[role] = dict(config)
     connections = _get_connections(api_url)
 
     with st.expander("モデル割り当て", expanded=True):
@@ -2001,7 +2162,8 @@ def _render_evaluation_start_form(
             connections,
         )
         embedding_profile = _evaluation_embedding_profile(
-            role_choices["embedding"].model_name
+            role_choices["embedding"].model_name,
+            provider_config.get("embedding", {}).get("profile"),
         )
         st.markdown("##### Temperature / output")
         generation_values = {}
@@ -2128,9 +2290,16 @@ def _render_evaluation_start_form(
             if response.ok:
                 job = response.json()
                 st.session_state.evaluation_selected_job = job["job_id"]
+                st.session_state.evaluation_pending_run_id = (
+                    _evaluation_next_run_id(
+                        str(job["run_id"]),
+                        [*run_ids, str(job["run_id"])],
+                    )
+                )
                 st.success(
                     f"評価を開始しました: {job['run_id']} "
-                    f"(job {job['job_id'][:8]})"
+                    f"(job {job['job_id'][:8]})。次の新規評価では"
+                    "この設定を引き継ぎます。"
                 )
             else:
                 st.error(_api_error_detail(response))
