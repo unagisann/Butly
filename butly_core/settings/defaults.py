@@ -123,6 +123,24 @@ SYSTEM_CONFIG = {
         "readable_instances": ["self"],
         "dynamic_threshold": 0.6,
         "default_use_google_search": False,
+        # --- ハイブリッド検索（検索改修計画 §3.5） ---
+        # "vector" = 従来のベクトル単独。"hybrid" = BM25(FTS5/trigram) と RRF 融合。
+        # eval で効果を確認してから既定を昇格させる。
+        "search_mode": "vector",
+        "bm25_candidates": 20,
+        "vector_candidates": 20,
+        "rrf_k": 60,
+        # bm25() の column weight。trigram トークン上の BM25 は語単位 BM25 と
+        # 挙動が異なるため、この値は推測でしかない（offline replay のスイープ対象）。
+        "bm25_weights": {"title": 5.0, "tags": 3.0, "summary": 2.0, "episode": 1.0},
+        # この比率を超えて出現する語は「弱い語」。弱い語しか一致していない
+        # カードは候補から落とす（会話の主役名だけで候補が埋まるのを防ぐ）。
+        "bm25_max_df_ratio": 0.5,
+        # 件数の少ない DB を守る床。カード3枚で「2枚に出る語」は比率上は
+        # 高DFだが、ノイズではない。df がこの件数未満なら弱い語にしない。
+        "bm25_min_weak_df": 5,
+        # df 計算と語境界検証のためにスキャンする最大ヒット数。
+        "bm25_scan_limit": 500,
     },
     "backup": {"generations": 7, "dir_name": "db_backups"},
     "search": {
@@ -134,6 +152,15 @@ SYSTEM_CONFIG = {
         "vector_search_limit": 3,
         "vector_search_threshold": 0.4,
         "deep_search_enabled": True,
+        # 検索の実行と、検索結果をプロンプトへ注入するかの判定を分離する
+        # （検索改修計画 §3.3）。
+        # retrieval_execution: "always" = need_intent に関わらず検索する
+        #                      "intent_gated" = 旧挙動（past_fact/relationship のみ）
+        # injection_policy: "intent_gated" = 旧挙動どおり need_intent で注入判定
+        #                   "retrieval_assisted" = 分類器が null でも強い検索根拠
+        #                     （BM25 とベクトルが同じカードを支持）なら注入
+        "retrieval_execution": "always",
+        "injection_policy": "intent_gated",
     },
     "gatekeeper": {
         "tier_rc_threshold": 0.4,

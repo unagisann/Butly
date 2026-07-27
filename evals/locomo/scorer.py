@@ -195,6 +195,7 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
     diagnostics = row.get("diagnostics") or {}
     rag = diagnostics.get("rag") or {}
     rag_results = rag.get("results") or []
+    retrieval = rag.get("retrieval") or {}
     raw_reference = rag.get("raw_reference") or {}
     token_usage = diagnostics.get("token_usage") or {}
     token_usage_total = diagnostics.get("token_usage_total") or {}
@@ -227,9 +228,80 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
         "intent_floor_applied": gatekeeper.get("intent_floor_applied"),
         "latency_ms": row.get("latency_ms"),
         "error": row.get("error"),
+        # 検索の実行と注入は別物（計画書 §3.7）。rag_triggered は注入の有無。
+        "search_executed": bool(retrieval.get("executed")),
+        "retrieval_mode": retrieval.get("mode"),
+        "retrieval_candidate_count": retrieval.get("candidate_count") or 0,
+        "retrieval_latency_ms": retrieval.get("latency_ms"),
+        "injection_allowed": retrieval.get("injection_allowed"),
+        "injection_reason": retrieval.get("injection_reason"),
+        "bm25_short_term_hit": _has_short_term_hit(retrieval),
     }
     entry["evidence_coverage"] = _evidence_provenance_coverage(row, provenance)
+    entry.update(_retrieval_coverage(row, provenance, retrieval))
     return entry
+
+
+def _has_short_term_hit(retrieval: dict) -> Optional[bool]:
+    """2文字CJK語の LIKE 補助候補が候補に入ったか（日本語運用の観測用）。"""
+    if not retrieval.get("executed") or "short_term_hits" not in retrieval:
+        return None
+    return bool(retrieval.get("short_term_hits"))
+
+
+def _retrieval_coverage(
+    row: dict, provenance: Optional[dict], retrieval: dict
+) -> dict:
+    """検索候補（注入前）の Recall@k。分母は oracle カードが存在する問。
+
+    ``evidence_coverage`` は「注入されたカード」で測るので、注入policyの影響を
+    受ける。ランキング自体の良し悪しを見るために、融合後の上位k候補で同じ
+    計算をする（計画書 §3.7）。``vector_recall_at_3`` は BM25 を外した場合の
+    対照で、``bm25_rescue_rate`` の計算に使う。
+    """
+    out: dict = {
+        "oracle_available": None,
+        "recall_at_1": None,
+        "recall_at_3": None,
+        "recall_at_20": None,
+        "vector_recall_at_3": None,
+    }
+    if not retrieval.get("executed"):
+        return out
+    oracle = _oracle_available(row, provenance)
+    out["oracle_available"] = oracle
+    if not oracle:
+        return out
+    fused = retrieval.get("fused_candidate_ids") or []
+    vector_ids = retrieval.get("vector_candidate_ids") or []
+    for k in (1, 3, 20):
+        out[f"recall_at_{k}"] = _coverage_for_card_ids(row, provenance, fused[:k])
+    out["vector_recall_at_3"] = _coverage_for_card_ids(
+        row, provenance, vector_ids[:3]
+    )
+    return out
+
+
+def _oracle_available(row: dict, provenance: Optional[dict]) -> Optional[bool]:
+    """evidence ターンを含むカードが1枚でも存在するか（検索で救えるか）。"""
+    if provenance is None:
+        return None
+    instance = provenance.get(str(row.get("instance_name")))
+    if instance is None:
+        return None
+    evidence_ids = row.get("evidence") or []
+    if not evidence_ids:
+        return None
+    evidence_files = {
+        instance["dialog_files"].get(str(evidence_id))
+        for evidence_id in evidence_ids
+    }
+    evidence_files.discard(None)
+    if not evidence_files:
+        return False
+    return any(
+        files & evidence_files for files in instance["card_files"].values()
+    )
 
 
 def _official_aggregate(question_scores: list[dict]) -> dict:
@@ -428,8 +500,68 @@ def _butly_aggregate(
         "evidence_retrieval_rate": _mean(
             [e["evidence_coverage"] for e in with_evidence]
         ),
+        **_retrieval_aggregate(question_scores),
     }
     return metrics
+
+
+def _retrieval_aggregate(question_scores: list[dict]) -> dict:
+    """検索そのものの指標（注入判定と分離。計画書 §3.7）。
+
+    ``rag_trigger_rate`` は歴史的に「注入されたか」を測っている。検索が
+    need_intent でゲートされていた頃は実行率の proxy にもなっていたが、
+    ``retrieval_execution=always`` 以降は別物なので別名で並べる。
+    """
+    executed = [e for e in question_scores if e.get("search_executed")]
+    oracle = [e for e in question_scores if e.get("oracle_available")]
+    retrieval_latencies = sorted(
+        e["retrieval_latency_ms"]
+        for e in question_scores
+        if e.get("retrieval_latency_ms") is not None
+    )
+    short_term = [
+        e for e in question_scores if e.get("bm25_short_term_hit") is not None
+    ]
+    return {
+        "search_execution_rate": _mean(
+            [float(bool(e.get("search_executed"))) for e in question_scores]
+        ),
+        "retrieval_candidate_rate": _mean(
+            [
+                float(bool(e.get("retrieval_candidate_count")))
+                for e in question_scores
+            ]
+        ),
+        # rag_trigger_rate と同義（同値であることを保つために両方出す）
+        "memory_injection_rate": _mean(
+            [float(e["rag_triggered"]) for e in question_scores]
+        ),
+        "retrieval_mode_distribution": _distribution(
+            question_scores, "retrieval_mode"
+        ),
+        "injection_reason_distribution": _distribution(
+            question_scores, "injection_reason"
+        ),
+        "oracle_available_count": len(oracle),
+        "retrieval_recall_at_1": _mean(_present(oracle, "recall_at_1")),
+        "retrieval_recall_at_3": _mean(_present(oracle, "recall_at_3")),
+        "retrieval_recall_at_20": _mean(_present(oracle, "recall_at_20")),
+        "vector_only_recall_at_3": _mean(_present(oracle, "vector_recall_at_3")),
+        "bm25_rescue_rate": _mean(
+            [
+                float((e["recall_at_3"] or 0) > (e["vector_recall_at_3"] or 0))
+                for e in oracle
+                if e["recall_at_3"] is not None
+                and e["vector_recall_at_3"] is not None
+            ]
+        ),
+        "retrieval_latency_ms_p50": _percentile(retrieval_latencies, 50),
+        "retrieval_latency_ms_p95": _percentile(retrieval_latencies, 95),
+        "bm25_short_term_hit_rate": _mean(
+            [float(bool(e["bm25_short_term_hit"])) for e in short_term]
+        ),
+        "search_executed_count": len(executed),
+    }
 
 
 def _load_provenance(run_path: Path, qa_rows: list[dict]) -> Optional[dict]:
@@ -514,6 +646,15 @@ def _evidence_provenance_coverage(
 ) -> Optional[float]:
     """Share of evidence turns whose saved file is among the retrieved cards'
     ``source_files``. Chunk-level provenance (see ``_load_provenance``)."""
+    return _coverage_for_card_ids(
+        row, provenance, row.get("retrieved_card_ids") or []
+    )
+
+
+def _coverage_for_card_ids(
+    row: dict, provenance: Optional[dict], card_ids: list
+) -> Optional[float]:
+    """Evidence coverage for an arbitrary card list (injected cards, top-k, ...)."""
     if provenance is None:
         return None
     instance = provenance.get(str(row.get("instance_name")))
@@ -523,7 +664,7 @@ def _evidence_provenance_coverage(
     if not evidence_ids:
         return None
     retrieved_files: set = set()
-    for card_id in row.get("retrieved_card_ids") or []:
+    for card_id in card_ids:
         retrieved_files |= instance["card_files"].get(str(card_id), set())
     covered = sum(
         1
@@ -550,6 +691,10 @@ def _write_errors(
         for row in rows:
             if row.get("error") or row.get("status") == "failed":
                 append_jsonl(errors_path, {"source": source, **row})
+
+
+def _present(entries: list[dict], key: str) -> list:
+    return [e[key] for e in entries if e.get(key) is not None]
 
 
 def _mean(values: list) -> Optional[float]:

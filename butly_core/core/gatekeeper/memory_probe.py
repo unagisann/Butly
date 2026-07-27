@@ -166,6 +166,11 @@ class MemoryProbe:
         t0 = time.time()
         layers: dict = {}
 
+        probe_conf = _resolve_section("memory_probe", override_config)
+        execution_policy = probe_conf.get("retrieval_execution", "always")
+        injection_policy = probe_conf.get("injection_policy", "intent_gated")
+        intent_wants_memory = need_intent in ("past_fact", "relationship")
+
         # Layer 1.5: Glossary Match (常時実行 — LLM 不要で軽量)
         glossary_hits = (
             self._match_glossary(
@@ -182,29 +187,31 @@ class MemoryProbe:
             "matches": len(glossary_hits),
         }
 
-        # need_intent が無い or "glossary" → Layer 1.5 のみで終了
-        if need_intent is None or need_intent == "glossary":
-            t1 = time.time()
-            status = "hit" if glossary_hits else "no_hit"
-            tag = "intent=None" if need_intent is None else "glossary-only"
-            print(
-                f"[MemoryProbe] {tag}: glossary={len(glossary_hits)} "
-                f"({int((t1-t0)*1000)}ms)"
-            )
-            return {
-                "status": status,
-                "candidates": [],
-                "glossary_hits": glossary_hits,
-                "layers": layers,
-            }
+        retrieval: dict = {
+            "execution_policy": execution_policy,
+            "injection_policy": injection_policy,
+            "executed": False,
+            "reason": None,
+            "candidate_count": 0,
+            "candidate_ids": [],
+            "injection_allowed": False,
+            "injection_reason": "no_candidates",
+        }
 
-        # past_fact / relationship: brain が無ければ glossary だけで返す
+        # 検索の実行と、結果をプロンプトへ入れるかは別判断（計画書 §3.3）。
+        # retrieval_execution="always" では分類器の結果に関わらず検索する。
         if brain is None:
+            retrieval["reason"] = "no_brain"
+            layers["vector"] = {"executed": False, "reason": "no brain"}
+        elif execution_policy != "always" and not intent_wants_memory:
+            retrieval["reason"] = f"intent_gated:{need_intent}"
+            layers["vector"] = {"executed": False, "reason": "intent gated"}
+
+        if retrieval["reason"] is not None:
             t1 = time.time()
             status = "hit" if glossary_hits else "no_hit"
-            layers["vector"] = {"executed": False, "reason": "no brain"}
             print(
-                f"[MemoryProbe] no brain (intent={need_intent}): "
+                f"[MemoryProbe] retrieval skipped ({retrieval['reason']}): "
                 f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"
             )
             return {
@@ -212,14 +219,14 @@ class MemoryProbe:
                 "candidates": [],
                 "glossary_hits": glossary_hits,
                 "layers": layers,
+                "retrieval": retrieval,
             }
 
-        probe_conf = _resolve_section("memory_probe", override_config)
         vector_limit = probe_conf.get("vector_search_limit", 3)
         vector_threshold = probe_conf.get("vector_search_threshold", 0.4)
         deep_enabled = probe_conf.get("deep_search_enabled", True)
 
-        # Layer 1: Quick Vector Search (past_fact / relationship)
+        # Layer 1: Quick Retrieval（search_mode に応じて vector / hybrid）
         v_diag = self._quick_vector_search_diag(
             user_input,
             brain,
@@ -229,95 +236,151 @@ class MemoryProbe:
             override_config=override_config,
         )
         candidates = v_diag["results"]
+        diagnostics = v_diag.get("diagnostics", {})
         layers["vector"] = {
             "executed": True,
-            **v_diag.get("diagnostics", {}),
+            **diagnostics,
             "result_count": len(candidates),
         }
+        retrieval["executed"] = True
+        retrieval["mode"] = diagnostics.get("mode", "vector")
+        retrieval["latency_ms"] = diagnostics.get("latency_ms")
+        retrieval["source"] = "vector"
 
         t1 = time.time()
+        status = "no_hit"
 
-        # Layer 1 でヒットあり → 即返却
         if candidates:
+            status = "hit"
             print(
                 f"[MemoryProbe] Layer 1 hit (intent={need_intent}): "
                 f"{len(candidates)} candidates, "
                 f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"
             )
-            return {
-                "status": "hit",
-                "candidates": candidates,
-                "glossary_hits": glossary_hits,
-                "layers": layers,
-            }
-
-        # Layer 2 トリガー判定
-        if not deep_enabled:
-            layers["deep"] = {"executed": False, "reason": "disabled"}
-            print(
-                f"[MemoryProbe] no_hit (intent={need_intent}, deep_search disabled), "
-                f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"
-            )
-            return {
-                "status": "no_hit",
-                "candidates": [],
-                "glossary_hits": glossary_hits,
-                "layers": layers,
-            }
-
-        headline_match = self._check_headline_match(user_input, recent_headlines)
-
-        if should_deep_search(
-            user_input,
-            candidates,
-            headline_match,
-            bool(glossary_hits),
-            need_intent=need_intent,
+        elif not deep_enabled or not (
+            intent_wants_memory or injection_policy == "retrieval_assisted"
         ):
-            deep_data = self._deep_search_diag(
-                user_input, brain, instance_name, override_config
-            )
-            deep_candidates = deep_data["results"]
-            layers["deep"] = {
-                "executed": True,
-                "trigger": (
-                    "past_ref_pattern"
-                    if asks_for_specific_past_detail(user_input)
-                    else "llm_intent"
-                ),
-                "keywords": deep_data.get("keywords", []),
-                "result_count": len(deep_candidates),
-            }
-            t2 = time.time()
-            if deep_candidates:
-                print(
-                    f"[MemoryProbe] deep_search hit (intent={need_intent}): "
-                    f"{len(deep_candidates)} candidates, "
-                    f"glossary={len(glossary_hits)} ({int((t2-t0)*1000)}ms)"
-                )
-                return {
-                    "status": "deep_search",
-                    "candidates": deep_candidates,
-                    "glossary_hits": glossary_hits,
-                    "layers": layers,
-                }
+            # Layer 2 は LLM 呼び出し（vector モードのキーワード抽出）を伴うので、
+            # 「検索しても注入され得ない」ケースでは走らせない。常時検索は
+            # 軽い Layer 1 までに留める。
+            reason = "disabled" if not deep_enabled else "injection_gated"
+            layers["deep"] = {"executed": False, "reason": reason}
             print(
-                f"[MemoryProbe] deep_search no_hit (intent={need_intent}), "
-                f"glossary={len(glossary_hits)} ({int((t2-t0)*1000)}ms)"
+                f"[MemoryProbe] no_hit (intent={need_intent}, deep {reason}), "
+                f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"
             )
         else:
-            layers["deep"] = {"executed": False, "reason": "no deep trigger"}
-            print(
-                f"[MemoryProbe] no_hit (intent={need_intent}, no deep_search trigger), "
-                f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"
+            headline_match = self._check_headline_match(user_input, recent_headlines)
+            if should_deep_search(
+                user_input,
+                candidates,
+                headline_match,
+                bool(glossary_hits),
+                need_intent=need_intent,
+            ):
+                deep_data = self._deep_search_diag(
+                    user_input, brain, instance_name, override_config
+                )
+                deep_candidates = deep_data["results"]
+                layers["deep"] = {
+                    "executed": True,
+                    "trigger": (
+                        "past_ref_pattern"
+                        if asks_for_specific_past_detail(user_input)
+                        else "llm_intent"
+                    ),
+                    "keywords": deep_data.get("keywords", []),
+                    "result_count": len(deep_candidates),
+                }
+                t2 = time.time()
+                if deep_candidates:
+                    candidates = deep_candidates
+                    status = "deep_search"
+                    retrieval["source"] = "deep"
+                    print(
+                        f"[MemoryProbe] deep_search hit (intent={need_intent}): "
+                        f"{len(deep_candidates)} candidates, "
+                        f"glossary={len(glossary_hits)} ({int((t2-t0)*1000)}ms)"
+                    )
+                else:
+                    print(
+                        f"[MemoryProbe] deep_search no_hit (intent={need_intent}), "
+                        f"glossary={len(glossary_hits)} ({int((t2-t0)*1000)}ms)"
+                    )
+            else:
+                layers["deep"] = {"executed": False, "reason": "no deep trigger"}
+                print(
+                    f"[MemoryProbe] no_hit (intent={need_intent}, "
+                    f"no deep_search trigger), glossary={len(glossary_hits)} "
+                    f"({int((t1-t0)*1000)}ms)"
+                )
+
+        retrieval["candidate_count"] = len(candidates)
+        retrieval["candidate_ids"] = [str(c.get("id")) for c in candidates]
+        retrieval["fused_candidate_ids"] = diagnostics.get("fused_candidate_ids", [])
+        retrieval["vector_candidate_ids"] = diagnostics.get("vector_candidate_ids", [])
+        retrieval["bm25_candidate_ids"] = diagnostics.get("bm25_candidate_ids", [])
+        retrieval["retrieval_sources"] = diagnostics.get("retrieval_sources")
+        bm25_diags = list((diagnostics.get("bm25") or {}).values())
+        if bm25_diags:
+            retrieval["bm25_terms"] = sorted(
+                {t for d in bm25_diags for t in (d.get("terms") or [])}
+            )
+            retrieval["short_term_hits"] = sum(
+                int(d.get("short_term_hits") or 0) for d in bm25_diags
+            )
+            retrieval["weak_terms"] = sorted(
+                {t for d in bm25_diags for t in (d.get("weak_terms") or [])}
             )
 
+        allowed, reason = self._resolve_injection(
+            candidates,
+            injection_policy=injection_policy,
+            intent_wants_memory=intent_wants_memory,
+        )
+        retrieval["injection_allowed"] = allowed
+        retrieval["injection_reason"] = reason
+        if allowed and not intent_wants_memory:
+            # 分類器が拾えなかったが検索根拠が強い場合の need（gatekeeper が使う）
+            retrieval["need_hint"] = "past_fact"
+
+        if not allowed:
+            # 検索は走ったが注入しない場合の status は従来（検索を実行しなかった
+            # 頃）と同じ意味に保つ。status を見ている trace / debug の互換のため。
+            status = "hit" if glossary_hits else "no_hit"
+
         return {
-            "status": "no_hit",
-            "candidates": [],
+            "status": status,
+            "candidates": candidates if allowed else [],
+            "retrieved_candidates": candidates,
             "glossary_hits": glossary_hits,
             "layers": layers,
+            "retrieval": retrieval,
         }
+
+    @staticmethod
+    def _resolve_injection(
+        candidates: list,
+        *,
+        injection_policy: str,
+        intent_wants_memory: bool,
+    ) -> tuple:
+        """検索結果をプロンプトへ注入してよいかを判定する（計画書 §3.3）。
+
+        RRF は候補の順位付けであって絶対的な関連性判定ではないので、
+        「候補があるから入れる」はしない。intent_gated は従来どおり分類器の
+        判定に従い、retrieval_assisted は分類器が null でもベクトルと BM25 の
+        双方が同じカードを支持したときだけ昇格させる。
+        """
+        if not candidates:
+            return False, "no_candidates"
+        if intent_wants_memory:
+            return True, "intent"
+        if injection_policy != "retrieval_assisted":
+            return False, "intent_gated"
+        if any(c.get("retrieval_source") == "both" for c in candidates):
+            return True, "retrieval_assisted"
+        return False, "weak_evidence"
 
     def _quick_vector_search(
         self,
@@ -564,12 +627,18 @@ class MemoryProbe:
     ) -> dict:
         """Layer 2 + 診断情報。Returns {"results": [...], "keywords": [...]}"""
         try:
-            keyword_data = brain.extract_keywords(user_input, override_config)
-            keywords = keyword_data.get("keywords", [])
-            if not keywords:
-                return {"results": [], "keywords": []}
+            brain_conf = _resolve_section("brain", override_config)
+            # hybrid では検索語を決定論的に組み立てるため、LLM のキーワード抽出は
+            # 呼ばない（計画書 §3.6）。vector では従来どおり。
+            if brain_conf.get("search_mode") == "hybrid":
+                keywords = []
+            else:
+                keyword_data = brain.extract_keywords(user_input, override_config)
+                keywords = keyword_data.get("keywords", [])
+                if not keywords:
+                    return {"results": [], "keywords": []}
 
-            limit = _resolve_section("brain", override_config).get("search_limit", 3)
+            limit = brain_conf.get("search_limit", 3)
             results = brain.search_knowledge(
                 keywords,
                 user_input,

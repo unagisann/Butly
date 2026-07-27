@@ -410,6 +410,83 @@ class TestScoreRun:
         assert scores["butly"]["evidence_retrieval_rate"] == pytest.approx(1 / 3)
         assert scores["butly"]["evidence_metric"] == "provenance_source_files"
 
+    def test_retrieval_metrics_separate_execution_from_injection(self, tmp_path):
+        """検索は走ったが注入しなかった問を、実行率と注入率で区別する（§3.7）"""
+        rows = [
+            _qa_row(
+                "qa-1",
+                diagnostics={
+                    "gatekeeper": {"tier": "mid", "need_intent": "past_fact"},
+                    "rag": {
+                        "results": [{"title": "t"}],
+                        "retrieval": {
+                            "executed": True,
+                            "mode": "hybrid",
+                            "candidate_count": 1,
+                            "latency_ms": 120,
+                            "injection_allowed": True,
+                            "injection_reason": "intent",
+                            "fused_candidate_ids": ["k1"],
+                            "vector_candidate_ids": ["zzz"],
+                            "short_term_hits": 0,
+                        },
+                    },
+                },
+            ),
+            # 検索は実行したが need_intent=None で注入しなかった問
+            _qa_row(
+                "qa-2",
+                retrieved_card_ids=[],
+                diagnostics={
+                    "gatekeeper": {"tier": "mid", "need_intent": None},
+                    "rag": {
+                        "results": [],
+                        "retrieval": {
+                            "executed": True,
+                            "mode": "hybrid",
+                            "candidate_count": 2,
+                            "latency_ms": 80,
+                            "injection_allowed": False,
+                            "injection_reason": "intent_gated",
+                            "fused_candidate_ids": ["k1"],
+                            "vector_candidate_ids": [],
+                            "short_term_hits": 1,
+                        },
+                    },
+                },
+            ),
+        ]
+        run_dir = _write_run(tmp_path, rows)
+        _write_workspace(run_dir)
+
+        butly = score_run(run_dir)["butly"]
+
+        assert butly["search_execution_rate"] == pytest.approx(1.0)
+        assert butly["memory_injection_rate"] == pytest.approx(0.5)
+        assert butly["memory_injection_rate"] == butly["rag_trigger_rate"]
+        assert butly["retrieval_candidate_rate"] == pytest.approx(1.0)
+        assert butly["retrieval_mode_distribution"] == {"hybrid": 2}
+        assert butly["injection_reason_distribution"] == {
+            "intent": 1,
+            "intent_gated": 1,
+        }
+        # 注入されなくても、候補としては oracle カードへ届いている
+        assert butly["oracle_available_count"] == 2
+        assert butly["retrieval_recall_at_3"] == pytest.approx(1.0)
+        assert butly["vector_only_recall_at_3"] == pytest.approx(0.0)
+        assert butly["bm25_rescue_rate"] == pytest.approx(1.0)
+        assert butly["retrieval_latency_ms_p50"] == pytest.approx(100)
+        assert butly["bm25_short_term_hit_rate"] == pytest.approx(0.5)
+
+    def test_retrieval_metrics_absent_for_old_runs(self, tmp_path):
+        """retrieval を持たない旧 run でも壊れない"""
+        run_dir = _write_run(tmp_path, [_qa_row("qa-1")])
+
+        butly = score_run(run_dir)["butly"]
+        assert butly["search_execution_rate"] == pytest.approx(0.0)
+        assert butly["retrieval_recall_at_3"] is None
+        assert butly["bm25_short_term_hit_rate"] is None
+
     def test_classifier_fallback_and_floor_rates(self, tmp_path):
         rows = [
             _qa_row("qa-1"),  # status ok / floor False

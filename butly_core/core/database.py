@@ -7,6 +7,7 @@ from butly_core.core.card_content import (
     normalize_maturation_time,
     utc_now_stamp,
 )
+from butly_core.core.hybrid_search import ensure_fts_index
 
 
 def _table_columns(cursor, table: str) -> set:
@@ -30,6 +31,7 @@ def _ensure_column(cursor, table: str, column: str, decl: str) -> bool:
 class ButlyDatabase:
     def __init__(self, db_path="butly_memory.db"):
         self.db_path = db_path
+        self.fts_status: dict = {}
         self._initialize_db()
 
     def _get_connection(self):
@@ -240,6 +242,12 @@ class ButlyDatabase:
             # queued_at は parse 可能な created_at を UTC へ正規化し、不能時は
             # migration 開始時刻を使う。
             self._backfill_content_hashes(cursor)
+
+            # ハイブリッド検索用の FTS5(trigram) 索引（検索改修計画 §3.1）。
+            # 既存 migration と同じトランザクション内で作り、backfill も同時に
+            # 終わらせる。FTS5/trigram が使えない SQLite では索引を作らず、
+            # 検索側が vector へフォールバックする（起動は止めない）。
+            self.fts_status = ensure_fts_index(conn)
 
             conn.commit()
 

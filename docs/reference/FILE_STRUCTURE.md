@@ -52,8 +52,13 @@ instances tree. The bundled mini fixture is synthetic.
   progress-log parsing, stop/resume, saved-run discovery, and score comparison.
 - `artifacts.py` — JSON/JSONL, Trace copies, and before/after snapshots.
 - `scorer.py` — official-compatible scoring (normalized + stemmed token F1,
-  per-category rules, no-information detection) plus Butly-specific metrics;
-  writes `scores.json` and `errors.jsonl`.
+  per-category rules, no-information detection) plus Butly-specific metrics
+  (including search-execution vs memory-injection rates, `retrieval_recall_at_k`
+  and `bm25_rescue_rate`); writes `scores.json` and `errors.jsonl`.
+- `retrieval_replay.py` — offline retrieval replay with no answer generation.
+  Copies an existing run's DBs into a temp directory and compares Recall@k for
+  `bm25` / `vector` / `hybrid` (`python -m evals.locomo.retrieval_replay`);
+  the source run is never modified.
 - `stemming.py` — dependency-free Porter (1980) stemmer; rare words may differ
   from the official nltk stemmer.
 - `report.py` — renders `summary.md` from `scores.json`.
@@ -226,9 +231,11 @@ Implements the backward-compat rule: **missing meta = owner / direct / web** (no
 
 #### `brain.py`
 - `ButlyBrain(base_dir)`
-  - `get_embedding(text)`, `extract_keywords(text, override_config)`
-  - `search_knowledge(keywords, query, instance_name, limit, override_config)` — keyword filter + cosine similarity rerank + time decay.
-  - `quick_vector_search(...)` / `quick_vector_search_diag(...)` — pure vector search (no keyword extraction). It scores every knowledge card, then applies time decay/archive weighting and returns the top `limit`; diagnostics report the full candidate count and retain `fetch_limit: null` for trace compatibility. Evaluation profiles may override `brain.time_decay_rate` without changing the normal system default.
+  - `get_embedding(text)`, `extract_keywords(text, override_config)` (keyword extraction is only used by Layer 2 when `search_mode="vector"`)
+  - `search_knowledge(keywords, query, instance_name, limit, override_config)` — Layer 2 (deep). `vector`: keyword filter + cosine rerank + time decay. `hybrid`: ignores keywords (accepts `None`) and runs the hybrid pipeline without the vector threshold gate.
+  - `quick_vector_search(...)` / `quick_vector_search_diag(...)` — pure vector search (no keyword extraction). It scores every knowledge card, then applies time decay/archive weighting and returns the top `limit`; diagnostics report the full candidate count and retain `fetch_limit: null` for trace compatibility. Evaluation profiles may override `brain.time_decay_rate` without changing the normal system default. Dispatches to the hybrid path when `brain.search_mode="hybrid"`.
+  - `_hybrid_search_diag(...)` — collects BM25 and vector candidates from **all** readable instances, ranks them globally, then fuses with RRF. In hybrid results `score` is the **RRF score**; cosine lives in `vector_score` / `raw_score` so that downstream re-sorting by `score` cannot silently undo the fusion.
+  - `_bm25_search_single(spec, instance_name, limit, brain_conf)` — BM25 candidates for one DB; builds the FTS index once if missing and returns empty (i.e. vector-only) when FTS5/trigram is unavailable.
   - `summarize_conversation(text, override_config)`, `generate_knowledge_card(text, override_config)`.
   - `_calculate_cosine_similarity(...)`, `_get_provider(model_name)`.
 
@@ -243,7 +250,16 @@ Implements the backward-compat rule: **missing meta = owner / direct / web** (no
 - `extract_json_array(raw_text)` — array variant (first `[` to last `]`), used by Stage 2 knowledge-card extraction; also picks the array out of object wrappers like `{"cards": [...]}`.
 
 #### `database.py`
-- `ButlyDatabase(db_path)` — SQLite CRUD for `knowledge_cards`. Auto-creates / migrates schema. Tables: `knowledge_cards`, `access_logs`.
+- `ButlyDatabase(db_path)` — SQLite CRUD for `knowledge_cards`. Auto-creates / migrates schema. Tables: `knowledge_cards`, `access_logs`, `knowledge_cards_fts` (FTS5/trigram index kept in sync by INSERT / DELETE / text-column UPDATE triggers — embedding-only updates do not reindex), `fts_meta` (index schema version / tokenizer / card count; a mismatch triggers a single-transaction rebuild).
+
+#### `hybrid_search.py`
+Building blocks for fusing FTS5(trigram) BM25 with vector search. Imported by both the index side (`ButlyDatabase`) and the search side (`ButlyBrain`).
+
+- `build_fts_query(text, max_terms=32)` — NFKC + lowercase; Latin terms of 3+ chars (stopwords removed) and 3-char CJK shingles. Two-char CJK terms go to `short_terms` (LIKE fallback) because trigram cannot index them. Every term is quoted with `"` doubled.
+- `term_matches(term, text, is_ascii)` — post-verifies trigram's substring hits. Latin terms must start at a word boundary with at most a 3-char suffix (`pet`→`pets` kept, `carpet` dropped); CJK stays substring.
+- `ensure_fts_index(conn)` / `fts_index_ready(conn)` / `fts5_trigram_available(conn)` — idempotent index/trigger/backfill setup and capability detection.
+- `bm25_candidates(conn, spec, ...)` — FTS hit → word-boundary verification → df gate (`bm25_max_df_ratio` / `bm25_min_weak_df`) → archive rule (archived cards only when no active card matches) → top `limit`.
+- `rrf_fuse(vector_results, bm25_results, k, limit)` — rank-only fusion; sets `score` to the RRF score and records `retrieval_source` (vector/bm25/both) plus both ranks.
 
 #### `instance_manager.py`
 - `InstanceManager(base_dir)` — instance directory CRUD (`create_instance`, `delete_instance`, `rename_instance`, `list_instances`, `update_instruction`, `get_instance_prompts`, `get_instance_config`).
@@ -296,17 +312,18 @@ Defaults: `rc=0.4`, `cn=0.3`. Override via `SYSTEM_CONFIG["gatekeeper"]` or per-
 **`need_intent` values**: `past_fact` / `glossary` / `relationship` / `null`. Parse failures fall back to `asks_for_specific_past_detail(user_input)` (regex). Even on a successful parse, an LLM `null` is promoted to `past_fact` when the same patterns match (floor — with `null` the vector probe never runs). JSON extraction uses `extract_json_str()` from `core/json_extract.py`. The returned dict carries observability fields `classifier_status` (ok/fallback), `fallback_reason`, `original_need_intent`, and `intent_floor_applied`.
 
 #### `memory_probe.py`
-LLM-free fact-based retrieval.
+LLM-free fact-based retrieval. **Running retrieval and injecting its results are separate decisions** (`memory_probe.retrieval_execution` / `injection_policy`). By default glossary scan and Layer 1 run on every turn while injection still follows `need_intent`.
 
 - `MemoryProbe()`
-  - `probe(user_input, brain, memory_manager, history_msgs=None, need_intent=None, recent_headlines=None, override_config=None, instance_name=None)` — Layer 1.5 always runs; vector / deep are conditional. Deep (Layer 2) fires on a Layer 1 miss when `need_intent=past_fact` or a past-reference pattern matches (the pattern is not a standalone gate).
+  - `probe(user_input, brain, memory_manager, history_msgs=None, need_intent=None, recent_headlines=None, override_config=None, instance_name=None)` — Layer 1.5 always runs. Layer 1 runs on every turn when `retrieval_execution="always"` (default; `"intent_gated"` restores the old behavior). Deep (Layer 2) fires on a Layer 1 miss when a past-reference pattern matches **and** the result could be injected (`need_intent ∈ {past_fact, relationship}` or `injection_policy="retrieval_assisted"`), because Layer 2 costs an LLM call.
+  - `_resolve_injection(candidates, injection_policy, intent_wants_memory)` — `intent_gated` (default) keeps the classifier as the gate; `retrieval_assisted` promotes candidates supported by **both** vector and BM25 (`retrieval_source="both"`) even when the classifier returned null, and sets `retrieval.need_hint="past_fact"`.
   - `_match_glossary(user_input, memory_manager, history_msgs=None, override_config=None)` — term/aliases match on `user_input` + recent history. Raw hits with `priority` / `_yaml_index` / `match_source`.
   - `_quick_vector_search_diag(...)` — wraps `brain.quick_vector_search_diag()`.
   - `_deep_search_diag(...)` — `extract_keywords` + `search_knowledge` with diagnostics.
   - `_check_headline_match(user_input, recent_headlines)`.
   - `_extract_history_text(history_msgs, scan_depth, scan_target)`.
 
-Returned dict includes `status` (`hit` / `no_hit` / `deep_search` / `skipped`), `candidates`, `glossary_hits`, and `layers` (per-layer diagnostics).
+Returned dict includes `status` (`hit` / `no_hit` / `deep_search` / `skipped`), `candidates` (empty when the injection policy is not satisfied), `retrieved_candidates` (before the injection decision), `glossary_hits`, `layers` (per-layer diagnostics), and `retrieval` (execution / candidate ids / mode / latency / injection decision). The extra `retrieval` block is what makes "retrieval reached the evidence but was not injected" observable.
 
 #### `state_updater.py`
 - `StateUpdater(base_dir)` — `update(user_input, history_msgs, current_state, override_config)` returns `{"topic": str|None, "mood": str|None}`. Called by `Gatekeeper.update_state()`.
