@@ -47,6 +47,47 @@ def _normalize_field(value: Any) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
+def coerce_card_text(value: Any, *, separator: str = "\n") -> str:
+    """LLM が配列/辞書で返したカードのフィールドを 1 つの文字列にする。
+
+    Stage 2 のプロンプトは summary を「箇条書き」で求めるため、モデルによっては
+    JSON 配列（``["- 事実A", "- 事実B"]``）で返す。以前はそれをそのまま sqlite へ
+    bind していたので ``type 'list' is not supported`` になり、**カードが 1 枚
+    丸ごと失われていた**（RAW は処理済みへ移動されるため、その回のカードは復元
+    されない）。書き手側で必ず文字列へ寄せる。
+
+    箇条書き記号が無い要素には ``- `` を付け、既存カードの summary 形式に揃える。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        items = []
+        for item in value:
+            text = coerce_card_text(item, separator=separator).strip()
+            if not text:
+                continue
+            if separator == "\n" and not text.startswith(("-", "・", "*")):
+                text = f"- {text}"
+            items.append(text)
+        return separator.join(items)
+    if isinstance(value, Mapping):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def coerce_card_fields(card: Mapping[str, Any]) -> dict:
+    """カード dict の本文フィールドを文字列へ正規化した複製を返す。"""
+    normalized = dict(card)
+    for field in ("title", "summary", "episode", "category", "reason"):
+        if field in normalized:
+            normalized[field] = coerce_card_text(normalized[field])
+    if "tags" in normalized:
+        normalized["tags"] = coerce_card_text(normalized["tags"], separator=", ")
+    return normalized
+
+
 def canonical_card_content(card: Mapping[str, Any]) -> str:
     """カードの意味内容を固定順 JSON 文字列に正規化する。"""
     try:

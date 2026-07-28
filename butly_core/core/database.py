@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timezone, timedelta
 
 from butly_core.core.card_content import (
+    coerce_card_fields,
     compute_content_hash,
     normalize_maturation_time,
     utc_now_stamp,
@@ -331,6 +332,8 @@ class ButlyDatabase:
 
     def register_knowledge(self, card_data):
         """ナレッジカードをDBに登録または更新する"""
+        # LLM 由来の dict は summary/tags が配列で来ることがある（sleeptime と同じ）。
+        card_data = coerce_card_fields(card_data)
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
