@@ -82,6 +82,13 @@ APIキー入力欄は常に空で表示され、保存済みの値を読み戻�
 一覧に無いモデルは「モデルIDを直接入力」で指定できる。保存時は
 `connection` と `model_name` の両方が保存される。
 
+接続先のモデル一覧は選択中のConnectionだけ遅延取得し、Connection単位で10分間
+キャッシュする。Chat、Summaryなど複数ロールで同じConnectionを使う場合は一覧を
+再利用し、ロールを切り替えるたびに外部`/models`を呼ばない。Connection・
+APIキー・Ollama URLを変更した場合は該当キャッシュを自動破棄する。
+プロバイダー側の変更をすぐ反映する場合は、画面の「モデル一覧を更新」または
+`POST /settings/model_catalog/refresh`を使用する。
+
 Embeddingロールでは `embeddings_supported=false` の Connection は選択候補から
 除外される。Embedding Connectionまたはモデルを変更した場合、既存ベクトルと
 次元が一致しなくなる可能性があるため `migrate_embeddings.py` で再生成する。
@@ -145,7 +152,8 @@ Connection の削除とAPIキーの解除は別操作である。不要な秘密
 | `POST` | `/settings/connections/{connection_id}/api_key` | `{"api_key": "..."}` を保存 |
 | `DELETE` | `/settings/connections/{connection_id}/api_key` | Connectionが参照するキーを解除 |
 | `POST` | `/settings/test_connection` | Connectionの疎通とモデル一覧を確認 |
-| `GET` | `/settings/model_candidates?role=...` | ロール別の `(connection_id, model_name)` 候補 |
+| `GET` | `/settings/model_candidates?role=...&connection_id=...` | ロール別候補。`connection_id`指定時はその接続先だけ動的取得 |
+| `POST` | `/settings/model_catalog/refresh` | 全Connectionまたは指定Connectionのモデル一覧キャッシュを破棄 |
 
 APIキー保存・解除レスポンスにキー値は含まれない。
 

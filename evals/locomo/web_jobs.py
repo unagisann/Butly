@@ -1,4 +1,4 @@
-"""Persistent subprocess jobs for the local LoCoMo evaluation console."""
+"""Persistent subprocess jobs for the local evaluation console."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ ACTIVE_JOB_STATUSES = frozenset({"queued", "running", "stopping"})
 RESUMABLE_JOB_STATUSES = frozenset({"stopped", "failed", "interrupted"})
 _SAFE_RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _PROGRESS_LINE = re.compile(
-    r"^\[LoCoMo\s+([0-9.]+)%\]"
+    r"^\[(?:LoCoMo|DialogueAB)\s+([0-9.]+)%\]"
     r"(?:\s+\[[^\]]+\])?\s+(\S+)\s+\|\s+(.*)$"
 )
 _PROFILE_ROLES = ("chat", "gatekeeper", "summary", "knowledge", "embedding")
@@ -446,8 +446,126 @@ def validate_job_request(
     return normalized
 
 
+def build_dialogue_ab_profile_payload(
+    request: dict[str, Any],
+) -> dict[str, Any]:
+    """Build one shared profile for both Japanese dialogue A/B arms."""
+    payload = {
+        **request,
+        "run_mode": (
+            "stage3-full"
+            if request.get("stage3_enabled", True)
+            else "standard"
+        ),
+        "locale": "ja",
+        "search_mode": "vector",
+        "retrieval_execution": "always",
+        # The runner overwrites this per isolated arm.
+        "injection_policy": "intent_gated",
+    }
+    return build_profile_payload(payload)
+
+
+def build_dialogue_ab_command(
+    request: dict[str, Any],
+    *,
+    output_dir: Path,
+    profile_path: Path,
+    python_executable: str = sys.executable,
+) -> list[str]:
+    return [
+        python_executable,
+        "-m",
+        "evals.dialogue_ab",
+        "run",
+        "--dataset",
+        str(request["dataset_path"]),
+        "--output-dir",
+        str(output_dir),
+        "--run-id",
+        str(request["run_id"]),
+        "--profile",
+        str(profile_path),
+    ]
+
+
+def validate_dialogue_ab_request(
+    request: dict[str, Any],
+    *,
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Validate the dedicated Japanese production-dialogue A/B request."""
+    from evals.dialogue_ab import load_dialogue_dataset
+
+    normalized = dict(request)
+    run_id = str(normalized.get("run_id") or "").strip()
+    if not _SAFE_RUN_ID.fullmatch(run_id):
+        raise EvaluationJobError(
+            "run_id must start with an alphanumeric character and contain only "
+            "letters, numbers, '.', '_' or '-'"
+        )
+    normalized["run_id"] = run_id
+    if (output_dir / run_id).exists():
+        raise EvaluationJobConflict(
+            f"dialogue A/B run already exists: {output_dir / run_id}"
+        )
+
+    dataset_path = Path(str(normalized.get("dataset_path") or "")).expanduser()
+    try:
+        dataset_path = dataset_path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise EvaluationJobError(f"dataset not found: {dataset_path}") from exc
+    if not dataset_path.is_file():
+        raise EvaluationJobError(f"dataset is not a file: {dataset_path}")
+    try:
+        load_dialogue_dataset(dataset_path)
+    except ValueError as exc:
+        raise EvaluationJobError(str(exc)) from exc
+    normalized["dataset_path"] = str(dataset_path)
+
+    normalized["stage3_enabled"] = bool(
+        normalized.get("stage3_enabled", True)
+    )
+    normalized["locale"] = "ja"
+    normalized["search_mode"] = "vector"
+    normalized["retrieval_execution"] = "always"
+
+    for name, default, minimum in (
+        ("rag_raw_top_k", 1, 0),
+        ("rag_raw_max_chars", 2500, 0),
+        ("stage3_batch_size", 10, 1),
+        ("stage3_bootstrap_max_cards", 2000, 1),
+    ):
+        value = normalized.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise EvaluationJobError(f"{name} must be at least {minimum}")
+        normalized[name] = value
+
+    decay = normalized.get("time_decay_rate", 0.003)
+    if isinstance(decay, bool) or not isinstance(decay, (int, float)):
+        raise EvaluationJobError("time_decay_rate must be a number")
+    if float(decay) < 0:
+        raise EvaluationJobError("time_decay_rate must be non-negative")
+    normalized["time_decay_rate"] = float(decay)
+
+    rag_mode = str(normalized.get("rag_source_mode") or "both")
+    if rag_mode not in {"cards", "raw", "both"}:
+        raise EvaluationJobError(f"unsupported rag_source_mode: {rag_mode}")
+    normalized["rag_source_mode"] = rag_mode
+
+    role_models = normalized.get("role_models") or {}
+    if not isinstance(role_models, dict):
+        raise EvaluationJobError("role_models must be an object")
+    unknown_roles = set(role_models) - set(_PROFILE_ROLES)
+    if unknown_roles:
+        raise EvaluationJobError(
+            f"unsupported role_models: {sorted(unknown_roles)}"
+        )
+    return normalized
+
+
 class EvaluationJobManager:
-    """Launch, persist, stop, resume, and inspect LoCoMo CLI processes."""
+    """Launch, persist, stop, resume, and inspect evaluation CLI processes."""
 
     def __init__(
         self,
@@ -468,6 +586,14 @@ class EvaluationJobManager:
             resolved_output = self.data_dir / "eval_runs" / "runs"
         self.output_dir = resolved_output.resolve()
         self.state_root = self.data_dir / "eval_runs"
+        configured_dialogue_output = os.environ.get(
+            "BUTLY_DIALOGUE_AB_OUTPUT_DIR"
+        )
+        self.dialogue_output_dir = (
+            Path(configured_dialogue_output).expanduser().resolve()
+            if configured_dialogue_output
+            else (self.state_root / "dialogue_ab").resolve()
+        )
         self.jobs_dir = self.state_root / "jobs"
         self.profiles_dir = self.state_root / "profiles"
         self.python_executable = python_executable
@@ -475,7 +601,12 @@ class EvaluationJobManager:
         self._records: dict[str, dict[str, Any]] = {}
         self._processes: dict[str, subprocess.Popen] = {}
         self._monitors: dict[str, threading.Thread] = {}
-        for directory in (self.output_dir, self.jobs_dir, self.profiles_dir):
+        for directory in (
+            self.output_dir,
+            self.dialogue_output_dir,
+            self.jobs_dir,
+            self.profiles_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
         self._load_records()
 
@@ -497,6 +628,7 @@ class EvaluationJobManager:
             previous_records = [
                 record
                 for record in self._records.values()
+                if record.get("job_type", "locomo") == "locomo"
                 if isinstance(record.get("request"), dict)
             ]
             latest = (
@@ -508,6 +640,33 @@ class EvaluationJobManager:
                 else None
             )
             last_request = dict(latest["request"]) if latest is not None else None
+            dialogue_records = [
+                record
+                for record in self._records.values()
+                if record.get("job_type") == "dialogue_ab"
+                and isinstance(record.get("request"), dict)
+            ]
+            latest_dialogue = (
+                max(
+                    dialogue_records,
+                    key=lambda record: record.get("created_at") or "",
+                )
+                if dialogue_records
+                else None
+            )
+            last_dialogue_request = (
+                dict(latest_dialogue["request"])
+                if latest_dialogue is not None
+                else None
+            )
+        dialogue_candidates = []
+        for candidate in (
+            self.project_root / "data" / "ja_dialogue_ab_prompts_v1.json",
+            self.data_dir / "data" / "ja_dialogue_ab_prompts_v1.json",
+        ):
+            resolved = candidate.resolve()
+            if resolved.is_file() and str(resolved) not in dialogue_candidates:
+                dialogue_candidates.append(str(resolved))
         return {
             "output_dir": str(self.output_dir),
             "dataset_candidates": candidates,
@@ -518,6 +677,12 @@ class EvaluationJobManager:
             # APIキー本体はrequestへ入らない。前回のフォーム設定をBackend再起動後も
             # 復元できるよう、永続job recordの正規化済みrequestを返す。
             "last_request": last_request,
+            "dialogue_ab": {
+                "output_dir": str(self.dialogue_output_dir),
+                "dataset_candidates": dialogue_candidates,
+                "last_request": last_dialogue_request,
+                "policies": ["intent_gated", "candidates"],
+            },
         }
 
     def start(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -555,6 +720,7 @@ class EvaluationJobManager:
             )
             record = {
                 "schema_version": 1,
+                "job_type": "locomo",
                 "job_id": job_id,
                 "run_id": normalized["run_id"],
                 "run_mode": normalized["run_mode"],
@@ -572,6 +738,73 @@ class EvaluationJobManager:
                 "stop_requested": False,
                 "output_dir": str(self.output_dir),
                 "run_dir": str(self.output_dir / normalized["run_id"]),
+                "profile_path": str(profile_path),
+                "log_path": str(self.jobs_dir / f"{job_id}.log"),
+                "request": normalized,
+                "command": command,
+            }
+            self._records[job_id] = record
+            self._save_record(record)
+            return self._launch(record, command)
+
+    def start_dialogue_ab(
+        self,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._lock:
+            self._refresh_records()
+            active = [
+                record["job_id"]
+                for record in self._records.values()
+                if record.get("status") in ACTIVE_JOB_STATUSES
+            ]
+            if active:
+                raise EvaluationJobConflict(
+                    f"another evaluation job is active: {active[0]}"
+                )
+            normalized = validate_dialogue_ab_request(
+                request,
+                output_dir=self.dialogue_output_dir,
+            )
+            job_id = uuid4().hex
+            profile_path = self.profiles_dir / f"{job_id}.yaml"
+            profile = build_dialogue_ab_profile_payload(normalized)
+            atomic_write_text(
+                profile_path,
+                yaml.safe_dump(
+                    profile,
+                    allow_unicode=True,
+                    sort_keys=False,
+                ),
+            )
+            command = build_dialogue_ab_command(
+                normalized,
+                output_dir=self.dialogue_output_dir,
+                profile_path=profile_path,
+                python_executable=self.python_executable,
+            )
+            record = {
+                "schema_version": 1,
+                "job_type": "dialogue_ab",
+                "job_id": job_id,
+                "run_id": normalized["run_id"],
+                "run_mode": "dialogue-ab",
+                "status": "queued",
+                "progress": 0.0,
+                "phase": "queued",
+                "message": "Waiting to start",
+                "created_at": utc_now(),
+                "started_at": None,
+                "ended_at": None,
+                "pid": None,
+                "process_created_at": None,
+                "return_code": None,
+                "attempt": 0,
+                "stop_requested": False,
+                "output_dir": str(self.dialogue_output_dir),
+                "run_dir": str(
+                    self.dialogue_output_dir / normalized["run_id"]
+                ),
                 "profile_path": str(profile_path),
                 "log_path": str(self.jobs_dir / f"{job_id}.log"),
                 "request": normalized,
@@ -624,14 +857,24 @@ class EvaluationJobManager:
                 raise EvaluationJobConflict(
                     "run directory was not created; start a new run instead"
                 )
-            command = [
-                self.python_executable,
-                "-m",
-                "evals.locomo.cli",
-                "resume",
-                "--run-dir",
-                str(run_dir),
-            ]
+            if record.get("job_type") == "dialogue_ab":
+                command = [
+                    self.python_executable,
+                    "-m",
+                    "evals.dialogue_ab",
+                    "resume",
+                    "--run-dir",
+                    str(run_dir),
+                ]
+            else:
+                command = [
+                    self.python_executable,
+                    "-m",
+                    "evals.locomo.cli",
+                    "resume",
+                    "--run-dir",
+                    str(run_dir),
+                ]
             record["command"] = command
             record["stop_requested"] = False
             record["status"] = "queued"
@@ -702,6 +945,48 @@ class EvaluationJobManager:
             key=lambda item: item.get("created_at") or "",
             reverse=True,
         )
+
+    def list_dialogue_ab_runs(self) -> list[dict[str, Any]]:
+        with self._lock:
+            self._refresh_records()
+            jobs_by_run = {
+                record["run_id"]: record
+                for record in self._records.values()
+                if record.get("job_type") == "dialogue_ab"
+            }
+        runs = []
+        for config_path in self.dialogue_output_dir.glob("*/run_config.json"):
+            try:
+                summary = self._summarize_dialogue_ab_run(
+                    config_path.parent
+                )
+            except EvaluationJobError:
+                logger.exception(
+                    "Failed to summarize dialogue A/B run: %s",
+                    config_path.parent,
+                )
+                continue
+            job = jobs_by_run.get(summary["run_id"])
+            if job is not None:
+                summary["job_id"] = job["job_id"]
+                if job.get("status") in ACTIVE_JOB_STATUSES:
+                    summary["status"] = job["status"]
+                    summary["progress"] = job.get("progress", 0.0)
+            runs.append(summary)
+        return sorted(
+            runs,
+            key=lambda item: item.get("created_at") or "",
+            reverse=True,
+        )
+
+    def get_dialogue_ab_result(self, run_id: str) -> dict[str, Any]:
+        if not _SAFE_RUN_ID.fullmatch(run_id):
+            raise EvaluationJobError(f"invalid run_id: {run_id}")
+        run_dir = self.dialogue_output_dir / run_id
+        scores = self._read_json(run_dir / "scores.json")
+        if not isinstance(scores, dict):
+            raise KeyError(run_id)
+        return scores
 
     def retrieval_replay(
         self,
@@ -1084,6 +1369,96 @@ class EvaluationJobManager:
             "run_mode": None,
             "connection": config.get("connection"),
             "model_name": config.get("model_name"),
+        }
+
+    def _summarize_dialogue_ab_run(
+        self,
+        run_dir: Path,
+    ) -> dict[str, Any]:
+        config = self._read_json(run_dir / "run_config.json")
+        if not isinstance(config, dict) or config.get("run_type") != "dialogue_ab":
+            raise EvaluationJobError(
+                f"invalid dialogue A/B run: {run_dir.name}"
+            )
+        checkpoint = self._read_json(
+            run_dir / "checkpoints" / "dialogue_ab.json"
+        ) or {}
+        scores = self._read_json(run_dir / "scores.json")
+        policies = (
+            scores.get("policies", {}) if isinstance(scores, dict) else {}
+        )
+        comparison = (
+            scores.get("comparison", {}) if isinstance(scores, dict) else {}
+        )
+        intent = (
+            policies.get("intent_gated", {})
+            if isinstance(policies.get("intent_gated"), dict)
+            else {}
+        )
+        candidates = (
+            policies.get("candidates", {})
+            if isinstance(policies.get("candidates"), dict)
+            else {}
+        )
+        status = "created"
+        if isinstance(scores, dict):
+            status = "completed"
+        elif checkpoint.get("status") == "completed":
+            status = "evaluation_completed"
+        elif checkpoint:
+            status = "interrupted"
+        return {
+            "run_id": str(config.get("run_id") or run_dir.name),
+            "run_dir": str(run_dir),
+            "created_at": config.get("created_at"),
+            "status": status,
+            "progress": 100.0 if status == "completed" else None,
+            "job_id": None,
+            "has_scores": isinstance(scores, dict),
+            "dataset_id": config.get("dataset_id"),
+            "prompt_count": (
+                scores.get("prompt_count")
+                if isinstance(scores, dict)
+                else config.get("prompt_count")
+            ),
+            "knowledge_cards_created": (
+                scores.get("knowledge_cards_created")
+                if isinstance(scores, dict)
+                else None
+            ),
+            "intent_rag_trigger_rate": intent.get("rag_trigger_rate"),
+            "candidates_rag_trigger_rate": candidates.get(
+                "rag_trigger_rate"
+            ),
+            "intent_prompt_tokens_mean": intent.get("prompt_tokens_mean"),
+            "candidates_prompt_tokens_mean": candidates.get(
+                "prompt_tokens_mean"
+            ),
+            "prompt_tokens_mean_delta": comparison.get(
+                "prompt_tokens_mean_delta"
+            ),
+            "intent_required_recall": intent.get(
+                "required_target_recall"
+            ),
+            "candidates_required_recall": candidates.get(
+                "required_target_recall"
+            ),
+            "required_recall_delta": comparison.get(
+                "required_target_recall_delta"
+            ),
+            "intent_irrelevant_mention_rate": intent.get(
+                "irrelevant_seed_mention_rate"
+            ),
+            "candidates_irrelevant_mention_rate": candidates.get(
+                "irrelevant_seed_mention_rate"
+            ),
+            "irrelevant_mention_delta": comparison.get(
+                "irrelevant_seed_mention_rate_delta"
+            ),
+            "intent_latency_ms_mean": intent.get("latency_ms_mean"),
+            "candidates_latency_ms_mean": candidates.get(
+                "latency_ms_mean"
+            ),
         }
 
     def _public_record(self, record: dict[str, Any]) -> dict[str, Any]:

@@ -18,9 +18,13 @@ import pytest
 @pytest.fixture(autouse=True)
 def reset_registry():
     from butly_core.llm.connections import get_registry
+    from routers.settings import _invalidate_model_catalog
+
     get_registry().reset_to_builtin()
+    _invalidate_model_catalog()
     yield
     get_registry().reset_to_builtin()
+    _invalidate_model_catalog()
 
 
 @pytest.fixture(autouse=True)
@@ -160,3 +164,169 @@ class TestModelCandidatesDynamicDiscovery:
         # needs_auth 由来の候補は出ない
         for c in res["candidates"]:
             assert c["connection_id"] != "needs_auth"
+
+    def test_catalog_is_reused_across_roles(self, monkeypatch):
+        """5 roleの候補取得でConnectionの/modelsを重複取得しない。"""
+        from butly_core.llm.connections import Connection, register_connection
+
+        register_connection(Connection(
+            id="cached-provider",
+            protocol="openai_compat",
+            base_url="https://cached.example/v1",
+            api_key_env="CACHED_PROVIDER_API_KEY",
+            embeddings_supported=True,
+        ))
+        monkeypatch.setenv("CACHED_PROVIDER_API_KEY", "test-key")
+        calls = 0
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self):
+                return json.dumps({
+                    "data": [
+                        {"id": "cached-chat-model"},
+                        {"id": "cached-embedding-model"},
+                    ]
+                }).encode()
+
+        def _fake_urlopen(request, timeout=5):
+            nonlocal calls
+            if "cached.example" in request.full_url:
+                calls += 1
+                return _FakeResp()
+            from urllib.error import URLError
+            raise URLError("not stubbed")
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+        from routers.settings import model_candidates
+
+        chat = model_candidates(role="chat")
+        summary = model_candidates(role="summary")
+        embedding = model_candidates(role="embedding")
+
+        assert calls == 1
+        assert any(
+            item["model_name"] == "cached-chat-model"
+            for item in chat["candidates"]
+        )
+        assert any(
+            item["model_name"] == "cached-chat-model"
+            for item in summary["candidates"]
+        )
+        assert any(
+            item["model_name"] == "cached-embedding-model"
+            for item in embedding["candidates"]
+        )
+        assert chat["catalog_ttl_seconds"] == 600.0
+
+    def test_manual_refresh_invalidates_one_connection(self, monkeypatch):
+        from butly_core.llm.connections import Connection, register_connection
+
+        register_connection(Connection(
+            id="refreshable",
+            protocol="openai_compat",
+            base_url="https://refreshable.example/v1",
+            api_key_env="REFRESHABLE_API_KEY",
+        ))
+        monkeypatch.setenv("REFRESHABLE_API_KEY", "test-key")
+        calls = 0
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self):
+                return json.dumps({
+                    "data": [{"id": f"model-v{calls}"}],
+                }).encode()
+
+        def _fake_urlopen(request, timeout=5):
+            nonlocal calls
+            if "refreshable.example" in request.full_url:
+                calls += 1
+                return _FakeResp()
+            from urllib.error import URLError
+            raise URLError("not stubbed")
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+        from routers.settings import model_candidates, refresh_model_catalog
+
+        first = model_candidates(role="chat")
+        cached = model_candidates(role="chat")
+        refreshed = refresh_model_catalog(connection_id="refreshable")
+        second = model_candidates(role="chat")
+
+        assert calls == 2
+        assert refreshed["connection_id"] == "refreshable"
+        assert any(
+            item["model_name"] == "model-v1"
+            for item in first["candidates"]
+        )
+        assert any(
+            item["model_name"] == "model-v1"
+            for item in cached["candidates"]
+        )
+        assert any(
+            item["model_name"] == "model-v2"
+            for item in second["candidates"]
+        )
+
+    def test_connection_filter_discovers_only_selected_provider(
+        self,
+        monkeypatch,
+    ):
+        from butly_core.llm.connections import Connection, register_connection
+
+        for connection_id in ("selected-provider", "hidden-provider"):
+            register_connection(Connection(
+                id=connection_id,
+                protocol="openai_compat",
+                base_url=f"https://{connection_id}.example/v1",
+                api_key_env="SHARED_PROVIDER_API_KEY",
+            ))
+        monkeypatch.setenv("SHARED_PROVIDER_API_KEY", "test-key")
+        calls = []
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self):
+                return json.dumps({
+                    "data": [{"id": "selected-chat-model"}],
+                }).encode()
+
+        def _fake_urlopen(request, timeout=5):
+            calls.append(request.full_url)
+            if "selected-provider.example" in request.full_url:
+                return _FakeResp()
+            raise AssertionError("unselected Connection was queried")
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+        from routers.settings import model_candidates
+
+        result = model_candidates(
+            role="chat",
+            connection_id="selected-provider",
+        )
+
+        assert calls == ["https://selected-provider.example/v1/models"]
+        assert any(
+            item["connection_id"] == "selected-provider"
+            and item["model_name"] == "selected-chat-model"
+            for item in result["candidates"]
+        )

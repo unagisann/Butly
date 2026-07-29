@@ -94,6 +94,27 @@ class RetrievalReplayRequest(BaseModel):
     limit: int = Field(default=20, ge=1, le=100)
 
 
+class DialogueABStartRequest(BaseModel):
+    """Japanese natural-dialogue A/B with one shared memory seed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_path: str
+    run_id: str
+    time_decay_rate: float = Field(default=0.003, ge=0.0)
+    context_current_time: bool = True
+    context_mid_term: bool = True
+    context_session_digest: bool = True
+    context_rag: bool = True
+    rag_source_mode: Literal["cards", "raw", "both"] = "both"
+    rag_raw_top_k: int = Field(default=1, ge=0)
+    rag_raw_max_chars: int = Field(default=2500, ge=0)
+    stage3_enabled: bool = True
+    stage3_batch_size: int = Field(default=10, ge=1)
+    stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
+    role_models: dict[str, RoleModelRequest] = Field(default_factory=dict)
+
+
 _manager: Optional[EvaluationJobManager] = None
 _manager_data_dir: Optional[Path] = None
 
@@ -126,6 +147,18 @@ def get_evaluation_config() -> dict[str, Any]:
 def start_evaluation_job(request: EvaluationStartRequest) -> dict[str, Any]:
     try:
         return _get_manager().start(request.model_dump(mode="json"))
+    except (KeyError, EvaluationJobConflict, EvaluationJobError) as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/dialogue-ab/jobs", status_code=202)
+def start_dialogue_ab_job(
+    request: DialogueABStartRequest,
+) -> dict[str, Any]:
+    try:
+        return _get_manager().start_dialogue_ab(
+            request.model_dump(mode="json")
+        )
     except (KeyError, EvaluationJobConflict, EvaluationJobError) as exc:
         raise _translate_error(exc) from exc
 
@@ -182,6 +215,23 @@ def list_evaluation_runs() -> dict[str, Any]:
         "output_dir": str(_get_manager().output_dir),
         "runs": _get_manager().list_runs(),
     }
+
+
+@router.get("/dialogue-ab/runs")
+def list_dialogue_ab_runs() -> dict[str, Any]:
+    manager = _get_manager()
+    return {
+        "output_dir": str(manager.dialogue_output_dir),
+        "runs": manager.list_dialogue_ab_runs(),
+    }
+
+
+@router.get("/dialogue-ab/runs/{run_id}")
+def get_dialogue_ab_result(run_id: str) -> dict[str, Any]:
+    try:
+        return _get_manager().get_dialogue_ab_result(run_id)
+    except (KeyError, EvaluationJobError) as exc:
+        raise _translate_error(exc) from exc
 
 
 @router.post("/runs/retrieval-replay")

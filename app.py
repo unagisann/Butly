@@ -162,10 +162,15 @@ _CONNECTION_ICONS = {
     "nanogpt": "💎",
     "nanogpt-sub": "💎",
 }
+_MODEL_CANDIDATE_CACHE_TTL_SECONDS = 600
 
 
-@st.cache_data(ttl=30)
-def _get_role_candidates(api_url: str, role: str) -> list:
+@st.cache_data(ttl=_MODEL_CANDIDATE_CACHE_TTL_SECONDS)
+def _get_role_candidates(
+    api_url: str,
+    role: str,
+    connection_id: str | None = None,
+) -> list:
     """role に対するモデル候補を backend から取得する。
 
     Returns
@@ -177,9 +182,12 @@ def _get_role_candidates(api_url: str, role: str) -> list:
     try:
         import requests as _req
 
+        params = {"role": role}
+        if connection_id:
+            params["connection_id"] = connection_id
         resp = _req.get(
             f"{api_url}/settings/model_candidates",
-            params={"role": role},
+            params=params,
             timeout=8,
         )
         if resp.ok:
@@ -207,7 +215,21 @@ def _get_role_candidates(api_url: str, role: str) -> list:
         return []
 
 
-@st.cache_data(ttl=30)
+def _get_selector_candidates(
+    api_url: str,
+    role: str,
+    current_connection: str | None,
+    key_prefix: str,
+) -> list:
+    """Load dynamic models only for the currently selected Connection."""
+    selected_connection = (
+        st.session_state.get(f"{key_prefix}_connection")
+        or current_connection
+    )
+    return _get_role_candidates(api_url, role, selected_connection)
+
+
+@st.cache_data(ttl=300)
 def _get_connections(api_url: str) -> list:
     """Connection metadata for provider-first model selection."""
     try:
@@ -438,6 +460,35 @@ def _api_error_detail(response) -> str:
     except Exception:
         pass
     return response.text
+
+
+def _render_model_catalog_refresh(api_url: str, *, key: str) -> None:
+    """Refresh provider-discovered model IDs only on explicit request."""
+    import requests
+
+    if not st.button(
+        "🔄 モデル一覧を更新",
+        key=key,
+        help=(
+            "通常は10分間のキャッシュを利用します。プロバイダー側で"
+            "モデルが追加・削除されたときだけ更新してください。"
+        ),
+    ):
+        return
+    try:
+        response = requests.post(
+            f"{api_url}/settings/model_catalog/refresh",
+            json={},
+            timeout=10,
+        )
+        if not response.ok:
+            st.error(_api_error_detail(response))
+            return
+        _get_role_candidates.clear()
+        st.success("モデル一覧キャッシュを更新しました。")
+        st.rerun()
+    except Exception as exc:
+        st.error(f"モデル一覧の更新エラー: {exc}")
 
 
 def _render_connection_manager(api_url: str) -> list:
@@ -1392,6 +1443,10 @@ def render_settings_screen():
             "💡 候補は backend (`/settings/model_candidates`) から取得します。"
             "Connection を追加すると Groq / Together などのモデルも自動で並びます。"
         )
+        _render_model_catalog_refresh(
+            api_url,
+            key="provider_model_catalog_refresh",
+        )
 
         ROLE_LABELS = {
             "chat": "Chat (メイン応答)",
@@ -1413,14 +1468,20 @@ def render_settings_screen():
         ]:
             current_role = provider_ai_cfg.get(role, {})
             current_model = current_role.get("model_name", "")
-            _candidates = _get_role_candidates(api_url, role)
+            selector_key = f"provider_model_{role}"
+            _candidates = _get_selector_candidates(
+                api_url,
+                role,
+                current_role.get("connection"),
+                selector_key,
+            )
             model_selections[role] = _model_selector(
                 label=ROLE_LABELS[role],
                 current_value=current_model,
                 current_connection=current_role.get("connection"),
                 candidates=_candidates,
                 connections=_provider_connections,
-                key_prefix=f"provider_model_{role}",
+                key_prefix=selector_key,
                 embeddings_only=(role == "embedding"),
             )
 
@@ -1653,6 +1714,8 @@ def _evaluation_role_models(
     api_url: str,
     provider_config: dict,
     connections: list,
+    *,
+    key_prefix: str = "evaluation_model",
 ) -> dict[str, ModelChoice]:
     role_labels = {
         "chat": "Chat（評価対象の応答）",
@@ -1664,13 +1727,19 @@ def _evaluation_role_models(
     choices = {}
     for role, label in role_labels.items():
         current = provider_config.get(role, {})
+        selector_key = f"{key_prefix}_{role}"
         choices[role] = _model_selector(
             label=label,
             current_value=current.get("model_name", ""),
             current_connection=current.get("connection"),
-            candidates=_get_role_candidates(api_url, role),
+            candidates=_get_selector_candidates(
+                api_url,
+                role,
+                current.get("connection"),
+                selector_key,
+            ),
             connections=connections,
-            key_prefix=f"evaluation_model_{role}",
+            key_prefix=selector_key,
             embeddings_only=(role == "embedding"),
         )
     return choices
@@ -1679,6 +1748,8 @@ def _evaluation_role_models(
 def _evaluation_embedding_profile(
     model_name: str,
     current_profile: str | None = None,
+    *,
+    widget_key: str = "evaluation_embedding_profile",
 ) -> str | None:
     """Embedding の prefix 規約セレクタ。戻り値 None は auto（モデル名から推定）。
 
@@ -1695,7 +1766,7 @@ def _evaluation_embedding_profile(
         "Embedding prefix 規約",
         options,
         index=_evaluation_option_index(options, selected_profile),
-        key="evaluation_embedding_profile",
+        key=widget_key,
         help=(
             "auto はモデル名から推定します（nomic → search_query:/"
             "search_document:、E5 → query:/passage: など）。"
@@ -2307,18 +2378,30 @@ def _render_evaluation_start_form(
             st.error(f"開始エラー: {exc}")
 
 
-def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
+@st.fragment(run_every=2)
+def _render_evaluation_jobs(api_url: str) -> None:
     import requests
 
     st.subheader("評価ジョブ")
-    if st.button("🔄 状態を更新", key="evaluation_refresh_jobs"):
-        st.rerun()
+    st.caption(
+        "このジョブ表示だけを2秒ごとに更新します。評価フォームや"
+        "モデル候補は再読み込みしません。"
+    )
+    try:
+        jobs = _evaluation_get(
+            api_url,
+            "/evaluations/jobs",
+        ).get("jobs", [])
+    except Exception as exc:
+        st.error(f"ジョブ状態の取得エラー: {exc}")
+        return
     if not jobs:
         st.info("Web Consoleから開始した評価ジョブはまだありません。")
         return
 
     job_rows = [
         {
+            "type": job.get("job_type", "locomo"),
             "run_id": job.get("run_id"),
             "status": job.get("status"),
             "progress": job.get("progress"),
@@ -2360,7 +2443,7 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
         f"{selected.get('message')}"
     )
 
-    action_cols = st.columns(3)
+    action_cols = st.columns(2)
     with action_cols[0]:
         if st.button(
             "■ 停止",
@@ -2375,7 +2458,6 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
             )
             if response.ok:
                 st.success("停止要求を送信しました。")
-                st.rerun()
             else:
                 st.error(_api_error_detail(response))
     with action_cols[1]:
@@ -2392,15 +2474,8 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
             )
             if response.ok:
                 st.success("checkpointから再開しました。")
-                st.rerun()
             else:
                 st.error(_api_error_detail(response))
-    with action_cols[2]:
-        auto_refresh = st.checkbox(
-            "2秒ごとに更新",
-            value=selected.get("status") in _EVALUATION_ACTIVE_STATUSES,
-            key=f"evaluation_auto_refresh_{selected_job_id}",
-        )
 
     with st.expander("実行ログ", expanded=True):
         try:
@@ -2411,13 +2486,6 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
             st.code(log_payload.get("text") or "ログはまだありません。")
         except Exception as exc:
             st.error(f"ログ取得エラー: {exc}")
-
-    if (
-        auto_refresh
-        and selected.get("status") in _EVALUATION_ACTIVE_STATUSES
-    ):
-        time.sleep(2)
-        st.rerun()
 
 
 def _render_retrieval_replay(api_url: str, runs: list) -> None:
@@ -2651,6 +2719,419 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
     st.dataframe(question_rows, width="stretch", hide_index=True)
 
 
+def _render_dialogue_ab_form(
+    api_url: str,
+    evaluation_config: dict,
+    runs: list,
+) -> None:
+    import requests
+
+    config = evaluation_config.get("dialogue_ab") or {}
+    previous = config.get("last_request")
+    if not isinstance(previous, dict):
+        previous = {}
+    candidates = config.get("dataset_candidates") or []
+    existing_run_ids = [
+        str(run["run_id"]) for run in runs if run.get("run_id")
+    ]
+    previous_run_id = str(previous.get("run_id") or "")
+    suggested_run_id = (
+        _evaluation_next_run_id(previous_run_id, existing_run_ids)
+        if previous_run_id
+        else "ja_dialogue_ab_v1"
+    )
+    # RUN_ID の更新は widget キーへ直接書けない（インスタンス化後の代入は
+    # StreamlitAPIException）。開始成功時は pending キーへ置き、次の描画の
+    # 冒頭＝widget を作る前に反映する（LoCoMo 側の evaluation_pending_run_id と同じ）。
+    pending_run_id = st.session_state.pop("dialogue_ab_pending_run_id", None)
+    if pending_run_id:
+        st.session_state.dialogue_ab_run_id = pending_run_id
+    elif "dialogue_ab_run_id" not in st.session_state:
+        st.session_state.dialogue_ab_run_id = suggested_run_id
+
+    st.subheader("日本語対話 injection policy A/B")
+    st.caption(
+        "同一の日本語メモリを一度だけ生成し、30件の各プロンプトを毎回"
+        "クリーンな複製へ入力します。比較条件は intent_gated と candidates、"
+        "検索実行は両方とも always、検索方式は vector 固定です。"
+    )
+    st.info(
+        "自動指標はトークン・RAG注入・対象語recallです。回答の自然さと"
+        "無関係な記憶の持ち出しは、完了後の回答差分で確認してください。"
+    )
+
+    dataset_default = str(
+        previous.get("dataset_path")
+        or (candidates[0] if candidates else "")
+    )
+    dataset_path = st.text_input(
+        "日本語対話dataset path",
+        value=dataset_default,
+        key="dialogue_ab_dataset_path",
+    )
+    top_cols = st.columns(2)
+    with top_cols[0]:
+        run_id = st.text_input(
+            "RUN_ID",
+            key="dialogue_ab_run_id",
+        )
+    with top_cols[1]:
+        stage3_enabled = st.checkbox(
+            "Stage3を有効化",
+            value=bool(previous.get("stage3_enabled", True)),
+            key="dialogue_ab_stage3_enabled",
+            help="記憶生成時にノードも作り、両policyで同じノードを利用します。",
+        )
+
+    with st.expander("RAG・コンテキスト設定", expanded=True):
+        context_cols = st.columns(4)
+        with context_cols[0]:
+            context_current_time = st.checkbox(
+                "Current Time",
+                value=bool(previous.get("context_current_time", True)),
+                key="dialogue_ab_context_current_time",
+            )
+        with context_cols[1]:
+            context_mid_term = st.checkbox(
+                "Mid-term",
+                value=bool(previous.get("context_mid_term", True)),
+                key="dialogue_ab_context_mid_term",
+            )
+        with context_cols[2]:
+            context_session_digest = st.checkbox(
+                "Session Digest",
+                value=bool(previous.get("context_session_digest", True)),
+                key="dialogue_ab_context_session_digest",
+            )
+        with context_cols[3]:
+            context_rag = st.checkbox(
+                "RAG",
+                value=bool(previous.get("context_rag", True)),
+                key="dialogue_ab_context_rag",
+            )
+        rag_cols = st.columns(4)
+        with rag_cols[0]:
+            rag_source_mode = st.selectbox(
+                "RAG source",
+                options=["cards", "raw", "both"],
+                index=_evaluation_option_index(
+                    ["cards", "raw", "both"],
+                    previous.get("rag_source_mode", "both"),
+                ),
+                key="dialogue_ab_rag_source_mode",
+            )
+        with rag_cols[1]:
+            rag_raw_top_k = st.number_input(
+                "RAW top-k",
+                min_value=0,
+                value=int(previous.get("rag_raw_top_k", 1)),
+                step=1,
+                key="dialogue_ab_rag_raw_top_k",
+            )
+        with rag_cols[2]:
+            rag_raw_max_chars = st.number_input(
+                "RAW max chars",
+                min_value=0,
+                value=int(previous.get("rag_raw_max_chars", 2500)),
+                step=100,
+                key="dialogue_ab_rag_raw_max_chars",
+            )
+        with rag_cols[3]:
+            time_decay_rate = st.number_input(
+                "Time decay rate",
+                min_value=0.0,
+                value=float(previous.get("time_decay_rate", 0.003)),
+                step=0.001,
+                format="%.3f",
+                key="dialogue_ab_time_decay_rate",
+            )
+
+    stage3_batch_size = int(previous.get("stage3_batch_size", 10))
+    stage3_bootstrap_max_cards = int(
+        previous.get("stage3_bootstrap_max_cards", 2000)
+    )
+    if stage3_enabled:
+        with st.expander("Stage3設定"):
+            stage_cols = st.columns(2)
+            with stage_cols[0]:
+                stage3_batch_size = st.number_input(
+                    "Batch size",
+                    min_value=1,
+                    value=stage3_batch_size,
+                    step=1,
+                    key="dialogue_ab_stage3_batch_size",
+                )
+            with stage_cols[1]:
+                stage3_bootstrap_max_cards = st.number_input(
+                    "Bootstrap max cards",
+                    min_value=1,
+                    value=stage3_bootstrap_max_cards,
+                    step=10,
+                    key="dialogue_ab_stage3_bootstrap_max_cards",
+                )
+
+    try:
+        provider_response = requests.get(f"{api_url}/config", timeout=5)
+        provider_config = (
+            provider_response.json().get("AI_CONFIG", {})
+            if provider_response.ok
+            else {}
+        )
+    except Exception:
+        provider_config = {}
+    provider_config = {
+        role: dict(role_config)
+        for role, role_config in provider_config.items()
+        if isinstance(role_config, dict)
+    }
+    previous_models = previous.get("role_models") or {}
+    if isinstance(previous_models, dict):
+        for role, role_config in previous_models.items():
+            if isinstance(role_config, dict):
+                provider_config[role] = dict(role_config)
+
+    with st.expander("モデル割り当て", expanded=True):
+        role_choices = _evaluation_role_models(
+            api_url,
+            provider_config,
+            _get_connections(api_url),
+            key_prefix="dialogue_ab_model",
+        )
+        embedding_profile = _evaluation_embedding_profile(
+            role_choices["embedding"].model_name,
+            provider_config.get("embedding", {}).get("profile"),
+            widget_key="dialogue_ab_embedding_profile",
+        )
+        generation_values = {}
+        generation_cols = st.columns(4)
+        temperatures = {
+            "chat": 0.0,
+            "gatekeeper": 0.0,
+            "summary": 0.3,
+            "knowledge": 0.2,
+        }
+        for column, (role, fallback) in zip(
+            generation_cols,
+            temperatures.items(),
+        ):
+            previous_generation = (
+                previous_models.get(role, {}).get("generation_config", {})
+                if isinstance(previous_models.get(role), dict)
+                else {}
+            )
+            current_generation = (
+                previous_generation
+                if isinstance(previous_generation, dict)
+                else {}
+            )
+            with column:
+                temperature = st.number_input(
+                    f"{role} temperature",
+                    min_value=0.0,
+                    max_value=2.0,
+                    value=float(
+                        current_generation.get("temperature", fallback)
+                    ),
+                    step=0.1,
+                    key=f"dialogue_ab_temperature_{role}",
+                )
+                generation_values[role] = {
+                    "temperature": float(temperature)
+                }
+        gatekeeper_max_tokens = st.number_input(
+            "Gatekeeper max output tokens",
+            min_value=1,
+            value=int(
+                (
+                    previous_models.get("gatekeeper", {})
+                    .get("generation_config", {})
+                    if isinstance(previous_models.get("gatekeeper"), dict)
+                    else {}
+                ).get("max_output_tokens", 2048)
+            ),
+            step=128,
+            key="dialogue_ab_gatekeeper_max_tokens",
+        )
+        generation_values["gatekeeper"]["max_output_tokens"] = int(
+            gatekeeper_max_tokens
+        )
+        from evals.locomo.web_jobs import gatekeeper_token_warning
+
+        warning = gatekeeper_token_warning(
+            role_choices["gatekeeper"].model_name,
+            gatekeeper_max_tokens,
+        )
+        if warning:
+            st.warning(warning)
+
+    if st.button(
+        "▶ 日本語対話A/Bを開始",
+        type="primary",
+        width="stretch",
+        disabled=not dataset_path.strip() or not run_id.strip(),
+        key="dialogue_ab_start",
+    ):
+        role_models = {}
+        empty_roles = []
+        for role, choice in role_choices.items():
+            if not choice.model_name.strip():
+                empty_roles.append(role)
+                continue
+            role_models[role] = {
+                "connection": choice.connection_id,
+                "model_name": choice.model_name.strip(),
+                "generation_config": generation_values.get(role, {}),
+            }
+            if role == "embedding" and embedding_profile:
+                role_models[role]["profile"] = embedding_profile
+        if empty_roles:
+            st.error(
+                "モデルが未設定のロールがあります: "
+                + ", ".join(empty_roles)
+            )
+            return
+        payload = {
+            "dataset_path": dataset_path.strip(),
+            "run_id": run_id.strip(),
+            "time_decay_rate": float(time_decay_rate),
+            "context_current_time": context_current_time,
+            "context_mid_term": context_mid_term,
+            "context_session_digest": context_session_digest,
+            "context_rag": context_rag,
+            "rag_source_mode": rag_source_mode,
+            "rag_raw_top_k": int(rag_raw_top_k),
+            "rag_raw_max_chars": int(rag_raw_max_chars),
+            "stage3_enabled": stage3_enabled,
+            "stage3_batch_size": int(stage3_batch_size),
+            "stage3_bootstrap_max_cards": int(
+                stage3_bootstrap_max_cards
+            ),
+            "role_models": role_models,
+        }
+        # 起動リクエストの失敗だけを「開始エラー」として扱う。開始後の UI 更新まで
+        # 同じ except で包むと、ジョブは走っているのに「開始エラー」と出て誤解する。
+        try:
+            response = requests.post(
+                f"{api_url}/evaluations/dialogue-ab/jobs",
+                json=payload,
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            st.error(f"開始エラー: {exc}")
+            return
+        if not response.ok:
+            st.error(_api_error_detail(response))
+            return
+
+        job = response.json()
+        st.session_state.evaluation_selected_job = job["job_id"]
+        st.session_state.dialogue_ab_pending_run_id = _evaluation_next_run_id(
+            str(job["run_id"]),
+            [*existing_run_ids, str(job["run_id"])],
+        )
+        st.success(
+            f"日本語対話A/Bを開始しました: {job['run_id']} "
+            f"(job {job['job_id'][:8]})"
+        )
+
+
+def _render_dialogue_ab_history(api_url: str, runs: list) -> None:
+    if not runs:
+        st.info("日本語対話A/B runはまだありません。")
+        return
+    rows = [
+        {
+            "run_id": run.get("run_id"),
+            "status": run.get("status"),
+            "prompts": run.get("prompt_count"),
+            "cards": run.get("knowledge_cards_created"),
+            "intent RAG": run.get("intent_rag_trigger_rate"),
+            "candidates RAG": run.get("candidates_rag_trigger_rate"),
+            "token Δ/turn": run.get("prompt_tokens_mean_delta"),
+            "required recall Δ": run.get("required_recall_delta"),
+            "irrelevant mention Δ": run.get("irrelevant_mention_delta"),
+            "created_at": run.get("created_at"),
+        }
+        for run in runs
+    ]
+    st.markdown("#### A/B履歴")
+    st.dataframe(rows, width="stretch", hide_index=True)
+
+    completed = [
+        run["run_id"]
+        for run in runs
+        if run.get("has_scores") and run.get("run_id")
+    ]
+    if not completed:
+        return
+    selected_run = st.selectbox(
+        "回答差分を表示するrun",
+        options=completed,
+        key="dialogue_ab_result_run",
+    )
+    try:
+        scores = _evaluation_get(
+            api_url,
+            f"/evaluations/dialogue-ab/runs/{selected_run}",
+        )
+    except Exception as exc:
+        st.error(f"A/B結果取得エラー: {exc}")
+        return
+
+    policy_rows = []
+    for policy in ("intent_gated", "candidates"):
+        stats = scores.get("policies", {}).get(policy, {})
+        policy_rows.append(
+            {
+                "policy": policy,
+                "RAG trigger": stats.get("rag_trigger_rate"),
+                "search exec": stats.get("search_execution_rate"),
+                "prompt tokens mean": stats.get("prompt_tokens_mean"),
+                "latency ms mean": stats.get("latency_ms_mean"),
+                "latency p95": stats.get("latency_ms_p95"),
+                "required recall": stats.get("required_target_recall"),
+                "irrelevant mention": stats.get(
+                    "irrelevant_seed_mention_rate"
+                ),
+            }
+        )
+    st.markdown("#### Policy指標")
+    st.dataframe(policy_rows, width="stretch", hide_index=True)
+
+    category = st.selectbox(
+        "表示カテゴリ",
+        options=[
+            "all",
+            "memory_required",
+            "memory_irrelevant",
+            "memory_optional",
+        ],
+        key="dialogue_ab_result_category",
+    )
+    prompt_rows = []
+    for prompt in scores.get("prompts", []):
+        if category != "all" and prompt.get("category") != category:
+            continue
+        arms = prompt.get("arms") or {}
+        intent = arms.get("intent_gated") or {}
+        candidates = arms.get("candidates") or {}
+        prompt_rows.append(
+            {
+                "id": prompt.get("prompt_id"),
+                "category": prompt.get("category"),
+                "prompt": prompt.get("prompt"),
+                "review": prompt.get("review_point"),
+                "intent RAG": intent.get("rag_triggered"),
+                "candidate RAG": candidates.get("rag_triggered"),
+                "token Δ": prompt.get("prompt_tokens_delta"),
+                "intent answer": intent.get("response"),
+                "candidates answer": candidates.get("response"),
+            }
+        )
+    st.markdown("#### プロンプト別回答")
+    st.dataframe(prompt_rows, width="stretch", hide_index=True)
+
+
 def render_evaluation_screen():
     api_url = st.session_state.api_base_url
     header_cols = st.columns([1, 8])
@@ -2659,48 +3140,92 @@ def render_evaluation_screen():
             navigate_to("home")
     with header_cols[1]:
         st.markdown(
-            '<h1 class="app-title">📊 LoCoMo Evaluation Console</h1>',
+            '<h1 class="app-title">📊 Butly Evaluation Console</h1>',
             unsafe_allow_html=True,
         )
     st.divider()
 
+    sections = [
+        "▶ LoCoMo評価",
+        "🗣 日本語対話A/B",
+        "⚙️ ジョブ",
+        "📈 LoCoMo履歴・比較",
+    ]
+    section = st.segmented_control(
+        "評価画面",
+        options=sections,
+        default=sections[0],
+        key="evaluation_console_section",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+
     try:
-        evaluation_config = _evaluation_get(
-            api_url,
-            "/evaluations/config",
-        )
-        jobs = _evaluation_get(
-            api_url,
-            "/evaluations/jobs",
-        ).get("jobs", [])
-        runs_payload = _evaluation_get(
-            api_url,
-            "/evaluations/runs",
-        )
-        runs = runs_payload.get("runs", [])
+        if section == sections[0]:
+            evaluation_config = _evaluation_get(
+                api_url,
+                "/evaluations/config",
+            )
+            runs_payload = _evaluation_get(
+                api_url,
+                "/evaluations/runs",
+            )
+            runs = runs_payload.get("runs", [])
+            st.caption(
+                "LoCoMo保存先: "
+                f"`{runs_payload.get('output_dir') or evaluation_config.get('output_dir')}`"
+            )
+            _render_model_catalog_refresh(
+                api_url,
+                key="evaluation_locomo_model_catalog_refresh",
+            )
+            _render_evaluation_start_form(
+                api_url,
+                evaluation_config,
+                runs,
+            )
+        elif section == sections[1]:
+            evaluation_config = _evaluation_get(
+                api_url,
+                "/evaluations/config",
+            )
+            dialogue_runs_payload = _evaluation_get(
+                api_url,
+                "/evaluations/dialogue-ab/runs",
+            )
+            dialogue_runs = dialogue_runs_payload.get("runs", [])
+            st.caption(
+                "日本語対話A/B保存先: "
+                f"`{dialogue_runs_payload.get('output_dir')}`"
+            )
+            _render_model_catalog_refresh(
+                api_url,
+                key="evaluation_dialogue_model_catalog_refresh",
+            )
+            _render_dialogue_ab_form(
+                api_url,
+                evaluation_config,
+                dialogue_runs,
+            )
+            _render_dialogue_ab_history(api_url, dialogue_runs)
+        elif section == sections[2]:
+            _render_evaluation_jobs(api_url)
+        else:
+            runs_payload = _evaluation_get(
+                api_url,
+                "/evaluations/runs",
+            )
+            runs = runs_payload.get("runs", [])
+            st.caption(
+                "LoCoMo保存先: "
+                f"`{runs_payload.get('output_dir')}`"
+            )
+            _render_evaluation_history(api_url, runs)
     except Exception as exc:
         st.error(
             "評価APIへ接続できません。backendを再起動して最新コードを"
             f"読み込んでください。\n\n{exc}"
         )
-        return
-
-    st.caption(
-        f"Run保存先: `{runs_payload.get('output_dir') or evaluation_config.get('output_dir')}`"
-    )
-    start_tab, jobs_tab, history_tab = st.tabs(
-        ["▶ 新規評価", "⚙️ ジョブ", "📈 履歴・比較"]
-    )
-    with start_tab:
-        _render_evaluation_start_form(
-            api_url,
-            evaluation_config,
-            runs,
-        )
-    with jobs_tab:
-        _render_evaluation_jobs(api_url, jobs)
-    with history_tab:
-        _render_evaluation_history(api_url, runs)
 
 
 # ==========================================
@@ -3126,11 +3651,55 @@ def render_instance_settings_screen():
     # --- 全プロバイダーのモデル候補リスト ---
     # Phase 3: ハードコード撤廃。backend `/settings/model_candidates?role=<role>` から
     # role 毎に取得し、Connection 追加で増えるモデルもそのまま反映される。
-    _chat_candidates = _get_role_candidates(api_url, "chat")
-    _summary_candidates = _get_role_candidates(api_url, "summary")
-    _knowledge_candidates = _get_role_candidates(api_url, "knowledge")
-    _gatekeeper_candidates = _get_role_candidates(api_url, "gatekeeper")
-    _embedding_candidates = _get_role_candidates(api_url, "embedding")
+    _render_model_catalog_refresh(
+        api_url,
+        key="instance_model_catalog_refresh",
+    )
+    from butly_core.config import AI_CONFIG as _candidate_global_ai
+
+    def _instance_role_connection(role: str) -> str | None:
+        role_config = config.get(role, {})
+        global_config = _candidate_global_ai.get(role, {})
+        return (
+            role_config.get("connection")
+            if isinstance(role_config, dict)
+            else None
+        ) or (
+            global_config.get("connection")
+            if isinstance(global_config, dict)
+            else None
+        )
+
+    _chat_candidates = _get_selector_candidates(
+        api_url,
+        "chat",
+        _instance_role_connection("chat"),
+        "inst_chat_model",
+    )
+    _summary_candidates = _get_selector_candidates(
+        api_url,
+        "summary",
+        _instance_role_connection("summary"),
+        "inst_sum_model",
+    )
+    _knowledge_candidates = _get_selector_candidates(
+        api_url,
+        "knowledge",
+        _instance_role_connection("knowledge"),
+        "inst_know_model",
+    )
+    _gatekeeper_candidates = _get_selector_candidates(
+        api_url,
+        "gatekeeper",
+        _instance_role_connection("gatekeeper"),
+        "inst_gk_model",
+    )
+    _embedding_candidates = _get_selector_candidates(
+        api_url,
+        "embedding",
+        _instance_role_connection("embedding"),
+        "inst_emb_model",
+    )
     _instance_connections = _get_connections(api_url)
 
     # =====================

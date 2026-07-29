@@ -12,6 +12,7 @@
 |---|---|
 | `main.py` | FastAPI アプリの互換 entrypoint（app 構築は `butly_api.create_app()` に委譲） |
 | `app.py` | Streamlit Web UI（FastAPI バックエンド経由で動作） |
+| `data/ja_dialogue_ab_prompts_v1.json` | 日本語の本番対話A/B用memory seed 10件・プロンプト30件 |
 | `dependencies.py` | ルーター間共有のグローバル状態・ヘルパー |
 | `sleeptime.py` | 記憶自動整理スクリプト（単体実行 & APIから呼び出し可） |
 | `migrate_embeddings.py` | プロバイダー切り替え時の embedding 再生成ユーティリティ |
@@ -43,7 +44,7 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 **画面構成:**
 - `render_home_screen()` — ホーム。インスタンス一覧・新規作成
 - `render_chat_screen()` — チャット画面。`POST /chat` で応答取得、デバッグ表示
-- `render_settings_screen()` — グローバル設定、汎用Connection/APIキー管理、プロバイダー→モデルの二段階選択
+- `render_settings_screen()` — グローバル設定、汎用Connection/APIキー管理、プロバイダー→モデルの二段階選択、モデル一覧の明示更新
 - `render_evaluation_screen()` — LoCoMo評価フォーム、ジョブ停止・再開・ログ、run履歴・問題別スコア比較
 - `render_instance_settings_screen()` — インスタンス個別の性格設定・config 編集。モデル上書きもConnection→モデルの順に選択
 - `_render_connection_manager()` — built-in / ユーザー定義Connectionの一覧、秘密値を再表示しないAPIキー保存・解除、疎通テスト、テンプレート追加、参照保護付き削除
@@ -124,6 +125,13 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`）。top-level `locale`は内部prompt／memory出力言語、`brain.time_decay_rate`は評価runの検索時間減衰を指定 |
 | `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook。ParametersセルでQA mode、locale、sample/session/questionの全件／上限制御、context別ON/OFF、role別temperature、`TIME_DECAY_RATE`、同一カード再利用元runを選択（評価ロジック禁止） |
 
+### `evals/dialogue_ab.py`
+
+日本語の通常対話に対する`intent_gated` / `candidates`比較runner。
+同じseed memoryを一度だけKnowledge化し、30プロンプトを独立cloneへ投入する。
+プロンプト単位のatomic結果、停止・resume、policy/category別のtoken・RAG・latency・
+対象語recall集計を提供する。CLIは`python -m evals.dialogue_ab run|resume`。
+
 QA modeは、全質問を同じpost-Sleeptime状態から評価する`independent`
 （バージョン比較の既定）と、QAターンを同一instanceへ蓄積する`sequential`
 （連続運用・耐久評価）を分離する。全LoCoMo評価はsample/session/questionの
@@ -174,7 +182,8 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 - `POST /settings/connections` / `DELETE /settings/connections/{id}` — ユーザー定義Connectionの登録・削除。モデル設定から参照中の通常削除は409、`force=true`のみ強制
 - `POST /settings/connections/{id}/api_key` / `DELETE /settings/connections/{id}/api_key` — 登録済みConnectionの環境変数名をサーバー側で解決し、`DATA_DIR/.env` のAPIキーを保存・解除
 - `POST /settings/test_connection` — Connectionの疎通確認
-- `GET /settings/model_candidates` — role別に `(connection_id, model_name)` 候補を返す
+- `GET /settings/model_candidates` — 選択Connectionだけ遅延取得・10分キャッシュし、role別の `(connection_id, model_name)` 候補を返す
+- `POST /settings/model_catalog/refresh` — 全Connectionまたは指定Connectionのモデル一覧キャッシュを破棄
 
 詳細は [LLM Connection / APIキー管理](llm_connections.ja.md) を参照。
 

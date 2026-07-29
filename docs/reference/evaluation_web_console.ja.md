@@ -2,8 +2,8 @@
 
 🌐 **日本語** | [English](evaluation_web_console.md)
 
-Butly Web Consoleから、既存のLoCoMo評価CLIをバックグラウンドジョブとして
-開始・停止・再開し、過去runのスコアを比較するための仕様。
+Butly Web Consoleから、既存のLoCoMo評価と日本語対話A/Bをバックグラウンド
+ジョブとして開始・停止・再開し、結果を比較するための仕様。
 
 評価ロジックの正本は引き続き`evals/locomo/`であり、Web APIと画面はCLIを
 subprocessとして呼ぶ薄い管理層である。Replay、Sleeptime、QA、checkpoint、
@@ -11,13 +11,19 @@ subprocessとして呼ぶ薄い管理層である。Replay、Sleeptime、QA、ch
 
 ## 画面
 
-ホームの`📊`から、次の3タブを開く。
+ホームの`📊`から、次の4セクションを切り替える。選択中のセクションだけを描画し、
+非表示フォームのモデル候補や履歴は取得しない。
 
-| タブ | 用途 |
+| セクション | 用途 |
 |---|---|
-| 新規評価 | Colab Parameters相当のrun設定とモデル割り当て |
+| LoCoMo評価 | Colab Parameters相当のrun設定とモデル割り当て |
+| 日本語対話A/B | `intent_gated`と`candidates`の本番対話向け比較 |
 | ジョブ | 進捗・phase・ログ、停止、checkpointからの再開 |
-| 履歴・比較 | 保存済みrunの指標一覧、2〜8 runの比較、問題別delta |
+| LoCoMo履歴・比較 | 保存済みrunの指標一覧、2〜8 runの比較、問題別delta |
+
+ジョブセクションの2秒更新はStreamlit fragment内だけで行い、評価フォーム全体を
+再実行しない。モデル候補は10分キャッシュされ、「モデル一覧を更新」を押した場合
+だけ明示的に再取得する。
 
 新規評価フォームは次を扱う。
 
@@ -46,6 +52,32 @@ ConnectionとAPIキーは通常のWeb Console設定を共有する。フォー�
 StreamlitまたはBackendの再起動後も復元できる。重複を避けるため`RUN_ID`だけは
 末尾が`_vNN`なら次番号、それ以外は時刻ベースの候補へ更新する。
 `allow_embedding_mismatch`は危険な承知操作なので引き継がず、runごとにOFFへ戻す。
+
+### 日本語対話A/B
+
+`data/ja_dialogue_ab_prompts_v1.json`には、記憶seed 10件と次の30プロンプトを置く。
+
+- 記憶が回答に必須: 10件
+- 記憶が不要な通常会話: 10件
+- 記憶が補助的に有効: 10件
+
+runnerはseedをReplayしてSleeptime（任意でStage 3を含む）を一度だけ実行する。
+生成済みの同一instanceから、各プロンプトごとに使い捨てcloneを作り、
+`retrieval_execution=always`のまま次の2 armを実行する。
+
+1. `injection_policy=intent_gated`
+2. `injection_policy=candidates`
+
+各プロンプトは独立しており、先行プロンプトと回答を次のプロンプトへ蓄積しない。
+回答はtemperature 0.0を初期値とし、Webフォームから明示変更できる。
+
+自動集計はRAG発火率、検索実行率、平均prompt tokens、latency、記憶必須問の
+対象語recall、記憶不要問でのseed固有語の持ち出し率を保存する。後者2つは
+機械的なproxyであり、自然さ・過剰な個人化の最終判断は画面の回答差分で行う。
+
+成果物はプロンプト単位のatomic JSONなので、停止・失敗後のresumeは完了済みの
+`(policy, prompt_id)`を飛ばす。seed生成中に中断した場合は、部分的な記憶を
+使わず専用instanceを作り直す。
 
 ### 記憶を再利用するrunの埋め込み整合チェック
 
@@ -76,6 +108,9 @@ legacy Web Console用Backendに次を追加する。
 | `GET` | `/evaluations/jobs/{job_id}/log` | 末尾ログ |
 | `GET` | `/evaluations/runs` | 保存済みrunと主要指標 |
 | `POST` | `/evaluations/runs/compare` | 2〜8 runの指標・問題別比較 |
+| `POST` | `/evaluations/dialogue-ab/jobs` | 日本語対話A/Bを開始 |
+| `GET` | `/evaluations/dialogue-ab/runs` | 日本語対話A/Bの履歴 |
+| `GET` | `/evaluations/dialogue-ab/runs/{run_id}` | policy・プロンプト別結果 |
 
 ローカルLLM/GPUへの過負荷と同一runへの競合書き込みを避けるため、Web APIが
 同時に管理するactive jobは1件だけとする。NanoGPTなど外部APIを使う場合も、
@@ -112,6 +147,8 @@ Backend再起動後もPIDとprocess作成時刻を照合し、別processへ誤�
 DATA_DIR/eval_runs/
 ├─ runs/
 │  └─ <run_id>/
+├─ dialogue_ab/
+│  └─ <run_id>/
 ├─ jobs/
 │  ├─ <job_id>.json
 │  └─ <job_id>.log
@@ -127,6 +164,9 @@ run成果物と履歴・比較画面の既定参照先は`DATA_DIR/eval_runs/run
 
 1. `BUTLY_EVALUATION_OUTPUT_DIR`
 2. `DATA_DIR/eval_runs/runs/`
+
+日本語対話A/Bは`BUTLY_DIALOGUE_AB_OUTPUT_DIR`、未設定時は
+`DATA_DIR/eval_runs/dialogue_ab/`へ保存する。
 
 dataset候補は`BUTLY_LOCOMO_DATASET`、`data/locomo10.json`、合成mini fixtureから
 検出する。任意のdatasetを使う場合は、Backendから読める絶対パスをフォームへ入力する。

@@ -10,8 +10,11 @@ from evals.locomo.web_jobs import (
     EvaluationJobConflict,
     EvaluationJobError,
     EvaluationJobManager,
+    build_dialogue_ab_command,
+    build_dialogue_ab_profile_payload,
     build_job_command,
     build_profile_payload,
+    validate_dialogue_ab_request,
     validate_job_request,
 )
 
@@ -57,6 +60,31 @@ def _request(**overrides):
                 "generation_config": {},
             },
         },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _dialogue_request(**overrides):
+    payload = {
+        "dataset_path": str(
+            Path(__file__).parents[1]
+            / "data"
+            / "ja_dialogue_ab_prompts_v1.json"
+        ),
+        "run_id": "dialogue-v1",
+        "time_decay_rate": 0.003,
+        "context_current_time": True,
+        "context_mid_term": True,
+        "context_session_digest": True,
+        "context_rag": True,
+        "rag_source_mode": "both",
+        "rag_raw_top_k": 1,
+        "rag_raw_max_chars": 2500,
+        "stage3_enabled": True,
+        "stage3_batch_size": 10,
+        "stage3_bootstrap_max_cards": 2000,
+        "role_models": _request()["role_models"],
     }
     payload.update(overrides)
     return payload
@@ -428,6 +456,78 @@ class TestSearchSettingsInProfile:
         assert previous["question_limit"] is None
         assert previous["search_mode"] == "vector"
         assert previous["role_models"]["chat"]["connection"] == "nanogpt-sub"
+
+
+class TestDialogueABWebJob:
+    def test_validates_dataset_and_fixed_comparison_settings(self, tmp_path):
+        normalized = validate_dialogue_ab_request(
+            _dialogue_request(),
+            output_dir=tmp_path,
+        )
+
+        assert normalized["locale"] == "ja"
+        assert normalized["search_mode"] == "vector"
+        assert normalized["retrieval_execution"] == "always"
+        assert normalized["time_decay_rate"] == pytest.approx(0.003)
+
+    def test_profile_uses_japanese_and_shared_base_policy(self):
+        profile = build_dialogue_ab_profile_payload(_dialogue_request())
+
+        assert profile["locale"] == "ja"
+        assert profile["brain"]["search_mode"] == "vector"
+        assert profile["memory_probe"] == {
+            "retrieval_execution": "always",
+            "injection_policy": "intent_gated",
+        }
+        assert profile["memory"]["knowledge_maturation_enabled"] is True
+
+    def test_builds_dialogue_cli_command(self, tmp_path):
+        profile = tmp_path / "profile.yaml"
+        command = build_dialogue_ab_command(
+            _dialogue_request(),
+            output_dir=tmp_path,
+            profile_path=profile,
+            python_executable="/python",
+        )
+
+        assert command[:5] == [
+            "/python",
+            "-m",
+            "evals.dialogue_ab",
+            "run",
+            "--dataset",
+        ]
+        assert command[-2:] == ["--profile", str(profile)]
+
+    def test_config_keeps_last_requests_separate(self, tmp_path):
+        manager = EvaluationJobManager(tmp_path)
+        manager._records = {
+            "locomo": {
+                "job_type": "locomo",
+                "created_at": "2026-07-27T00:00:00+00:00",
+                "request": _request(run_id="locomo-v1"),
+            },
+            "dialogue": {
+                "job_type": "dialogue_ab",
+                "created_at": "2026-07-28T00:00:00+00:00",
+                "request": _dialogue_request(run_id="dialogue-v1"),
+            },
+        }
+
+        config = manager.config()
+
+        assert config["last_request"]["run_id"] == "locomo-v1"
+        assert (
+            config["dialogue_ab"]["last_request"]["run_id"]
+            == "dialogue-v1"
+        )
+
+    def test_rejects_non_dialogue_dataset(self, tmp_path):
+        with pytest.raises(EvaluationJobError, match="root must be an object"):
+            validate_dialogue_ab_request(
+                _dialogue_request(dataset_path=str(FIXTURE)),
+                output_dir=tmp_path,
+            )
 
 
 class TestRetrievalReplayEndpointBacking:
@@ -818,6 +918,53 @@ def test_manager_resume_uses_existing_cli_checkpoint(tmp_path, monkeypatch):
     assert resumed["stop_requested"] is False
 
 
+def test_manager_resume_uses_dialogue_ab_checkpoint(tmp_path, monkeypatch):
+    manager = EvaluationJobManager(
+        tmp_path / "data",
+        output_dir=tmp_path / "runs",
+        python_executable="python-test",
+    )
+    run_dir = manager.dialogue_output_dir / "dialogue-resume"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_config.json").write_text(
+        json.dumps(
+            {"run_id": "dialogue-resume", "run_type": "dialogue_ab"}
+        ),
+        encoding="utf-8",
+    )
+    record = {
+        "schema_version": 1,
+        "job_type": "dialogue_ab",
+        "job_id": "dialogue-resume-job",
+        "run_id": "dialogue-resume",
+        "run_mode": "dialogue-ab",
+        "status": "stopped",
+        "run_dir": str(run_dir),
+        "log_path": str(manager.jobs_dir / "dialogue-resume-job.log"),
+        "attempt": 1,
+        "stop_requested": True,
+        "created_at": "2026-01-01T00:00:00Z",
+    }
+    manager._save_record(record)
+    captured = {}
+
+    def fake_launch(current, command):
+        captured["command"] = command
+        return manager._public_record(current)
+
+    monkeypatch.setattr(manager, "_launch", fake_launch)
+    manager.resume("dialogue-resume-job")
+
+    assert captured["command"] == [
+        "python-test",
+        "-m",
+        "evals.dialogue_ab",
+        "resume",
+        "--run-dir",
+        str(run_dir),
+    ]
+
+
 def test_run_history_and_question_comparison(tmp_path):
     output_dir = tmp_path / "runs"
     _write_run(output_dir, "a", overall=0.5, prediction="Tuesday")
@@ -836,6 +983,55 @@ def test_run_history_and_question_comparison(tmp_path):
     assert comparison["comparison_run_id"] == "b"
     assert comparison["questions"][0]["delta"] == 0.5
     assert comparison["questions"][0]["runs"]["b"]["prediction"] == "Monday"
+
+
+def test_dialogue_ab_history_summary(tmp_path):
+    manager = EvaluationJobManager(
+        tmp_path / "data",
+        output_dir=tmp_path / "runs",
+    )
+    run_dir = manager.dialogue_output_dir / "dialogue-v1"
+    (run_dir / "checkpoints").mkdir(parents=True)
+    (run_dir / "run_config.json").write_text(
+        json.dumps(
+            {
+                "run_id": "dialogue-v1",
+                "run_type": "dialogue_ab",
+                "dataset_id": "ja-dialogue-ab-prompts-v1",
+                "prompt_count": 30,
+                "created_at": "2026-07-28T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "scores.json").write_text(
+        json.dumps(
+            {
+                "run_id": "dialogue-v1",
+                "prompt_count": 30,
+                "knowledge_cards_created": 10,
+                "policies": {
+                    "intent_gated": {
+                        "rag_trigger_rate": 0.4,
+                        "prompt_tokens_mean": 1000,
+                    },
+                    "candidates": {
+                        "rag_trigger_rate": 1.0,
+                        "prompt_tokens_mean": 1400,
+                    },
+                },
+                "comparison": {"prompt_tokens_mean_delta": 400},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runs = manager.list_dialogue_ab_runs()
+    result = manager.get_dialogue_ab_result("dialogue-v1")
+
+    assert runs[0]["candidates_rag_trigger_rate"] == 1.0
+    assert runs[0]["prompt_tokens_mean_delta"] == 400
+    assert result["knowledge_cards_created"] == 10
 
 
 class TestGatekeeperTokenWarning:

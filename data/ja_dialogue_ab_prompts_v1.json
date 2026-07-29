@@ -1,0 +1,397 @@
+{
+  "schema_version": 1,
+  "dataset_id": "ja-dialogue-ab-prompts-v1",
+  "locale": "ja",
+  "purpose": "本番対話に近い日本語入力で、intent_gated と candidates のRAG注入コストおよび応答品質を比較する。",
+  "recommended_protocol": {
+    "policies": [
+      "intent_gated",
+      "candidates"
+    ],
+    "temperature": 0.0,
+    "instance_strategy": "memory_seedから同一内容のインスタンスを2つ作り、各policyへ同じpromptを独立に入力する。",
+    "primary_metrics": [
+      "rag_trigger_rate",
+      "prompt_tokens",
+      "latency_ms",
+      "injected_card_ids",
+      "target_fact_recall"
+    ],
+    "human_review": [
+      "無関係な過去の記憶を持ち出していないか",
+      "個人情報を唐突に復唱していないか",
+      "必要な記憶を自然に利用しているか",
+      "回答が記憶に引っ張られすぎていないか"
+    ]
+  },
+  "memory_seed": [
+    {
+      "id": "seed_pet",
+      "date": "2026-05-12",
+      "user": "先週、保護猫を迎えたよ。三毛猫の女の子で、名前はこむぎ。まだ少し人見知りしている。",
+      "assistant": "こむぎちゃんを迎えたんだね。新しい環境にゆっくり慣れていけるといいね。"
+    },
+    {
+      "id": "seed_pottery",
+      "date": "2026-06-03",
+      "user": "陶芸教室で藍色のマグカップを作った。八月の教室展にも出す予定。",
+      "assistant": "藍色のマグカップ、素敵だね。八月の教室展も楽しみだね。"
+    },
+    {
+      "id": "seed_allergy",
+      "date": "2026-06-18",
+      "user": "クルミにアレルギーがあるから、外食のときはソースやデザートも確認するようにしている。",
+      "assistant": "クルミは見えにくい形で料理に入ることもあるから、確認を続けるのが安心だね。"
+    },
+    {
+      "id": "seed_knee",
+      "date": "2026-06-25",
+      "user": "右膝を痛めて、医師からしばらくランニングを控えるように言われた。散歩と軽いストレッチなら大丈夫。",
+      "assistant": "今は無理に走らず、散歩と軽いストレッチを中心にするのがよさそうだね。"
+    },
+    {
+      "id": "seed_sister",
+      "date": "2026-07-02",
+      "user": "妹のあおいはミステリー小説が好き。誕生日は九月十四日。",
+      "assistant": "あおいさんはミステリー好きで、誕生日は九月十四日なんだね。"
+    },
+    {
+      "id": "seed_trip",
+      "date": "2026-07-07",
+      "user": "八月の第二週末に金沢へ行く予定。兼六園と二十一世紀美術館に行きたい。",
+      "assistant": "八月の第二週末の金沢旅行で、兼六園と二十一世紀美術館が候補なんだね。"
+    },
+    {
+      "id": "seed_work",
+      "date": "2026-07-11",
+      "user": "仕事では『ほしぞら』という新機能を担当していて、八月二十日に社内発表がある。",
+      "assistant": "『ほしぞら』の社内発表は八月二十日なんだね。準備が順調に進むといいね。"
+    },
+    {
+      "id": "seed_cafe",
+      "date": "2026-07-15",
+      "user": "カフェは静かで席の間隔が広いところが好き。午後は眠れなくなるからデカフェを選んでいる。",
+      "assistant": "静かでゆったりした席と、デカフェが選べることが大事なんだね。"
+    },
+    {
+      "id": "seed_book",
+      "date": "2026-07-20",
+      "user": "最近は川上弘美の小説が好きで、読書会では『センセイの鞄』を読んでいる。",
+      "assistant": "最近は川上弘美が好きで、読書会では『センセイの鞄』を読んでいるんだね。"
+    },
+    {
+      "id": "seed_plant",
+      "date": "2026-07-24",
+      "user": "ベランダで育てているバジルに『みどり』と名前を付けた。朝に水をあげている。",
+      "assistant": "バジルのみどりを朝に世話しているんだね。元気に育つといいね。"
+    }
+  ],
+  "prompts": [
+    {
+      "id": "memory_required_01",
+      "category": "memory_required",
+      "prompt": "うちで迎えた猫の名前と、どんな猫だったか覚えてる？",
+      "expected_memory_behavior": "use",
+      "target_memory_ids": [
+        "seed_pet"
+      ],
+      "expected_terms": [
+        "こむぎ",
+        "三毛猫",
+        "女の子"
+      ]
+    },
+    {
+      "id": "memory_required_02",
+      "category": "memory_required",
+      "prompt": "陶芸教室で作ったものは何色の何だった？",
+      "expected_memory_behavior": "use",
+      "target_memory_ids": [
+        "seed_pottery"
+      ],
+      "expected_terms": [
+        "藍色",
+        "マグカップ"
+      ]
+    },
+    {
+      "id": "memory_required_03",
+      "category": "memory_required",
+      "prompt": "外食するとき、どの食材に注意するって話したっけ？",
+      "expected_memory_behavior": "use",
+      "target_memory_ids": [
+        "seed_allergy"
+      ],
+      "expected_terms": [
+        "クルミ",
+        "アレルギー"
+      ]
+    },
+    {
+      "id": "memory_required_04",
+      "category": "memory_required",
+      "prompt": "膝を痛めたあと、控えるように言われた運動は何だった？",
+      "expected_memory_behavior": "use",
+      "target_memory_ids": [
+        "seed_knee"
+      ],
+      "expected_terms": [
+        "ランニング"
+      ]
+    },
+    {
+      "id": "memory_required_05",
+      "category": "memory_required",
+      "prompt": "妹の名前と誕生日を覚えていたら教えて。",
+      "expected_memory_behavior": "use",
+      "target_memory_ids": [
+        "seed_sister"
+      ],
+      "expected_terms": [
+        "あおい",
+        "九月十四日"
+      ]
+    },
+    {
+      "id": "memory_required_06",
+      "category": "memory_required",
+      "prompt": "八月の旅行先と、行きたいと話していた場所はどこ？",
+      "expected_memory_behavior": "use",
+      "target_memory_ids": [
+        "seed_trip"
+      ],
+      "expected_terms": [
+        "金沢",
+        "兼六園",
+        "二十一世紀美術館"
+      ]
+    },
+    {
+      "id": "memory_required_07",
+      "category": "memory_required",
+      "prompt": "担当している新機能の名前と、社内発表の日を確認したい。",
+      "expected_memory_behavior": "use",
+      "target_memory_ids": [
+        "seed_work"
+      ],
+      "expected_terms": [
+        "ほしぞら",
+        "八月二十日"
+      ]
+    },
+    {
+      "id": "memory_required_08",
+      "category": "memory_required",
+      "prompt": "私がカフェを選ぶときに重視していた条件は何だった？",
+      "expected_memory_behavior": "use",
+      "target_memory_ids": [
+        "seed_cafe"
+      ],
+      "expected_terms": [
+        "静か",
+        "席の間隔",
+        "デカフェ"
+      ]
+    },
+    {
+      "id": "memory_required_09",
+      "category": "memory_required",
+      "prompt": "最近好きだと話した作家と、読書会で読んでいる本を教えて。",
+      "expected_memory_behavior": "use",
+      "target_memory_ids": [
+        "seed_book"
+      ],
+      "expected_terms": [
+        "川上弘美",
+        "センセイの鞄"
+      ]
+    },
+    {
+      "id": "memory_required_10",
+      "category": "memory_required",
+      "prompt": "ベランダの植物に付けた名前と、いつ水をあげているか覚えてる？",
+      "expected_memory_behavior": "use",
+      "target_memory_ids": [
+        "seed_plant"
+      ],
+      "expected_terms": [
+        "みどり",
+        "朝"
+      ]
+    },
+    {
+      "id": "memory_irrelevant_01",
+      "category": "memory_irrelevant",
+      "prompt": "おはよう。今日はゆっくり始めたい気分。",
+      "expected_memory_behavior": "avoid",
+      "target_memory_ids": []
+    },
+    {
+      "id": "memory_irrelevant_02",
+      "category": "memory_irrelevant",
+      "prompt": "『確認しました。後ほど連絡します』を少し丁寧に言い換えて。",
+      "expected_memory_behavior": "avoid",
+      "target_memory_ids": []
+    },
+    {
+      "id": "memory_irrelevant_03",
+      "category": "memory_irrelevant",
+      "prompt": "Pythonでリストの重複を、順番を保ったまま削除する方法は？",
+      "expected_memory_behavior": "avoid",
+      "target_memory_ids": []
+    },
+    {
+      "id": "memory_irrelevant_04",
+      "category": "memory_irrelevant",
+      "prompt": "夕焼けが赤く見える理由を短く説明して。",
+      "expected_memory_behavior": "avoid",
+      "target_memory_ids": []
+    },
+    {
+      "id": "memory_irrelevant_05",
+      "category": "memory_irrelevant",
+      "prompt": "三分くらいでできる簡単な呼吸法を教えて。",
+      "expected_memory_behavior": "avoid",
+      "target_memory_ids": []
+    },
+    {
+      "id": "memory_irrelevant_06",
+      "category": "memory_irrelevant",
+      "prompt": "机の上を十分で片付ける手順を三つにまとめて。",
+      "expected_memory_behavior": "avoid",
+      "target_memory_ids": []
+    },
+    {
+      "id": "memory_irrelevant_07",
+      "category": "memory_irrelevant",
+      "prompt": "トマトを長持ちさせる保存方法を教えて。",
+      "expected_memory_behavior": "avoid",
+      "target_memory_ids": []
+    },
+    {
+      "id": "memory_irrelevant_08",
+      "category": "memory_irrelevant",
+      "prompt": "雨上がりをテーマに、短い俳句を一つ作って。",
+      "expected_memory_behavior": "avoid",
+      "target_memory_ids": []
+    },
+    {
+      "id": "memory_irrelevant_09",
+      "category": "memory_irrelevant",
+      "prompt": "一時間の作業を始める前のチェックリストを作って。",
+      "expected_memory_behavior": "avoid",
+      "target_memory_ids": []
+    },
+    {
+      "id": "memory_irrelevant_10",
+      "category": "memory_irrelevant",
+      "prompt": "ありがとう、助かったよ。",
+      "expected_memory_behavior": "avoid",
+      "target_memory_ids": []
+    },
+    {
+      "id": "memory_optional_01",
+      "category": "memory_optional",
+      "prompt": "今度の週末、気分転換に何をするのがよさそう？",
+      "expected_memory_behavior": "optional_subtle",
+      "target_memory_ids": [
+        "seed_pottery",
+        "seed_cafe",
+        "seed_knee"
+      ],
+      "review_point": "過去の趣味や膝の状態を自然に考慮してもよいが、すべてを列挙しない。"
+    },
+    {
+      "id": "memory_optional_02",
+      "category": "memory_optional",
+      "prompt": "外でデザートを選ぶとき、何を確認したらいいかな？",
+      "expected_memory_behavior": "use_if_relevant",
+      "target_memory_ids": [
+        "seed_allergy"
+      ],
+      "review_point": "クルミのアレルギーを優先して注意できるか。"
+    },
+    {
+      "id": "memory_optional_03",
+      "category": "memory_optional",
+      "prompt": "少し体を動かしたい。無理のない案を出して。",
+      "expected_memory_behavior": "use_if_relevant",
+      "target_memory_ids": [
+        "seed_knee"
+      ],
+      "review_point": "ランニングを勧めず、散歩や軽いストレッチを提案できるか。"
+    },
+    {
+      "id": "memory_optional_04",
+      "category": "memory_optional",
+      "prompt": "妹への誕生日プレゼントをそろそろ考えたい。",
+      "expected_memory_behavior": "use_if_relevant",
+      "target_memory_ids": [
+        "seed_sister"
+      ],
+      "review_point": "ミステリー好きという情報を押しつけずに活用できるか。"
+    },
+    {
+      "id": "memory_optional_05",
+      "category": "memory_optional",
+      "prompt": "八月の予定を整理するのを手伝って。",
+      "expected_memory_behavior": "use",
+      "target_memory_ids": [
+        "seed_pottery",
+        "seed_trip",
+        "seed_work"
+      ],
+      "review_point": "教室展、金沢旅行、社内発表を混同せず整理できるか。"
+    },
+    {
+      "id": "memory_optional_06",
+      "category": "memory_optional",
+      "prompt": "次に読む小説の候補をいくつか出してほしい。",
+      "expected_memory_behavior": "optional_subtle",
+      "target_memory_ids": [
+        "seed_book"
+      ],
+      "review_point": "川上弘美の好みを出発点にしてもよいが、既読作品を断定しない。"
+    },
+    {
+      "id": "memory_optional_07",
+      "category": "memory_optional",
+      "prompt": "午後に落ち着いて作業できる場所を選びたい。",
+      "expected_memory_behavior": "use_if_relevant",
+      "target_memory_ids": [
+        "seed_cafe"
+      ],
+      "review_point": "静かさ、席の間隔、デカフェを自然に条件へ含められるか。"
+    },
+    {
+      "id": "memory_optional_08",
+      "category": "memory_optional",
+      "prompt": "育てている植物が元気になるように、世話の仕方を見直したい。",
+      "expected_memory_behavior": "use_if_relevant",
+      "target_memory_ids": [
+        "seed_plant"
+      ],
+      "review_point": "バジルであることと朝の水やりを踏まえつつ、環境を確認してから助言するか。"
+    },
+    {
+      "id": "memory_optional_09",
+      "category": "memory_optional",
+      "prompt": "猫が家に慣れやすくなる工夫を教えて。",
+      "expected_memory_behavior": "use_if_relevant",
+      "target_memory_ids": [
+        "seed_pet"
+      ],
+      "review_point": "人見知りのこむぎに配慮しつつ、一般論との境界を保てるか。"
+    },
+    {
+      "id": "memory_optional_10",
+      "category": "memory_optional",
+      "prompt": "手作りのものを誰かに贈るなら、どんな案がある？",
+      "expected_memory_behavior": "optional_subtle",
+      "target_memory_ids": [
+        "seed_pottery"
+      ],
+      "review_point": "陶芸経験を自然に活用してもよいが、藍色のマグカップを贈ると決めつけない。"
+    }
+  ]
+}
