@@ -1,0 +1,253 @@
+{
+  "schema_version": 1,
+  "dataset_id": "ja-dialogue-ab-jarvis-candidates-v1",
+  "locale": "ja",
+  "status": "reviewed",
+  "purpose": "実インスタンス Jarvis（カード155枚）の記憶に対して injection_policy を A/B するためのプロンプト集。yuki のレビュー済み（各カテゴリ10問）。",
+  "memory_source": {
+    "type": "instance",
+    "name": "Jarvis",
+    "note": "memory_seed からは作らない。本番インスタンスを run workspace へ read-only スナップショットとして複製し、それを種にする（--seed-instance）。本番 Jarvis は一切変更しない。Sleeptime も実行しない。",
+    "card_count_at_authoring": 155,
+    "card_date_range": ["2026-01-23", "2026-06-03"],
+    "card_categories": {"Project": 92, "Tech": 44, "Life": 15, "Hobby": 4},
+    "measured_facts": {
+      "source_files": "全155枚 NULL。したがって RAW 原文は解決できない（raw_reference.py は source_files が無い候補を skip する）。rag_source_mode=both にしてもカード注入へフォールバックする",
+      "source_date": "全155枚 NULL。time decay は created_at 基準で効く",
+      "raw_reference": "WEB_hist_N.json 等の論理名が40種。2_knowledgeized の実ファイル名（session_*.json 189個）とは1件も一致しないため、そのままでは source_files を復元できない",
+      "knowledgeized_raw": "189ファイル / 0.58MB（memory_archive 全体は 2.29MB で、うち 1.70MB は 3_log/archive_long_term.txt）",
+      "instance_size": "実バイト 5.40MB（du 表示は 6.1MB）",
+      "embedding_meta": "テーブルは存在するがレコード 0 件。どのモデルで書かれたかの証跡は無い",
+      "stored_vectors": "3072次元。config の gemini-embedding-2 と一致し、実際に同モデルでクエリすると decay 0 で required 15問中14問が top3 に入る（＝空間として整合していることを実測で確認済み。メタ欠落の警告は run に記録する）"
+    }
+  },
+  "experiment_conditions": {
+    "decided_at": "2026-07-29",
+    "time_decay_rate": 0.0,
+    "time_decay_note": "本番既定 0.003 のままだと、cosine が 0.65〜0.80 に固まっている一方で1月のカードが exp(-0.003*187)=0.57倍される。実測で required の top3 到達が 14/15 → 4/15 まで落ち、どの質問でも最新カードだけが上位に来た。A/B では 0 に固定する（本番設定も 0 へ寄せる方針）",
+    "rag_source_mode": "cards",
+    "rag_source_mode_note": "本番 Jarvis の config に rag_source_mode の指定が無く、SYSTEM_CONFIG 既定の cards が効いている。したがって本番同等は cards。ハーネス側では both / raw も選べるようにしておくが、source_files が NULL の間は both を選んでもカードのみになる。将来 raw_reference → 実ファイルのマッピングを作れたら別実験として RAW 込みを測る",
+    "search_mode": "vector",
+    "vector_search_limit": 3,
+    "policies": ["intent_gated", "candidates"],
+    "embedding": {
+      "model": "google / gemini-embedding-2",
+      "reembed_required": false,
+      "reason": "保存済みベクトル（3072次元）をそのまま使う。読み手だけ弱くしたいので、検索は本番同等に保つ",
+      "nomic_rejected": "ollama nomic-embed-text:v1.5 でコピー側155枚を再embeddingして実測した結果、required 10問の正解カードは top1 2/10・top3 2/10・中央順位 75位/155（ほぼランダム）。当たった2問はクエリにラテン文字（jarvis / FastAPI）が含まれる問いだけだった。nomic は英語中心のモデルで、日本語の記憶では検索が成立しない。LoCoMo（英語）で機能していたのは言語の問題。完全ローカルで回したい場合は bge-m3 等の多言語モデルを ollama へ入れてから同手順で再検証する"
+    },
+    "run_plan": [
+      "1. ストレス評価: chat / gatekeeper = Qwen3-14B (temperature 0)、embedding は Gemini のまま。本番性能の再現ではなく『弱い読み手でハーネスの policy 差を観測する』のが目的",
+      "2. 差が出た問だけ 5〜10問へ絞る",
+      "3. 最後に本番構成（chat gemini-3-flash-preview / gatekeeper gemini-3.1-flash-lite）で確認する"
+    ],
+    "caveat": "Qwen の Gatekeeper は Gemini より need_intent を取りこぼしやすいので、candidates の効果が本番より大きく見える可能性がある。ストレス評価の数字をそのまま本番既定の根拠にしない"
+  },
+  "review_notes": [
+    "この記憶は大半が Butly/ジャービス開発そのもの。したがって『技術的な一般質問』は memory_irrelevant にならない（合成データセットとの最大の違い）。irrelevant は料理・言い換え・一般常識・挨拶など、記憶が一切カバーしない領域に限定した。",
+    "expected_terms は (1) memory_required の正答判定 と (2) 持ち出し検知の固有語プール を兼ねる。df=1〜3 の語を優先して選んである（df は155枚中の出現カード数）。",
+    "各 required 候補には source_card_id を付けた。正解の裏取りに使い、記憶と食い違う候補は削るか文言を直すこと。",
+    "正答表記のゆれに注意（例: 『午前3時』『3時』『AM3時』）。expected_terms には実際に回答へ現れる形を入れる。数字は半角で書かれる想定。",
+    "採用済み: 各カテゴリ10問。req_06（FastAPI移行のトラブル）は失敗(2/27)と成功(2/28)の2枚があるため、時系列の取り違えを人手で見る価値がある。"
+  ],
+  "prompts": {
+    "memory_required": [
+      {
+        "id": "req_01",
+        "prompt": "ラズパイのホスト名、結局どう決めたか覚えてる？",
+        "expected_terms": ["jarvis", "半角"],
+        "source_card_id": "web_20260212_037",
+        "source_fact": "全角「ジャービス」ではなく半角小文字の jarvis に固定",
+        "term_df": {"jarvis": 6, "半角": 1}
+      },
+      {
+        "id": "req_02",
+        "prompt": "環境変数ファイルの名前で一度ハマった件、原因は何だった？",
+        "expected_terms": ["APIkey.env", "大文字"],
+        "source_card_id": "web_20260123_054",
+        "source_fact": "APIkey.env を APIKey.env と書いて読み込み失敗（大文字K）",
+        "term_df": {"APIkey.env": 2, "大文字": 2}
+      },
+      {
+        "id": "req_03",
+        "prompt": "今のラズパイのケースとストレージ構成を確認したい。",
+        "expected_terms": ["Argon NEO 5", "512GB", "NVMe"],
+        "source_card_id": "00_master_20260227_004",
+        "source_fact": "Argon NEO 5 ケース + 512GB NVMe SSD",
+        "term_df": {"Argon NEO 5": 3, "512GB": 7, "NVMe": 2}
+      },
+      {
+        "id": "req_04",
+        "prompt": "ハードウェアの調達で一度やらかしたこと、何だったっけ？",
+        "expected_terms": ["Raspberry Pi 4"],
+        "source_card_id": "web_20260123_019",
+        "source_fact": "誤って Raspberry Pi 4 を購入（必要だったのは5）",
+        "term_df": {"Raspberry Pi 4": 1}
+      },
+      {
+        "id": "req_05",
+        "prompt": "記憶の整理は何時に、どうやって走らせてる？",
+        "expected_terms": ["housekeeper", "crontab"],
+        "source_card_id": "web_20260123_058",
+        "source_fact": "毎日深夜3時に housekeeper.py を crontab で自動実行",
+        "term_df": {"housekeeper": 2, "crontab": 1},
+        "caution": "『3時』は2文字なので持ち出し検知の語には使われない（len>=3 のみ）。正答判定には入れてよい。"
+      },
+      {
+        "id": "req_06",
+        "prompt": "FastAPI への移行したときのトラブル覚えてる？",
+        "expected_terms": ["ロールバック"],
+        "source_card_id": "00_master_20260227_001",
+        "source_fact": "8時間の格闘の末に失敗し、バックアップから復元してロールバック（後日あらためて移行成功）",
+        "term_df": {"ロールバック": 1},
+        "caution": "後に移行成功のカード(00_master_20260228_002)もあるため、時系列を混同していないかを人手で見ると良い"
+      },
+      {
+        "id": "req_07",
+        "prompt": "歯医者の記憶が悪さをしていた件、結局どういう対処をしたっけ？",
+        "expected_terms": ["歯医者", "教訓"],
+        "source_card_id": "00_master_20260225_002",
+        "source_fact": "特定エピソードの Weight を下げ、教訓のみ行動指針として残す",
+        "term_df": {"歯医者": 4, "教訓": 2}
+      },
+      {
+        "id": "req_08",
+        "prompt": "漫画アプリで古い端末が落ちていた原因は何だったっけ？",
+        "expected_terms": ["readAsBytesSync"],
+        "source_card_id": "web_20260123_074",
+        "source_fact": "200MB超のZIPを readAsBytesSync で一括読み込みしてクラッシュ",
+        "term_df": {"readAsBytesSync": 1}
+      },
+      {
+        "id": "req_09",
+        "prompt": "外部ファイルやリポジトリを読ませる計画、何を使う想定だったかな？",
+        "expected_terms": ["MCP"],
+        "source_card_id": "jarvis_20260517_002",
+        "source_fact": "MCP（Model Context Protocol）で GitHub リポジトリやローカルファイルを読む計画",
+        "term_df": {"MCP": 1}
+      },
+      {
+        "id": "req_10",
+        "prompt": "ウェイクワード周りで名前が挙がっていたライブラリってなんだっけ？",
+        "expected_terms": ["Porcupine"],
+        "source_card_id": "web_20260123_041",
+        "source_fact": "Porcupine 等でウェイクワード検出、Jabra 等でエコーキャンセラー",
+        "term_df": {"Porcupine": 1}
+      }
+    ],
+    "memory_optional": [
+      {
+        "id": "opt_01",
+        "prompt": "今日はどこから手をつけるのがよさそう？",
+        "memory_would_help": "優先課題4点（物理干渉ブリッジ / 漫画アプリ再動 / ナレッジ月次精査 / FastAPI移行）を知っていれば具体化できる",
+        "source_card_id": "00_master_20260310_001"
+      },
+      {
+        "id": "opt_02",
+        "prompt": "そろそろ切り上げたほうがいいと思う？",
+        "memory_would_help": "深夜作業の常習と健康管理のやりとりを踏まえた返しになるか",
+        "source_card_id": "00_master_20260303_002"
+      },
+      {
+        "id": "opt_03",
+        "prompt": "UIをまた作り直すか迷ってる。どう思う？",
+        "memory_would_help": "ターミナル→Streamlit→Flutter案→FastAPI+専用ダッシュボードの経緯を踏まえられるか",
+        "source_card_id": "00_master_20260227_003"
+      },
+      {
+        "id": "opt_04",
+        "prompt": "今月の開発方針をどうしようか考えてる。",
+        "memory_would_help": "3月に『ローパワーモード（思考の蒸留期間）』を敷いた前例を出せるか",
+        "source_card_id": "00_master_20260302_001"
+      },
+      {
+        "id": "opt_05",
+        "prompt": "記憶まわりの構造をまた整理したい。",
+        "memory_would_help": "三層構造（短期/浮動要約/中期）や Key Memory 分離の経緯を踏まえられるか",
+        "source_card_id": "00_master_20260216_002"
+      },
+      {
+        "id": "opt_06",
+        "prompt": "APIのコストが少し気になってきた。",
+        "memory_would_help": "1日15万トークン試算・暗黙キャッシュ54%ヒット・うまい棒換算などの実績値を出せるか",
+        "source_card_id": "00_master_20260228_001"
+      },
+      {
+        "id": "opt_07",
+        "prompt": "Butlyに次に足すなら、どの機能がいいと思う？",
+        "memory_would_help": "MCP / 動画文脈理解 / バイタル連携 / 自律思考ループ など保留中の構想を挙げられるか",
+        "source_card_id": "00_master_20260306_002"
+      },
+      {
+        "id": "opt_08",
+        "prompt": "ラズパイの発熱と電源、今の構成で大丈夫かな。",
+        "memory_would_help": "Argon NEO 5（放熱）・GaN 27W電源・24時間稼働前提の構成を踏まえられるか",
+        "source_card_id": "web_20260212_035"
+      },
+      {
+        "id": "opt_09",
+        "prompt": "詰まってきたから少し気分転換したい。何かある？",
+        "memory_would_help": "LoL や漫画など趣味側の観測を踏まえた提案になるか（Hobby カードは4枚と少ない）",
+        "source_card_id": "jarvis_20260602_002"
+      },
+      {
+        "id": "opt_10",
+        "prompt": "週末の作業計画を一緒に立てたい。",
+        "memory_would_help": "週末開発のリズム・金曜夜の価値観を踏まえられるか",
+        "source_card_id": "00_master_20260227_006"
+      }
+    ],
+    "memory_irrelevant": [
+      {
+        "id": "irr_01",
+        "prompt": "おはよう。今日はゆっくり始めたい気分。",
+        "why_irrelevant": "挨拶。記憶を持ち出す必然性がない"
+      },
+      {
+        "id": "irr_02",
+        "prompt": "『確認しました。後ほど連絡します』をもう少し丁寧に言い換えて。",
+        "why_irrelevant": "文面の言い換え。記憶と無関係"
+      },
+      {
+        "id": "irr_03",
+        "prompt": "夕焼けが赤く見える理由を短く説明して。",
+        "why_irrelevant": "一般常識。記憶がカバーしない領域"
+      },
+      {
+        "id": "irr_04",
+        "prompt": "トマトを長持ちさせる保存方法を教えて。",
+        "why_irrelevant": "料理・家事。記憶がカバーしない領域"
+      },
+      {
+        "id": "irr_05",
+        "prompt": "雨上がりをテーマに、短い俳句を一つ作って。",
+        "why_irrelevant": "創作依頼。記憶を使う必然性がない"
+      },
+      {
+        "id": "irr_06",
+        "prompt": "『大器晩成』の意味を簡単に教えて。",
+        "why_irrelevant": "辞書的知識。glossary とは無関係な一般語を選んである"
+      },
+      {
+        "id": "irr_07",
+        "prompt": "来客に出すお茶、何を選ぶのが無難かな。",
+        "why_irrelevant": "生活マナー。記憶がカバーしない領域"
+      },
+      {
+        "id": "irr_08",
+        "prompt": "ありがとう、助かったよ。",
+        "why_irrelevant": "お礼。ここで過去の話を持ち出すのは典型的な『持ち出し』"
+      },
+      {
+        "id": "irr_09",
+        "prompt": "英語の『Best regards』は日本語だとどう締めるのが自然？",
+        "why_irrelevant": "言語知識。記憶と無関係"
+      },
+      {
+        "id": "irr_10",
+        "prompt": "郵便物の宛名で『御中』と『様』の使い分けを教えて。",
+        "why_irrelevant": "ビジネスマナー。記憶と無関係"
+      }
+    ]
+  }
+}

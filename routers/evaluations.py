@@ -113,6 +113,11 @@ class DialogueABStartRequest(BaseModel):
     stage3_batch_size: int = Field(default=10, ge=1)
     stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
     role_models: dict[str, RoleModelRequest] = Field(default_factory=dict)
+    # 既存インスタンスを種にする（本番の記憶量・System Instruction をそのまま使う）。
+    # 未指定なら dataset の memory_seed から Sleeptime で作る従来経路。
+    seed_instance: Optional[str] = None
+    # 複製側のカードを profile の embedding で貼り直す。既定は保存済みベクトルを使う。
+    reembed: bool = False
 
 
 _manager: Optional[EvaluationJobManager] = None

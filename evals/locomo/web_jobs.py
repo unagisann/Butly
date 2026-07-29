@@ -473,7 +473,7 @@ def build_dialogue_ab_command(
     profile_path: Path,
     python_executable: str = sys.executable,
 ) -> list[str]:
-    return [
+    command = [
         python_executable,
         "-m",
         "evals.dialogue_ab",
@@ -487,6 +487,11 @@ def build_dialogue_ab_command(
         "--profile",
         str(profile_path),
     ]
+    if request.get("seed_instance_path"):
+        command.extend(["--seed-instance", str(request["seed_instance_path"])])
+    if request.get("reembed"):
+        command.append("--reembed")
+    return command
 
 
 def validate_dialogue_ab_request(
@@ -552,6 +557,24 @@ def validate_dialogue_ab_request(
     if rag_mode not in {"cards", "raw", "both"}:
         raise EvaluationJobError(f"unsupported rag_source_mode: {rag_mode}")
     normalized["rag_source_mode"] = rag_mode
+
+    # 既存インスタンスを種にする場合。複製元は読み取りのみで、run 側の
+    # コピーだけを操作する（本番インスタンスは変更しない）。
+    seed_instance = str(normalized.get("seed_instance") or "").strip()
+    if seed_instance:
+        instance_dir = (PROJECT_ROOT / "butly_core" / "instances" / seed_instance)
+        if not _SAFE_RUN_ID.fullmatch(seed_instance):
+            raise EvaluationJobError(f"invalid seed_instance: {seed_instance}")
+        if not (instance_dir / "butly_memory.db").is_file():
+            raise EvaluationJobError(
+                f"seed instance not found: {instance_dir}"
+            )
+        normalized["seed_instance"] = seed_instance
+        normalized["seed_instance_path"] = str(instance_dir.resolve())
+    else:
+        normalized["seed_instance"] = None
+        normalized["seed_instance_path"] = None
+    normalized["reembed"] = bool(normalized.get("reembed"))
 
     role_models = normalized.get("role_models") or {}
     if not isinstance(role_models, dict):
@@ -682,8 +705,21 @@ class EvaluationJobManager:
                 "dataset_candidates": dialogue_candidates,
                 "last_request": last_dialogue_request,
                 "policies": ["intent_gated", "candidates"],
+                "rag_source_modes": ["cards", "raw", "both"],
+                "seed_instances": self._seed_instance_candidates(),
             },
         }
+
+    def _seed_instance_candidates(self) -> list[str]:
+        """種にできる実インスタンス名（カードDBを持つものだけ）。"""
+        instances_dir = self.project_root / "butly_core" / "instances"
+        if not instances_dir.is_dir():
+            return []
+        return sorted(
+            path.name
+            for path in instances_dir.iterdir()
+            if path.is_dir() and (path / "butly_memory.db").is_file()
+        )
 
     def start(self, request: dict[str, Any]) -> dict[str, Any]:
         with self._lock:

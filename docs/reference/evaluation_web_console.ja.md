@@ -65,6 +65,29 @@ runnerはseedをReplayしてSleeptime（任意でStage 3を含む）を一度だ
 生成済みの同一instanceから、各プロンプトごとに使い捨てcloneを作り、
 `retrieval_execution=always`のまま次の2 armを実行する。
 
+#### 既存インスタンスを記憶の種にする
+
+合成seedの代わりに、**実インスタンスを複製して種にできる**。本番の記憶量・
+System Instruction・digestをそのまま使うため、トークンや持ち出しの数字が実運用に
+近くなる。フォームの「記憶の種」で選ぶか、datasetへ次を書く。
+
+```json
+"memory_source": {"type": "instance", "name": "Jarvis"}
+```
+
+- 複製元は**読み取りのみ**。run workspace側のコピーだけを操作する
+- Sleeptimeは実行しない（カード・digestは複製時点で固定）
+- `debug_logs` / `traces` / `*.log`は複製しない
+- 保存済みのembeddingベクトルをそのまま使う。別モデルで比較したいときだけ
+  「カードを再embedding」をONにする（`--reembed`）
+- `embedding_meta`が空のインスタンスは「どのモデル製か不明」と警告を
+  `seed_instance.json`へ記録する。検索が生きているかは記憶必須問の結果で確認する
+
+この形式のdatasetは`prompts`をカテゴリ名キーの辞書でも書ける
+（`memory_required` / `memory_optional` / `memory_irrelevant`）。
+`expected_memory_behavior`を省略するとカテゴリ既定が入り、根拠カードは
+`source_card_id`で指せる。
+
 1. `injection_policy=intent_gated`
 2. `injection_policy=candidates`
 

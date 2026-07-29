@@ -73,6 +73,30 @@ memory under two arms:
 Prompts do not accumulate each other's requests or responses. Chat temperature
 defaults to 0.0 and remains configurable in the Web form.
 
+#### Seeding from a real instance
+
+Instead of a synthetic seed, the run can **snapshot an existing instance** so
+that token counts and memory-leak behaviour reflect real usage (real card
+volume, System Instruction, and digest). Pick it under 記憶の種 in the form, or
+declare it in the dataset:
+
+```json
+"memory_source": {"type": "instance", "name": "Jarvis"}
+```
+
+- The source instance is **read-only**; only the run-side copy is touched.
+- Sleeptime is skipped, so cards and digests stay exactly as snapshotted.
+- `debug_logs` / `traces` / `*.log` are not copied.
+- Stored embedding vectors are reused. Enable 再embedding (`--reembed`) only
+  when comparing a different embedding model.
+- An empty `embedding_meta` is recorded as a warning in `seed_instance.json`
+  (the vectors' origin model cannot be proven); confirm retrieval still works
+  via the memory-required prompts.
+
+Datasets in this form may express `prompts` as an object keyed by category.
+`expected_memory_behavior` falls back to a per-category default, and evidence
+cards can be referenced with `source_card_id`.
+
 The automatic report records RAG and search rates, mean prompt tokens,
 latency, target-term recall for memory-required prompts, and a seed-term
 mention proxy for memory-irrelevant prompts. The last two are mechanical

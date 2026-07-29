@@ -672,6 +672,87 @@ class TestRetrievalReplayEndpointBacking:
         }
 
 
+class TestDialogueABSeedInstance:
+    """既存インスタンスを種にする指定が CLI まで通ること。"""
+
+    def _instance(self, root: Path, name: str = "SeedInst") -> Path:
+        from butly_core.core.database import ButlyDatabase
+
+        d = root / "butly_core" / "instances" / name
+        d.mkdir(parents=True)
+        ButlyDatabase(db_path=str(d / "butly_memory.db"))
+        return d
+
+    def test_validate_resolves_instance_path(self, tmp_path, monkeypatch):
+        self._instance(tmp_path)
+        monkeypatch.setattr(web_jobs, "PROJECT_ROOT", tmp_path)
+
+        normalized = validate_dialogue_ab_request(
+            _dialogue_request(seed_instance="SeedInst"),
+            output_dir=tmp_path / "runs",
+        )
+
+        assert normalized["seed_instance"] == "SeedInst"
+        assert normalized["seed_instance_path"].endswith("instances/SeedInst")
+        assert normalized["reembed"] is False
+
+    def test_validate_rejects_unknown_instance(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(web_jobs, "PROJECT_ROOT", tmp_path)
+
+        with pytest.raises(EvaluationJobError, match="seed instance not found"):
+            validate_dialogue_ab_request(
+                _dialogue_request(seed_instance="Missing"),
+                output_dir=tmp_path / "runs",
+            )
+
+    def test_validate_rejects_unsafe_instance_name(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(web_jobs, "PROJECT_ROOT", tmp_path)
+
+        with pytest.raises(EvaluationJobError, match="invalid seed_instance"):
+            validate_dialogue_ab_request(
+                _dialogue_request(seed_instance="../escape"),
+                output_dir=tmp_path / "runs",
+            )
+
+    def test_command_passes_seed_and_reembed(self, tmp_path):
+        command = build_dialogue_ab_command(
+            _dialogue_request(
+                seed_instance_path=str(tmp_path / "Jarvis"), reembed=True
+            ),
+            output_dir=tmp_path,
+            profile_path=tmp_path / "p.yaml",
+            python_executable="python-test",
+        )
+
+        assert "--seed-instance" in command
+        assert str(tmp_path / "Jarvis") in command
+        assert "--reembed" in command
+
+    def test_command_omits_flags_without_seed(self, tmp_path):
+        command = build_dialogue_ab_command(
+            _dialogue_request(),
+            output_dir=tmp_path,
+            profile_path=tmp_path / "p.yaml",
+        )
+
+        assert "--seed-instance" not in command
+        assert "--reembed" not in command
+
+    def test_config_lists_seed_instances(self, tmp_path):
+        self._instance(tmp_path, "Alpha")
+        (tmp_path / "butly_core" / "instances" / "NoDb").mkdir(parents=True)
+        manager = EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+            project_root=tmp_path,
+        )
+
+        dialogue = manager.config()["dialogue_ab"]
+
+        assert dialogue["seed_instances"] == ["Alpha"]
+        assert dialogue["rag_source_modes"] == ["cards", "raw", "both"]
+
+
 def test_build_fresh_command_preserves_all_scope_flags(tmp_path):
     command = build_job_command(
         _request(
