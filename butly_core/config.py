@@ -137,6 +137,15 @@ SYSTEM_CONFIG = {
         "readable_instances": ["self"],  # ["self"], ["self", "00_master"] 等で横断検索
         "dynamic_threshold": 0.6,  # Google Search Dynamic Retrieval Threshold (0.0 - 1.0)
         "default_use_google_search": False,  # デフォルトでGoogle検索グラウンディングを使用するか
+        # ハイブリッド検索（検索改修計画 §3.5）。正は settings/defaults.py。
+        "search_mode": "vector",  # "vector" | "hybrid"
+        "bm25_candidates": 20,
+        "vector_candidates": 20,
+        "rrf_k": 60,
+        "bm25_weights": {"title": 5.0, "tags": 3.0, "summary": 2.0, "episode": 1.0},
+        "bm25_max_df_ratio": 0.5,
+        "bm25_min_weak_df": 5,
+        "bm25_scan_limit": 500,
     },
     "backup": {"generations": 7, "dir_name": "db_backups"},
     "search": {
@@ -148,6 +157,10 @@ SYSTEM_CONFIG = {
         "vector_search_limit": 3,
         "vector_search_threshold": 0.4,  # 緩和: 0.6→0.4 (時間減衰込みの実効値で判定するため)
         "deep_search_enabled": True,
+        # 検索実行と注入判定の分離（検索改修計画 §3.3）。正は settings/defaults.py。
+        "retrieval_execution": "always",  # "always" | "intent_gated"
+        # "intent_gated" | "retrieval_assisted" | "candidates"
+        "injection_policy": "intent_gated",
     },
     "gatekeeper": {
         # tier 判定閾値: rc<=tier_rc_threshold AND cn<=tier_cn_threshold → reflex、それ以外 → mid

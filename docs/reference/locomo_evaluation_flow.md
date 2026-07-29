@@ -174,6 +174,53 @@ An evaluation profile can override retrieval recency through
 old and new cards by semantic similarity alone; it does not change the system
 default for normal instances.
 
+### Hybrid retrieval (`brain.search_mode`)
+
+`brain.search_mode: hybrid` switches retrieval to FTS5(trigram) BM25 candidates
+fused with vector candidates via RRF (default remains `vector`). Profiles may
+override `bm25_candidates` / `vector_candidates` / `rrf_k` / `bm25_weights` /
+`bm25_max_df_ratio` / `bm25_min_weak_df` / `bm25_scan_limit`. In hybrid results
+`score` is the **RRF score** and cosine moves to `vector_score`; each candidate
+also carries `retrieval_source` (vector/bm25/both) and both ranks.
+
+The run-history section has an "offline retrieval replay" panel
+(`POST /evaluations/runs/retrieval-replay`) that compares Recall@1/3/20 for
+`bm25` / `vector` / `hybrid` without generating answers; the result is also
+written to `retrieval_replay.json` inside the run. `bm25` needs no embedding
+calls; `vector` / `hybrid` call the embedding model once per question.
+
+The Web Console exposes `search_mode` / `retrieval_execution` /
+`injection_policy` under "検索設定（ハイブリッド検索 A/B）"; `hybrid` additionally
+reveals `bm25_candidates` / `vector_candidates` / `rrf_k` /
+`bm25_max_df_ratio`. Those land in the profile YAML's `brain` and
+`memory_probe` sections (BM25 keys are omitted from `vector` runs), and the run
+history / comparison tables gain `search_exec`, `recall@3`, and `bm25_rescue`.
+
+Retrieval execution and prompt injection are controlled independently by
+`memory_probe.retrieval_execution` (default `always`) and
+`memory_probe.injection_policy` (default `intent_gated`). With `always`, Quick
+Retrieval runs even when `need_intent` is null, so **`rag_trigger_rate` is no
+longer an execution rate**: use `search_execution_rate` for execution and
+`memory_injection_rate` (identical to `rag_trigger_rate`) for injection.
+
+Retrieval metrics emitted by the scorer:
+
+| Metric | Denominator | Meaning |
+|---|---|---|
+| `search_execution_rate` | all questions | share where Quick Retrieval ran |
+| `retrieval_candidate_rate` | all questions | share with at least one candidate |
+| `memory_injection_rate` | all questions | share injected into the prompt |
+| `retrieval_recall_at_1/3/20` | questions with an oracle card | evidence-turn coverage of the top-k candidates |
+| `vector_only_recall_at_3` | same | control value with BM25 removed |
+| `bm25_rescue_rate` | same | share where fused top-3 beat vector-only top-3 |
+| `retrieval_latency_ms_p50/p95` | executed questions | retrieval-only latency (includes the embedding call) |
+| `bm25_short_term_hit_rate` | executed questions | share where the 2-char CJK LIKE fallback contributed |
+
+`evidence_retrieval_rate` measures **injected** cards and therefore reflects the
+injection policy; judge ranking quality with `retrieval_recall_at_k` instead.
+`python -m evals.locomo.retrieval_replay` compares those recalls offline (no
+answer generation) before spending QA tokens.
+
 An evaluation profile can set `current_time`, `mid_term`, `session_digest`,
 and `rag` independently under `context_levels.levels` to `high` or `'off'`.
 Fully disabling RAG requires both `rag: 'off'` to suppress prompt injection and

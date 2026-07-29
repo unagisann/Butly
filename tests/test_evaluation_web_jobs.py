@@ -10,8 +10,11 @@ from evals.locomo.web_jobs import (
     EvaluationJobConflict,
     EvaluationJobError,
     EvaluationJobManager,
+    build_dialogue_ab_command,
+    build_dialogue_ab_profile_payload,
     build_job_command,
     build_profile_payload,
+    validate_dialogue_ab_request,
     validate_job_request,
 )
 
@@ -57,6 +60,31 @@ def _request(**overrides):
                 "generation_config": {},
             },
         },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _dialogue_request(**overrides):
+    payload = {
+        "dataset_path": str(
+            Path(__file__).parents[1]
+            / "data"
+            / "ja_dialogue_ab_prompts_v1.json"
+        ),
+        "run_id": "dialogue-v1",
+        "time_decay_rate": 0.003,
+        "context_current_time": True,
+        "context_mid_term": True,
+        "context_session_digest": True,
+        "context_rag": True,
+        "rag_source_mode": "both",
+        "rag_raw_top_k": 1,
+        "rag_raw_max_chars": 2500,
+        "stage3_enabled": True,
+        "stage3_batch_size": 10,
+        "stage3_bootstrap_max_cards": 2000,
+        "role_models": _request()["role_models"],
     }
     payload.update(overrides)
     return payload
@@ -299,6 +327,7 @@ def test_build_profile_matches_colab_stage3_controls():
     assert profile["brain"] == {
         "time_decay_rate": 0.25,
         "use_rag": True,
+        "search_mode": "vector",
     }
     assert profile["context_levels"]["levels"]["mid_term"] == "off"
     assert profile["memory"]["rag_raw_top_k"] == 1
@@ -306,6 +335,341 @@ def test_build_profile_matches_colab_stage3_controls():
     assert profile["sleeptime"]["update_targets"] == {
         "knowledge_maturation": True
     }
+
+
+class TestSearchSettingsInProfile:
+    """Web Console から hybrid の A/B を回せること（検索改修計画 §3.5）"""
+
+    def test_vector_run_omits_bm25_params(self):
+        profile = build_profile_payload(_request())
+
+        assert profile["brain"]["search_mode"] == "vector"
+        assert "bm25_candidates" not in profile["brain"]
+        assert profile["memory_probe"] == {
+            "retrieval_execution": "always",
+            "injection_policy": "intent_gated",
+        }
+
+    def test_hybrid_run_writes_bm25_params(self):
+        profile = build_profile_payload(
+            _request(
+                search_mode="hybrid",
+                bm25_candidates=30,
+                vector_candidates=15,
+                rrf_k=40,
+                bm25_max_df_ratio=0.4,
+                injection_policy="retrieval_assisted",
+                retrieval_execution="intent_gated",
+            )
+        )
+
+        assert profile["brain"]["search_mode"] == "hybrid"
+        assert profile["brain"]["bm25_candidates"] == 30
+        assert profile["brain"]["vector_candidates"] == 15
+        assert profile["brain"]["rrf_k"] == 40
+        assert profile["brain"]["bm25_max_df_ratio"] == pytest.approx(0.4)
+        assert profile["memory_probe"] == {
+            "retrieval_execution": "intent_gated",
+            "injection_policy": "retrieval_assisted",
+        }
+
+    def test_profile_sections_are_applicable_to_instance_config(self):
+        """profile へ書いたセクションが eval 側で適用対象になっている"""
+        from evals.locomo.config import PROFILE_ROLE_SECTIONS
+
+        profile = build_profile_payload(_request(search_mode="hybrid"))
+        for section in ("brain", "memory_probe"):
+            assert section in profile
+            assert section in PROFILE_ROLE_SECTIONS
+
+    def test_validate_fills_defaults(self, tmp_path):
+        request = _request()
+        for key in (
+            "search_mode",
+            "retrieval_execution",
+            "injection_policy",
+            "bm25_candidates",
+            "rrf_k",
+            "bm25_max_df_ratio",
+        ):
+            request.pop(key, None)
+
+        normalized = validate_job_request(request, output_dir=tmp_path)
+
+        assert normalized["search_mode"] == "vector"
+        assert normalized["retrieval_execution"] == "always"
+        assert normalized["injection_policy"] == "intent_gated"
+        assert normalized["bm25_candidates"] == 20
+        assert normalized["rrf_k"] == 60
+        assert normalized["bm25_max_df_ratio"] == pytest.approx(0.5)
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"search_mode": "bm25"}, "unsupported search_mode"),
+            ({"injection_policy": "always"}, "unsupported injection_policy"),
+            ({"retrieval_execution": "never"}, "unsupported retrieval_execution"),
+            ({"bm25_candidates": 0}, "bm25_candidates must be a positive"),
+            ({"bm25_max_df_ratio": 1.5}, "bm25_max_df_ratio must be in"),
+        ],
+    )
+    def test_validate_rejects_bad_search_settings(
+        self, tmp_path, overrides, message
+    ):
+        with pytest.raises(EvaluationJobError, match=message):
+            validate_job_request(_request(**overrides), output_dir=tmp_path)
+
+    def test_config_exposes_choices(self, tmp_path):
+        manager = EvaluationJobManager(tmp_path)
+
+        config = manager.config()
+
+        assert config["search_modes"] == ["vector", "hybrid"]
+        assert config["retrieval_executions"] == ["always", "intent_gated"]
+        assert config["injection_policies"] == [
+            "intent_gated",
+            "retrieval_assisted",
+            "candidates",
+        ]
+        assert config["last_request"] is None
+
+    def test_config_exposes_latest_job_request(self, tmp_path):
+        manager = EvaluationJobManager(tmp_path)
+        older = {
+            "created_at": "2026-07-26T00:00:00+00:00",
+            "request": _request(run_id="web-v25", question_limit=10),
+        }
+        latest = {
+            "created_at": "2026-07-27T00:00:00+00:00",
+            "request": _request(
+                run_id="web-v26",
+                question_limit=None,
+                search_mode="vector",
+                retrieval_execution="always",
+            ),
+        }
+        manager._records = {"older": older, "latest": latest}
+
+        previous = manager.config()["last_request"]
+
+        assert previous["run_id"] == "web-v26"
+        assert previous["question_limit"] is None
+        assert previous["search_mode"] == "vector"
+        assert previous["role_models"]["chat"]["connection"] == "nanogpt-sub"
+
+
+class TestDialogueABWebJob:
+    def test_validates_dataset_and_fixed_comparison_settings(self, tmp_path):
+        normalized = validate_dialogue_ab_request(
+            _dialogue_request(),
+            output_dir=tmp_path,
+        )
+
+        assert normalized["locale"] == "ja"
+        assert normalized["search_mode"] == "vector"
+        assert normalized["retrieval_execution"] == "always"
+        assert normalized["time_decay_rate"] == pytest.approx(0.003)
+
+    def test_profile_uses_japanese_and_shared_base_policy(self):
+        profile = build_dialogue_ab_profile_payload(_dialogue_request())
+
+        assert profile["locale"] == "ja"
+        assert profile["brain"]["search_mode"] == "vector"
+        assert profile["memory_probe"] == {
+            "retrieval_execution": "always",
+            "injection_policy": "intent_gated",
+        }
+        assert profile["memory"]["knowledge_maturation_enabled"] is True
+
+    def test_builds_dialogue_cli_command(self, tmp_path):
+        profile = tmp_path / "profile.yaml"
+        command = build_dialogue_ab_command(
+            _dialogue_request(),
+            output_dir=tmp_path,
+            profile_path=profile,
+            python_executable="/python",
+        )
+
+        assert command[:5] == [
+            "/python",
+            "-m",
+            "evals.dialogue_ab",
+            "run",
+            "--dataset",
+        ]
+        assert command[-2:] == ["--profile", str(profile)]
+
+    def test_config_keeps_last_requests_separate(self, tmp_path):
+        manager = EvaluationJobManager(tmp_path)
+        manager._records = {
+            "locomo": {
+                "job_type": "locomo",
+                "created_at": "2026-07-27T00:00:00+00:00",
+                "request": _request(run_id="locomo-v1"),
+            },
+            "dialogue": {
+                "job_type": "dialogue_ab",
+                "created_at": "2026-07-28T00:00:00+00:00",
+                "request": _dialogue_request(run_id="dialogue-v1"),
+            },
+        }
+
+        config = manager.config()
+
+        assert config["last_request"]["run_id"] == "locomo-v1"
+        assert (
+            config["dialogue_ab"]["last_request"]["run_id"]
+            == "dialogue-v1"
+        )
+
+    def test_rejects_non_dialogue_dataset(self, tmp_path):
+        with pytest.raises(EvaluationJobError, match="root must be an object"):
+            validate_dialogue_ab_request(
+                _dialogue_request(dataset_path=str(FIXTURE)),
+                output_dir=tmp_path,
+            )
+
+
+class TestRetrievalReplayEndpointBacking:
+    """QA を回さずに検索だけ比較する（検索改修計画 §8）。"""
+
+    def _write_run(self, output_dir: Path, run_id: str = "v26") -> Path:
+        import sqlite3
+
+        from butly_core.core.database import ButlyDatabase
+
+        run_dir = output_dir / run_id
+        (run_dir / "results").mkdir(parents=True)
+        instance_dir = (
+            run_dir / "workspace" / "butly_core" / "instances" / "conv_1"
+        )
+        (instance_dir / "short_term_json").mkdir(parents=True)
+
+        db_path = instance_dir / "butly_memory.db"
+        ButlyDatabase(db_path=str(db_path))
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO knowledge_cards (id, category, title, summary, "
+            "source_files) VALUES (?, ?, ?, ?, ?)",
+            ("k1", "Life", "Pottery workshop", "made mugs",
+             json.dumps(["session_0001.json"])),
+        )
+        conn.commit()
+        conn.close()
+
+        (instance_dir / "short_term_json" / "session_0001.json").write_text(
+            json.dumps({
+                "messages": [{
+                    "role": "user",
+                    "parts": ["We made mugs."],
+                    "meta": {"locomo_dialog_ids": ["D1:1"]},
+                }]
+            }),
+            encoding="utf-8",
+        )
+        (run_dir / "results" / "qa_results.jsonl").write_text(
+            json.dumps({
+                "question_id": "qa-1",
+                "question": "What pottery did they make?",
+                "category": 2,
+                "instance_name": "conv_1",
+                "evidence": ["D1:1"],
+                "retrieved_card_ids": [],
+            }) + "\n",
+            encoding="utf-8",
+        )
+        (run_dir / "run_config.json").write_text(
+            json.dumps({"run_id": run_id}), encoding="utf-8"
+        )
+        return run_dir
+
+    def _manager(self, tmp_path: Path) -> EvaluationJobManager:
+        return EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+            project_root=Path(__file__).parents[1],
+        )
+
+    def test_bm25_replay_returns_recall_and_persists(self, tmp_path):
+        manager = self._manager(tmp_path)
+        run_dir = self._write_run(tmp_path / "runs")
+
+        result = manager.retrieval_replay("v26", ["bm25"])
+
+        assert result["oracle_questions"] == 1
+        assert result["bm25"]["recall_at_3"] == pytest.approx(1.0)
+        saved = json.loads(
+            (run_dir / "retrieval_replay.json").read_text(encoding="utf-8")
+        )
+        assert saved["bm25"] == result["bm25"]
+        assert saved["limit"] == 20
+
+    def test_unknown_run_raises_key_error(self, tmp_path):
+        manager = self._manager(tmp_path)
+
+        with pytest.raises(KeyError):
+            manager.retrieval_replay("missing", ["bm25"])
+
+    @pytest.mark.parametrize(
+        ("run_id", "modes", "limit", "message"),
+        [
+            ("../escape", ["bm25"], 20, "invalid run_id"),
+            ("v26", ["keyword"], 20, "modes must be a subset"),
+            ("v26", [], 20, "modes must be a subset"),
+            ("v26", ["bm25"], 0, "limit must be a positive integer"),
+        ],
+    )
+    def test_rejects_bad_arguments(
+        self, tmp_path, run_id, modes, limit, message
+    ):
+        manager = self._manager(tmp_path)
+        self._write_run(tmp_path / "runs")
+
+        with pytest.raises(EvaluationJobError, match=message):
+            manager.retrieval_replay(run_id, modes, limit=limit)
+
+    def test_run_without_workspace_reports_error(self, tmp_path):
+        manager = self._manager(tmp_path)
+        run_dir = tmp_path / "runs" / "bare"
+        (run_dir / "results").mkdir(parents=True)
+        (run_dir / "run_config.json").write_text("{}", encoding="utf-8")
+        (run_dir / "results" / "qa_results.jsonl").write_text(
+            "", encoding="utf-8"
+        )
+
+        with pytest.raises(EvaluationJobError):
+            manager.retrieval_replay("bare", ["bm25"])
+
+    def test_missing_profile_does_not_block_replay(self, tmp_path):
+        manager = self._manager(tmp_path)
+        run_dir = self._write_run(tmp_path / "runs")
+        (run_dir / "run_config.json").write_text(
+            json.dumps({
+                "run_id": "v26",
+                "profile_path": str(tmp_path / "gone.yaml"),
+            }),
+            encoding="utf-8",
+        )
+
+        result = manager.retrieval_replay("v26", ["bm25"])
+
+        assert result["bm25"]["questions"] == 1
+
+    def test_profile_sections_are_used(self, tmp_path):
+        manager = self._manager(tmp_path)
+        run_dir = self._write_run(tmp_path / "runs")
+        profile_path = tmp_path / "profile.yaml"
+        profile_path.write_text(
+            "name: p\nbrain:\n  bm25_max_df_ratio: 0.9\n", encoding="utf-8"
+        )
+        (run_dir / "run_config.json").write_text(
+            json.dumps({"run_id": "v26", "profile_path": str(profile_path)}),
+            encoding="utf-8",
+        )
+
+        assert manager._run_profile_sections(run_dir)["brain"] == {
+            "bm25_max_df_ratio": 0.9
+        }
 
 
 def test_build_fresh_command_preserves_all_scope_flags(tmp_path):
@@ -554,6 +918,53 @@ def test_manager_resume_uses_existing_cli_checkpoint(tmp_path, monkeypatch):
     assert resumed["stop_requested"] is False
 
 
+def test_manager_resume_uses_dialogue_ab_checkpoint(tmp_path, monkeypatch):
+    manager = EvaluationJobManager(
+        tmp_path / "data",
+        output_dir=tmp_path / "runs",
+        python_executable="python-test",
+    )
+    run_dir = manager.dialogue_output_dir / "dialogue-resume"
+    run_dir.mkdir(parents=True)
+    (run_dir / "run_config.json").write_text(
+        json.dumps(
+            {"run_id": "dialogue-resume", "run_type": "dialogue_ab"}
+        ),
+        encoding="utf-8",
+    )
+    record = {
+        "schema_version": 1,
+        "job_type": "dialogue_ab",
+        "job_id": "dialogue-resume-job",
+        "run_id": "dialogue-resume",
+        "run_mode": "dialogue-ab",
+        "status": "stopped",
+        "run_dir": str(run_dir),
+        "log_path": str(manager.jobs_dir / "dialogue-resume-job.log"),
+        "attempt": 1,
+        "stop_requested": True,
+        "created_at": "2026-01-01T00:00:00Z",
+    }
+    manager._save_record(record)
+    captured = {}
+
+    def fake_launch(current, command):
+        captured["command"] = command
+        return manager._public_record(current)
+
+    monkeypatch.setattr(manager, "_launch", fake_launch)
+    manager.resume("dialogue-resume-job")
+
+    assert captured["command"] == [
+        "python-test",
+        "-m",
+        "evals.dialogue_ab",
+        "resume",
+        "--run-dir",
+        str(run_dir),
+    ]
+
+
 def test_run_history_and_question_comparison(tmp_path):
     output_dir = tmp_path / "runs"
     _write_run(output_dir, "a", overall=0.5, prediction="Tuesday")
@@ -572,6 +983,55 @@ def test_run_history_and_question_comparison(tmp_path):
     assert comparison["comparison_run_id"] == "b"
     assert comparison["questions"][0]["delta"] == 0.5
     assert comparison["questions"][0]["runs"]["b"]["prediction"] == "Monday"
+
+
+def test_dialogue_ab_history_summary(tmp_path):
+    manager = EvaluationJobManager(
+        tmp_path / "data",
+        output_dir=tmp_path / "runs",
+    )
+    run_dir = manager.dialogue_output_dir / "dialogue-v1"
+    (run_dir / "checkpoints").mkdir(parents=True)
+    (run_dir / "run_config.json").write_text(
+        json.dumps(
+            {
+                "run_id": "dialogue-v1",
+                "run_type": "dialogue_ab",
+                "dataset_id": "ja-dialogue-ab-prompts-v1",
+                "prompt_count": 30,
+                "created_at": "2026-07-28T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "scores.json").write_text(
+        json.dumps(
+            {
+                "run_id": "dialogue-v1",
+                "prompt_count": 30,
+                "knowledge_cards_created": 10,
+                "policies": {
+                    "intent_gated": {
+                        "rag_trigger_rate": 0.4,
+                        "prompt_tokens_mean": 1000,
+                    },
+                    "candidates": {
+                        "rag_trigger_rate": 1.0,
+                        "prompt_tokens_mean": 1400,
+                    },
+                },
+                "comparison": {"prompt_tokens_mean_delta": 400},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runs = manager.list_dialogue_ab_runs()
+    result = manager.get_dialogue_ab_result("dialogue-v1")
+
+    assert runs[0]["candidates_rag_trigger_rate"] == 1.0
+    assert runs[0]["prompt_tokens_mean_delta"] == 400
+    assert result["knowledge_cards_created"] == 10
 
 
 class TestGatekeeperTokenWarning:
@@ -659,3 +1119,41 @@ class TestRunSummaryExposesRetrievalDiagnostics:
         assert row["rag_trigger_rate"] == 0.332
         assert row["classifier_fallback_rate"] == 0.779
         assert row["evidence_retrieval_rate"] == 0.219
+        # 旧 run（検索指標なし）は None のまま落ちない
+        assert row["search_execution_rate"] is None
+        assert row["retrieval_recall_at_3"] is None
+
+    def test_history_row_includes_retrieval_metrics(self, tmp_path):
+        manager = EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+            project_root=Path(__file__).parents[1],
+        )
+        run_dir = tmp_path / "runs" / "v27"
+        run_dir.mkdir(parents=True)
+        (run_dir / "run_config.json").write_text(
+            json.dumps({"run_id": "v27"}), encoding="utf-8"
+        )
+        (run_dir / "scores.json").write_text(
+            json.dumps(
+                {
+                    "run_id": "v27",
+                    "question_count": 199,
+                    "official": {"overall": 0.41},
+                    "auxiliary": {},
+                    "butly": {
+                        "rag_trigger_rate": 0.9,
+                        "search_execution_rate": 1.0,
+                        "retrieval_recall_at_3": 0.61,
+                        "bm25_rescue_rate": 0.18,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        row = next(r for r in manager.list_runs() if r["run_id"] == "v27")
+
+        assert row["search_execution_rate"] == 1.0
+        assert row["retrieval_recall_at_3"] == 0.61
+        assert row["bm25_rescue_rate"] == 0.18

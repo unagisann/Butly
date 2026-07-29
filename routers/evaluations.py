@@ -60,6 +60,16 @@ class EvaluationStartRequest(BaseModel):
     rag_raw_max_chars: int = Field(default=2500, ge=0)
     stage3_batch_size: int = Field(default=10, ge=1)
     stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
+    # --- 検索設定（検索改修計画 §3.5）。hybrid は eval で先行検証する ---
+    search_mode: Literal["vector", "hybrid"] = "vector"
+    retrieval_execution: Literal["always", "intent_gated"] = "always"
+    injection_policy: Literal[
+        "intent_gated", "retrieval_assisted", "candidates"
+    ] = "intent_gated"
+    bm25_candidates: int = Field(default=20, ge=1)
+    vector_candidates: int = Field(default=20, ge=1)
+    rrf_k: int = Field(default=60, ge=1)
+    bm25_max_df_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
     role_models: dict[str, RoleModelRequest] = Field(default_factory=dict)
     # 記憶を再利用する run で、保存済みベクトルと embedding 設定が
     # 食い違っていても実行する（既定は事前に弾く）。
@@ -70,6 +80,39 @@ class RunCompareRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run_ids: list[str] = Field(min_length=2, max_length=8)
+
+
+class RetrievalReplayRequest(BaseModel):
+    """検索だけを回して Recall@k を比べる（QA トークンを使わない足切り）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    modes: list[Literal["bm25", "vector", "hybrid"]] = Field(
+        default_factory=lambda: ["bm25"], min_length=1, max_length=3
+    )
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class DialogueABStartRequest(BaseModel):
+    """Japanese natural-dialogue A/B with one shared memory seed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_path: str
+    run_id: str
+    time_decay_rate: float = Field(default=0.003, ge=0.0)
+    context_current_time: bool = True
+    context_mid_term: bool = True
+    context_session_digest: bool = True
+    context_rag: bool = True
+    rag_source_mode: Literal["cards", "raw", "both"] = "both"
+    rag_raw_top_k: int = Field(default=1, ge=0)
+    rag_raw_max_chars: int = Field(default=2500, ge=0)
+    stage3_enabled: bool = True
+    stage3_batch_size: int = Field(default=10, ge=1)
+    stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
+    role_models: dict[str, RoleModelRequest] = Field(default_factory=dict)
 
 
 _manager: Optional[EvaluationJobManager] = None
@@ -104,6 +147,18 @@ def get_evaluation_config() -> dict[str, Any]:
 def start_evaluation_job(request: EvaluationStartRequest) -> dict[str, Any]:
     try:
         return _get_manager().start(request.model_dump(mode="json"))
+    except (KeyError, EvaluationJobConflict, EvaluationJobError) as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/dialogue-ab/jobs", status_code=202)
+def start_dialogue_ab_job(
+    request: DialogueABStartRequest,
+) -> dict[str, Any]:
+    try:
+        return _get_manager().start_dialogue_ab(
+            request.model_dump(mode="json")
+        )
     except (KeyError, EvaluationJobConflict, EvaluationJobError) as exc:
         raise _translate_error(exc) from exc
 
@@ -160,6 +215,44 @@ def list_evaluation_runs() -> dict[str, Any]:
         "output_dir": str(_get_manager().output_dir),
         "runs": _get_manager().list_runs(),
     }
+
+
+@router.get("/dialogue-ab/runs")
+def list_dialogue_ab_runs() -> dict[str, Any]:
+    manager = _get_manager()
+    return {
+        "output_dir": str(manager.dialogue_output_dir),
+        "runs": manager.list_dialogue_ab_runs(),
+    }
+
+
+@router.get("/dialogue-ab/runs/{run_id}")
+def get_dialogue_ab_result(run_id: str) -> dict[str, Any]:
+    try:
+        return _get_manager().get_dialogue_ab_result(run_id)
+    except (KeyError, EvaluationJobError) as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/runs/retrieval-replay")
+def replay_run_retrieval(request: RetrievalReplayRequest) -> dict[str, Any]:
+    """既存 run の記憶に対して検索だけ再実行する。
+
+    ``bm25`` は embedding を呼ばないので即返る。``vector`` / ``hybrid`` は
+    質問1件につき embedding を1回呼ぶため、応答まで分単位でかかりうる。
+    """
+    try:
+        return _get_manager().retrieval_replay(
+            request.run_id,
+            list(request.modes),
+            limit=request.limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"評価runが見つかりません: {request.run_id}"
+        ) from exc
+    except EvaluationJobError as exc:
+        raise _translate_error(exc) from exc
 
 
 @router.post("/runs/compare")

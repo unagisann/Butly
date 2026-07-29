@@ -7,6 +7,8 @@ routers/settings.py
 import json
 import os
 from pathlib import Path
+import threading
+import time
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, Body, BackgroundTasks
@@ -32,6 +34,89 @@ from butly_core.prompts import USER_PROMPTS_PATH
 import dependencies as deps
 
 router = APIRouter()
+
+_MODEL_CATALOG_TTL_SECONDS = 600.0
+_MODEL_CATALOG_CACHE: dict[str, tuple[float, tuple[str, ...]]] = {}
+_MODEL_CATALOG_LOCK = threading.RLock()
+
+
+def _invalidate_model_catalog(connection_id: str | None = None) -> None:
+    """Invalidate dynamic model discovery without touching static presets."""
+    with _MODEL_CATALOG_LOCK:
+        if connection_id is None:
+            _MODEL_CATALOG_CACHE.clear()
+        else:
+            _MODEL_CATALOG_CACHE.pop(connection_id, None)
+
+
+def _discover_connection_models(conn) -> list[str]:
+    """Fetch one Connection's raw model IDs exactly once per cache fill."""
+    if conn.api_key_env and not conn.resolve_api_key():
+        return []
+
+    if conn.protocol == "gemini_native":
+        try:
+            from google import genai
+
+            api_key = conn.resolve_api_key()
+            if not api_key:
+                return []
+            client = genai.Client(api_key=api_key)
+            models = []
+            for model in client.models.list():
+                model_id = model.name
+                if model_id and model_id.startswith("models/"):
+                    model_id = model_id[len("models/") :]
+                if model_id:
+                    models.append(model_id)
+            return list(dict.fromkeys(models))
+        except Exception:
+            return []
+
+    if conn.protocol == "openai_compat":
+        try:
+            import urllib.request
+
+            base_url = conn.resolve_base_url()
+            if not base_url:
+                return []
+            url = base_url.rstrip("/") + "/models"
+            headers = {"Accept": "application/json"}
+            api_key = conn.resolve_api_key()
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            if conn.extra_headers:
+                headers.update(conn.extra_headers)
+            request = urllib.request.Request(url, headers=headers, method="GET")
+            with urllib.request.urlopen(request, timeout=5) as response:
+                data = json.loads(response.read())
+            models = [
+                item.get("id")
+                for item in (data.get("data") or [])[:200]
+                if isinstance(item, dict) and item.get("id")
+            ]
+            return list(dict.fromkeys(models))
+        except Exception:
+            return []
+
+    return []
+
+
+def _connection_model_catalog(conn) -> list[str]:
+    """Return a cached raw model catalog for one Connection."""
+    with _MODEL_CATALOG_LOCK:
+        now = time.monotonic()
+        cached = _MODEL_CATALOG_CACHE.get(conn.id)
+        if cached and cached[0] > now:
+            return list(cached[1])
+
+        models = tuple(_discover_connection_models(conn))
+        _MODEL_CATALOG_CACHE[conn.id] = (
+            time.monotonic() + _MODEL_CATALOG_TTL_SECONDS,
+            models,
+        )
+        return list(models)
+
 
 # --- Pydantic Models ---
 
@@ -150,6 +235,7 @@ def set_api_key(request: ApiKeyRequest):
     env_path = _env_file_path()
     upsert_env_var(env_path, env_name, key)
     os.environ[env_name] = key
+    _invalidate_model_catalog()
 
     print(f"[Server] {request.key_type} API key updated and saved to {env_path}")
     return {"message": f"{request.key_type} APIキーを保存しました"}
@@ -235,6 +321,7 @@ def set_ollama_url(url: str = Body(..., embed=True)):
     env_path = _env_file_path()
     upsert_env_var(env_path, OLLAMA_BASE_URL_ENV, base_url)
     os.environ[OLLAMA_BASE_URL_ENV] = base_url
+    _invalidate_model_catalog("ollama")
 
     print(f"[Server] Ollama base URL updated to {base_url} (saved to {env_path})")
     return {"message": "Ollama の接続先を保存しました", "url": root}
@@ -467,6 +554,7 @@ def add_connection(payload: ConnectionPayload):
         existing.append(entry)
     cfg["LLM_CONNECTIONS"] = existing
     _save_user_config(cfg)
+    _invalidate_model_catalog(payload.id)
 
     return {
         "message": f"Connection {payload.id!r} を登録しました",
@@ -567,6 +655,7 @@ def delete_connection(connection_id: str, force: bool = False):
         ]
         _save_user_config(cfg)
     reg.unregister(connection_id)
+    _invalidate_model_catalog(connection_id)
     return {"message": f"Connection {connection_id!r} を削除しました"}
 
 
@@ -618,6 +707,8 @@ def set_connection_api_key(
     upsert_env_var(_env_file_path(), conn.api_key_env, key)
     os.environ[conn.api_key_env] = key
     affected = _connections_using_env_names((conn.api_key_env,))
+    for affected_connection in affected:
+        _invalidate_model_catalog(affected_connection)
     return {
         "message": f"Connection {connection_id!r} のAPIキーを保存しました",
         "api_key_set": True,
@@ -640,6 +731,8 @@ def delete_connection_api_key(connection_id: str):
     for env_name in env_names:
         os.environ.pop(env_name, None)
     affected = _connections_using_env_names(env_names)
+    for affected_connection in affected:
+        _invalidate_model_catalog(affected_connection)
     return {
         "message": f"Connection {connection_id!r} のAPIキーを削除しました",
         "api_key_set": False,
@@ -709,8 +802,34 @@ def test_connection(connection_id: str = Body(..., embed=True)):
         return {"status": "error", "message": str(e), "models": []}
 
 
+@router.post("/settings/model_catalog/refresh")
+def refresh_model_catalog(
+    connection_id: str | None = Body(default=None, embed=True),
+):
+    """Invalidate cached provider model lists.
+
+    The next ``model_candidates`` request performs discovery again. Omitting
+    ``connection_id`` refreshes every Connection.
+    """
+    if connection_id is not None:
+        _require_connection(connection_id)
+    _invalidate_model_catalog(connection_id)
+    return {
+        "message": (
+            f"Connection {connection_id!r} のモデル一覧を更新します"
+            if connection_id
+            else "全Connectionのモデル一覧を更新します"
+        ),
+        "connection_id": connection_id,
+    }
+
+
 @router.get("/settings/model_candidates")
-def model_candidates(role: str, include_deprecated: bool = False):
+def model_candidates(
+    role: str,
+    include_deprecated: bool = False,
+    connection_id: str | None = None,
+):
     """role に対するモデル候補を返す。
 
     内訳:
@@ -737,6 +856,8 @@ def model_candidates(role: str, include_deprecated: bool = False):
     )
     if role_lower not in valid_roles:
         raise HTTPException(status_code=400, detail=f"未対応の role: {role}")
+    if connection_id is not None:
+        _require_connection(connection_id)
 
     candidates: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -788,8 +909,11 @@ def model_candidates(role: str, include_deprecated: bool = False):
     if saved_model and saved_connection:
         _push(saved_connection, saved_model, available=True)
 
-    # 3. 動的取得 (/models 成功した connection だけ)
+    # 3. Connection単位でキャッシュした動的一覧をrole別に絞り込む。
+    #    roleごとに外部 /models を再取得しないことが重要。
     for conn in list_connections():
+        if connection_id is not None and conn.id != connection_id:
+            continue
         # auth が必要なのに env 未設定なら skip
         if conn.api_key_env and not conn.resolve_api_key():
             continue
@@ -797,51 +921,12 @@ def model_candidates(role: str, include_deprecated: bool = False):
         if role_lower == "embedding" and not conn.embeddings_supported:
             continue
 
-        if conn.protocol == "gemini_native":
-            # Gemini は SDK 経由で list_models
-            try:
-                from google import genai
+        for model_id in _connection_model_catalog(conn):
+            if _dynamic_model_matches_role(role_lower, model_id):
+                _push(conn.id, model_id, available=True)
 
-                api_key = conn.resolve_api_key()
-                if not api_key:
-                    continue
-                client = genai.Client(api_key=api_key)
-                for m in client.models.list():
-                    # SDK が返す name は "models/gemini-..." 形式
-                    mid = m.name
-                    if mid and mid.startswith("models/"):
-                        mid = mid[len("models/") :]
-                    if mid and _dynamic_model_matches_role(role_lower, mid):
-                        _push(conn.id, mid, available=True)
-            except Exception:
-                # 1 connection 失敗で全体は止めない
-                continue
-
-        elif conn.protocol == "openai_compat":
-            # OpenAI 互換: /models を直叩き
-            try:
-                base = conn.resolve_base_url()
-                if not base:
-                    continue
-                import urllib.request
-
-                url = base.rstrip("/") + "/models"
-                headers = {"Accept": "application/json"}
-                api_key = conn.resolve_api_key()
-                if api_key:
-                    headers["Authorization"] = f"Bearer {api_key}"
-                if conn.extra_headers:
-                    for k, v in conn.extra_headers.items():
-                        headers[k] = v
-                req = urllib.request.Request(url, headers=headers, method="GET")
-                with urllib.request.urlopen(req, timeout=5) as resp:
-                    data = json.loads(resp.read())
-                for m in (data.get("data") or [])[:200]:
-                    mid = m.get("id") if isinstance(m, dict) else None
-                    if mid and _dynamic_model_matches_role(role_lower, mid):
-                        _push(conn.id, mid, available=True)
-            except Exception:
-                # 1 connection 失敗で全体は止めない
-                continue
-
-    return {"role": role_lower, "candidates": candidates}
+    return {
+        "role": role_lower,
+        "candidates": candidates,
+        "catalog_ttl_seconds": _MODEL_CATALOG_TTL_SECONDS,
+    }

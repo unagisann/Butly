@@ -2,8 +2,8 @@
 
 [日本語](evaluation_web_console.ja.md) | **English**
 
-The Butly Web Console can launch, stop, resume, inspect, and compare existing
-LoCoMo evaluator runs.
+The Butly Web Console can launch, stop, resume, inspect, and compare LoCoMo
+runs and the dedicated Japanese production-dialogue A/B.
 
 `evals/locomo/` remains the source of truth. The Web API is a thin persistent
 subprocess manager around the existing CLI; it does not duplicate Replay,
@@ -11,13 +11,19 @@ Sleeptime, QA, checkpoint, or scoring logic.
 
 ## Screens
 
-Open the console from the home-screen `📊` button.
+Open the console from the home-screen `📊` button. Only the selected section is
+rendered, so hidden forms do not fetch model candidates or run history.
 
-| Tab | Purpose |
+| Section | Purpose |
 |---|---|
-| New evaluation | Colab-parameter-equivalent run and model settings |
+| LoCoMo evaluation | Colab-parameter-equivalent run and model settings |
+| Japanese dialogue A/B | Production-dialogue comparison of `intent_gated` and `candidates` |
 | Jobs | Progress, phase, logs, stop, and checkpoint resume |
-| History / compare | Saved-run metrics, two-to-eight-run comparison, question deltas |
+| LoCoMo history / compare | Saved-run metrics, two-to-eight-run comparison, question deltas |
+
+The two-second Jobs refresh runs inside a Streamlit fragment and does not rerun
+the evaluation forms. Model candidates are cached for ten minutes and are
+refetched only through the explicit **Refresh model list** action.
 
 The start form covers:
 
@@ -43,6 +49,40 @@ Connections and API keys are shared with the normal Web Console. The form
 never receives key values. The evaluation subprocess inherits the Backend
 process environment.
 
+The new-evaluation form automatically uses the last Web job's normalized
+request as its initial state. This restores the dataset, run mode, source run,
+scope, RAG, retrieval, Stage 3, role-model, temperature, and output-limit
+settings even after Streamlit or the Backend restarts. To avoid collisions,
+only `RUN_ID` changes: a trailing `_vNN` is incremented, otherwise a
+time-based suggestion is generated. `allow_embedding_mismatch` is a hazardous
+per-run acknowledgement and always resets to off.
+
+### Japanese dialogue A/B
+
+`data/ja_dialogue_ab_prompts_v1.json` contains ten memory seeds and thirty
+prompts: ten that require memory, ten ordinary turns where memory is
+irrelevant, and ten where memory may help.
+
+The runner replays and knowledgeizes the seed once, optionally including
+Stage 3. Every prompt then runs against a fresh disposable clone of that same
+memory under two arms:
+
+1. `retrieval_execution=always`, `injection_policy=intent_gated`;
+2. `retrieval_execution=always`, `injection_policy=candidates`.
+
+Prompts do not accumulate each other's requests or responses. Chat temperature
+defaults to 0.0 and remains configurable in the Web form.
+
+The automatic report records RAG and search rates, mean prompt tokens,
+latency, target-term recall for memory-required prompts, and a seed-term
+mention proxy for memory-irrelevant prompts. The last two are mechanical
+proxies; reviewers use the side-by-side answers for the final naturalness and
+over-personalization judgment.
+
+Each prompt result is an atomic JSON artifact. Resume skips completed
+`(policy, prompt_id)` pairs. If seed generation is interrupted, the runner
+rebuilds the dedicated instance instead of trusting partial memory.
+
 ### Embedding compatibility check for memory-reusing runs
 
 A run with `SOURCE_MEMORY_RUN_ID` (`rerun-qa`) reuses the source run's cards and
@@ -65,7 +105,7 @@ The legacy Web Console Backend exposes:
 
 | Method | Path | Behavior |
 |---|---|---|
-| `GET` | `/evaluations/config` | Output root, dataset candidates, and run modes |
+| `GET` | `/evaluations/config` | Output root, dataset candidates, run modes, and the last evaluation request |
 | `POST` | `/evaluations/jobs` | Start a run |
 | `GET` | `/evaluations/jobs` | List jobs |
 | `GET` | `/evaluations/jobs/{job_id}` | Read status and progress |
@@ -74,6 +114,9 @@ The legacy Web Console Backend exposes:
 | `GET` | `/evaluations/jobs/{job_id}/log` | Tail the combined log |
 | `GET` | `/evaluations/runs` | List saved runs and headline metrics |
 | `POST` | `/evaluations/runs/compare` | Compare metrics and questions for 2–8 runs |
+| `POST` | `/evaluations/dialogue-ab/jobs` | Start the Japanese dialogue A/B |
+| `GET` | `/evaluations/dialogue-ab/runs` | List Japanese dialogue A/B runs |
+| `GET` | `/evaluations/dialogue-ab/runs/{run_id}` | Read policy and prompt results |
 
 The manager permits one active Web job at a time. This avoids conflicting
 writes and local LLM/GPU overload; the same conservative rule initially
@@ -110,6 +153,8 @@ cannot target a reused PID.
 DATA_DIR/eval_runs/
 ├─ runs/
 │  └─ <run_id>/
+├─ dialogue_ab/
+│  └─ <run_id>/
 ├─ jobs/
 │  ├─ <job_id>.json
 │  └─ <job_id>.log
@@ -126,6 +171,9 @@ set:
 
 1. `BUTLY_EVALUATION_OUTPUT_DIR`;
 2. `DATA_DIR/eval_runs/runs/`.
+
+Japanese dialogue A/B output uses `BUTLY_DIALOGUE_AB_OUTPUT_DIR`, falling back
+to `DATA_DIR/eval_runs/dialogue_ab/`.
 
 Dataset candidates come from `BUTLY_LOCOMO_DATASET`,
 `data/locomo10.json`, and the synthetic mini fixture. Any Backend-readable

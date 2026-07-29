@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 import asyncio
 import os
+import re
 
 # 自作モジュールのインポート
 from butly_core.core.memory import ButlyMemory
@@ -161,10 +162,15 @@ _CONNECTION_ICONS = {
     "nanogpt": "💎",
     "nanogpt-sub": "💎",
 }
+_MODEL_CANDIDATE_CACHE_TTL_SECONDS = 600
 
 
-@st.cache_data(ttl=30)
-def _get_role_candidates(api_url: str, role: str) -> list:
+@st.cache_data(ttl=_MODEL_CANDIDATE_CACHE_TTL_SECONDS)
+def _get_role_candidates(
+    api_url: str,
+    role: str,
+    connection_id: str | None = None,
+) -> list:
     """role に対するモデル候補を backend から取得する。
 
     Returns
@@ -176,9 +182,12 @@ def _get_role_candidates(api_url: str, role: str) -> list:
     try:
         import requests as _req
 
+        params = {"role": role}
+        if connection_id:
+            params["connection_id"] = connection_id
         resp = _req.get(
             f"{api_url}/settings/model_candidates",
-            params={"role": role},
+            params=params,
             timeout=8,
         )
         if resp.ok:
@@ -206,7 +215,21 @@ def _get_role_candidates(api_url: str, role: str) -> list:
         return []
 
 
-@st.cache_data(ttl=30)
+def _get_selector_candidates(
+    api_url: str,
+    role: str,
+    current_connection: str | None,
+    key_prefix: str,
+) -> list:
+    """Load dynamic models only for the currently selected Connection."""
+    selected_connection = (
+        st.session_state.get(f"{key_prefix}_connection")
+        or current_connection
+    )
+    return _get_role_candidates(api_url, role, selected_connection)
+
+
+@st.cache_data(ttl=300)
 def _get_connections(api_url: str) -> list:
     """Connection metadata for provider-first model selection."""
     try:
@@ -437,6 +460,35 @@ def _api_error_detail(response) -> str:
     except Exception:
         pass
     return response.text
+
+
+def _render_model_catalog_refresh(api_url: str, *, key: str) -> None:
+    """Refresh provider-discovered model IDs only on explicit request."""
+    import requests
+
+    if not st.button(
+        "🔄 モデル一覧を更新",
+        key=key,
+        help=(
+            "通常は10分間のキャッシュを利用します。プロバイダー側で"
+            "モデルが追加・削除されたときだけ更新してください。"
+        ),
+    ):
+        return
+    try:
+        response = requests.post(
+            f"{api_url}/settings/model_catalog/refresh",
+            json={},
+            timeout=10,
+        )
+        if not response.ok:
+            st.error(_api_error_detail(response))
+            return
+        _get_role_candidates.clear()
+        st.success("モデル一覧キャッシュを更新しました。")
+        st.rerun()
+    except Exception as exc:
+        st.error(f"モデル一覧の更新エラー: {exc}")
 
 
 def _render_connection_manager(api_url: str) -> list:
@@ -1391,6 +1443,10 @@ def render_settings_screen():
             "💡 候補は backend (`/settings/model_candidates`) から取得します。"
             "Connection を追加すると Groq / Together などのモデルも自動で並びます。"
         )
+        _render_model_catalog_refresh(
+            api_url,
+            key="provider_model_catalog_refresh",
+        )
 
         ROLE_LABELS = {
             "chat": "Chat (メイン応答)",
@@ -1412,14 +1468,20 @@ def render_settings_screen():
         ]:
             current_role = provider_ai_cfg.get(role, {})
             current_model = current_role.get("model_name", "")
-            _candidates = _get_role_candidates(api_url, role)
+            selector_key = f"provider_model_{role}"
+            _candidates = _get_selector_candidates(
+                api_url,
+                role,
+                current_role.get("connection"),
+                selector_key,
+            )
             model_selections[role] = _model_selector(
                 label=ROLE_LABELS[role],
                 current_value=current_model,
                 current_connection=current_role.get("connection"),
                 candidates=_candidates,
                 connections=_provider_connections,
-                key_prefix=f"provider_model_{role}",
+                key_prefix=selector_key,
                 embeddings_only=(role == "embedding"),
             )
 
@@ -1609,6 +1671,36 @@ _EVALUATION_ACTIVE_STATUSES = {"queued", "running", "stopping"}
 _EVALUATION_RESUMABLE_STATUSES = {"stopped", "failed", "interrupted"}
 
 
+def _evaluation_option_index(options: list, value) -> int:
+    """Return a safe Streamlit selectbox index for a persisted value."""
+    try:
+        return options.index(value)
+    except ValueError:
+        return 0
+
+
+def _evaluation_next_run_id(previous_run_id: str, existing_run_ids: list) -> str:
+    """Suggest a unique run id while preserving a trailing ``_vNN`` series."""
+    existing = {str(run_id) for run_id in existing_run_ids if run_id}
+    match = re.fullmatch(r"(.+_v)(\d+)", previous_run_id or "")
+    if match:
+        prefix, digits = match.groups()
+        number = int(digits) + 1
+        while True:
+            candidate = f"{prefix}{number:0{len(digits)}d}"
+            if candidate not in existing:
+                return candidate
+            number += 1
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = f"web_eval_{timestamp}"
+    suffix = 2
+    while candidate in existing:
+        candidate = f"web_eval_{timestamp}_{suffix}"
+        suffix += 1
+    return candidate
+
+
 def _evaluation_get(api_url: str, path: str) -> dict:
     import requests
 
@@ -1622,6 +1714,8 @@ def _evaluation_role_models(
     api_url: str,
     provider_config: dict,
     connections: list,
+    *,
+    key_prefix: str = "evaluation_model",
 ) -> dict[str, ModelChoice]:
     role_labels = {
         "chat": "Chat（評価対象の応答）",
@@ -1633,19 +1727,30 @@ def _evaluation_role_models(
     choices = {}
     for role, label in role_labels.items():
         current = provider_config.get(role, {})
+        selector_key = f"{key_prefix}_{role}"
         choices[role] = _model_selector(
             label=label,
             current_value=current.get("model_name", ""),
             current_connection=current.get("connection"),
-            candidates=_get_role_candidates(api_url, role),
+            candidates=_get_selector_candidates(
+                api_url,
+                role,
+                current.get("connection"),
+                selector_key,
+            ),
             connections=connections,
-            key_prefix=f"evaluation_model_{role}",
+            key_prefix=selector_key,
             embeddings_only=(role == "embedding"),
         )
     return choices
 
 
-def _evaluation_embedding_profile(model_name: str) -> str | None:
+def _evaluation_embedding_profile(
+    model_name: str,
+    current_profile: str | None = None,
+    *,
+    widget_key: str = "evaluation_embedding_profile",
+) -> str | None:
     """Embedding の prefix 規約セレクタ。戻り値 None は auto（モデル名から推定）。
 
     prefix を付け忘れると埋め込みが 1 つの円錐に潰れて検索が機能しなくなる。
@@ -1654,11 +1759,14 @@ def _evaluation_embedding_profile(model_name: str) -> str | None:
     from butly_core.llm.embedding_profiles import describe, list_profiles
 
     options = ["auto"] + [p.id for p in list_profiles()]
+    selected_profile = current_profile or "auto"
+    if selected_profile not in options:
+        options.append(selected_profile)
     selected = st.selectbox(
         "Embedding prefix 規約",
         options,
-        index=0,
-        key="evaluation_embedding_profile",
+        index=_evaluation_option_index(options, selected_profile),
+        key=widget_key,
         help=(
             "auto はモデル名から推定します（nomic → search_query:/"
             "search_document:、E5 → query:/passage: など）。"
@@ -1686,13 +1794,49 @@ def _render_evaluation_start_form(
     )
 
     dataset_candidates = evaluation_config.get("dataset_candidates") or []
+    run_ids = [
+        run.get("run_id")
+        for run in runs
+        if run.get("run_id")
+    ]
+    previous_request = evaluation_config.get("last_request")
+    if not isinstance(previous_request, dict):
+        previous_request = {}
+    previous_run_id = str(previous_request.get("run_id") or "")
+
+    pending_run_id = st.session_state.pop(
+        "evaluation_pending_run_id",
+        None,
+    )
+    if pending_run_id:
+        st.session_state.evaluation_run_id = pending_run_id
+        st.session_state.evaluation_default_run_id = pending_run_id
+        # このチェックは検索結果を壊し得る危険な承知操作なので、runごとに確認する。
+        st.session_state.pop(
+            "evaluation_allow_embedding_mismatch",
+            None,
+        )
+
     if "evaluation_dataset_path" not in st.session_state:
         st.session_state.evaluation_dataset_path = (
-            dataset_candidates[0] if dataset_candidates else ""
+            str(previous_request.get("dataset_path") or "")
+            or (dataset_candidates[0] if dataset_candidates else "")
         )
     if "evaluation_default_run_id" not in st.session_state:
-        st.session_state.evaluation_default_run_id = (
-            f"web_eval_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        st.session_state.evaluation_default_run_id = _evaluation_next_run_id(
+            previous_run_id,
+            run_ids,
+        )
+    if "evaluation_run_id" not in st.session_state:
+        st.session_state.evaluation_run_id = (
+            st.session_state.evaluation_default_run_id
+        )
+
+    if previous_run_id:
+        st.caption(
+            f"前回の評価 `{previous_run_id}` の設定を引き継いでいます。"
+            "RUN_IDは次の候補へ更新し、埋め込み不一致の承知チェックだけは"
+            "安全のため毎回OFFに戻します。"
         )
 
     if dataset_candidates:
@@ -1717,19 +1861,22 @@ def _render_evaluation_start_form(
     with top_cols[0]:
         run_id = st.text_input(
             "RUN_ID",
-            value=st.session_state.evaluation_default_run_id,
             key="evaluation_run_id",
         )
+        run_mode_options = evaluation_config.get("run_modes") or [
+            "standard",
+            "stage3-full",
+            "stage3-source",
+            "stage3-off",
+            "stage3-on",
+        ]
         run_mode = st.selectbox(
             "RUN_MODE",
-            options=evaluation_config.get("run_modes")
-            or [
-                "standard",
-                "stage3-full",
-                "stage3-source",
-                "stage3-off",
-                "stage3-on",
-            ],
+            options=run_mode_options,
+            index=_evaluation_option_index(
+                run_mode_options,
+                previous_request.get("run_mode", "standard"),
+            ),
             key="evaluation_run_mode",
         )
     with top_cols[1]:
@@ -1738,33 +1885,46 @@ def _render_evaluation_start_form(
             "stage3-off",
             "stage3-on",
         }
+        qa_mode_options = (
+            ["independent"]
+            if formal_stage3
+            else ["independent", "sequential"]
+        )
         qa_mode = st.selectbox(
             "QA_MODE",
-            options=["independent"] if formal_stage3 else [
-                "independent",
-                "sequential",
-            ],
+            options=qa_mode_options,
+            index=_evaluation_option_index(
+                qa_mode_options,
+                previous_request.get("qa_mode", "independent"),
+            ),
             key="evaluation_qa_mode",
         )
+        locale_options = ["en", "ja"]
         locale = st.selectbox(
             "LOCALE",
-            options=["en", "ja"],
+            options=locale_options,
+            index=_evaluation_option_index(
+                locale_options,
+                previous_request.get("locale", "en"),
+            ),
             key="evaluation_locale",
         )
 
-    run_ids = [
-        run.get("run_id")
-        for run in runs
-        if run.get("run_id")
-    ]
     source_required = run_mode in {"stage3-off", "stage3-on"}
     source_allowed = run_mode not in {"stage3-full", "stage3-source"}
     source_memory_run_id = ""
     if source_allowed:
         source_options = ["", *run_ids]
+        previous_source = str(
+            previous_request.get("source_memory_run_id") or ""
+        )
         source_memory_run_id = st.selectbox(
             "SOURCE_MEMORY_RUN_ID",
             options=source_options,
+            index=_evaluation_option_index(
+                source_options,
+                previous_source,
+            ),
             format_func=lambda value: value or "（新規にReplay/Sleeptimeを実行）",
             key="evaluation_source_run",
             help=(
@@ -1808,10 +1968,20 @@ def _render_evaluation_start_form(
         scope_cols,
         scope_defaults.items(),
     ):
+        previous_limit = previous_request.get(f"{dimension}_limit")
+        if f"{dimension}_limit" in previous_request:
+            use_all_default = previous_limit is None
+            limit_default = (
+                defaults[1]
+                if previous_limit is None
+                else int(previous_limit)
+            )
+        else:
+            use_all_default, limit_default = defaults
         with column:
             use_all = st.checkbox(
                 f"ALL_{scope_labels[dimension].upper()}",
-                value=defaults[0],
+                value=use_all_default,
                 key=f"evaluation_all_{dimension}",
                 disabled=bool(source_memory_run_id)
                 and dimension in {"sample", "session"},
@@ -1819,7 +1989,7 @@ def _render_evaluation_start_form(
             limit = st.number_input(
                 f"{scope_labels[dimension]} limit",
                 min_value=1,
-                value=defaults[1],
+                value=limit_default,
                 step=1,
                 key=f"evaluation_{dimension}_limit",
                 disabled=use_all
@@ -1835,39 +2005,50 @@ def _render_evaluation_start_form(
         with context_cols[0]:
             context_current_time = st.checkbox(
                 "Current Time",
-                value=True,
+                value=bool(
+                    previous_request.get("context_current_time", True)
+                ),
                 key="evaluation_context_current_time",
             )
         with context_cols[1]:
             context_mid_term = st.checkbox(
                 "Mid-term",
-                value=True,
+                value=bool(
+                    previous_request.get("context_mid_term", True)
+                ),
                 key="evaluation_context_mid_term",
             )
         with context_cols[2]:
             context_session_digest = st.checkbox(
                 "Session Digest",
-                value=True,
+                value=bool(
+                    previous_request.get("context_session_digest", True)
+                ),
                 key="evaluation_context_session_digest",
             )
         with context_cols[3]:
             context_rag = st.checkbox(
                 "RAG",
-                value=True,
+                value=bool(previous_request.get("context_rag", True)),
                 key="evaluation_context_rag",
             )
         rag_cols = st.columns(4)
         with rag_cols[0]:
+            rag_source_options = ["both", "cards", "raw"]
             rag_source_mode = st.selectbox(
                 "RAG source",
-                options=["both", "cards", "raw"],
+                options=rag_source_options,
+                index=_evaluation_option_index(
+                    rag_source_options,
+                    previous_request.get("rag_source_mode", "both"),
+                ),
                 key="evaluation_rag_source_mode",
             )
         with rag_cols[1]:
             rag_raw_top_k = st.number_input(
                 "RAW top-k",
                 min_value=0,
-                value=1,
+                value=int(previous_request.get("rag_raw_top_k", 1)),
                 step=1,
                 key="evaluation_rag_raw_top_k",
             )
@@ -1875,7 +2056,9 @@ def _render_evaluation_start_form(
             rag_raw_max_chars = st.number_input(
                 "RAW max chars",
                 min_value=0,
-                value=2500,
+                value=int(
+                    previous_request.get("rag_raw_max_chars", 2500)
+                ),
                 step=100,
                 key="evaluation_rag_raw_max_chars",
             )
@@ -1883,13 +2066,125 @@ def _render_evaluation_start_form(
             time_decay_rate = st.number_input(
                 "Time decay rate",
                 min_value=0.0,
-                value=0.0,
+                value=float(
+                    previous_request.get("time_decay_rate", 0.0)
+                ),
                 step=0.01,
                 key="evaluation_time_decay_rate",
             )
 
-    stage3_batch_size = 10
-    stage3_bootstrap_max_cards = 2000
+    with st.expander("検索設定（ハイブリッド検索 A/B）", expanded=False):
+        st.caption(
+            "search_mode=hybrid で BM25(FTS5/trigram) とベクトルを RRF 融合する。"
+            "検索の実行と注入判定は別設定。"
+        )
+        search_cols = st.columns(3)
+        with search_cols[0]:
+            search_mode_options = (
+                evaluation_config.get("search_modes")
+                or ["vector", "hybrid"]
+            )
+            search_mode = st.selectbox(
+                "Search mode",
+                options=search_mode_options,
+                index=_evaluation_option_index(
+                    search_mode_options,
+                    previous_request.get("search_mode", "vector"),
+                ),
+                key="evaluation_search_mode",
+            )
+        with search_cols[1]:
+            retrieval_execution_options = (
+                evaluation_config.get("retrieval_executions")
+                or ["always", "intent_gated"]
+            )
+            retrieval_execution = st.selectbox(
+                "Retrieval execution",
+                options=retrieval_execution_options,
+                index=_evaluation_option_index(
+                    retrieval_execution_options,
+                    previous_request.get(
+                        "retrieval_execution",
+                        "always",
+                    ),
+                ),
+                key="evaluation_retrieval_execution",
+                help="always=全質問で検索 / intent_gated=分類器が past_fact 等の時だけ",
+            )
+        with search_cols[2]:
+            injection_policy_options = (
+                evaluation_config.get("injection_policies")
+                or ["intent_gated", "retrieval_assisted", "candidates"]
+            )
+            injection_policy = st.selectbox(
+                "Injection policy",
+                options=injection_policy_options,
+                index=_evaluation_option_index(
+                    injection_policy_options,
+                    previous_request.get(
+                        "injection_policy",
+                        "intent_gated",
+                    ),
+                ),
+                key="evaluation_injection_policy",
+                help=(
+                    "retrieval_assisted は分類器 null でもベクトルと BM25 の"
+                    "両方が支持した候補を注入する（hybrid 専用）。"
+                    "candidates は候補があれば注入する"
+                ),
+            )
+        bm25_candidates = int(
+            previous_request.get("bm25_candidates", 20)
+        )
+        vector_candidates = int(
+            previous_request.get("vector_candidates", 20)
+        )
+        rrf_k = int(previous_request.get("rrf_k", 60))
+        bm25_max_df_ratio = float(
+            previous_request.get("bm25_max_df_ratio", 0.5)
+        )
+        if search_mode == "hybrid":
+            hybrid_cols = st.columns(4)
+            with hybrid_cols[0]:
+                bm25_candidates = st.number_input(
+                    "BM25 candidates",
+                    min_value=1,
+                    value=bm25_candidates,
+                    step=1,
+                    key="evaluation_bm25_candidates",
+                )
+            with hybrid_cols[1]:
+                vector_candidates = st.number_input(
+                    "Vector candidates",
+                    min_value=1,
+                    value=vector_candidates,
+                    step=1,
+                    key="evaluation_vector_candidates",
+                )
+            with hybrid_cols[2]:
+                rrf_k = st.number_input(
+                    "RRF k",
+                    min_value=1,
+                    value=rrf_k,
+                    step=1,
+                    key="evaluation_rrf_k",
+                )
+            with hybrid_cols[3]:
+                bm25_max_df_ratio = st.number_input(
+                    "BM25 max df ratio",
+                    min_value=0.05,
+                    max_value=1.0,
+                    value=bm25_max_df_ratio,
+                    step=0.05,
+                    key="evaluation_bm25_max_df_ratio",
+                )
+
+    stage3_batch_size = int(
+        previous_request.get("stage3_batch_size", 10)
+    )
+    stage3_bootstrap_max_cards = int(
+        previous_request.get("stage3_bootstrap_max_cards", 2000)
+    )
     if run_mode != "standard":
         with st.expander("Stage3設定"):
             stage3_cols = st.columns(2)
@@ -1897,7 +2192,7 @@ def _render_evaluation_start_form(
                 stage3_batch_size = st.number_input(
                     "Batch size",
                     min_value=1,
-                    value=10,
+                    value=stage3_batch_size,
                     step=1,
                     key="evaluation_stage3_batch_size",
                 )
@@ -1905,7 +2200,7 @@ def _render_evaluation_start_form(
                 stage3_bootstrap_max_cards = st.number_input(
                     "Bootstrap max cards",
                     min_value=1,
-                    value=2000,
+                    value=stage3_bootstrap_max_cards,
                     step=10,
                     key="evaluation_stage3_bootstrap_max_cards",
                 )
@@ -1919,6 +2214,16 @@ def _render_evaluation_start_form(
         )
     except Exception:
         provider_config = {}
+    provider_config = {
+        role: dict(config)
+        for role, config in provider_config.items()
+        if isinstance(config, dict)
+    }
+    previous_role_models = previous_request.get("role_models") or {}
+    if isinstance(previous_role_models, dict):
+        for role, config in previous_role_models.items():
+            if isinstance(config, dict):
+                provider_config[role] = dict(config)
     connections = _get_connections(api_url)
 
     with st.expander("モデル割り当て", expanded=True):
@@ -1928,7 +2233,8 @@ def _render_evaluation_start_form(
             connections,
         )
         embedding_profile = _evaluation_embedding_profile(
-            role_choices["embedding"].model_name
+            role_choices["embedding"].model_name,
+            provider_config.get("embedding", {}).get("profile"),
         )
         st.markdown("##### Temperature / output")
         generation_values = {}
@@ -2032,6 +2338,13 @@ def _render_evaluation_start_form(
             "rag_source_mode": rag_source_mode,
             "rag_raw_top_k": int(rag_raw_top_k),
             "rag_raw_max_chars": int(rag_raw_max_chars),
+            "search_mode": search_mode,
+            "retrieval_execution": retrieval_execution,
+            "injection_policy": injection_policy,
+            "bm25_candidates": int(bm25_candidates),
+            "vector_candidates": int(vector_candidates),
+            "rrf_k": int(rrf_k),
+            "bm25_max_df_ratio": float(bm25_max_df_ratio),
             "stage3_batch_size": int(stage3_batch_size),
             "stage3_bootstrap_max_cards": int(
                 stage3_bootstrap_max_cards
@@ -2048,9 +2361,16 @@ def _render_evaluation_start_form(
             if response.ok:
                 job = response.json()
                 st.session_state.evaluation_selected_job = job["job_id"]
+                st.session_state.evaluation_pending_run_id = (
+                    _evaluation_next_run_id(
+                        str(job["run_id"]),
+                        [*run_ids, str(job["run_id"])],
+                    )
+                )
                 st.success(
                     f"評価を開始しました: {job['run_id']} "
-                    f"(job {job['job_id'][:8]})"
+                    f"(job {job['job_id'][:8]})。次の新規評価では"
+                    "この設定を引き継ぎます。"
                 )
             else:
                 st.error(_api_error_detail(response))
@@ -2058,18 +2378,30 @@ def _render_evaluation_start_form(
             st.error(f"開始エラー: {exc}")
 
 
-def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
+@st.fragment(run_every=2)
+def _render_evaluation_jobs(api_url: str) -> None:
     import requests
 
     st.subheader("評価ジョブ")
-    if st.button("🔄 状態を更新", key="evaluation_refresh_jobs"):
-        st.rerun()
+    st.caption(
+        "このジョブ表示だけを2秒ごとに更新します。評価フォームや"
+        "モデル候補は再読み込みしません。"
+    )
+    try:
+        jobs = _evaluation_get(
+            api_url,
+            "/evaluations/jobs",
+        ).get("jobs", [])
+    except Exception as exc:
+        st.error(f"ジョブ状態の取得エラー: {exc}")
+        return
     if not jobs:
         st.info("Web Consoleから開始した評価ジョブはまだありません。")
         return
 
     job_rows = [
         {
+            "type": job.get("job_type", "locomo"),
             "run_id": job.get("run_id"),
             "status": job.get("status"),
             "progress": job.get("progress"),
@@ -2111,7 +2443,7 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
         f"{selected.get('message')}"
     )
 
-    action_cols = st.columns(3)
+    action_cols = st.columns(2)
     with action_cols[0]:
         if st.button(
             "■ 停止",
@@ -2126,7 +2458,6 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
             )
             if response.ok:
                 st.success("停止要求を送信しました。")
-                st.rerun()
             else:
                 st.error(_api_error_detail(response))
     with action_cols[1]:
@@ -2143,15 +2474,8 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
             )
             if response.ok:
                 st.success("checkpointから再開しました。")
-                st.rerun()
             else:
                 st.error(_api_error_detail(response))
-    with action_cols[2]:
-        auto_refresh = st.checkbox(
-            "2秒ごとに更新",
-            value=selected.get("status") in _EVALUATION_ACTIVE_STATUSES,
-            key=f"evaluation_auto_refresh_{selected_job_id}",
-        )
 
     with st.expander("実行ログ", expanded=True):
         try:
@@ -2163,12 +2487,101 @@ def _render_evaluation_jobs(api_url: str, jobs: list) -> None:
         except Exception as exc:
             st.error(f"ログ取得エラー: {exc}")
 
-    if (
-        auto_refresh
-        and selected.get("status") in _EVALUATION_ACTIVE_STATUSES
-    ):
-        time.sleep(2)
-        st.rerun()
+
+def _render_retrieval_replay(api_url: str, runs: list) -> None:
+    """QA を回さずに検索だけ比較する（検索改修計画 §8 の足切り）。"""
+    import requests
+
+    replayable = [
+        run["run_id"]
+        for run in runs
+        if run.get("run_id") and run.get("question_count")
+    ]
+    if not replayable:
+        return
+
+    with st.expander("検索だけ比較（offline retrieval replay）", expanded=False):
+        st.caption(
+            "回答を生成せず、同じカードに対する Recall@k だけを測ります。"
+            "bm25 は embedding を呼ばないので即終わります。vector / hybrid は"
+            "質問1件につき embedding を1回呼ぶため、199問なら数分かかります。"
+        )
+        replay_cols = st.columns([2, 2, 1])
+        with replay_cols[0]:
+            target_run = st.selectbox(
+                "対象run",
+                options=replayable,
+                key="evaluation_replay_run",
+            )
+        with replay_cols[1]:
+            modes = st.multiselect(
+                "モード",
+                options=["bm25", "vector", "hybrid"],
+                default=["bm25"],
+                key="evaluation_replay_modes",
+            )
+        with replay_cols[2]:
+            replay_limit = st.number_input(
+                "候補数",
+                min_value=1,
+                max_value=100,
+                value=20,
+                step=1,
+                key="evaluation_replay_limit",
+            )
+        if st.button(
+            "検索を比較",
+            disabled=not modes,
+            key="evaluation_replay_start",
+        ):
+            with st.spinner("検索を実行中…"):
+                try:
+                    response = requests.post(
+                        f"{api_url}/evaluations/runs/retrieval-replay",
+                        json={
+                            "run_id": target_run,
+                            "modes": modes,
+                            "limit": int(replay_limit),
+                        },
+                        timeout=1800,
+                    )
+                    if response.ok:
+                        st.session_state.evaluation_replay_result = (
+                            response.json()
+                        )
+                    else:
+                        st.error(_api_error_detail(response))
+                except Exception as exc:
+                    st.error(f"replayエラー: {exc}")
+
+        result = st.session_state.get("evaluation_replay_result")
+        if not result:
+            return
+        st.caption(
+            f"{result.get('run')} / oracleカードがある問: "
+            f"{result.get('oracle_questions')}"
+        )
+        rows = []
+        for mode in ("bm25", "vector", "hybrid"):
+            stats = result.get(mode)
+            if not isinstance(stats, dict):
+                continue
+            rows.append(
+                {
+                    "mode": mode,
+                    "recall@1": stats.get("recall_at_1"),
+                    "recall@3": stats.get("recall_at_3"),
+                    "recall@20": stats.get("recall_at_20"),
+                    "hit@3": stats.get("hit_at_3"),
+                    "hit@20": stats.get("hit_at_20"),
+                }
+            )
+        st.dataframe(rows, width="stretch", hide_index=True)
+        st.caption(
+            "recall は「上位k候補が evidence ターンを覆った割合」の平均、"
+            "hit は1件でも覆えた問数です。結果は run 直下の "
+            "retrieval_replay.json にも保存されます。"
+        )
 
 
 def _render_evaluation_history(api_url: str, runs: list) -> None:
@@ -2189,6 +2602,8 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
             "exact_match": run.get("exact_match_rate"),
             "evidence": run.get("evidence_retrieval_rate"),
             "rag_trigger": run.get("rag_trigger_rate"),
+            "search_exec": run.get("search_execution_rate"),
+            "recall@3": run.get("retrieval_recall_at_3"),
             "clf_fallback": run.get("classifier_fallback_rate"),
             "latency_ms": run.get("latency_ms_mean"),
             "prompt_tokens": run.get("prompt_tokens_total"),
@@ -2201,7 +2616,8 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
     st.dataframe(history_rows, width="stretch", hide_index=True)
     st.caption(
         "evidence は全問で割った値です。rag_trigger が低い run では検索品質と"
-        "無関係に下がるため、2列を併せて読んでください。"
+        "無関係に下がるため、2列を併せて読んでください。search_exec は検索の"
+        "実行率（注入率とは別）、recall@3 は注入前の候補で測ったランキング品質です。"
     )
     broken = [
         run.get("run_id")
@@ -2213,6 +2629,8 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
             "分類器が高頻度で fallback した run があります（need_intent が立たず"
             "RAG が不発になっている可能性）: " + ", ".join(str(r) for r in broken)
         )
+
+    _render_retrieval_replay(api_url, runs)
 
     scoreable = [
         run["run_id"]
@@ -2260,6 +2678,9 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
             "containment": run.get("answer_containment_rate"),
             "evidence": run.get("evidence_retrieval_rate"),
             "rag_trigger": run.get("rag_trigger_rate"),
+            "search_exec": run.get("search_execution_rate"),
+            "recall@3": run.get("retrieval_recall_at_3"),
+            "bm25_rescue": run.get("bm25_rescue_rate"),
             "clf_fallback": run.get("classifier_fallback_rate"),
             "latency_ms": run.get("latency_ms_mean"),
             "prompt_tokens": run.get("prompt_tokens_total"),
@@ -2298,6 +2719,419 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
     st.dataframe(question_rows, width="stretch", hide_index=True)
 
 
+def _render_dialogue_ab_form(
+    api_url: str,
+    evaluation_config: dict,
+    runs: list,
+) -> None:
+    import requests
+
+    config = evaluation_config.get("dialogue_ab") or {}
+    previous = config.get("last_request")
+    if not isinstance(previous, dict):
+        previous = {}
+    candidates = config.get("dataset_candidates") or []
+    existing_run_ids = [
+        str(run["run_id"]) for run in runs if run.get("run_id")
+    ]
+    previous_run_id = str(previous.get("run_id") or "")
+    suggested_run_id = (
+        _evaluation_next_run_id(previous_run_id, existing_run_ids)
+        if previous_run_id
+        else "ja_dialogue_ab_v1"
+    )
+    # RUN_ID の更新は widget キーへ直接書けない（インスタンス化後の代入は
+    # StreamlitAPIException）。開始成功時は pending キーへ置き、次の描画の
+    # 冒頭＝widget を作る前に反映する（LoCoMo 側の evaluation_pending_run_id と同じ）。
+    pending_run_id = st.session_state.pop("dialogue_ab_pending_run_id", None)
+    if pending_run_id:
+        st.session_state.dialogue_ab_run_id = pending_run_id
+    elif "dialogue_ab_run_id" not in st.session_state:
+        st.session_state.dialogue_ab_run_id = suggested_run_id
+
+    st.subheader("日本語対話 injection policy A/B")
+    st.caption(
+        "同一の日本語メモリを一度だけ生成し、30件の各プロンプトを毎回"
+        "クリーンな複製へ入力します。比較条件は intent_gated と candidates、"
+        "検索実行は両方とも always、検索方式は vector 固定です。"
+    )
+    st.info(
+        "自動指標はトークン・RAG注入・対象語recallです。回答の自然さと"
+        "無関係な記憶の持ち出しは、完了後の回答差分で確認してください。"
+    )
+
+    dataset_default = str(
+        previous.get("dataset_path")
+        or (candidates[0] if candidates else "")
+    )
+    dataset_path = st.text_input(
+        "日本語対話dataset path",
+        value=dataset_default,
+        key="dialogue_ab_dataset_path",
+    )
+    top_cols = st.columns(2)
+    with top_cols[0]:
+        run_id = st.text_input(
+            "RUN_ID",
+            key="dialogue_ab_run_id",
+        )
+    with top_cols[1]:
+        stage3_enabled = st.checkbox(
+            "Stage3を有効化",
+            value=bool(previous.get("stage3_enabled", True)),
+            key="dialogue_ab_stage3_enabled",
+            help="記憶生成時にノードも作り、両policyで同じノードを利用します。",
+        )
+
+    with st.expander("RAG・コンテキスト設定", expanded=True):
+        context_cols = st.columns(4)
+        with context_cols[0]:
+            context_current_time = st.checkbox(
+                "Current Time",
+                value=bool(previous.get("context_current_time", True)),
+                key="dialogue_ab_context_current_time",
+            )
+        with context_cols[1]:
+            context_mid_term = st.checkbox(
+                "Mid-term",
+                value=bool(previous.get("context_mid_term", True)),
+                key="dialogue_ab_context_mid_term",
+            )
+        with context_cols[2]:
+            context_session_digest = st.checkbox(
+                "Session Digest",
+                value=bool(previous.get("context_session_digest", True)),
+                key="dialogue_ab_context_session_digest",
+            )
+        with context_cols[3]:
+            context_rag = st.checkbox(
+                "RAG",
+                value=bool(previous.get("context_rag", True)),
+                key="dialogue_ab_context_rag",
+            )
+        rag_cols = st.columns(4)
+        with rag_cols[0]:
+            rag_source_mode = st.selectbox(
+                "RAG source",
+                options=["cards", "raw", "both"],
+                index=_evaluation_option_index(
+                    ["cards", "raw", "both"],
+                    previous.get("rag_source_mode", "both"),
+                ),
+                key="dialogue_ab_rag_source_mode",
+            )
+        with rag_cols[1]:
+            rag_raw_top_k = st.number_input(
+                "RAW top-k",
+                min_value=0,
+                value=int(previous.get("rag_raw_top_k", 1)),
+                step=1,
+                key="dialogue_ab_rag_raw_top_k",
+            )
+        with rag_cols[2]:
+            rag_raw_max_chars = st.number_input(
+                "RAW max chars",
+                min_value=0,
+                value=int(previous.get("rag_raw_max_chars", 2500)),
+                step=100,
+                key="dialogue_ab_rag_raw_max_chars",
+            )
+        with rag_cols[3]:
+            time_decay_rate = st.number_input(
+                "Time decay rate",
+                min_value=0.0,
+                value=float(previous.get("time_decay_rate", 0.003)),
+                step=0.001,
+                format="%.3f",
+                key="dialogue_ab_time_decay_rate",
+            )
+
+    stage3_batch_size = int(previous.get("stage3_batch_size", 10))
+    stage3_bootstrap_max_cards = int(
+        previous.get("stage3_bootstrap_max_cards", 2000)
+    )
+    if stage3_enabled:
+        with st.expander("Stage3設定"):
+            stage_cols = st.columns(2)
+            with stage_cols[0]:
+                stage3_batch_size = st.number_input(
+                    "Batch size",
+                    min_value=1,
+                    value=stage3_batch_size,
+                    step=1,
+                    key="dialogue_ab_stage3_batch_size",
+                )
+            with stage_cols[1]:
+                stage3_bootstrap_max_cards = st.number_input(
+                    "Bootstrap max cards",
+                    min_value=1,
+                    value=stage3_bootstrap_max_cards,
+                    step=10,
+                    key="dialogue_ab_stage3_bootstrap_max_cards",
+                )
+
+    try:
+        provider_response = requests.get(f"{api_url}/config", timeout=5)
+        provider_config = (
+            provider_response.json().get("AI_CONFIG", {})
+            if provider_response.ok
+            else {}
+        )
+    except Exception:
+        provider_config = {}
+    provider_config = {
+        role: dict(role_config)
+        for role, role_config in provider_config.items()
+        if isinstance(role_config, dict)
+    }
+    previous_models = previous.get("role_models") or {}
+    if isinstance(previous_models, dict):
+        for role, role_config in previous_models.items():
+            if isinstance(role_config, dict):
+                provider_config[role] = dict(role_config)
+
+    with st.expander("モデル割り当て", expanded=True):
+        role_choices = _evaluation_role_models(
+            api_url,
+            provider_config,
+            _get_connections(api_url),
+            key_prefix="dialogue_ab_model",
+        )
+        embedding_profile = _evaluation_embedding_profile(
+            role_choices["embedding"].model_name,
+            provider_config.get("embedding", {}).get("profile"),
+            widget_key="dialogue_ab_embedding_profile",
+        )
+        generation_values = {}
+        generation_cols = st.columns(4)
+        temperatures = {
+            "chat": 0.0,
+            "gatekeeper": 0.0,
+            "summary": 0.3,
+            "knowledge": 0.2,
+        }
+        for column, (role, fallback) in zip(
+            generation_cols,
+            temperatures.items(),
+        ):
+            previous_generation = (
+                previous_models.get(role, {}).get("generation_config", {})
+                if isinstance(previous_models.get(role), dict)
+                else {}
+            )
+            current_generation = (
+                previous_generation
+                if isinstance(previous_generation, dict)
+                else {}
+            )
+            with column:
+                temperature = st.number_input(
+                    f"{role} temperature",
+                    min_value=0.0,
+                    max_value=2.0,
+                    value=float(
+                        current_generation.get("temperature", fallback)
+                    ),
+                    step=0.1,
+                    key=f"dialogue_ab_temperature_{role}",
+                )
+                generation_values[role] = {
+                    "temperature": float(temperature)
+                }
+        gatekeeper_max_tokens = st.number_input(
+            "Gatekeeper max output tokens",
+            min_value=1,
+            value=int(
+                (
+                    previous_models.get("gatekeeper", {})
+                    .get("generation_config", {})
+                    if isinstance(previous_models.get("gatekeeper"), dict)
+                    else {}
+                ).get("max_output_tokens", 2048)
+            ),
+            step=128,
+            key="dialogue_ab_gatekeeper_max_tokens",
+        )
+        generation_values["gatekeeper"]["max_output_tokens"] = int(
+            gatekeeper_max_tokens
+        )
+        from evals.locomo.web_jobs import gatekeeper_token_warning
+
+        warning = gatekeeper_token_warning(
+            role_choices["gatekeeper"].model_name,
+            gatekeeper_max_tokens,
+        )
+        if warning:
+            st.warning(warning)
+
+    if st.button(
+        "▶ 日本語対話A/Bを開始",
+        type="primary",
+        width="stretch",
+        disabled=not dataset_path.strip() or not run_id.strip(),
+        key="dialogue_ab_start",
+    ):
+        role_models = {}
+        empty_roles = []
+        for role, choice in role_choices.items():
+            if not choice.model_name.strip():
+                empty_roles.append(role)
+                continue
+            role_models[role] = {
+                "connection": choice.connection_id,
+                "model_name": choice.model_name.strip(),
+                "generation_config": generation_values.get(role, {}),
+            }
+            if role == "embedding" and embedding_profile:
+                role_models[role]["profile"] = embedding_profile
+        if empty_roles:
+            st.error(
+                "モデルが未設定のロールがあります: "
+                + ", ".join(empty_roles)
+            )
+            return
+        payload = {
+            "dataset_path": dataset_path.strip(),
+            "run_id": run_id.strip(),
+            "time_decay_rate": float(time_decay_rate),
+            "context_current_time": context_current_time,
+            "context_mid_term": context_mid_term,
+            "context_session_digest": context_session_digest,
+            "context_rag": context_rag,
+            "rag_source_mode": rag_source_mode,
+            "rag_raw_top_k": int(rag_raw_top_k),
+            "rag_raw_max_chars": int(rag_raw_max_chars),
+            "stage3_enabled": stage3_enabled,
+            "stage3_batch_size": int(stage3_batch_size),
+            "stage3_bootstrap_max_cards": int(
+                stage3_bootstrap_max_cards
+            ),
+            "role_models": role_models,
+        }
+        # 起動リクエストの失敗だけを「開始エラー」として扱う。開始後の UI 更新まで
+        # 同じ except で包むと、ジョブは走っているのに「開始エラー」と出て誤解する。
+        try:
+            response = requests.post(
+                f"{api_url}/evaluations/dialogue-ab/jobs",
+                json=payload,
+                timeout=10,
+            )
+        except requests.RequestException as exc:
+            st.error(f"開始エラー: {exc}")
+            return
+        if not response.ok:
+            st.error(_api_error_detail(response))
+            return
+
+        job = response.json()
+        st.session_state.evaluation_selected_job = job["job_id"]
+        st.session_state.dialogue_ab_pending_run_id = _evaluation_next_run_id(
+            str(job["run_id"]),
+            [*existing_run_ids, str(job["run_id"])],
+        )
+        st.success(
+            f"日本語対話A/Bを開始しました: {job['run_id']} "
+            f"(job {job['job_id'][:8]})"
+        )
+
+
+def _render_dialogue_ab_history(api_url: str, runs: list) -> None:
+    if not runs:
+        st.info("日本語対話A/B runはまだありません。")
+        return
+    rows = [
+        {
+            "run_id": run.get("run_id"),
+            "status": run.get("status"),
+            "prompts": run.get("prompt_count"),
+            "cards": run.get("knowledge_cards_created"),
+            "intent RAG": run.get("intent_rag_trigger_rate"),
+            "candidates RAG": run.get("candidates_rag_trigger_rate"),
+            "token Δ/turn": run.get("prompt_tokens_mean_delta"),
+            "required recall Δ": run.get("required_recall_delta"),
+            "irrelevant mention Δ": run.get("irrelevant_mention_delta"),
+            "created_at": run.get("created_at"),
+        }
+        for run in runs
+    ]
+    st.markdown("#### A/B履歴")
+    st.dataframe(rows, width="stretch", hide_index=True)
+
+    completed = [
+        run["run_id"]
+        for run in runs
+        if run.get("has_scores") and run.get("run_id")
+    ]
+    if not completed:
+        return
+    selected_run = st.selectbox(
+        "回答差分を表示するrun",
+        options=completed,
+        key="dialogue_ab_result_run",
+    )
+    try:
+        scores = _evaluation_get(
+            api_url,
+            f"/evaluations/dialogue-ab/runs/{selected_run}",
+        )
+    except Exception as exc:
+        st.error(f"A/B結果取得エラー: {exc}")
+        return
+
+    policy_rows = []
+    for policy in ("intent_gated", "candidates"):
+        stats = scores.get("policies", {}).get(policy, {})
+        policy_rows.append(
+            {
+                "policy": policy,
+                "RAG trigger": stats.get("rag_trigger_rate"),
+                "search exec": stats.get("search_execution_rate"),
+                "prompt tokens mean": stats.get("prompt_tokens_mean"),
+                "latency ms mean": stats.get("latency_ms_mean"),
+                "latency p95": stats.get("latency_ms_p95"),
+                "required recall": stats.get("required_target_recall"),
+                "irrelevant mention": stats.get(
+                    "irrelevant_seed_mention_rate"
+                ),
+            }
+        )
+    st.markdown("#### Policy指標")
+    st.dataframe(policy_rows, width="stretch", hide_index=True)
+
+    category = st.selectbox(
+        "表示カテゴリ",
+        options=[
+            "all",
+            "memory_required",
+            "memory_irrelevant",
+            "memory_optional",
+        ],
+        key="dialogue_ab_result_category",
+    )
+    prompt_rows = []
+    for prompt in scores.get("prompts", []):
+        if category != "all" and prompt.get("category") != category:
+            continue
+        arms = prompt.get("arms") or {}
+        intent = arms.get("intent_gated") or {}
+        candidates = arms.get("candidates") or {}
+        prompt_rows.append(
+            {
+                "id": prompt.get("prompt_id"),
+                "category": prompt.get("category"),
+                "prompt": prompt.get("prompt"),
+                "review": prompt.get("review_point"),
+                "intent RAG": intent.get("rag_triggered"),
+                "candidate RAG": candidates.get("rag_triggered"),
+                "token Δ": prompt.get("prompt_tokens_delta"),
+                "intent answer": intent.get("response"),
+                "candidates answer": candidates.get("response"),
+            }
+        )
+    st.markdown("#### プロンプト別回答")
+    st.dataframe(prompt_rows, width="stretch", hide_index=True)
+
+
 def render_evaluation_screen():
     api_url = st.session_state.api_base_url
     header_cols = st.columns([1, 8])
@@ -2306,48 +3140,92 @@ def render_evaluation_screen():
             navigate_to("home")
     with header_cols[1]:
         st.markdown(
-            '<h1 class="app-title">📊 LoCoMo Evaluation Console</h1>',
+            '<h1 class="app-title">📊 Butly Evaluation Console</h1>',
             unsafe_allow_html=True,
         )
     st.divider()
 
+    sections = [
+        "▶ LoCoMo評価",
+        "🗣 日本語対話A/B",
+        "⚙️ ジョブ",
+        "📈 LoCoMo履歴・比較",
+    ]
+    section = st.segmented_control(
+        "評価画面",
+        options=sections,
+        default=sections[0],
+        key="evaluation_console_section",
+        label_visibility="collapsed",
+        width="stretch",
+    )
+
     try:
-        evaluation_config = _evaluation_get(
-            api_url,
-            "/evaluations/config",
-        )
-        jobs = _evaluation_get(
-            api_url,
-            "/evaluations/jobs",
-        ).get("jobs", [])
-        runs_payload = _evaluation_get(
-            api_url,
-            "/evaluations/runs",
-        )
-        runs = runs_payload.get("runs", [])
+        if section == sections[0]:
+            evaluation_config = _evaluation_get(
+                api_url,
+                "/evaluations/config",
+            )
+            runs_payload = _evaluation_get(
+                api_url,
+                "/evaluations/runs",
+            )
+            runs = runs_payload.get("runs", [])
+            st.caption(
+                "LoCoMo保存先: "
+                f"`{runs_payload.get('output_dir') or evaluation_config.get('output_dir')}`"
+            )
+            _render_model_catalog_refresh(
+                api_url,
+                key="evaluation_locomo_model_catalog_refresh",
+            )
+            _render_evaluation_start_form(
+                api_url,
+                evaluation_config,
+                runs,
+            )
+        elif section == sections[1]:
+            evaluation_config = _evaluation_get(
+                api_url,
+                "/evaluations/config",
+            )
+            dialogue_runs_payload = _evaluation_get(
+                api_url,
+                "/evaluations/dialogue-ab/runs",
+            )
+            dialogue_runs = dialogue_runs_payload.get("runs", [])
+            st.caption(
+                "日本語対話A/B保存先: "
+                f"`{dialogue_runs_payload.get('output_dir')}`"
+            )
+            _render_model_catalog_refresh(
+                api_url,
+                key="evaluation_dialogue_model_catalog_refresh",
+            )
+            _render_dialogue_ab_form(
+                api_url,
+                evaluation_config,
+                dialogue_runs,
+            )
+            _render_dialogue_ab_history(api_url, dialogue_runs)
+        elif section == sections[2]:
+            _render_evaluation_jobs(api_url)
+        else:
+            runs_payload = _evaluation_get(
+                api_url,
+                "/evaluations/runs",
+            )
+            runs = runs_payload.get("runs", [])
+            st.caption(
+                "LoCoMo保存先: "
+                f"`{runs_payload.get('output_dir')}`"
+            )
+            _render_evaluation_history(api_url, runs)
     except Exception as exc:
         st.error(
             "評価APIへ接続できません。backendを再起動して最新コードを"
             f"読み込んでください。\n\n{exc}"
         )
-        return
-
-    st.caption(
-        f"Run保存先: `{runs_payload.get('output_dir') or evaluation_config.get('output_dir')}`"
-    )
-    start_tab, jobs_tab, history_tab = st.tabs(
-        ["▶ 新規評価", "⚙️ ジョブ", "📈 履歴・比較"]
-    )
-    with start_tab:
-        _render_evaluation_start_form(
-            api_url,
-            evaluation_config,
-            runs,
-        )
-    with jobs_tab:
-        _render_evaluation_jobs(api_url, jobs)
-    with history_tab:
-        _render_evaluation_history(api_url, runs)
 
 
 # ==========================================
@@ -2773,11 +3651,55 @@ def render_instance_settings_screen():
     # --- 全プロバイダーのモデル候補リスト ---
     # Phase 3: ハードコード撤廃。backend `/settings/model_candidates?role=<role>` から
     # role 毎に取得し、Connection 追加で増えるモデルもそのまま反映される。
-    _chat_candidates = _get_role_candidates(api_url, "chat")
-    _summary_candidates = _get_role_candidates(api_url, "summary")
-    _knowledge_candidates = _get_role_candidates(api_url, "knowledge")
-    _gatekeeper_candidates = _get_role_candidates(api_url, "gatekeeper")
-    _embedding_candidates = _get_role_candidates(api_url, "embedding")
+    _render_model_catalog_refresh(
+        api_url,
+        key="instance_model_catalog_refresh",
+    )
+    from butly_core.config import AI_CONFIG as _candidate_global_ai
+
+    def _instance_role_connection(role: str) -> str | None:
+        role_config = config.get(role, {})
+        global_config = _candidate_global_ai.get(role, {})
+        return (
+            role_config.get("connection")
+            if isinstance(role_config, dict)
+            else None
+        ) or (
+            global_config.get("connection")
+            if isinstance(global_config, dict)
+            else None
+        )
+
+    _chat_candidates = _get_selector_candidates(
+        api_url,
+        "chat",
+        _instance_role_connection("chat"),
+        "inst_chat_model",
+    )
+    _summary_candidates = _get_selector_candidates(
+        api_url,
+        "summary",
+        _instance_role_connection("summary"),
+        "inst_sum_model",
+    )
+    _knowledge_candidates = _get_selector_candidates(
+        api_url,
+        "knowledge",
+        _instance_role_connection("knowledge"),
+        "inst_know_model",
+    )
+    _gatekeeper_candidates = _get_selector_candidates(
+        api_url,
+        "gatekeeper",
+        _instance_role_connection("gatekeeper"),
+        "inst_gk_model",
+    )
+    _embedding_candidates = _get_selector_candidates(
+        api_url,
+        "embedding",
+        _instance_role_connection("embedding"),
+        "inst_emb_model",
+    )
     _instance_connections = _get_connections(api_url)
 
     # =====================

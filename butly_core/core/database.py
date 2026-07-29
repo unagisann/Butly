@@ -3,10 +3,12 @@ import os
 from datetime import datetime, timezone, timedelta
 
 from butly_core.core.card_content import (
+    coerce_card_fields,
     compute_content_hash,
     normalize_maturation_time,
     utc_now_stamp,
 )
+from butly_core.core.hybrid_search import ensure_fts_index
 
 
 def _table_columns(cursor, table: str) -> set:
@@ -30,6 +32,7 @@ def _ensure_column(cursor, table: str, column: str, decl: str) -> bool:
 class ButlyDatabase:
     def __init__(self, db_path="butly_memory.db"):
         self.db_path = db_path
+        self.fts_status: dict = {}
         self._initialize_db()
 
     def _get_connection(self):
@@ -241,6 +244,12 @@ class ButlyDatabase:
             # migration 開始時刻を使う。
             self._backfill_content_hashes(cursor)
 
+            # ハイブリッド検索用の FTS5(trigram) 索引（検索改修計画 §3.1）。
+            # 既存 migration と同じトランザクション内で作り、backfill も同時に
+            # 終わらせる。FTS5/trigram が使えない SQLite では索引を作らず、
+            # 検索側が vector へフォールバックする（起動は止めない）。
+            self.fts_status = ensure_fts_index(conn)
+
             conn.commit()
 
     @staticmethod
@@ -323,6 +332,8 @@ class ButlyDatabase:
 
     def register_knowledge(self, card_data):
         """ナレッジカードをDBに登録または更新する"""
+        # LLM 由来の dict は summary/tags が配列で来ることがある（sleeptime と同じ）。
+        card_data = coerce_card_fields(card_data)
         with self._get_connection() as conn:
             cursor = conn.cursor()
 

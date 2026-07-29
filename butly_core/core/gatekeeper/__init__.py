@@ -120,6 +120,11 @@ class Gatekeeper:
         elif need_intent in ("past_fact", "relationship") and candidates:
             need = need_intent
             search_targets = [c.get("title", "") for c in candidates[:3]]
+        elif candidates:
+            # probe が注入policy（retrieval_assisted）で昇格させた候補。
+            # intent_gated では candidates が空になるので、ここには来ない。
+            need = probe_result.get("retrieval", {}).get("need_hint") or "past_fact"
+            search_targets = [c.get("title", "") for c in candidates[:3]]
 
         return {
             "tier": tier,

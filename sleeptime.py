@@ -389,7 +389,15 @@ class ButlySleeptime:
         source_date: 元会話の日付 (YYYY-MM-DD)。time decay の基準になる。
         source_files: 生成に使った RAW ファイル名のリスト（遡及参照用）。
         """
-        from butly_core.core.card_content import compute_content_hash, utc_now_stamp
+        from butly_core.core.card_content import (
+            coerce_card_fields,
+            compute_content_hash,
+            utc_now_stamp,
+        )
+
+        # モデルが summary/tags を配列で返すことがある。そのまま bind すると
+        # sqlite が落ちてカードが 1 枚まるごと失われるため、必ず文字列へ寄せる。
+        card = coerce_card_fields(card)
 
         conn = sqlite3.connect(instance_db_path)
         conn.execute("PRAGMA journal_mode=WAL;")
@@ -1928,7 +1936,10 @@ class ButlySleeptime:
 
         Returns:
             {"chunks": int, "failed_chunks": int, "cards_created": int,
+             "insert_failures": int,
              "failures": [{"date", "chunk", "reason"}, ...]}
+            cards_created は「実際に DB へ保存できた枚数」。抽出できたのに保存で
+            落ちた分は insert_failures と failures に出る。
         """
         print(f"--- Stage 2: Knowledgeize (RAW) for {target_instance} ({db_type}) ---")
         # source_files_card / _chunk: カード単位の根拠に絞れた枚数と、
@@ -1937,6 +1948,9 @@ class ButlySleeptime:
             "chunks": 0,
             "failed_chunks": 0,
             "cards_created": 0,
+            # 抽出はできたが保存に失敗した枚数。RAW は処理済みへ移動されるので、
+            # ここが 0 でないと「静かにカードが消えた」状態を意味する。
+            "insert_failures": 0,
             "failures": [],
             "source_files_card": 0,
             "source_files_chunk": 0,
@@ -2072,13 +2086,26 @@ class ButlySleeptime:
                             card, chunk_file_names
                         )
                         stats[f"source_files_{granularity}"] += 1
-                        self.insert_knowledge(
+                        # 生成数ではなく実際に保存できた数を数える。以前は
+                        # INSERT が落ちてもカウントされ、カードが消えたことに
+                        # 気づけなかった（RAW は処理済みへ移動される）。
+                        if self.insert_knowledge(
                             card, db_id, db_type,
                             f"{date_str}_raw_combined", instance_db_path,
                             source_date=date_str,
                             source_files=card_files,
-                        )
-                    stats["cards_created"] += len(cards)
+                        ):
+                            stats["cards_created"] += 1
+                        else:
+                            stats["insert_failures"] += 1
+                            stats["failures"].append(
+                                {
+                                    "date": date_str,
+                                    "chunk": chunk_idx + 1,
+                                    "reason": "insert_failed",
+                                    "card_title": str(card.get("title", ""))[:80],
+                                }
+                            )
                     all_processed_files.extend(files_in_batch)
                 elif status == "no_cards":
                     # 正当な「抽出対象なし」— 再処理し続けないよう処理済み扱いで移動

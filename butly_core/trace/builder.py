@@ -238,6 +238,9 @@ def build_chat_trace(
                 "layers": probe.get("layers"),
                 "candidate_count": len(probe.get("candidates") or []),
                 "glossary_hit_count": len(probe.get("glossary_hits") or []),
+                # 検索は走ったが注入されなかったケースを読めるようにする
+                "retrieval": probe.get("retrieval"),
+                "retrieved_count": len(probe.get("retrieved_candidates") or []),
             },
         )
     )
@@ -299,6 +302,13 @@ def build_chat_trace(
                     "id": r.get("id"),
                     "title": summarize_text(r.get("title", ""), 40),
                     "score": r.get("score"),
+                    # hybrid では score は RRF スコア。cosine と BM25 の内訳は
+                    # 別フィールドに残す（計画書 §3.2 / §3.7）
+                    "vector_score": r.get("vector_score"),
+                    "retrieval_source": r.get("retrieval_source"),
+                    "vector_rank": r.get("vector_rank"),
+                    "bm25_rank": r.get("bm25_rank"),
+                    "matched_terms": r.get("matched_terms"),
                     "source_date": r.get("source_date"),
                     "source_instance": r.get("source_instance"),
                 }

@@ -184,6 +184,51 @@ Traceの`memory_probe_layers.vector`では、`fetch_limit: null`が全件検索�
 Colabの既定値`0.0`は新旧カードを意味類似度だけで比較するA/B用であり、
 通常インスタンスのシステム既定値は変更しない。
 
+### ハイブリッド検索（`brain.search_mode`）
+
+`brain.search_mode: hybrid`で、FTS5(trigram)のBM25候補とベクトル候補を
+RRFで融合する検索へ切り替えられる（既定は`vector`）。profileから
+`bm25_candidates` / `vector_candidates` / `rrf_k` / `bm25_weights` /
+`bm25_max_df_ratio` / `bm25_min_weak_df` / `bm25_scan_limit`を上書きできる。
+hybridの候補dictでは`score`が**RRFスコア**になり、cosineは`vector_score`へ入る。
+`retrieval_source`（vector/bm25/both）と両者の順位も残る。
+
+Run履歴の「検索だけ比較（offline retrieval replay）」から、回答生成なしで
+`bm25` / `vector` / `hybrid` のRecall@1/3/20を比べられる
+（`POST /evaluations/runs/retrieval-replay`）。結果はrun直下の
+`retrieval_replay.json`にも残る。`bm25`はembeddingを呼ばないので即終わるが、
+`vector` / `hybrid`は質問1件につきembeddingを1回呼ぶ。
+
+Webコンソールの「検索設定（ハイブリッド検索 A/B）」から
+`search_mode` / `retrieval_execution` / `injection_policy` を選べる。
+`hybrid`のときだけ`bm25_candidates` / `vector_candidates` / `rrf_k` /
+`bm25_max_df_ratio`の入力欄が出て、profile YAMLの`brain`・`memory_probe`
+セクションへ書き込まれる（`vector` runのprofileにBM25キーは残さない）。
+run履歴と比較表には`search_exec` / `recall@3` / `bm25_rescue`列が並ぶ。
+
+検索の実行と注入判定は`memory_probe.retrieval_execution`（既定`always`）と
+`memory_probe.injection_policy`（既定`intent_gated`）で独立に制御する。
+`always`では`need_intent=null`の問でもQuick Retrievalが走るため、
+**`rag_trigger_rate`はもう検索実行率ではない**。実行率は
+`search_execution_rate`、注入率は`memory_injection_rate`（`rag_trigger_rate`と同値）
+を見る。
+
+scorerが出す検索系の指標:
+
+| 指標 | 分母 | 内容 |
+|---|---|---|
+| `search_execution_rate` | 全問 | Quick Retrievalを実行した割合 |
+| `retrieval_candidate_rate` | 全問 | 候補が1件以上あった割合 |
+| `memory_injection_rate` | 全問 | promptへ注入した割合（=`rag_trigger_rate`） |
+| `retrieval_recall_at_1/3/20` | oracleカードがある問 | 上位k候補の`source_files`がevidenceターンを覆う割合 |
+| `vector_only_recall_at_3` | 同上 | BM25を外した対照値 |
+| `bm25_rescue_rate` | 同上 | 融合top3がベクトル単独top3を上回った割合 |
+| `retrieval_latency_ms_p50/p95` | 実行した問 | 検索のみのレイテンシ（embedding呼び出しを含む） |
+| `bm25_short_term_hit_rate` | 実行した問 | 2文字CJK語のLIKE補助候補が入った割合 |
+
+`evidence_retrieval_rate`は**注入されたカード**で測るので注入policyの影響を受ける。
+ランキング自体の良し悪しは`retrieval_recall_at_k`で見る。
+
 評価profileの`context_levels.levels`では、`current_time`、`mid_term`、
 `session_digest`、`rag`をそれぞれ`high` / `'off'`にできる。RAGを完全に止める
 場合は、prompt注入を止める`rag: 'off'`に加えて`brain.use_rag: false`で検索自体も

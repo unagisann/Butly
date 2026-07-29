@@ -83,6 +83,13 @@ Candidates combine built-in presets, the currently saved value, and the
 endpoint's `/models` response. Use the direct model-ID field when a model is not
 listed. Butly saves both `connection` and `model_name`.
 
+The selected Connection's provider catalog is loaded lazily and cached for ten
+minutes. Role-specific candidate requests reuse that catalog instead of calling
+the external `/models` endpoint for every role. Connection, API-key, and Ollama
+URL changes invalidate the affected cache automatically. Use **Refresh model list** or
+`POST /settings/model_catalog/refresh` to pick up provider-side changes
+immediately.
+
 Connections with `embeddings_supported=false` are excluded from the Embedding
 role. After changing an embedding Connection or model, regenerate existing
 vectors with `migrate_embeddings.py` because their dimensions may differ.
@@ -149,7 +156,8 @@ Console.
 | `POST` | `/settings/connections/{connection_id}/api_key` | Save `{"api_key": "..."}` |
 | `DELETE` | `/settings/connections/{connection_id}/api_key` | Clear key variables used by the Connection |
 | `POST` | `/settings/test_connection` | Test a Connection and list models |
-| `GET` | `/settings/model_candidates?role=...` | Return role-specific `(connection_id, model_name)` candidates |
+| `GET` | `/settings/model_candidates?role=...&connection_id=...` | Return role candidates; optional `connection_id` limits dynamic discovery |
+| `POST` | `/settings/model_catalog/refresh` | Invalidate all or one Connection's model-catalog cache |
 
 Secret create/delete responses never contain the key value.
 

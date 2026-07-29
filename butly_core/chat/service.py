@@ -248,6 +248,9 @@ def _build_rag_debug(
     return {
         "query": gk_result.get("need"),
         "results": results,
+        # 検索の実行/候補/注入判定（計画書 §3.7）。注入されなかった検索も
+        # ここに残るので、search_execution と memory_injection を分けて測れる。
+        "retrieval": (gk_result.get("memory_probe") or {}).get("retrieval"),
         "source_mode": blocks.get("rag_source_mode"),
         "raw_reference": blocks.get("rag_raw_reference"),
         "active_nodes": _build_active_node_trace(

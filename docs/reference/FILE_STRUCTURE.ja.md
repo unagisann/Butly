@@ -12,6 +12,7 @@
 |---|---|
 | `main.py` | FastAPI アプリの互換 entrypoint（app 構築は `butly_api.create_app()` に委譲） |
 | `app.py` | Streamlit Web UI（FastAPI バックエンド経由で動作） |
+| `data/ja_dialogue_ab_prompts_v1.json` | 日本語の本番対話A/B用memory seed 10件・プロンプト30件 |
 | `dependencies.py` | ルーター間共有のグローバル状態・ヘルパー |
 | `sleeptime.py` | 記憶自動整理スクリプト（単体実行 & APIから呼び出し可） |
 | `migrate_embeddings.py` | プロバイダー切り替え時の embedding 再生成ユーティリティ |
@@ -43,7 +44,7 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 **画面構成:**
 - `render_home_screen()` — ホーム。インスタンス一覧・新規作成
 - `render_chat_screen()` — チャット画面。`POST /chat` で応答取得、デバッグ表示
-- `render_settings_screen()` — グローバル設定、汎用Connection/APIキー管理、プロバイダー→モデルの二段階選択
+- `render_settings_screen()` — グローバル設定、汎用Connection/APIキー管理、プロバイダー→モデルの二段階選択、モデル一覧の明示更新
 - `render_evaluation_screen()` — LoCoMo評価フォーム、ジョブ停止・再開・ログ、run履歴・問題別スコア比較
 - `render_instance_settings_screen()` — インスタンス個別の性格設定・config 編集。モデル上書きもConnection→モデルの順に選択
 - `_render_connection_manager()` — built-in / ユーザー定義Connectionの一覧、秘密値を再表示しないAPIキー保存・解除、疎通テスト、テンプレート追加、参照保護付き削除
@@ -112,16 +113,24 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、独立／逐次QAの結果とTraceを保存 |
 | `replay.py` | セッションReplay、Sleeptime、独立／逐次QA、checkpoint更新のオーケストレーション。逐次QAはcheckpoint commit前の中断時にinstance・結果・Traceをrollbackし、`resume_evaluation()`で重複なく途中再開。`rerun_qa_from_memory()`は独立runのpost-Sleeptime instanceを新runへ複製してQAだけ再実行 |
 | `artifacts.py` | JSON/JSONL、Traceコピー、セッション前後スナップショットの保存 |
-| `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。`scores.json` / `errors.jsonl`出力 |
+| `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。検索実行率／注入率／`retrieval_recall_at_k`／`bm25_rescue_rate`も集計。`scores.json` / `errors.jsonl`出力 |
+| `retrieval_replay.py` | LLM回答を生成しないoffline retrieval replay。既存runのDBを一時ディレクトリへ複製し、`bm25` / `vector` / `hybrid`のRecall@kを比較する（`python -m evals.locomo.retrieval_replay`）。元runは変更しない |
 | `stemming.py` | 依存追加なしのPorter (1980) stemmer。公式のnltk stemmerと稀な語で差が出る旨をdocstringに明記 |
 | `report.py` | `scores.json`から`summary.md`を生成 |
 | `checkpoint.py` | セッション/Sleeptime/QA単位のatomicなcheckpoint。run ID照合と破損検出つき |
 | `config.py` | CLI設定DTO（QA mode、sample/session/question範囲、localeを含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
 | `cli.py` | `run` / `resume` / `rerun-qa` / `score` / `report` subcommands。`run`は`--qa-mode`、各`--*-limit` / `--all-*`、`--locale`を受け付け、`rerun-qa`は元runを変更せず同じカードでQAを再実行 |
 | `progress.py` | CLI / Colab向けの即時進捗ログ。Replay・Sleeptime・QAの完了unitを0〜90%、採点・レポートを90〜100%としてstderrへ表示 |
-| `web_jobs.py` | Web Console用の永続subprocessジョブ管理。CLI command/profile生成、進捗ログ解析、停止・resume、既存run走査・スコア比較 |
+| `web_jobs.py` | Web Console用の永続subprocessジョブ管理。CLI command/profile生成（検索設定を含む）、進捗ログ解析、停止・resume、既存run走査・スコア比較、offline retrieval replayの実行 |
 | `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`）。top-level `locale`は内部prompt／memory出力言語、`brain.time_decay_rate`は評価runの検索時間減衰を指定 |
 | `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook。ParametersセルでQA mode、locale、sample/session/questionの全件／上限制御、context別ON/OFF、role別temperature、`TIME_DECAY_RATE`、同一カード再利用元runを選択（評価ロジック禁止） |
+
+### `evals/dialogue_ab.py`
+
+日本語の通常対話に対する`intent_gated` / `candidates`比較runner。
+同じseed memoryを一度だけKnowledge化し、30プロンプトを独立cloneへ投入する。
+プロンプト単位のatomic結果、停止・resume、policy/category別のtoken・RAG・latency・
+対象語recall集計を提供する。CLIは`python -m evals.dialogue_ab run|resume`。
 
 QA modeは、全質問を同じpost-Sleeptime状態から評価する`independent`
 （バージョン比較の既定）と、QAターンを同一instanceへ蓄積する`sequential`
@@ -173,7 +182,8 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 - `POST /settings/connections` / `DELETE /settings/connections/{id}` — ユーザー定義Connectionの登録・削除。モデル設定から参照中の通常削除は409、`force=true`のみ強制
 - `POST /settings/connections/{id}/api_key` / `DELETE /settings/connections/{id}/api_key` — 登録済みConnectionの環境変数名をサーバー側で解決し、`DATA_DIR/.env` のAPIキーを保存・解除
 - `POST /settings/test_connection` — Connectionの疎通確認
-- `GET /settings/model_candidates` — role別に `(connection_id, model_name)` 候補を返す
+- `GET /settings/model_candidates` — 選択Connectionだけ遅延取得・10分キャッシュし、role別の `(connection_id, model_name)` 候補を返す
+- `POST /settings/model_catalog/refresh` — 全Connectionまたは指定Connectionのモデル一覧キャッシュを破棄
 
 詳細は [LLM Connection / APIキー管理](llm_connections.ja.md) を参照。
 
@@ -369,10 +379,12 @@ LLM 呼び出しと RAG 検索のエンジン。Provider に依存しない中�
 
 - `ButlyBrain(base_dir)` — 初期化
   - `get_embedding(text)` — Embedding ベクトルを取得
-  - `extract_keywords(text, override_config)` — RAG 用キーワードを LLM で抽出
-  - `search_knowledge(keywords, query, instance_name, limit, override_config)` — コサイン類似度で RAG 検索（時間減衰込み）
+  - `extract_keywords(text, override_config)` — RAG 用キーワードを LLM で抽出（`search_mode="vector"` の Layer 2 のみ使用）
+  - `search_knowledge(keywords, query, instance_name, limit, override_config)` — Layer 2（Deep）検索。`vector` では keywords の LIKE 絞り込み + コサイン再ランク、`hybrid` では keywords を使わずベクトル閾値なしのハイブリッド検索（`keywords=None` 可）
   - `quick_vector_search(user_input, instance_name, limit, threshold, override_config)` — キーワード抽出なしの純粋なベクトル検索。新旧を問わず全knowledge cardを類似度計算し、時間減衰・archive補正後の上位`limit`件を返す
-  - `quick_vector_search_diag(...)` — Layer 別診断情報（全候補数 / 閾値判定 / スコア等）を含む診断付き版。互換フィールド`fetch_limit`は全件検索を示す`null`
+  - `quick_vector_search_diag(...)` — Layer 別診断情報（全候補数 / 閾値判定 / スコア等）を含む診断付き版。互換フィールド`fetch_limit`は全件検索を示す`null`。`brain.search_mode="hybrid"` ならハイブリッド検索へ分岐する
+  - `_hybrid_search_diag(...)` — BM25（FTS5/trigram）とベクトルの候補を**全インスタンス分集めてからグローバル順位を付け**、RRF で融合する。返す候補の `score` は **RRF スコア**で、cosine は `vector_score` / `raw_score` に退避する（下流が `score` 降順で並べ直しても融合順位が壊れないようにするため）
+  - `_bm25_search_single(spec, instance_name, limit, brain_conf)` — 単一 DB の BM25 候補。索引が無ければ一度だけ生成し、それでも使えなければ空を返す（＝実質 vector へフォールバック）
   - `summarize_conversation(conversation_text, override_config)` — 会話テキストを要約（summary モデル使用）
   - `generate_knowledge_card(text, override_config)` — ナレッジカード JSON を生成（knowledge モデル使用）
   - `_calculate_cosine_similarity(vec1, vec2)` — コサイン類似度計算
@@ -413,6 +425,19 @@ LLM 応答テキストから JSON 文字列を取り出す共通ヘルパー。
 **テーブル**:
 - `knowledge_cards` — ナレッジカード本体（embedding_blob 含む）
 - `access_logs` — カードのアクセス履歴
+- `knowledge_cards_fts` — ハイブリッド検索用 FTS5(trigram) 索引。`knowledge_cards` の INSERT / DELETE / 本文列の UPDATE トリガで同期する（embedding だけの更新では再索引しない）
+- `fts_meta` — FTS 索引の schema version / tokenizer / 件数。version 不一致または件数不一致で単一トランザクション再構築
+
+---
+
+### `butly_core/core/hybrid_search.py`
+FTS5(trigram) の BM25 とベクトル検索を RRF で融合するための部品。索引側（`ButlyDatabase`）と検索側（`ButlyBrain`）の両方から import される中立モジュール。
+
+- `build_fts_query(text, max_terms=32)` — NFKC 正規化・小文字化のうえ、欧文は3文字以上の語（stopword 除去）、CJK は3文字 shingle を作る。2文字 CJK 語は `short_terms`（LIKE 補助候補用）へ回す。MATCH 式は各語を quote し `"` を二重化する
+- `term_matches(term, text, is_ascii)` — trigram の部分文字列一致を後段で検証する。欧文は語頭一致 + 語尾3文字まで（`pet`→`pets` は残し `carpet` は落とす）、CJK は部分一致
+- `ensure_fts_index(conn)` / `fts_index_ready(conn)` / `fts5_trigram_available(conn)` — 索引・トリガ・backfill の冪等な用意と、FTS5/trigram が無い環境の検出
+- `bm25_candidates(conn, spec, ...)` — 「FTS ヒット → 語境界検証 → df ゲート（`bm25_max_df_ratio` / `bm25_min_weak_df`）→ archive 判定 → 上位 limit」。archived は active 候補が皆無のときだけ使う
+- `rrf_fuse(vector_results, bm25_results, k, limit)` — 順位のみで融合。`score` に RRF スコアを入れ、`retrieval_source`（vector/bm25/both）と両者の順位を残す
 
 ---
 
@@ -481,9 +506,11 @@ Gatekeeper.classify(user_input, history, session_state)
     },
     "memory_probe": {
         "status": "hit" | "no_hit" | "deep_search" | "skipped",
-        "candidates": list[dict],
+        "candidates": list[dict],           # 注入する候補（policy 未達なら空）
+        "retrieved_candidates": list[dict], # 注入判定前の検索結果
         "glossary_hits": list[dict],
         "layers": dict,   # Layer 別診断 (glossary / vector / deep)
+        "retrieval": dict, # 実行/候補/注入判定・候補ID列・mode・latency
     }
 }
 ```
@@ -515,7 +542,7 @@ parse 失敗時は `asks_for_specific_past_detail()` を fallback として使�
 ---
 
 ### `gatekeeper/memory_probe.py`
-LLM 呼び出しなしの事実ベース記憶検索。Glossary scan は常時実行、vector / deep は need_intent でゲート。Deep (Layer 2) は Layer 1 空振り時に `need_intent=past_fact` または過去参照パターンで発火する（パターン単独ゲートではない）。
+LLM 呼び出しなしの事実ベース記憶検索。**検索の実行と、検索結果をプロンプトへ注入するかの判定は分離されている**（`memory_probe.retrieval_execution` / `injection_policy`）。既定では Glossary scan と Layer 1 を全ターン実行し、注入は従来どおり `need_intent` で判定する。Deep (Layer 2) は Layer 1 空振り時、かつ「注入され得る」ケース（`need_intent ∈ {past_fact, relationship}` または `injection_policy=retrieval_assisted`）でのみ発火する — Layer 2 は LLM 呼び出しを伴うため。
 
 - `MemoryProbe()`
   - `probe(user_input, brain, memory_manager, history_msgs=None, need_intent=None, recent_headlines=None, override_config=None, instance_name=None)` — Layer 1.5 を必ず実行し、`need_intent` に応じて Layer 1 / Layer 2 を選択的に実行。返却値の `layers` に Layer 別の診断情報を含む
@@ -529,10 +556,17 @@ LLM 呼び出しなしの事実ベース記憶検索。Glossary scan は常時�
 | レイヤー | 内容 | 実行条件 |
 |---|---|---|
 | Layer 1.5 | Glossary Match (term/aliases、user_input + 履歴 scan_depth ターン) | **常時実行**（regex のみ・LLM 不要） |
-| Layer 1 | Quick Vector Search（コサイン類似度） | `need_intent ∈ {past_fact, relationship}` のみ |
-| Layer 2 | Deep Search | Layer 1 ヒット無し + 過去参照パターン検出時のみ |
+| Layer 1 | Quick Retrieval（`search_mode` に応じ vector / hybrid） | `retrieval_execution="always"`（既定）なら**常時実行**。`"intent_gated"` で旧挙動（`need_intent ∈ {past_fact, relationship}` のみ） |
+| Layer 2 | Deep Search | Layer 1 ヒット無し + 過去参照パターン + 「注入され得る」ケースのみ |
 
-`need_intent=None` の場合、Glossary scan だけ実行され、glossary ヒット有無で `status="hit"`/`"no_hit"` を返す（vector / deep は skip）。`memory_manager=None` のときは Glossary もスキップ、`brain=None` のときは vector / deep をスキップ。
+**注入判定（`injection_policy`）:**
+| 値 | 挙動 |
+|---|---|
+| `intent_gated`（既定） | 従来どおり `need_intent ∈ {past_fact, relationship}` のときだけ候補を注入する |
+| `retrieval_assisted` | 分類器が null でも、ベクトルと BM25 の**双方が同じカードを支持**（`retrieval_source="both"`）していれば注入候補へ昇格し、`retrieval.need_hint="past_fact"` を返す（hybrid 専用。vector では発火しない） |
+| `candidates` | 候補があれば注入する。v26 実測で cosine・順位差・BM25 一致のどれも LoCoMo cat5 の adversarial 問を分離できず、検索側にゲートを作れなかったため（読み手は無関係な記憶に耐えている: cat5 の注入済42問で 0.810 / 未注入5問で 0.800） |
+
+注入しない場合、返却の `candidates` は空になる（下流の挙動は従来と同じ）。検索自体の結果は `retrieved_candidates` と `retrieval` に残るので、「検索は届いていたが注入しなかった」ケースを観測できる。`memory_manager=None` のときは Glossary をスキップ、`brain=None` のときは検索をスキップする。
 
 **`layers` 診断情報** (例):
 ```python

@@ -437,23 +437,30 @@ class TestNeedIntentGating:
         }
         return mm
 
-    def test_need_intent_none_runs_glossary_only(self, probe, brain_with_vector, mm_with_glossary):
-        """need_intent=None でも glossary scan は走る (vector はスキップ)"""
+    def test_need_intent_none_retrieves_but_does_not_inject(
+        self, probe, brain_with_vector, mm_with_glossary
+    ):
+        """need_intent=None でも検索は走る。ただし注入はしない（§3.3）。
+
+        検索実行と注入判定を分けたので、候補は retrieval に残り candidates は空。
+        """
         result = probe.probe(
             user_input="Gatekeeperの話",
             brain=brain_with_vector,
             memory_manager=mm_with_glossary,
             need_intent=None,
         )
-        # glossary は走るので "Gatekeeper" がヒット
-        assert result["status"] == "hit"
+        assert result["status"] == "hit"  # glossary ヒット由来
         assert result["candidates"] == []
         assert len(result["glossary_hits"]) == 1
-        # vector は呼ばれない
-        brain_with_vector.quick_vector_search_diag.assert_not_called()
+        brain_with_vector.quick_vector_search_diag.assert_called_once()
+        assert result["retrieval"]["executed"] is True
+        assert result["retrieval"]["candidate_count"] == 1
+        assert result["retrieval"]["injection_allowed"] is False
+        assert result["retrieval"]["injection_reason"] == "intent_gated"
 
     def test_need_intent_none_no_glossary_returns_no_hit(self, probe, brain_with_vector):
-        """need_intent=None かつ glossary マッチなし → status=no_hit"""
+        """need_intent=None かつ glossary マッチなし → status=no_hit（注入なし）"""
         mm = MagicMock()
         mm.get_glossary_raw.return_value = {"version": 1, "entries": []}
         result = probe.probe(
@@ -463,11 +470,30 @@ class TestNeedIntentGating:
             need_intent=None,
         )
         assert result["status"] == "no_hit"
+        assert result["candidates"] == []
         assert result["glossary_hits"] == []
-        brain_with_vector.quick_vector_search_diag.assert_not_called()
 
-    def test_need_intent_glossary_skips_vector(self, probe, brain_with_vector, mm_with_glossary):
-        """need_intent=glossary → vector search は呼ばれず glossary のみ"""
+    def test_retrieval_execution_intent_gated_restores_old_behavior(
+        self, probe, brain_with_vector, mm_with_glossary
+    ):
+        """retrieval_execution=intent_gated で旧挙動（検索自体をスキップ）へ戻せる"""
+        result = probe.probe(
+            user_input="Gatekeeperの話",
+            brain=brain_with_vector,
+            memory_manager=mm_with_glossary,
+            need_intent=None,
+            override_config={"memory_probe": {"retrieval_execution": "intent_gated"}},
+        )
+        assert result["status"] == "hit"
+        assert result["candidates"] == []
+        brain_with_vector.quick_vector_search_diag.assert_not_called()
+        assert result["retrieval"]["executed"] is False
+        assert result["retrieval"]["reason"] == "intent_gated:None"
+
+    def test_need_intent_glossary_does_not_inject_cards(
+        self, probe, brain_with_vector, mm_with_glossary
+    ):
+        """need_intent=glossary → カードは注入されない（検索は走ってよい）"""
         result = probe.probe(
             user_input="Gatekeeperって何？",
             brain=brain_with_vector,
@@ -477,7 +503,7 @@ class TestNeedIntentGating:
         assert result["candidates"] == []
         assert len(result["glossary_hits"]) == 1
         assert result["status"] == "hit"
-        brain_with_vector.quick_vector_search_diag.assert_not_called()
+        assert result["retrieval"]["injection_allowed"] is False
 
     def test_need_intent_glossary_no_hit(self, probe, brain_with_vector):
         """need_intent=glossary でマッチなし → no_hit"""
@@ -490,7 +516,93 @@ class TestNeedIntentGating:
             need_intent="glossary",
         )
         assert result["status"] == "no_hit"
-        brain_with_vector.quick_vector_search_diag.assert_not_called()
+        assert result["candidates"] == []
+
+    def test_retrieval_assisted_promotes_strong_evidence(
+        self, probe, brain_with_vector, mm_with_glossary
+    ):
+        """injection_policy=retrieval_assisted: vector と BM25 の双方が支持した
+        候補は、分類器が null でも注入候補へ昇格する（§3.3 Phase 1B）。"""
+        hit = {
+            "id": "1",
+            "title": "X",
+            "summary": "Y",
+            "episode": "",
+            "score": 0.03,
+            "retrieval_source": "both",
+        }
+        brain_with_vector.quick_vector_search_diag.return_value = {
+            "results": [hit],
+            "diagnostics": {"mode": "hybrid"},
+        }
+        result = probe.probe(
+            user_input="Gatekeeperの話",
+            brain=brain_with_vector,
+            memory_manager=mm_with_glossary,
+            need_intent=None,
+            override_config={
+                "memory_probe": {"injection_policy": "retrieval_assisted"}
+            },
+        )
+        assert len(result["candidates"]) == 1
+        assert result["retrieval"]["injection_reason"] == "retrieval_assisted"
+        assert result["retrieval"]["need_hint"] == "past_fact"
+
+    def test_candidates_policy_injects_without_intent(
+        self, probe, brain_with_vector, mm_with_glossary
+    ):
+        """injection_policy=candidates: 分類器 null でも候補があれば注入する。
+
+        v26 実測で cosine・順位差・BM25 一致のどれも cat5 の adversarial 問を
+        分離できず、検索側のゲートが作れなかったための policy（§3.3）。
+        """
+        result = probe.probe(
+            user_input="Gatekeeperの話",
+            brain=brain_with_vector,
+            memory_manager=mm_with_glossary,
+            need_intent=None,
+            override_config={"memory_probe": {"injection_policy": "candidates"}},
+        )
+
+        assert len(result["candidates"]) == 1
+        assert result["retrieval"]["injection_reason"] == "candidates"
+        assert result["retrieval"]["need_hint"] == "past_fact"
+
+    def test_candidates_policy_still_needs_candidates(
+        self, probe, brain_with_vector, mm_with_glossary
+    ):
+        brain_with_vector.quick_vector_search_diag.return_value = {
+            "results": [],
+            "diagnostics": {"mode": "vector"},
+        }
+        brain_with_vector.extract_keywords.return_value = {"keywords": []}
+
+        result = probe.probe(
+            user_input="Gatekeeperの話",
+            brain=brain_with_vector,
+            memory_manager=mm_with_glossary,
+            need_intent=None,
+            override_config={"memory_probe": {"injection_policy": "candidates"}},
+        )
+
+        assert result["candidates"] == []
+        assert result["retrieval"]["injection_reason"] == "no_candidates"
+
+    def test_retrieval_assisted_rejects_weak_evidence(
+        self, probe, brain_with_vector, mm_with_glossary
+    ):
+        """片側（vector のみ）の支持では昇格させない"""
+        result = probe.probe(
+            user_input="Gatekeeperの話",
+            brain=brain_with_vector,
+            memory_manager=mm_with_glossary,
+            need_intent=None,
+            override_config={
+                "memory_probe": {"injection_policy": "retrieval_assisted"}
+            },
+        )
+        assert result["candidates"] == []
+        assert result["retrieval"]["injection_reason"] == "weak_evidence"
 
     def test_need_intent_past_fact_runs_vector(self, probe, brain_with_vector, mm_with_glossary):
         """need_intent=past_fact → vector も走る"""
@@ -640,6 +752,40 @@ class TestGatekeeperIntegration:
         mock_gatekeeper.memory_probe.probe.assert_called_once()
         # glossary_hits は返却された
         assert len(result["memory_probe"]["glossary_hits"]) == 1
+
+    def test_retrieval_assisted_candidates_set_need(
+        self, mock_gatekeeper, test_instance_dir
+    ):
+        """need_intent=None でも probe が注入を許した候補は need を立てる。
+
+        probe 側の injection policy を通った候補だけが candidates に載るので、
+        Gatekeeper は「候補がある = 注入してよい」として扱ってよい。
+        """
+        mock_gatekeeper.context_classifier.classify.return_value = {
+            "tier": "mid",
+            "llm_scoring": {"response_complexity": 0.5, "emotional_weight": 0.1,
+                            "continuity_need": 0.2},
+            "need_intent": None,
+        }
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "hit",
+            "candidates": [{"title": "陶芸教室", "summary": "内容", "score": 0.03}],
+            "glossary_hits": [],
+            "retrieval": {"injection_reason": "retrieval_assisted",
+                          "need_hint": "past_fact"},
+        }
+
+        result = mock_gatekeeper.classify(
+            user_input="陶芸の話",
+            history_msgs=[],
+            session_state={},
+            instance_dir=test_instance_dir,
+            brain=MagicMock(),
+        )
+
+        assert result["need"] == "past_fact"
+        assert result["need_intent"] is None
+        assert result["search_targets"] == ["陶芸教室"]
 
     def test_deep_search_sets_need(self, mock_gatekeeper, test_instance_dir):
         """deep_search hit → tier は mid のまま、need=past_fact"""

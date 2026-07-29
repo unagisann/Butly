@@ -6,11 +6,13 @@ import time
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 from dotenv import load_dotenv
 
 from butly_core.trace.collector import record_llm_call
 from butly_core.core.chronos import resolve_now
 from butly_core.core.json_extract import extract_json_str
+from butly_core.core import hybrid_search
 from butly_core.llm.embedding_profiles import (
     QUERY,
     apply_prefix as apply_embedding_prefix,
@@ -27,6 +29,16 @@ except ImportError:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
     from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
     from butly_core import prompts
+
+
+def _count_retrieval_sources(rows: list) -> dict:
+    """候補が vector / bm25 / both のどれ由来かの内訳（trace 用）。"""
+    counts = {"vector": 0, "bm25": 0, "both": 0}
+    for row in rows:
+        source = row.get("retrieval_source")
+        if source in counts:
+            counts[source] += 1
+    return counts
 
 
 def _decay_basis_datetime(row_dict: dict):
@@ -339,16 +351,22 @@ class ButlyBrain:
             brain_conf.update(override_config["brain"])
         embedding_conf = self._resolve_embedding_conf(override_config)
 
-        # readable_instances の解決
-        readable = brain_conf.get("readable_instances", ["self"])
-        target_instances = []
-        for r in readable:
-            if r == "self":
-                target_instances.append(instance_name)
-            else:
-                target_instances.append(r)
-        target_instances = list(dict.fromkeys(target_instances))
+        target_instances = self._resolve_target_instances(instance_name, brain_conf)
 
+        if brain_conf.get("search_mode") == "hybrid":
+            return self._hybrid_search_diag(
+                user_input,
+                target_instances,
+                limit=limit,
+                threshold=threshold,
+                brain_conf=brain_conf,
+                embedding_conf=embedding_conf,
+            )
+
+        t0 = time.time()
+        # 上位 limit 件だけを返す一方、A/B とリコール計測のために候補列
+        # （hybrid 側の vector_candidates と同じ深さ）まで順位を残す
+        candidate_limit = max(limit, int(brain_conf.get("vector_candidates", 20)))
         all_results = []
         all_raw_scores: list = []
         all_final_scores: list = []
@@ -357,7 +375,7 @@ class ButlyBrain:
             single = self._quick_vector_search_single_diag(
                 user_input,
                 inst,
-                limit,
+                candidate_limit,
                 threshold,
                 brain_conf,
                 embedding_conf,
@@ -371,12 +389,15 @@ class ButlyBrain:
             total_fetched += single["fetched_count"]
 
         all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
-        top = all_results[:limit]
+        candidates = all_results[:candidate_limit]
+        top = candidates[:limit]
 
         all_raw_scores.sort(reverse=True)
         all_final_scores.sort(reverse=True)
 
+        candidate_ids = [str(r.get("id")) for r in candidates]
         diagnostics = {
+            "mode": "vector",
             "threshold": float(threshold),
             "decay_rate": float(brain_conf.get("time_decay_rate", 0.005)),
             # Kept for trace compatibility. Pure vector search scores the full
@@ -387,8 +408,166 @@ class ButlyBrain:
             "top_raw_scores": [round(s, 3) for s in all_raw_scores[:5]],
             "top_final_scores": [round(s, 3) for s in all_final_scores[:5]],
             "target_instances": target_instances,
+            "vector_candidate_ids": candidate_ids,
+            "bm25_candidate_ids": [],
+            "fused_candidate_ids": candidate_ids,
+            "latency_ms": int((time.time() - t0) * 1000),
         }
         return {"results": top, "diagnostics": diagnostics}
+
+    @staticmethod
+    def _resolve_target_instances(instance_name: str, brain_conf: dict) -> list:
+        """readable_instances を実インスタンス名へ解決する（"self" 展開・重複除去）。"""
+        readable = brain_conf.get("readable_instances", ["self"])
+        resolved = [instance_name if r == "self" else r for r in readable]
+        return list(dict.fromkeys(resolved))
+
+    # --- ハイブリッド検索（BM25 + ベクトル / RRF 融合。計画書 §3.2） ---
+
+    def _hybrid_search_diag(
+        self,
+        user_input: str,
+        target_instances: list,
+        *,
+        limit: int,
+        threshold: Optional[float],
+        brain_conf: dict,
+        embedding_conf: dict = None,
+    ) -> dict:
+        """BM25 とベクトルの候補をグローバル順位で RRF 融合する。
+
+        threshold=None ならベクトル側の閾値ゲートを外す（Deep 経路）。
+        複数インスタンスを跨ぐときは、インスタンスごとの順位をそのまま融合すると
+        「どの DB の1位も同じ重み」になってしまうため、両経路とも全インスタンス
+        分を集めてからグローバル順位を付ける。
+        """
+        t0 = time.time()
+        spec = hybrid_search.build_fts_query(user_input)
+        vector_limit = int(brain_conf.get("vector_candidates", 20))
+        bm25_limit = int(brain_conf.get("bm25_candidates", 20))
+        vector_threshold = -1.0 if threshold is None else float(threshold)
+
+        vector_rows: list = []
+        bm25_rows: list = []
+        bm25_diags: dict = {}
+        raw_scores: list = []
+        final_scores: list = []
+        fetched = 0
+
+        for inst in target_instances:
+            single = self._quick_vector_search_single_diag(
+                user_input,
+                inst,
+                vector_limit,
+                vector_threshold,
+                brain_conf,
+                embedding_conf,
+            )
+            for r in single["results"]:
+                r["source_instance"] = inst
+                # cosine は score から退避する。score は RRF スコアで上書きされ、
+                # 下流が score 降順で並べ直しても融合順位が壊れないようにする。
+                r["vector_score"] = r.get("score")
+            vector_rows.extend(single["results"])
+            raw_scores.extend(single["raw_scores"])
+            final_scores.extend(single["final_scores"])
+            fetched += single["fetched_count"]
+
+            bm25 = self._bm25_search_single(spec, inst, bm25_limit, brain_conf)
+            for r in bm25["results"]:
+                r["source_instance"] = inst
+                r["source"] = "bm25"
+            bm25_rows.extend(bm25["results"])
+            bm25_diags[inst] = bm25["diagnostics"]
+
+        vector_rows.sort(key=lambda r: r.get("vector_score") or 0.0, reverse=True)
+        vector_rows = vector_rows[:vector_limit]
+        bm25_rows.sort(key=hybrid_search.bm25_sort_key)
+        bm25_rows = bm25_rows[:bm25_limit]
+        for rank, row in enumerate(bm25_rows, start=1):
+            row["bm25_rank"] = rank
+
+        candidate_limit = max(limit, vector_limit, bm25_limit)
+        fused = hybrid_search.rrf_fuse(
+            vector_rows,
+            bm25_rows,
+            k=int(brain_conf.get("rrf_k", 60)),
+            limit=candidate_limit,
+        )
+        results = fused[:limit]
+
+        raw_scores.sort(reverse=True)
+        final_scores.sort(reverse=True)
+        diagnostics = {
+            "mode": "hybrid",
+            "threshold": vector_threshold,
+            "decay_rate": float(brain_conf.get("time_decay_rate", 0.005)),
+            "fetch_limit": None,
+            "fetched_count": fetched,
+            "passed_threshold": len(vector_rows),
+            "top_raw_scores": [round(s, 3) for s in raw_scores[:5]],
+            "top_final_scores": [round(s, 3) for s in final_scores[:5]],
+            "target_instances": target_instances,
+            "rrf_k": int(brain_conf.get("rrf_k", 60)),
+            # bm25_rescue_rate（BM25 が無ければ届かなかった率）を後から計算できる
+            # よう、融合前の2つのランキングをそのまま残す
+            "vector_candidate_ids": [str(r.get("id")) for r in vector_rows],
+            "bm25_candidate_ids": [str(r.get("id")) for r in bm25_rows],
+            "fused_candidate_ids": [str(r.get("id")) for r in fused],
+            "retrieval_sources": _count_retrieval_sources(fused),
+            "bm25": bm25_diags,
+            "latency_ms": int((time.time() - t0) * 1000),
+        }
+        return {"results": results, "diagnostics": diagnostics}
+
+    def _bm25_search_single(
+        self,
+        spec,
+        instance_name: str,
+        limit: int,
+        brain_conf: dict,
+    ) -> dict:
+        """単一インスタンス DB の BM25 候補。索引が無ければ空を返す。"""
+        empty = {"results": [], "diagnostics": {"reason": "unavailable"}}
+        instance_db_path = self._get_db_path(instance_name)
+        if not instance_db_path.exists():
+            return empty
+        if spec.is_empty():
+            return {"results": [], "diagnostics": {"reason": "no_terms"}}
+
+        conn = None
+        try:
+            conn = sqlite3.connect(instance_db_path)
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.row_factory = sqlite3.Row
+            if not hybrid_search.fts_index_ready(conn):
+                # 索引は ButlyDatabase の初期化で作られるが、hybrid を有効にした
+                # 直後の既存 DB にはまだ無い。読み取り経路から一度だけ作る。
+                status = hybrid_search.ensure_fts_index(conn)
+                conn.commit()
+                if not status.get("available"):
+                    return {
+                        "results": [],
+                        "diagnostics": {"reason": status.get("reason", "unavailable")},
+                    }
+            cursor = conn.cursor()
+            columns = self._knowledge_select_cols(cursor).split(",")
+            return hybrid_search.bm25_candidates(
+                conn,
+                spec,
+                columns=columns,
+                limit=limit,
+                weights=brain_conf.get("bm25_weights"),
+                max_df_ratio=float(brain_conf.get("bm25_max_df_ratio", 0.5)),
+                min_weak_df=int(brain_conf.get("bm25_min_weak_df", 5)),
+                scan_limit=int(brain_conf.get("bm25_scan_limit", 500)),
+            )
+        except sqlite3.Error as e:
+            print(f"[Brain] BM25 Search Error ({instance_name}): {e}")
+            return {"results": [], "diagnostics": {"reason": f"error:{e}"}}
+        finally:
+            if conn is not None:
+                conn.close()
 
     def _quick_vector_search_single(
         self,
@@ -522,8 +701,13 @@ class ButlyBrain:
         override_config=None,
     ):
         """
-        ハイブリッド検索: キーワードフィルター + ベクトル類似度
-        readable_instances に基づき複数DB横断検索に対応。
+        Layer 2（Deep）検索。readable_instances に基づき複数DB横断検索に対応。
+
+        search_mode="vector": 従来どおり keywords の LIKE 絞り込み + cosine 再ランク。
+        search_mode="hybrid": keywords（LLM 抽出）は使わず、質問文から決定論的に
+          作った検索語で BM25 + ベクトルを RRF 融合する。Layer 1 と違い
+          ベクトル側の閾値ゲートを外す（Layer 1 が空だったときの救済という
+          Deep の役割を保つため）。keywords は None を許容する。
         """
         brain_conf = SYSTEM_CONFIG["brain"].copy()
         if override_config and "brain" in override_config:
@@ -533,16 +717,17 @@ class ButlyBrain:
         if limit is None:
             limit = brain_conf["search_limit"]
 
-        # readable_instances の解決
-        readable = brain_conf.get("readable_instances", ["self"])
-        target_instances = []
-        for r in readable:
-            if r == "self":
-                target_instances.append(instance_name)
-            else:
-                target_instances.append(r)
-        # 重複除去（selfと明示指定が被る場合）
-        target_instances = list(dict.fromkeys(target_instances))
+        target_instances = self._resolve_target_instances(instance_name, brain_conf)
+
+        if brain_conf.get("search_mode") == "hybrid":
+            return self._hybrid_search_diag(
+                user_query,
+                target_instances,
+                limit=limit,
+                threshold=None,
+                brain_conf=brain_conf,
+                embedding_conf=embedding_conf,
+            )["results"]
 
         # 単一DBの場合（高速パス）
         if len(target_instances) == 1:
@@ -633,9 +818,10 @@ class ButlyBrain:
             KEYWORD_HIT_THRESHOLD = brain_conf["keyword_hit_threshold"]
 
             if len(rows) < KEYWORD_HIT_THRESHOLD:
-                # フォールバック: 直近50件 (キーワード条件なし)
+                # フォールバック: 直近 fallback_fetch_limit 件 (キーワード条件なし)
                 print(
-                    f"[Brain] Fallback triggered (Hits: {len(rows)}). Fetching recent logs."
+                    f"[Brain] Fallback triggered (Hits: {len(rows)}). "
+                    f"Fetching recent {brain_conf['fallback_fetch_limit']} logs."
                 )
 
                 fetch_limit = brain_conf["fallback_fetch_limit"]
