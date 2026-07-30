@@ -11,12 +11,14 @@ import logging
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import statistics
 import time
 import unicodedata
 from typing import Any, Optional
 
 from butly_core.chat.types import ChatRequest
+from butly_core.core.embedding_check import record_embedding_meta
 from evals.locomo.artifacts import (
     copy_latest_trace,
     count_knowledge_cards,
@@ -26,7 +28,11 @@ from evals.locomo.artifacts import (
 )
 from evals.locomo.config import EvaluationProfile, load_profile
 from evals.locomo.sleeptime_runner import SleeptimeRunner
-from evals.locomo.workspace import EvaluationWorkspace, IndependentQAWorkspace
+from evals.locomo.workspace import (
+    PROJECT_ROOT,
+    EvaluationWorkspace,
+    IndependentQAWorkspace,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -35,6 +41,12 @@ POLICIES = ("intent_gated", "candidates")
 _CATEGORIES = frozenset(
     {"memory_required", "memory_irrelevant", "memory_optional"}
 )
+# expected_memory_behavior 未記載時の既定（カテゴリ名が既に振る舞いを定義している）
+_DEFAULT_BEHAVIOR = {
+    "memory_required": "記憶から具体的な事実を答える",
+    "memory_optional": "役立つ場合だけ自然に記憶を使う",
+    "memory_irrelevant": "記憶を持ち出さない",
+}
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,179}$")
 _INSTANCE_NAME = "ja_dialogue_ab"
 _CHECKPOINT_NAME = "dialogue_ab.json"
@@ -64,11 +76,28 @@ class DialoguePrompt:
 
 
 @dataclass(frozen=True)
+class InstanceMemorySource:
+    """既存インスタンスを種にする指定（合成 memory_seed の代わり）。
+
+    本番の記憶量・System Instruction・digest をそのまま使って policy を測るための
+    経路。複製元は読み取りのみで、run 側のコピーだけを操作する。
+    """
+
+    name: str
+    path: Optional[Path] = None
+
+
+@dataclass(frozen=True)
 class DialogueDataset:
     dataset_id: str
     locale: str
     memory_seed: tuple[MemorySeed, ...]
     prompts: tuple[DialoguePrompt, ...]
+    memory_source: Optional[InstanceMemorySource] = None
+
+    @property
+    def seeds_from_instance(self) -> bool:
+        return self.memory_source is not None
 
 
 @dataclass(frozen=True)
@@ -77,6 +106,8 @@ class DialogueABConfig:
     output_dir: Path
     run_id: str
     profile_path: Path
+    seed_instance: Optional[Path] = None
+    reembed: bool = False
 
 
 def load_dialogue_dataset(path: Path) -> DialogueDataset:
@@ -101,9 +132,19 @@ def load_dialogue_dataset(path: Path) -> DialogueDataset:
     if locale != "ja":
         raise DialogueABError("dialogue dataset locale must be 'ja'")
 
+    memory_source = _load_memory_source(payload.get("memory_source"))
     raw_seed = payload.get("memory_seed")
-    if not isinstance(raw_seed, list) or not raw_seed:
-        raise DialogueABError("memory_seed must be a non-empty array")
+    if memory_source is not None:
+        if raw_seed:
+            raise DialogueABError(
+                "memory_source と memory_seed は同時に指定できない"
+            )
+        raw_seed = []
+    elif not isinstance(raw_seed, list) or not raw_seed:
+        raise DialogueABError(
+            "memory_seed must be a non-empty array "
+            "(or provide memory_source for an existing instance)"
+        )
     seeds = []
     seed_ids = set()
     for index, item in enumerate(raw_seed, start=1):
@@ -136,12 +177,10 @@ def load_dialogue_dataset(path: Path) -> DialogueDataset:
             )
         )
 
-    raw_prompts = payload.get("prompts")
-    if not isinstance(raw_prompts, list) or not raw_prompts:
-        raise DialogueABError("prompts must be a non-empty array")
+    raw_prompts = _flatten_prompts(payload.get("prompts"))
     prompts = []
     prompt_ids = set()
-    for index, item in enumerate(raw_prompts, start=1):
+    for index, (item, implied_category) in enumerate(raw_prompts, start=1):
         context = f"prompts[{index}]"
         if not isinstance(item, dict):
             raise DialogueABError(f"{context} must be an object")
@@ -149,28 +188,35 @@ def load_dialogue_dataset(path: Path) -> DialogueDataset:
         if prompt_id in prompt_ids:
             raise DialogueABError(f"duplicate prompt id: {prompt_id}")
         prompt_ids.add(prompt_id)
-        category = _required_text(item.get("category"), f"{context}.category")
+        category = _required_text(
+            item.get("category", implied_category), f"{context}.category"
+        )
         if category not in _CATEGORIES:
             raise DialogueABError(
                 f"{context}.category must be one of {sorted(_CATEGORIES)}"
             )
+        raw_targets = item.get("target_memory_ids")
+        if raw_targets is None and item.get("source_card_id"):
+            # 既存インスタンス種の場合、根拠は seed ではなくカード ID で指す
+            raw_targets = [item["source_card_id"]]
         target_ids = _text_array(
-            item.get("target_memory_ids", []),
-            f"{context}.target_memory_ids",
+            raw_targets or [], f"{context}.target_memory_ids"
         )
-        unknown_targets = set(target_ids) - seed_ids
-        if unknown_targets:
-            raise DialogueABError(
-                f"{context} references unknown memory seeds: "
-                f"{sorted(unknown_targets)}"
-            )
+        if memory_source is None:
+            unknown_targets = set(target_ids) - seed_ids
+            if unknown_targets:
+                raise DialogueABError(
+                    f"{context} references unknown memory seeds: "
+                    f"{sorted(unknown_targets)}"
+                )
         prompts.append(
             DialoguePrompt(
                 prompt_id=prompt_id,
                 category=category,
                 text=_required_text(item.get("prompt"), f"{context}.prompt"),
                 expected_memory_behavior=_required_text(
-                    item.get("expected_memory_behavior"),
+                    item.get("expected_memory_behavior")
+                    or _DEFAULT_BEHAVIOR[category],
                     f"{context}.expected_memory_behavior",
                 ),
                 target_memory_ids=tuple(target_ids),
@@ -180,7 +226,12 @@ def load_dialogue_dataset(path: Path) -> DialogueDataset:
                         f"{context}.expected_terms",
                     )
                 ),
-                review_point=_optional_text(item.get("review_point")),
+                review_point=_optional_text(
+                    item.get("review_point")
+                    or item.get("memory_would_help")
+                    or item.get("why_irrelevant")
+                    or item.get("caution")
+                ),
             )
         )
     return DialogueDataset(
@@ -188,7 +239,46 @@ def load_dialogue_dataset(path: Path) -> DialogueDataset:
         locale=locale,
         memory_seed=tuple(seeds),
         prompts=tuple(prompts),
+        memory_source=memory_source,
     )
+
+
+def _load_memory_source(raw: Any) -> Optional[InstanceMemorySource]:
+    """``memory_source`` 節（既存インスタンスを種にする指定）を読む。"""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise DialogueABError("memory_source must be an object")
+    kind = _required_text(raw.get("type"), "memory_source.type")
+    if kind != "instance":
+        raise DialogueABError(f"unsupported memory_source.type: {kind}")
+    name = _safe_id(raw.get("name"), "memory_source.name")
+    raw_path = raw.get("path")
+    return InstanceMemorySource(
+        name=name,
+        path=Path(str(raw_path)).expanduser() if raw_path else None,
+    )
+
+
+def _flatten_prompts(raw: Any) -> list:
+    """``prompts`` を (item, 暗黙のカテゴリ) の列へ正規化する。
+
+    配列形式（各要素が category を持つ）と、カテゴリ名をキーにした辞書形式の
+    両方を受ける。後者はレビュー用に人が読み書きしやすい形。
+    """
+    if isinstance(raw, list) and raw:
+        return [(item, None) for item in raw]
+    if isinstance(raw, dict) and raw:
+        flattened = []
+        for category, items in raw.items():
+            if not isinstance(items, list):
+                raise DialogueABError(
+                    f"prompts.{category} must be an array"
+                )
+            flattened.extend((item, category) for item in items)
+        if flattened:
+            return flattened
+    raise DialogueABError("prompts must be a non-empty array or object")
 
 
 async def run_dialogue_ab(config: DialogueABConfig) -> dict[str, Any]:
@@ -213,6 +303,10 @@ async def run_dialogue_ab(config: DialogueABConfig) -> dict[str, Any]:
             "policies": list(POLICIES),
             "prompt_count": len(dataset.prompts),
             "qa_isolation": "independent",
+            "seed_instance": (
+                str(config.seed_instance) if config.seed_instance else None
+            ),
+            "reembed": config.reembed,
         }
     )
     _write_checkpoint(
@@ -237,6 +331,10 @@ async def resume_dialogue_ab(run_dir: Path) -> dict[str, Any]:
         output_dir=Path(payload["output_dir"]),
         run_id=str(payload["run_id"]),
         profile_path=Path(payload["profile_path"]),
+        seed_instance=(
+            Path(payload["seed_instance"]) if payload.get("seed_instance") else None
+        ),
+        reembed=bool(payload.get("reembed")),
     )
     dataset = load_dialogue_dataset(config.dataset_path)
     profile = load_profile(config.profile_path)
@@ -252,7 +350,10 @@ async def _execute(
     checkpoint = _load_checkpoint(workspace)
     instance_dir = workspace.instances_dir / _INSTANCE_NAME
     if not checkpoint.get("seed_completed") or not instance_dir.is_dir():
-        _prepare_seed_memory(workspace, dataset, profile)
+        if dataset.seeds_from_instance or config.seed_instance:
+            _snapshot_instance_memory(workspace, dataset, profile, config)
+        else:
+            _prepare_seed_memory(workspace, dataset, profile)
         checkpoint = {
             **checkpoint,
             "status": "running",
@@ -326,6 +427,172 @@ async def _execute(
     )
     _emit_progress(100.0, "complete", "Japanese dialogue A/B completed")
     return scores
+
+
+def _snapshot_instance_memory(
+    workspace: EvaluationWorkspace,
+    dataset: DialogueDataset,
+    profile: EvaluationProfile,
+    config: DialogueABConfig,
+) -> dict[str, Any]:
+    """本番インスタンスを run workspace へ複製して種にする。
+
+    複製元は読み取りのみ（コピー後は run 側だけを触る）。Sleeptime は回さない
+    ので、カード・digest・System Instruction は本番のまま固定される。
+    """
+    source = _resolve_seed_instance(dataset, config)
+    instance_dir = workspace.instances_dir / _INSTANCE_NAME
+    _copy_instance_snapshot(source, instance_dir)
+    _emit_progress(2.0, "seed", f"Instance snapshot copied from {source}")
+
+    runtime = workspace.create_runtime()
+    _configure_base_instance(runtime, _INSTANCE_NAME, profile)
+
+    db_path = instance_dir / "butly_memory.db"
+    info: dict[str, Any] = {
+        "mode": "instance_snapshot",
+        "source_instance": str(source),
+        "instance_name": dataset.memory_source.name if dataset.memory_source else None,
+        "cards": count_knowledge_cards(db_path),
+        "sleeptime": "skipped",
+        **_describe_stored_embeddings(db_path),
+    }
+    if config.reembed:
+        info["reembedded"] = _reembed_cards(runtime, db_path, profile)
+    write_json(workspace.run_dir / "seed_instance.json", info)
+    for warning in info.get("warnings", []):
+        logger.warning("dialogue A/B seed: %s", warning)
+        print(f"[DialogueAB] {warning}")
+    _emit_progress(
+        10.0, "seed", f"Instance snapshot ready ({info['cards']} cards)"
+    )
+    return info
+
+
+def _copy_instance_snapshot(source: Path, dest: Path) -> None:
+    """本番インスタンスを run 側へ複製する（複製元は読み取りのみ）。
+
+    debug_logs / traces / ログは実験に不要かつ肥大しやすいので持ってこない。
+    """
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        source,
+        dest,
+        ignore=shutil.ignore_patterns("debug_logs", "traces", "*.log"),
+    )
+
+
+def _resolve_seed_instance(
+    dataset: DialogueDataset, config: DialogueABConfig
+) -> Path:
+    """複製元インスタンスのディレクトリを決める（CLI 指定 > dataset 指定）。"""
+    candidates = []
+    if config.seed_instance:
+        candidates.append(Path(config.seed_instance).expanduser())
+    source = dataset.memory_source
+    if source is not None:
+        if source.path:
+            candidates.append(source.path)
+        candidates.append(PROJECT_ROOT / "butly_core" / "instances" / source.name)
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if (resolved / "butly_memory.db").is_file():
+            return resolved
+    raise DialogueABError(
+        "seed instance not found (butly_memory.db がある実インスタンスを "
+        f"--seed-instance か memory_source.path で指定する): {candidates}"
+    )
+
+
+def _describe_stored_embeddings(db_path: Path) -> dict[str, Any]:
+    """保存済みベクトルの素性を読む。素性が無いことも run へ残す。"""
+    out: dict[str, Any] = {"warnings": []}
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            dims = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT length(embedding_blob)/4 "
+                    "FROM knowledge_cards WHERE embedding_blob IS NOT NULL"
+                )
+            ]
+            meta = conn.execute(
+                "SELECT model_name, profile, dim FROM embedding_meta WHERE id = 1"
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        out["warnings"].append(f"embedding 素性を読めなかった: {exc}")
+        return out
+
+    out["embedding_dims"] = dims
+    out["embedding_meta"] = (
+        {"model_name": meta[0], "profile": meta[1], "dim": meta[2]}
+        if meta
+        else None
+    )
+    if meta is None:
+        out["warnings"].append(
+            "embedding_meta が空。保存済みベクトルがどのモデル製かは推定扱いに"
+            "なる（検索が壊れていないかは required プロンプトの結果で確認する）"
+        )
+    if len(dims) > 1:
+        out["warnings"].append(f"次元が混在している: {dims}")
+    return out
+
+
+def _reembed_cards(
+    runtime: Any, db_path: Path, profile: EvaluationProfile
+) -> dict[str, Any]:
+    """複製側のカードだけを profile の embedding 設定で貼り直す。
+
+    別 embedding モデルで比較したいとき用。既定では実行しない（保存済み
+    ベクトルをそのまま使うほうが本番の検索を再現できる）。
+    """
+    import numpy as np
+
+    from butly_core.llm.embedding_profiles import DOCUMENT
+    from butly_core.llm.embedding_profiles import apply_prefix
+    from butly_core.llm.factory import ProviderFactory
+
+    conf = dict(profile.sections.get("embedding") or {})
+    if not conf.get("model_name"):
+        raise DialogueABError(
+            "--reembed には profile の embedding.model_name が要る"
+        )
+    provider = ProviderFactory.create(conf)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    updated = failed = 0
+    try:
+        rows = conn.execute(
+            "SELECT id, title, tags, summary FROM knowledge_cards"
+        ).fetchall()
+        for row in rows:
+            content = (
+                f"Title: {row['title']}\nTags: {row['tags']}\n"
+                f"Summary: {row['summary']}"
+            )
+            vector = provider.embed(
+                apply_prefix(content, conf, DOCUMENT), config=conf
+            )
+            if not vector:
+                failed += 1
+                continue
+            conn.execute(
+                "UPDATE knowledge_cards SET embedding_blob = ? WHERE id = ?",
+                (np.array(vector, dtype=np.float32).tobytes(), row["id"]),
+            )
+            updated += 1
+        conn.commit()
+    finally:
+        conn.close()
+    record_embedding_meta(db_path, conf)
+    _emit_progress(8.0, "seed", f"Re-embedded {updated} cards")
+    return {"model_name": conf.get("model_name"), "updated": updated, "failed": failed}
 
 
 def _prepare_seed_memory(
@@ -889,6 +1156,22 @@ def _build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--output-dir", type=Path, required=True)
     run_parser.add_argument("--run-id", required=True)
     run_parser.add_argument("--profile", type=Path, required=True)
+    run_parser.add_argument(
+        "--seed-instance",
+        type=Path,
+        help=(
+            "既存インスタンスのディレクトリを種にする（複製元は読み取りのみ。"
+            "dataset の memory_source より優先）"
+        ),
+    )
+    run_parser.add_argument(
+        "--reembed",
+        action="store_true",
+        help=(
+            "複製側のカードを profile の embedding 設定で貼り直す。"
+            "既定は保存済みベクトルをそのまま使う"
+        ),
+    )
     resume_parser = subparsers.add_parser("resume")
     resume_parser.add_argument("--run-dir", type=Path, required=True)
     return parser
@@ -902,6 +1185,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             output_dir=args.output_dir,
             run_id=args.run_id,
             profile_path=args.profile,
+            seed_instance=args.seed_instance,
+            reembed=args.reembed,
         )
         asyncio.run(run_dialogue_ab(config))
         return 0

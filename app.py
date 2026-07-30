@@ -2780,7 +2780,47 @@ def _render_dialogue_ab_form(
             "Stage3を有効化",
             value=bool(previous.get("stage3_enabled", True)),
             key="dialogue_ab_stage3_enabled",
-            help="記憶生成時にノードも作り、両policyで同じノードを利用します。",
+            help=(
+                "記憶生成時にノードも作り、両policyで同じノードを利用します。"
+                "既存インスタンスを種にする場合は Sleeptime を回さないため無視されます。"
+            ),
+        )
+
+    seed_options = ["（datasetのmemory_seedから作る）"] + list(
+        config.get("seed_instances") or []
+    )
+    seed_cols = st.columns([2, 1])
+    with seed_cols[0]:
+        seed_choice = st.selectbox(
+            "記憶の種",
+            options=seed_options,
+            index=_evaluation_option_index(
+                seed_options,
+                previous.get("seed_instance") or seed_options[0],
+            ),
+            key="dialogue_ab_seed_instance",
+            help=(
+                "既存インスタンスを選ぶと、その記憶を run workspace へ複製して"
+                "そのまま使います（本番インスタンスは変更しません／Sleeptimeも回しません）。"
+            ),
+        )
+    seed_instance = None if seed_choice == seed_options[0] else seed_choice
+    with seed_cols[1]:
+        reembed = st.checkbox(
+            "カードを再embedding",
+            value=bool(previous.get("reembed", False)),
+            key="dialogue_ab_reembed",
+            disabled=seed_instance is None,
+            help=(
+                "複製側のカードだけを上のembeddingモデルで貼り直します。"
+                "既定OFF＝保存済みベクトルをそのまま使う（本番の検索を再現）。"
+            ),
+        )
+    if seed_instance:
+        st.caption(
+            f"種: `butly_core/instances/{seed_instance}` を複製して使います。"
+            "検索を本番と揃えるなら再embeddingはOFFのまま、"
+            "別の埋め込みモデルで比較したいときだけONにしてください。"
         )
 
     with st.expander("RAG・コンテキスト設定", expanded=True):
@@ -3007,6 +3047,8 @@ def _render_dialogue_ab_form(
                 stage3_bootstrap_max_cards
             ),
             "role_models": role_models,
+            "seed_instance": seed_instance,
+            "reembed": bool(reembed) and seed_instance is not None,
         }
         # 起動リクエストの失敗だけを「開始エラー」として扱う。開始後の UI 更新まで
         # 同じ except で包むと、ジョブは走っているのに「開始エラー」と出て誤解する。

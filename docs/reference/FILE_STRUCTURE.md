@@ -23,7 +23,7 @@ This document gives an overview of every file and module in the repository. For 
 | `sleeptime.py` | Daily / weekly memory consolidation. Runnable standalone (`python sleeptime.py`) or via HTTP API. `ButlySleeptime(base_dir=None, instances_dir=None)` supports isolated storage for evaluation while preserving the existing default paths. `ask_gemini_to_summarize` returns `(cards, status)` and `stage_2_knowledgeize` returns chunk stats (`{chunks, failed_chunks, cards_created, failures}`); failed chunks keep their RAW files for the next pass, a legitimate empty extraction archives them. |
 | `migrate_embeddings.py` | Regenerates `embedding_blob` after provider switch. CLI: `--instance` / `--batch-size` / `--dry-run` / `--all`. |
 | `evals/locomo/` | Environment-independent LoCoMo evaluation CLI. Runs Replay → synchronous Sleeptime → Runtime QA → official-compatible scoring/reporting in an isolated, checkpointed workspace without adding production API routes. |
-| `evals/dialogue_ab.py` | Isolated Japanese production-dialogue runner comparing `intent_gated` and `candidates` on fresh per-prompt clones, with durable results and resume. |
+| `evals/dialogue_ab.py` | Isolated Japanese production-dialogue runner comparing `intent_gated` and `candidates` on fresh per-prompt clones, with durable results and resume. Memory comes either from the dataset's `memory_seed` (Sleeptime runs once) or from a **snapshot of a real instance** (`memory_source` / `--seed-instance`; Sleeptime skipped, source read-only, stored vectors reused unless `--reembed`). |
 | `dependencies.py` / `discovery_agent.py` / `news_agent.py` | Dashboard helpers (network discovery, news feed). |
 
 ---

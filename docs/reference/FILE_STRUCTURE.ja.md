@@ -132,6 +132,12 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 プロンプト単位のatomic結果、停止・resume、policy/category別のtoken・RAG・latency・
 対象語recall集計を提供する。CLIは`python -m evals.dialogue_ab run|resume`。
 
+記憶の種は2通り。`memory_seed`から生成する従来経路と、`memory_source`
+（または`--seed-instance`）で**実インスタンスを複製する経路**。後者はSleeptimeを
+回さず、複製元は読み取りのみで触らない。`--reembed`で複製側のカードだけを
+profileのembedding設定で貼り直せる（既定は保存済みベクトルを使用）。
+複製結果と`embedding_meta`欠落警告は`seed_instance.json`へ残す。
+
 QA modeは、全質問を同じpost-Sleeptime状態から評価する`independent`
 （バージョン比較の既定）と、QAターンを同一instanceへ蓄積する`sequential`
 （連続運用・耐久評価）を分離する。全LoCoMo評価はsample/session/questionの
