@@ -1,11 +1,12 @@
 # 検索改修計画（ハイブリッド検索 / RRF / 近傍展開）
 
 対象: ナレッジカード検索（`ButlyBrain` の Layer 1 / Layer 2 と `MemoryProbe`）
-状態: Phase 1 完了。**hybrid は不採用（既定 `vector`）／Phase 1B（常時検索 +
-`injection_policy=candidates`）は v27 で採用**（policy 単体で cat1-4 +0.019・
-cat5 悪化なし。§8 参照）。
-残るは既定へ昇格させる範囲の判断と Phase 2 以降
-最終更新: 2026-07-28
+状態: Phase 1 と日本語対話A/Bまで完了。**hybrid は不採用（既定 `vector`）／
+常時検索は採用／`injection_policy=candidates` は評価用に採用、本番既定は
+`intent_gated`のまま**。Jarvis + Gemini Embeddingでは検索が実用域に入ったため、
+残る中心判断は「記憶注入をGatekeeperに委ねるか」と「注入上限を2枚へ減らせるか」。
+Phase 2以降ではリランカーを優先する（§8、§11参照）。
+最終更新: 2026-07-30
 
 ---
 
@@ -21,6 +22,29 @@ LoCoMo v26（199問・NanoGPT Qwen3-14B）の実測:
 **根拠に届けば 0.54、届かなければ 0.19。** 読み手モデルやプロンプトを触るより、
 この 34% を削るほうが効く。全体スコア（cat5 を除く152問）は 0.380 で、
 仮に ev=0 の 51 問が ev=1.0 相当まで改善すれば +0.12 前後の余地がある。
+
+### 長期記憶評価として何を測っているか
+
+LoCoMoの目的は検索器単体の評価ではない。次の連鎖のどこで事実が落ちるかを切り分ける:
+
+```
+会話RAW
+  → SleeptimeでKnowledge Card化
+  → source_date/source_filesを保持
+  → 検索候補を生成
+  → 注入policyでカードを選択
+  → カードと根拠RAW excerptを回答モデルへ渡す
+  → 回答
+  → scorer
+```
+
+失敗は、カード生成漏れ、日時・事実の欠落、検索順位、Gatekeeperの注入漏れ、
+回答モデルの読み違い、採点表記揺れに分ける。LoCoMoのoverallだけで原因を判断しない。
+
+現行の「RAW注入」は、RAW本文をカードへ格納する方式ではない。
+カードの`source_files`をポインタとして元会話を逆引きし、カードとは別のexcerptとして
+注入するparent-document retrievalである。したがって、対応するカード自体が生成されて
+いない事実は現行RAW注入では検索できず、§7のRAW独立embeddingが必要になる。
 
 ### 直前に潰した2つ（この計画の前提）
 
@@ -127,7 +151,7 @@ Phase 1 単独の合格ラインとしては上振れなので、Phase 1 は 0.4
 
 ---
 
-## 3. Phase 1 — ハイブリッド検索（BM25 + ベクトル、RRF 融合）★本命
+## 3. Phase 1 — ハイブリッド検索（BM25 + ベクトル、RRF 融合）— 完了・hybrid不採用
 
 ### 3.1 索引
 
@@ -254,8 +278,16 @@ Quick Retrievalは`need_intent`に関係なく全質問で実行する。一方�
      これを A/B で測る**
    - cat5の誤注入を必ずA/Bで確認する（実測では読み手が耐えている＝リスクは小さい）
 
-初期実装は逐次実行でよい。正しさを確認後、ContextClassifierとQuick Retrievalを
-並列化して検索レイテンシを隠す。
+LoCoMo v27では`candidates`の効果を確認した。日本語実対話寄りのA/Bでは、
+Embeddingモデルが適切なら`candidates`が分類器取りこぼしを救える一方、明示的な
+記憶質問では`intent_gated`でも発火できることを確認した（§8）。
+
+`candidates`を本番既定にする場合、Gatekeeperの「記憶を注入するか」という役割は
+ほぼ不要になる。ただしtier選択、Web検索判定、state/context分類などの責務は残るため、
+Gatekeeper全体の削除とは分ける。まず記憶注入責務だけを検索候補側へ移せるか判断する。
+
+ContextClassifierとQuick Retrievalの並列化は未実施。検索レイテンシを隠す最適化は、
+注入policyを確定した後に行う。
 
 ### 3.4 「関係ない記憶を注入しない」の担保
 
@@ -534,6 +566,93 @@ cat1-4 の +0.0174 の内訳:
 - latency の +8.0秒/問は、**注入が変わっていない180問側が +1.48M ms** を占める
   ＝ NanoGPT 側の変動。今回の変更由来ではない
 
+### 日本語対話A/B（合成10カード、2026-07-29）
+
+`ja_dialogue_ab_v2`は、memory_required / memory_optional / memory_irrelevantを各10問、
+同一の合成カード10枚に対して`intent_gated`と`candidates`で比較した。
+
+| 指標 | intent_gated | candidates | 読み方 |
+|---|---:|---:|---|
+| required RAG / recall | 1.00 / 0.90 | 1.00 / 0.90 | 明示質問では分類器が全件発火し、便益なし |
+| optional RAG / prompt tokens | 0.20 / 1129 | 1.00 / 1737 | 具体性は増すが +54% |
+| irrelevant RAG / prompt tokens | 0.00 / 1063 | 1.00 / 1806 | +70% |
+| 全体prompt tokens | 1392 | 1842 | +32% |
+
+requiredの0.90は`九月十四日`と`9月14日`の表記差による見かけの減点で、意味上は
+両armとも正解。合成データでは固定コンテキストが小さいため、カード3枚の増分が
+比率上大きく見える。また、RAG未発火でもMid-term Digest / Recent Snapshotから
+固有記憶が出る例があり、`irrelevant_seed_mention_rate`はRAG単独の持ち出し指標ではない。
+
+optionalでは、`candidates`が既知の好みや状況を使って具体化する価値を確認した一方、
+その品質を自動採点する指標はまだ無い。本番判断には実カード数・固定コンテキスト量を
+再現した試験が必要になった。
+
+### Jarvis実インスタンスA/B（2026-07-29）
+
+`--seed-instance`経路で実インスタンスのカード155枚とRAWアーカイブを評価用workspaceへ
+複製し、元インスタンスを変更せず30問をA/Bした。Chat/Gatekeeperは両runとも
+NanoGPT Qwen3-14B、temperature 0.0。
+
+#### v3: Nomic Embedding — 日本語検索がボトルネック
+
+`nomic-embed-text:v1.5`へ155枚を再embeddingし、query/document task prefixも正しく
+適用されたが、targetカードの順位は低かった。
+
+| target命中 | required | optional |
+|---|---:|---:|
+| hit@3 | **2/10** | **1/10** |
+| hit@20 | **4/10** | **3/10** |
+
+パイプラインと再embeddingは正常で、失敗の主因は日本語カード・質問に対する
+Embeddingモデルの適合性だった。このrunは`candidates`の是非を判断する材料にはしない。
+Embeddingのtask prefixだけでなく、対象言語とモデル選択を評価条件として固定する。
+
+#### v4: Gemini Embedding — vector検索が実用域
+
+保存済みの`gemini-embedding-2` 3072次元ベクトルを再利用し、質問側も同じモデルで
+embeddingした。`embedding_meta`は旧DB由来で空だが、次元と検索結果は整合している。
+
+| target命中 | required | optional |
+|---|---:|---:|
+| hit@1 | **8/10** | **4/10** |
+| hit@2 | **9/10** | **5/10** |
+| hit@3 | **9/10** | **5/10** |
+| hit@20 | **10/10** | **9/10** |
+
+`candidates`の自動required recallは0.70だが、正解の`ロールバック`を`roll back`、
+`歯医者/教訓`を`dental appointment/lesson learned`と英語で回答した2問が
+ゼロ扱いされている。意味ベースでは約0.90で、残る弱点はtargetカードが4位だった
+1問。`intent_gated`が検索を注入しなかった質問では、microSDと誤答した一方、
+`candidates`は1位の正解カードからArgon NEO 5 / 512GB NVMeを回答した。
+
+| コスト・副作用 | 結果 |
+|---|---:|
+| Chat prompt tokens | candidatesが +4.2% |
+| 全prompt tokens | candidatesが +3.1% |
+| irrelevant seed mention | 0.20 → 0.20（悪化なし） |
+| 検索レイテンシ平均 | 約0.72秒 |
+
+本番相当の固定コンテキストでは、合成runの+32%ではなく全tokenで+3.1%に収まった。
+また、このdatasetではtop2とtop3のtarget命中数が同じ。次の本番既定候補は
+`search_mode=vector` / `retrieval_execution=always` /
+`injection_policy=candidates` / `vector_search_limit=2`とする。
+
+ただしv4の両armはGatekeeperと回答生成を別々に呼び出しており、temperature 0.0でも
+provider側の非決定性は残る。最終判断は同じ30問をtop2で1回再試験し、意味ベースの
+手動確認を併用する。
+
+### 現時点の統合判断
+
+1. **検索方式はvector単独を維持する。** LoCoMoではhybridが@3を悪化させ、日本語
+   Jarvisでは適切なEmbeddingモデルだけでrequired hit@3 9/10に到達した。
+2. **Embeddingモデルは検索方式と同格の評価変数。** Nomic v1.5の日本語runを根拠に
+   vector検索を否定しない。日本語本番の基準は当面Gemini Embeddingとする。
+3. **検索は常時実行する。** 分類器のnullで根拠へ届かない問題はv27で再現・改善済み。
+4. **`candidates`は本番採用候補だが未確定。** top2再試験でコスト・optionalの具体性・
+   irrelevantの持ち出しを確認してから既定化する。
+5. **次の検索改善はリランカー。** LoCoMoは@3 0.6906→@20 0.8363、
+   Jarvis optionalは@3 5/10→@20 9/10で、候補内にある正解を注入枠へ上げる余地が大きい。
+
 ### Phase 1A の A/B 結果（2026-07-27）— **hybrid は既定へ昇格しない**
 
 v26 workspace（カード107枚 / oracle カードがある cat1-4 139問）で、embedding を
@@ -653,12 +772,16 @@ v26 の workspace（カード107枚）に対し、**BM25 単独**（ベクトル
 | R7 | A/B用backfillが元runのworkspaceを変更する | `rerun-qa`の複製先だけを初期化・backfillし、source runを不変に保つテストを追加 |
 | R8 | RRF の順位が下流の `score` 再ソートで壊れる（`brain.py` は複数箇所で `score` 降順に並べ直す） | hybrid では `score` に RRF スコアを載せ、cosine は `vector_score` / `raw_score` へ退避（§3.2 の実装契約）。回帰テストで順序を固定 |
 | R9 | 目標値（overall 0.45 / ev=0 20%）が Phase 1 単独では届きにくい | §1 のとおり Phase 1 は 0.42 / 26%、0.45 / 20% は Phase 1-3 合算目標として分離 |
+| R10 | Embeddingモデルと言語の不一致で、検索方式が同じでも順位が崩れる | task prefix・model・profile・dim・text recipeをfingerprint化。日本語評価は多言語/Geminiで別途実施 |
+| R11 | 自動scorerが表記・言語差を不正解にする（`ロールバック` / `roll back`、漢数字日付など） | expected aliasesと日付正規化を追加し、少数A/Bでは意味ベースの手動確認を併記 |
+| R12 | A/BのarmごとにGatekeeperと回答を再生成するため、policy以外の分散が混ざる | `injection_reason`で帰属し、offline順位を先に固定。最終判断は同一条件の反復runで確認 |
+| R13 | RAG未注入でも固定のDigest / Snapshot / Key Memoryから過去固有語が出る | 持ち出し指標をRAG由来と固定コンテキスト由来に分離し、policy単独の副作用と混同しない |
 
 ## 10. 決定事項
 
-1. Phase 1導入時の既定は`vector`。evalの昇格条件を満たしてから`hybrid`を既定にする
+1. **検索方式の既定は`vector`のまま確定**。`hybrid`は実験フラグとして残す
 2. Quick Retrievalは全質問で実行し、注入policyと分離する
-3. Phase 1Aは`intent_gated`、Phase 1Bで`retrieval_assisted`を評価する
+3. 評価profileでは`candidates`を採用。本番既定はtop2再試験まで`intent_gated`を維持する
 4. `episode`は再要約せず、原文を最大512文字までembeddingへ追加する
 5. embedding本文は共通helperで作り、`text_recipe`をfingerprintへ含める
 6. rerankerは独立した任意のAIロールにする
@@ -678,27 +801,38 @@ v26 の workspace（カード107枚）に対し、**BM25 単独**（ベクトル
 12. 出力件数は Layer 1 = `memory_probe.vector_search_limit`、Layer 2 = `brain.search_limit`
     で固定（§3.5）
 13. §1 の目標は Phase 1 単独（0.42 / ev=0 26%）と合算（0.45 / 20%）に分ける
+14. 日本語本番相当の検索基準は当面`gemini-embedding-2`。Nomic v1.5の日本語結果は
+    モデル不適合として扱い、vector検索方式の評価へ混ぜない
+15. `candidates`を採用してもGatekeeper全体は削除しない。まず記憶注入判定の責務だけを
+    外し、tier / Web検索 / state分類の責務は維持する
+16. Jarvis v4ではtop2とtop3のtarget命中数が同じため、次の注入上限候補を2枚とする
+17. 現行RAW注入（カードからsource_filesを逆引き）とPhase 5のRAW独立検索を混同しない
 
 ---
 
 ## 11. 進め方
 
-Phase 1だけで独立して価値があり、他はPhase 1の結果を見てから優先度を決める。
-
 1. ~~Phase 1A（FTS5 / RRF / 常時検索 / intent-gated注入）を実装~~ 完了
 2. ~~offline retrieval replayでvectorとhybridを比較~~ 完了 → **hybrid は @3 で -4.5pt。既定は `vector` のまま**
 3. ~~Phase 1B を QA で A/B する~~ 完了（v27）。policy 単体の効果は cat1-4 **+0.019**、
    ev=0 は 51→43、cat5 悪化なし → **eval では採用**
-4. **次**: 既定へ昇格させる範囲を決める。eval profile は `candidates` を既定にしてよいが、
-   本番（対話）では全ターンにカードが入るため、**雑談ターンのトークン増と
-   ふるまいの変化は LoCoMo では測れていない**。本番既定は保留し、日本語の
-   対話サンプルでトークン実測とふるまい確認をしてから判断する。
-   `evals/dialogue_ab.py`とWeb Consoleの専用A/Bは実装済み、実測待ち
-5. 残ったevidence=0（43問）を「カード内にある / カードに無い」に再分類
-6. **Phase 4（リランカー）の優先度を上げる**。vector は @3 で 0.6906 だが
-   @20 では 0.8363 まで届いており、順位付けだけで19問ぶんの余地がある。
-   Phase 2（episode）と合わせて次の候補
-7. Phase 5（RAWのembedding）は「カードに無い」問の割合を再測定してから判断
+4. ~~合成日本語30問で`intent_gated` / `candidates`をA/B~~ 完了。required便益なし、
+   optionalは具体化、固定コンテキストが小さい条件ではtoken +32%
+5. ~~Jarvis実インスタンスを種にしたA/B導線を実装し、30問を実走~~ 完了
+   - Nomic v1.5: required hit@3 2/10 → 日本語Embedding不適合
+   - Gemini Embedding: required hit@3 9/10、optional hit@20 9/10、全token +3.1%
+6. **次**: Gemini Embedding + vector + alwaysを固定し、
+   `intent_gated(top3)`と`candidates(top2)`を同じ30問で再比較する。自動term recallに加え、
+   optionalの具体性とirrelevantの持ち出しを手動確認する
+7. top2再試験で悪化がなければ、本番の記憶注入既定を`candidates`へ変更する。
+   Gatekeeperからは記憶注入判定の責務だけを外す
+8. **Phase 4（リランカー）を次の検索改修とする**。vectorはLoCoMoで@3 0.6906→
+   @20 0.8363、Jarvis optionalで5/10→9/10。まずLLM回答を生成しないoffline順位評価を行う
+9. scorerへexpected aliases・日付表記正規化を追加し、意味上の正解がゼロ点になる問題を直す
+10. 残ったevidence=0（43問）を「カード内にある / カードに無い」に再分類する
+11. Phase 5（RAW独立embedding）は「カードに無い」問の割合を再測定してから判断する
+12. Phase 2（episode embedding）とPhase 3（sibling）は、リランカーとRAW欠落分析の後に
+    優先順位を再決定する
 
 ### Phase 1 で追加するテスト
 
