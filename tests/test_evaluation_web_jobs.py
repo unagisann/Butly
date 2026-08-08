@@ -84,6 +84,17 @@ def _dialogue_request(**overrides):
         "stage3_enabled": True,
         "stage3_batch_size": 10,
         "stage3_bootstrap_max_cards": 2000,
+        "search_mode": "vector",
+        "retrieval_execution": "always",
+        "vector_search_limit": 3,
+        "intent_gated_vector_search_limit": 3,
+        "candidates_vector_search_limit": 3,
+        "vector_search_threshold": 0.4,
+        "deep_search_enabled": True,
+        "bm25_candidates": 20,
+        "vector_candidates": 20,
+        "rrf_k": 60,
+        "bm25_max_df_ratio": 0.5,
         "role_models": _request()["role_models"],
     }
     payload.update(overrides)
@@ -459,7 +470,7 @@ class TestSearchSettingsInProfile:
 
 
 class TestDialogueABWebJob:
-    def test_validates_dataset_and_fixed_comparison_settings(self, tmp_path):
+    def test_validates_dataset_and_search_defaults(self, tmp_path):
         normalized = validate_dialogue_ab_request(
             _dialogue_request(),
             output_dir=tmp_path,
@@ -468,6 +479,11 @@ class TestDialogueABWebJob:
         assert normalized["locale"] == "ja"
         assert normalized["search_mode"] == "vector"
         assert normalized["retrieval_execution"] == "always"
+        assert normalized["vector_search_limit"] == 3
+        assert normalized["intent_gated_vector_search_limit"] == 3
+        assert normalized["candidates_vector_search_limit"] == 3
+        assert normalized["vector_search_threshold"] == pytest.approx(0.4)
+        assert normalized["deep_search_enabled"] is True
         assert normalized["time_decay_rate"] == pytest.approx(0.003)
 
     def test_profile_uses_japanese_and_shared_base_policy(self):
@@ -478,13 +494,86 @@ class TestDialogueABWebJob:
         assert profile["memory_probe"] == {
             "retrieval_execution": "always",
             "injection_policy": "intent_gated",
+            "vector_search_limit": 3,
+            "vector_search_threshold": 0.4,
+            "deep_search_enabled": True,
         }
         assert profile["memory"]["knowledge_maturation_enabled"] is True
+
+    def test_profile_applies_configurable_hybrid_search(self):
+        profile = build_dialogue_ab_profile_payload(
+            _dialogue_request(
+                search_mode="hybrid",
+                retrieval_execution="intent_gated",
+                vector_search_limit=2,
+                vector_search_threshold=0.55,
+                deep_search_enabled=False,
+                bm25_candidates=30,
+                vector_candidates=15,
+                rrf_k=40,
+                bm25_max_df_ratio=0.4,
+            )
+        )
+
+        assert profile["brain"]["search_mode"] == "hybrid"
+        assert profile["brain"]["bm25_candidates"] == 30
+        assert profile["brain"]["vector_candidates"] == 15
+        assert profile["brain"]["rrf_k"] == 40
+        assert profile["brain"]["bm25_max_df_ratio"] == pytest.approx(0.4)
+        assert profile["memory_probe"] == {
+            "retrieval_execution": "intent_gated",
+            "injection_policy": "intent_gated",
+            "vector_search_limit": 2,
+            "vector_search_threshold": 0.55,
+            "deep_search_enabled": False,
+        }
+
+    @pytest.mark.parametrize(
+        ("overrides", "message"),
+        [
+            ({"search_mode": "bm25"}, "unsupported search_mode"),
+            (
+                {"retrieval_execution": "never"},
+                "unsupported retrieval_execution",
+            ),
+            (
+                {"vector_search_limit": 0},
+                "vector_search_limit must be a positive",
+            ),
+            (
+                {"candidates_vector_search_limit": 0},
+                "candidates_vector_search_limit must be a positive",
+            ),
+            (
+                {"vector_search_threshold": 1.1},
+                "vector_search_threshold must be in",
+            ),
+            (
+                {"bm25_candidates": 0},
+                "bm25_candidates must be a positive",
+            ),
+            (
+                {"bm25_max_df_ratio": 0.0},
+                "bm25_max_df_ratio must be in",
+            ),
+        ],
+    )
+    def test_rejects_bad_search_settings(
+        self, tmp_path, overrides, message
+    ):
+        with pytest.raises(EvaluationJobError, match=message):
+            validate_dialogue_ab_request(
+                _dialogue_request(**overrides),
+                output_dir=tmp_path,
+            )
 
     def test_builds_dialogue_cli_command(self, tmp_path):
         profile = tmp_path / "profile.yaml"
         command = build_dialogue_ab_command(
-            _dialogue_request(),
+            _dialogue_request(
+                intent_gated_vector_search_limit=3,
+                candidates_vector_search_limit=2,
+            ),
             output_dir=tmp_path,
             profile_path=profile,
             python_executable="/python",
@@ -497,7 +586,13 @@ class TestDialogueABWebJob:
             "run",
             "--dataset",
         ]
-        assert command[-2:] == ["--profile", str(profile)]
+        assert command[command.index("--profile") + 1] == str(profile)
+        assert command[
+            command.index("--intent-gated-search-limit") + 1
+        ] == "3"
+        assert command[
+            command.index("--candidates-search-limit") + 1
+        ] == "2"
 
     def test_config_keeps_last_requests_separate(self, tmp_path):
         manager = EvaluationJobManager(tmp_path)
@@ -521,6 +616,11 @@ class TestDialogueABWebJob:
             config["dialogue_ab"]["last_request"]["run_id"]
             == "dialogue-v1"
         )
+        assert config["dialogue_ab"]["search_modes"] == ["vector", "hybrid"]
+        assert config["dialogue_ab"]["retrieval_executions"] == [
+            "always",
+            "intent_gated",
+        ]
 
     def test_rejects_non_dialogue_dataset(self, tmp_path):
         with pytest.raises(EvaluationJobError, match="root must be an object"):

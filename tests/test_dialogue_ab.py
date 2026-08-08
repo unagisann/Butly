@@ -1,10 +1,13 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from evals.dialogue_ab import (
+    DialogueABConfig,
     DialogueABError,
+    _configure_policy,
     build_dialogue_scores,
     load_dialogue_dataset,
 )
@@ -84,6 +87,54 @@ def test_build_scores_compares_policy_arms():
     first = scores["prompts"][0]
     assert first["prompt_tokens_delta"] == 60.0
     assert first["response_changed"] is True
+
+
+class TestPolicySearchLimits:
+    def test_config_rejects_non_positive_arm_limit(self, tmp_path):
+        with pytest.raises(
+            DialogueABError,
+            match="candidates_search_limit must be a positive",
+        ):
+            DialogueABConfig(
+                dataset_path=tmp_path / "dataset.json",
+                output_dir=tmp_path,
+                run_id="run",
+                profile_path=tmp_path / "profile.yaml",
+                candidates_search_limit=0,
+            )
+
+    def test_policy_override_keeps_retrieval_execution_and_sets_arm_limit(self):
+        class FakeInstanceManager:
+            def __init__(self):
+                self.config = {
+                    "memory_probe": {
+                        "retrieval_execution": "intent_gated",
+                        "vector_search_limit": 3,
+                    }
+                }
+
+            def get_instance_config(self, _instance_name):
+                return self.config
+
+            def update_instance_config(self, _instance_name, config):
+                self.config = config
+                return True, "ok"
+
+        manager = FakeInstanceManager()
+        runtime = SimpleNamespace(instance_manager=manager)
+
+        _configure_policy(
+            runtime,
+            "ja_dialogue_ab",
+            "candidates",
+            search_limit=2,
+        )
+
+        assert manager.config["memory_probe"] == {
+            "retrieval_execution": "intent_gated",
+            "injection_policy": "candidates",
+            "vector_search_limit": 2,
+        }
 
 
 # ===================================================================

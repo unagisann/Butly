@@ -458,12 +458,28 @@ def build_dialogue_ab_profile_payload(
             else "standard"
         ),
         "locale": "ja",
-        "search_mode": "vector",
-        "retrieval_execution": "always",
+        "search_mode": request.get("search_mode") or "vector",
+        "retrieval_execution": (
+            request.get("retrieval_execution") or "always"
+        ),
         # The runner overwrites this per isolated arm.
         "injection_policy": "intent_gated",
     }
-    return build_profile_payload(payload)
+    profile = build_profile_payload(payload)
+    profile["memory_probe"].update(
+        {
+            "vector_search_limit": int(
+                request.get("vector_search_limit", 3)
+            ),
+            "vector_search_threshold": float(
+                request.get("vector_search_threshold", 0.4)
+            ),
+            "deep_search_enabled": bool(
+                request.get("deep_search_enabled", True)
+            ),
+        }
+    )
+    return profile
 
 
 def build_dialogue_ab_command(
@@ -491,6 +507,14 @@ def build_dialogue_ab_command(
         command.extend(["--seed-instance", str(request["seed_instance_path"])])
     if request.get("reembed"):
         command.append("--reembed")
+    command.extend(
+        [
+            "--intent-gated-search-limit",
+            str(request.get("intent_gated_vector_search_limit", 3)),
+            "--candidates-search-limit",
+            str(request.get("candidates_vector_search_limit", 3)),
+        ]
+    )
     return command
 
 
@@ -532,8 +556,49 @@ def validate_dialogue_ab_request(
         normalized.get("stage3_enabled", True)
     )
     normalized["locale"] = "ja"
-    normalized["search_mode"] = "vector"
-    normalized["retrieval_execution"] = "always"
+
+    for name, allowed, default in (
+        ("search_mode", SEARCH_MODES, "vector"),
+        ("retrieval_execution", RETRIEVAL_EXECUTIONS, "always"),
+    ):
+        value = str(normalized.get(name) or default)
+        if value not in allowed:
+            raise EvaluationJobError(f"unsupported {name}: {value}")
+        normalized[name] = value
+
+    for name, default in (
+        ("vector_search_limit", 3),
+        ("intent_gated_vector_search_limit", 3),
+        ("candidates_vector_search_limit", 3),
+        ("bm25_candidates", 20),
+        ("vector_candidates", 20),
+        ("rrf_k", 60),
+    ):
+        value = normalized.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise EvaluationJobError(f"{name} must be a positive integer")
+        normalized[name] = value
+
+    threshold = normalized.get("vector_search_threshold", 0.4)
+    if isinstance(threshold, bool) or not isinstance(
+        threshold, (int, float)
+    ):
+        raise EvaluationJobError("vector_search_threshold must be a number")
+    if not 0.0 <= float(threshold) <= 1.0:
+        raise EvaluationJobError(
+            "vector_search_threshold must be in [0.0, 1.0]"
+        )
+    normalized["vector_search_threshold"] = float(threshold)
+    normalized["deep_search_enabled"] = bool(
+        normalized.get("deep_search_enabled", True)
+    )
+
+    df_ratio = normalized.get("bm25_max_df_ratio", 0.5)
+    if isinstance(df_ratio, bool) or not isinstance(df_ratio, (int, float)):
+        raise EvaluationJobError("bm25_max_df_ratio must be a number")
+    if not 0.0 < float(df_ratio) <= 1.0:
+        raise EvaluationJobError("bm25_max_df_ratio must be in (0.0, 1.0]")
+    normalized["bm25_max_df_ratio"] = float(df_ratio)
 
     for name, default, minimum in (
         ("rag_raw_top_k", 1, 0),
@@ -706,6 +771,8 @@ class EvaluationJobManager:
                 "last_request": last_dialogue_request,
                 "policies": ["intent_gated", "candidates"],
                 "rag_source_modes": ["cards", "raw", "both"],
+                "search_modes": list(SEARCH_MODES),
+                "retrieval_executions": list(RETRIEVAL_EXECUTIONS),
                 "seed_instances": self._seed_instance_candidates(),
             },
         }

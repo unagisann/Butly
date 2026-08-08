@@ -108,6 +108,16 @@ class DialogueABConfig:
     profile_path: Path
     seed_instance: Optional[Path] = None
     reembed: bool = False
+    intent_gated_search_limit: int = 3
+    candidates_search_limit: int = 3
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("intent_gated_search_limit", self.intent_gated_search_limit),
+            ("candidates_search_limit", self.candidates_search_limit),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise DialogueABError(f"{name} must be a positive integer")
 
 
 def load_dialogue_dataset(path: Path) -> DialogueDataset:
@@ -291,7 +301,7 @@ async def run_dialogue_ab(config: DialogueABConfig) -> dict[str, Any]:
     )
     workspace.write_run_config(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_type": "dialogue_ab",
             "run_id": config.run_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -307,6 +317,10 @@ async def run_dialogue_ab(config: DialogueABConfig) -> dict[str, Any]:
                 str(config.seed_instance) if config.seed_instance else None
             ),
             "reembed": config.reembed,
+            "policy_search_limits": {
+                "intent_gated": config.intent_gated_search_limit,
+                "candidates": config.candidates_search_limit,
+            },
         }
     )
     _write_checkpoint(
@@ -326,6 +340,12 @@ async def resume_dialogue_ab(run_dir: Path) -> dict[str, Any]:
     payload = _read_json(workspace.run_config_path)
     if payload.get("run_type") != "dialogue_ab":
         raise DialogueABError(f"not a dialogue A/B run: {run_dir}")
+    profile = load_profile(Path(payload["profile_path"]))
+    legacy_search_limit = int(
+        (profile.sections.get("memory_probe") or {}).get(
+            "vector_search_limit", 3
+        )
+    )
     config = DialogueABConfig(
         dataset_path=Path(payload["dataset_path"]),
         output_dir=Path(payload["output_dir"]),
@@ -335,9 +355,18 @@ async def resume_dialogue_ab(run_dir: Path) -> dict[str, Any]:
             Path(payload["seed_instance"]) if payload.get("seed_instance") else None
         ),
         reembed=bool(payload.get("reembed")),
+        intent_gated_search_limit=int(
+            (payload.get("policy_search_limits") or {}).get(
+                "intent_gated", legacy_search_limit
+            )
+        ),
+        candidates_search_limit=int(
+            (payload.get("policy_search_limits") or {}).get(
+                "candidates", legacy_search_limit
+            )
+        ),
     )
     dataset = load_dialogue_dataset(config.dataset_path)
-    profile = load_profile(config.profile_path)
     return await _execute(workspace, config, dataset, profile)
 
 
@@ -364,6 +393,11 @@ async def _execute(
     completed = _completed_result_keys(workspace)
     total = len(dataset.prompts) * len(POLICIES)
     for policy in POLICIES:
+        search_limit = (
+            config.intent_gated_search_limit
+            if policy == "intent_gated"
+            else config.candidates_search_limit
+        )
         with IndependentQAWorkspace(instance_dir) as isolated:
             for prompt in dataset.prompts:
                 result_key = (policy, prompt.prompt_id)
@@ -371,7 +405,12 @@ async def _execute(
                     continue
                 isolated.reset()
                 runtime = isolated.create_runtime()
-                _configure_policy(runtime, isolated.instance_name, policy)
+                _configure_policy(
+                    runtime,
+                    isolated.instance_name,
+                    policy,
+                    search_limit=search_limit,
+                )
                 result = await _run_prompt(
                     runtime=runtime,
                     workspace=workspace,
@@ -379,6 +418,7 @@ async def _execute(
                     dataset=dataset,
                     prompt=prompt,
                     policy=policy,
+                    search_limit=search_limit,
                 )
                 result_path = _result_path(
                     workspace,
@@ -675,13 +715,21 @@ def _configure_base_instance(
         raise RuntimeError(f"failed to configure dialogue A/B instance: {message}")
 
 
-def _configure_policy(runtime: Any, instance_name: str, policy: str) -> None:
+def _configure_policy(
+    runtime: Any,
+    instance_name: str,
+    policy: str,
+    *,
+    search_limit: int,
+) -> None:
     if policy not in POLICIES:
         raise DialogueABError(f"unsupported dialogue A/B policy: {policy}")
+    if isinstance(search_limit, bool) or search_limit < 1:
+        raise DialogueABError("search_limit must be a positive integer")
     config = runtime.instance_manager.get_instance_config(instance_name)
     probe = config.setdefault("memory_probe", {})
-    probe["retrieval_execution"] = "always"
     probe["injection_policy"] = policy
+    probe["vector_search_limit"] = search_limit
     updated, message = runtime.instance_manager.update_instance_config(
         instance_name,
         config,
@@ -698,6 +746,7 @@ async def _run_prompt(
     dataset: DialogueDataset,
     prompt: DialoguePrompt,
     policy: str,
+    search_limit: int,
 ) -> dict[str, Any]:
     request = ChatRequest(
         text=prompt.text,
@@ -756,6 +805,7 @@ async def _run_prompt(
         "schema_version": 1,
         "run_id": workspace.run_id,
         "policy": policy,
+        "vector_search_limit": search_limit,
         "prompt_id": prompt.prompt_id,
         "category": prompt.category,
         "prompt": prompt.text,
@@ -1172,6 +1222,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "既定は保存済みベクトルをそのまま使う"
         ),
     )
+    run_parser.add_argument(
+        "--intent-gated-search-limit",
+        type=int,
+        default=3,
+        help="intent_gated armのQuick Retrieval候補上限",
+    )
+    run_parser.add_argument(
+        "--candidates-search-limit",
+        type=int,
+        default=3,
+        help="candidates armのQuick Retrieval候補上限",
+    )
     resume_parser = subparsers.add_parser("resume")
     resume_parser.add_argument("--run-dir", type=Path, required=True)
     return parser
@@ -1187,6 +1249,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             profile_path=args.profile,
             seed_instance=args.seed_instance,
             reembed=args.reembed,
+            intent_gated_search_limit=args.intent_gated_search_limit,
+            candidates_search_limit=args.candidates_search_limit,
         )
         asyncio.run(run_dialogue_ab(config))
         return 0

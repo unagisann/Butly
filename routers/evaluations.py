@@ -112,6 +112,17 @@ class DialogueABStartRequest(BaseModel):
     stage3_enabled: bool = True
     stage3_batch_size: int = Field(default=10, ge=1)
     stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
+    search_mode: Literal["vector", "hybrid"] = "vector"
+    retrieval_execution: Literal["always", "intent_gated"] = "always"
+    vector_search_limit: int = Field(default=3, ge=1)
+    intent_gated_vector_search_limit: int = Field(default=3, ge=1)
+    candidates_vector_search_limit: int = Field(default=3, ge=1)
+    vector_search_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
+    deep_search_enabled: bool = True
+    bm25_candidates: int = Field(default=20, ge=1)
+    vector_candidates: int = Field(default=20, ge=1)
+    rrf_k: int = Field(default=60, ge=1)
+    bm25_max_df_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
     role_models: dict[str, RoleModelRequest] = Field(default_factory=dict)
     # 既存インスタンスを種にする（本番の記憶量・System Instruction をそのまま使う）。
     # 未指定なら dataset の memory_seed から Sleeptime で作る従来経路。

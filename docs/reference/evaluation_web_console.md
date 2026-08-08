@@ -65,10 +65,24 @@ irrelevant, and ten where memory may help.
 
 The runner replays and knowledgeizes the seed once, optionally including
 Stage 3. Every prompt then runs against a fresh disposable clone of that same
-memory under two arms:
+memory under two arms that share the same retrieval settings:
 
-1. `retrieval_execution=always`, `injection_policy=intent_gated`;
-2. `retrieval_execution=always`, `injection_policy=candidates`.
+1. `injection_policy=intent_gated`;
+2. `injection_policy=candidates`.
+
+The Web form can configure the shared `search_mode`, `retrieval_execution`,
+vector threshold, Deep Search toggle, and the BM25/vector candidate counts,
+RRF k, and maximum BM25 document-frequency ratio used by hybrid search. The
+vector result limit is configurable per arm through
+`intent_gated_vector_search_limit` and
+`candidates_vector_search_limit`. The next run inherits these values from the
+previous job.
+
+Use the same arm limits and `retrieval_execution=always` when isolating the
+injection-policy effect. Different limits, such as `intent_gated=3` and
+`candidates=2`, compare two prospective production configurations instead.
+With `retrieval_execution=intent_gated`, a classifier rejection prevents
+search and injection in the `candidates` arm too.
 
 Prompts do not accumulate each other's requests or responses. Chat temperature
 defaults to 0.0 and remains configurable in the Web form.

@@ -2753,7 +2753,7 @@ def _render_dialogue_ab_form(
     st.caption(
         "同一の日本語メモリを一度だけ生成し、30件の各プロンプトを毎回"
         "クリーンな複製へ入力します。比較条件は intent_gated と candidates、"
-        "検索実行は両方とも always、検索方式は vector 固定です。"
+        "検索条件は両armで共通です。"
     )
     st.info(
         "自動指標はトークン・RAG注入・対象語recallです。回答の自然さと"
@@ -2885,6 +2885,142 @@ def _render_dialogue_ab_form(
                 format="%.3f",
                 key="dialogue_ab_time_decay_rate",
             )
+
+        st.markdown("##### 検索設定")
+        search_mode_options = (
+            config.get("search_modes")
+            or evaluation_config.get("search_modes")
+            or ["vector", "hybrid"]
+        )
+        retrieval_execution_options = (
+            config.get("retrieval_executions")
+            or evaluation_config.get("retrieval_executions")
+            or ["always", "intent_gated"]
+        )
+        search_cols = st.columns(3)
+        with search_cols[0]:
+            search_mode = st.selectbox(
+                "Search mode",
+                options=search_mode_options,
+                index=_evaluation_option_index(
+                    search_mode_options,
+                    previous.get("search_mode", "vector"),
+                ),
+                key="dialogue_ab_search_mode",
+                help=(
+                    "vectorはベクトル検索のみ、hybridはBM25とベクトルを"
+                    "RRFで融合します。"
+                ),
+            )
+        with search_cols[1]:
+            retrieval_execution = st.selectbox(
+                "Retrieval execution",
+                options=retrieval_execution_options,
+                index=_evaluation_option_index(
+                    retrieval_execution_options,
+                    previous.get("retrieval_execution", "always"),
+                ),
+                key="dialogue_ab_retrieval_execution",
+                help=(
+                    "alwaysは分類結果にかかわらず検索します。intent_gatedは"
+                    "Gatekeeperが過去記憶を必要と判断した場合だけ検索します。"
+                ),
+            )
+        with search_cols[2]:
+            vector_search_threshold = st.number_input(
+                "Vector threshold",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(previous.get("vector_search_threshold", 0.4)),
+                step=0.05,
+                format="%.2f",
+                key="dialogue_ab_vector_search_threshold",
+            )
+        previous_common_limit = int(
+            previous.get("vector_search_limit", 3)
+        )
+        limit_cols = st.columns(2)
+        with limit_cols[0]:
+            intent_gated_vector_search_limit = st.number_input(
+                "intent_gated 注入候補上限",
+                min_value=1,
+                value=int(
+                    previous.get(
+                        "intent_gated_vector_search_limit",
+                        previous_common_limit,
+                    )
+                ),
+                step=1,
+                key="dialogue_ab_intent_gated_vector_search_limit",
+                help="intent_gated armのQuick Retrievalカード件数です。",
+            )
+        with limit_cols[1]:
+            candidates_vector_search_limit = st.number_input(
+                "candidates 注入候補上限",
+                min_value=1,
+                value=int(
+                    previous.get(
+                        "candidates_vector_search_limit",
+                        previous_common_limit,
+                    )
+                ),
+                step=1,
+                key="dialogue_ab_candidates_vector_search_limit",
+                help="candidates armのQuick Retrievalカード件数です。",
+            )
+        deep_search_enabled = st.checkbox(
+            "Quick Retrievalが0件のときDeep Searchを行う",
+            value=bool(previous.get("deep_search_enabled", True)),
+            key="dialogue_ab_deep_search_enabled",
+        )
+        if retrieval_execution != "always":
+            st.warning(
+                "Retrieval executionがintent_gatedの場合、分類器がnullの質問では"
+                "candidates armでも検索・注入されません。"
+            )
+
+        bm25_candidates = int(previous.get("bm25_candidates", 20))
+        vector_candidates = int(previous.get("vector_candidates", 20))
+        rrf_k = int(previous.get("rrf_k", 60))
+        bm25_max_df_ratio = float(
+            previous.get("bm25_max_df_ratio", 0.5)
+        )
+        if search_mode == "hybrid":
+            hybrid_cols = st.columns(4)
+            with hybrid_cols[0]:
+                bm25_candidates = st.number_input(
+                    "BM25 candidates",
+                    min_value=1,
+                    value=bm25_candidates,
+                    step=1,
+                    key="dialogue_ab_bm25_candidates",
+                )
+            with hybrid_cols[1]:
+                vector_candidates = st.number_input(
+                    "Vector candidates",
+                    min_value=1,
+                    value=vector_candidates,
+                    step=1,
+                    key="dialogue_ab_vector_candidates",
+                )
+            with hybrid_cols[2]:
+                rrf_k = st.number_input(
+                    "RRF k",
+                    min_value=1,
+                    value=rrf_k,
+                    step=1,
+                    key="dialogue_ab_rrf_k",
+                )
+            with hybrid_cols[3]:
+                bm25_max_df_ratio = st.number_input(
+                    "BM25 max DF ratio",
+                    min_value=0.01,
+                    max_value=1.0,
+                    value=bm25_max_df_ratio,
+                    step=0.05,
+                    format="%.2f",
+                    key="dialogue_ab_bm25_max_df_ratio",
+                )
 
     stage3_batch_size = int(previous.get("stage3_batch_size", 10))
     stage3_bootstrap_max_cards = int(
@@ -3046,6 +3182,24 @@ def _render_dialogue_ab_form(
             "stage3_bootstrap_max_cards": int(
                 stage3_bootstrap_max_cards
             ),
+            "search_mode": search_mode,
+            "retrieval_execution": retrieval_execution,
+            # profileの共通初期値。runnerが各arm開始時に個別値へ上書きする。
+            "vector_search_limit": int(
+                intent_gated_vector_search_limit
+            ),
+            "intent_gated_vector_search_limit": int(
+                intent_gated_vector_search_limit
+            ),
+            "candidates_vector_search_limit": int(
+                candidates_vector_search_limit
+            ),
+            "vector_search_threshold": float(vector_search_threshold),
+            "deep_search_enabled": bool(deep_search_enabled),
+            "bm25_candidates": int(bm25_candidates),
+            "vector_candidates": int(vector_candidates),
+            "rrf_k": int(rrf_k),
+            "bm25_max_df_ratio": float(bm25_max_df_ratio),
             "role_models": role_models,
             "seed_instance": seed_instance,
             "reembed": bool(reembed) and seed_instance is not None,

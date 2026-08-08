@@ -63,7 +63,7 @@ StreamlitまたはBackendの再起動後も復元できる。重複を避ける�
 
 runnerはseedをReplayしてSleeptime（任意でStage 3を含む）を一度だけ実行する。
 生成済みの同一instanceから、各プロンプトごとに使い捨てcloneを作り、
-`retrieval_execution=always`のまま次の2 armを実行する。
+同じ検索条件で次の2 armを実行する。
 
 #### 既存インスタンスを記憶の種にする
 
@@ -90,6 +90,20 @@ System Instruction・digestをそのまま使うため、トークンや持ち�
 
 1. `injection_policy=intent_gated`
 2. `injection_policy=candidates`
+
+Webフォームでは検索条件を変更できる。前回のjob requestは次回フォームへ引き継ぐ。
+
+- `search_mode`: `vector` / `hybrid`
+- `retrieval_execution`: `always` / `intent_gated`
+- `vector_search_threshold`、Deep Searchの有効・無効
+- hybrid時のBM25候補数、ベクトル候補数、RRF k、BM25最大DF比
+- `vector_search_limit`はarm別に指定できる
+  （`intent_gated_vector_search_limit` / `candidates_vector_search_limit`）
+
+policyの効果だけを比較するときは両armのlimitを同じにする。本番設定候補どうしを
+比較するときは、たとえば`intent_gated=3` / `candidates=2`のようにarm別指定する。
+`retrieval_execution=always`を使う。`intent_gated`へ変えると、分類器が記憶不要と
+判定した質問では`candidates` armでも検索・注入されない。
 
 各プロンプトは独立しており、先行プロンプトと回答を次のプロンプトへ蓄積しない。
 回答はtemperature 0.0を初期値とし、Webフォームから明示変更できる。
