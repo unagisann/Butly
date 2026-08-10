@@ -334,6 +334,14 @@ def build_chat_completion_kwargs(
         if max_tokens:
             kwargs["max_tokens"] = max_tokens
 
+    # Judge等の限定された呼び出しだけが設定するOpenAI互換の構造化出力。
+    # 通常チャットはresponse_formatを持たないため従来挙動のまま。
+    response_format = chat_conf.get("response_format")
+    if response_format is not None:
+        if not isinstance(response_format, dict):
+            raise ValueError("response_format must be a mapping")
+        kwargs["response_format"] = response_format
+
     return kwargs
 
 

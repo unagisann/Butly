@@ -4,9 +4,10 @@
 状態: Phase 1 と日本語対話A/Bまで完了。**hybrid は不採用（既定 `vector`）／
 常時検索は採用／`injection_policy=candidates` は評価用に採用、本番既定は
 `intent_gated`のまま**。Jarvis + Gemini Embeddingでは検索が実用域に入ったため、
-残る中心判断は「記憶注入をGatekeeperに委ねるか」と「注入上限を2枚へ減らせるか」。
-Phase 2以降ではリランカーを優先する（§8、§11参照）。
-最終更新: 2026-07-30
+Gatekeeper検索文と元発話を各top15で検索し、重複排除・RRF融合する`dual_query`
+基盤を本番／offline replay／日本語A/B／LoCoMoへ追加した。既定は引き続き`vector`で、
+次はofflineのoriginal/rewrite/fused Recallとrescue/harmを実測して採否を決める。
+最終更新: 2026-08-09
 
 ---
 
@@ -435,18 +436,23 @@ SQL だけで済み、embedding 呼び出しは増えない。
 
 ---
 
-## 6. Phase 4 — 多言語リランカー
+## 6. Phase 4 — 多言語リランカー — 4a実装完了・効果測定待ち
 
-候補20〜30件を cross-encoder で並べ替えて 3 件に絞る。
+候補20〜30件を別モデルで並べ替えて3件に絞る。まずConnection経由のLLM版を
+実装し、専用cross-encoder adapterは実測後に必要なら追加する。
 
 - 候補: `bge-reranker-v2-m3` / `jina-reranker-v2-base-multilingual`（どちらも ja/en）
-- **Butly 本体に重みを持たせない**。Ollama か OpenAI 互換エンドポイント越しに呼ぶ
-  形にし、`reranker` を独立した任意ロールとして `AI_CONFIG` に足す
-  （未設定なら無効＝現状動作）
-- Connection / model / timeoutは`reranker`ロール、enable / candidate数 / 採用数は
-  `memory_probe`に置く
-- NanoGPT 等の安い LLM で rerank する実装も同じインタフェースで差せる
-- **Phase 1 の後に効果を測ってから着手**。RRF だけで 0.07 の団子が解けるなら不要かもしれない
+- **実装済み**: `reranker`をinstance/profileの独立した任意セクションとして追加。
+  未設定なら無効で従来挙動を変えない
+- **実装済み**: vector top20（設定可）をLLMへ渡し、厳格JSON Schemaでtop3を選ぶ。
+  元vector rankは隠し、候補本文は文字数制限とprompt injection境界を持つ
+- **実装済み**: provider・JSON・schema失敗時は元vector top3へfail-openし、
+  fallback、追加latency、usageをTrace／LoCoMo artifactへ残す
+- **実装済み**: offline replayの`reranked` modeとLoCoMo本評価、Web/API設定。
+  Recall@k、rescue/harm、completion/fallbackを元vectorと比較できる
+- v1はvector専用。Hybridはv27実測で悪化したため同時利用を禁止する
+- 候補モデル`bge-reranker-v2-m3` / `jina-reranker-v2-base-multilingual`を使う
+  専用adapterは、LLM版の費用・速度・精度が合格しない場合の次候補とする
 
 ---
 

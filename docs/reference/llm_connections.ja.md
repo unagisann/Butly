@@ -187,6 +187,10 @@ NanoGPT は用途別に2つの Connectionとして登録する。
 両方が同じ `NANOGPT_API_KEY` を共有するため、どちらかの画面で保存すれば
 両方が設定済みになる。片方から解除すると両方へ影響する。
 
+同じ表示名のモデルでも、NanoGPT上のroute/model IDが異なる場合がある。
+サブスク対象かどうかは表示名ではなく、`/api/subscription/v1/models` が返す
+正確な`id`で判定する。`/api/paid/v1/models`だけにある同名IDとは置き換えない。
+
 ### Proで従量課金overrideを使わない
 
 `nanogpt-sub` は購読対象に限定するための Connection である。次の指定は
@@ -213,6 +217,12 @@ Embeddingモデル候補にNanoGPTのembeddingモデルが自動表示されな�
 `Qwen/Qwen3-Embedding-0.6B`。`nanogpt/` のようなButly独自prefixは付けない。
 
 モデル一覧と料金は変わるため、例を固定的な提供保証として扱わない。
+
+### 大きなモデル一覧も省略しない
+
+NanoGPTのテキストモデル一覧は200件を超える。Butlyは`/models`が返す全件を
+Connection単位でキャッシュし、選択中のConnectionの候補へ反映する。候補の後半に
+追加されたモデルも、先頭件数によって切り捨てない。
 
 ### NanoGPT公式資料
 

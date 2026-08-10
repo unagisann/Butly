@@ -54,6 +54,66 @@ otherwise — precision therefore varies per card (`knowledge_source_files_card`
 run's workspace (instance DB and turn files) and reports n/a without it; the
 dataset argument to `score` is no longer needed.
 
+When `brain.search_mode: dual_query` is selected, the normal Gatekeeper response
+also emits a standalone memory-search query. Butly vector-searches the original
+question and that query for 15 candidates each, deduplicates and equally
+RRF-fuses a pool capped at 25, then supplies only the normal requested top-k
+(three by default). A missing, invalid, or unchanged query falls back to the
+original vector order. `scores.json.butly` keeps query availability,
+original/rewrite Recall@3, and fused top-three rescue/harm separate from the
+official score.
+
+### Optional semantic judge
+
+Token F1 remains the official LoCoMo score. An optional, separately selected
+LLM judge can add a meaning-based diagnostic for paraphrases, translated
+answers, missing facts, and reversed claims. Its output is written to
+`semantic_scores.json` and `results/semantic_judge/`; it never replaces or
+modifies `scores.json.official`.
+
+Enable it in a profile with an evaluation-only top-level section:
+
+```yaml
+judge:
+  connection: nanogpt
+  model_name: TEE/gemma4-31b
+  generation_config:
+    max_output_tokens: 2048
+```
+
+The judge section is not copied into an evaluation instance. Judge
+temperature is fixed at `0.0`, and the model receives only the question,
+reference answer, candidate answer, category, and judging rubric. Results are
+cached per question using model, prompt, and input fingerprints, so an
+interrupted judgment can resume without rerunning QA or successful judgments.
+OpenAI-compatible Connections such as NanoGPT additionally receive a strict
+`response_format=json_schema` contract; Butly still validates the returned
+object locally before accepting the artifact.
+
+To judge an existing run after the fact:
+
+```bash
+python -m evals.locomo.cli judge \
+  --run-dir ./eval_runs/<run-id> \
+  --judge-connection nanogpt \
+  --judge-model-name TEE/gemma4-31b \
+  --judge-max-output-tokens 2048
+```
+
+`semantic_scores.json` reports `completed` only when every question has a
+valid structured judgment. Provider or schema errors are retained as error
+artifacts and make the command fail safely; rerunning retries only those
+questions. Category-level semantic averages and disagreements with official
+F1 are review aids, not benchmark-compatible replacements.
+
+Before a report or Web/API result uses these diagnostics, it verifies the
+aggregate `question_set_fingerprint` against the current questions,
+references, predictions, and judge configuration. A mismatch is reported as
+`stale`, hides the old semantic metrics and judgments, and requires re-judging.
+The problem-level Web result flags partial answers, contradictions, critical
+omissions, low-confidence judgments, and both directions of disagreement with
+the official score for review.
+
 ## Speaker Mapping
 
 `speaker_a` maps to Butly's `user` role and `speaker_b` maps to `assistant`.
@@ -82,7 +142,7 @@ python -m evals.locomo.cli run \
 `run` finishes with scoring and a summary; pass `--skip-scoring` to stop after
 QA. `--model-name` and `--connection` override the chat role for QA.
 `--profile <yaml>` applies role sections (`chat` / `gatekeeper` / `summary` /
-`knowledge` / `embedding`) plus the non-model `memory`, `brain`,
+`knowledge` / `embedding`) plus the optional runtime `reranker` and non-model `memory`, `brain`,
 `memory_probe`, and `context_levels` sections
 (e.g. `rag_source_mode: both` to inject original-conversation excerpts next to
 the RAG cards, `rag_raw_max_chars` to cap them, `rag_raw_top_k: 1` to give only
@@ -115,8 +175,103 @@ Quote `'off'` in hand-written YAML; an unquoted `off` is parsed as boolean
 false by YAML 1.1. To disable RAG completely, set both `brain.use_rag: false`
 (skip retrieval) and `context_levels.levels.rag: 'off'` (skip injection).
 
-`run`, `resume`, and `rerun-qa` emit flushed live progress to stderr, so the Colab run cell
-shows the active sample, session, or question even during long model calls.
+An optional Memory Reranker can reorder the vector top 20 before the normal
+top-3 injection. The recommended path is a non-generative local Cross-Encoder.
+Install it only where needed with `pip install -r requirements-reranker.txt`.
+It is disabled when the section is absent and falls back to vector order on
+runtime errors:
+
+```yaml
+reranker:
+  enabled: true
+  engine: cross_encoder
+  model_name: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+  candidate_limit: 20
+  max_candidate_chars: 1600
+  batch_size: 20
+  device: auto
+  score_threshold: null
+```
+
+The second reviewed preset is
+`Alibaba-NLP/gte-multilingual-reranker-base`. `score_threshold: null` always
+returns the best top three; once calibrated per model, a numeric threshold
+allows zero-card abstention. The previous `engine: llm` configuration remains
+available for comparison runs.
+
+Evaluate ranking first without regenerating answers:
+
+```bash
+python -m evals.locomo.retrieval_replay \
+  --run ./eval_runs/runs/qwen3_14b_web_v27 \
+  --modes vector reranked \
+  --limit 20 \
+  --profile ./eval_runs/profiles/reranker.yaml
+```
+
+The output compares Recall@1/3/20 and reports top-3 rescue/harm, fallback, and
+added latency (plus token usage for the LLM engine). Its per-question details
+retain the question/evidence, vector and selected IDs, raw scores, errors, and
+pinned model/code revisions. Full LoCoMo runs use the same profile section in
+the QA path and retain both original and effective candidate ranks.
+
+To test Summary candidate generation followed by Episode/RAW embedding
+selection, use the evaluation-only evidence mode:
+
+```bash
+python -m evals.locomo.retrieval_replay \
+  --run ./eval_runs/runs/qwen3_14b_web_v27 \
+  --modes vector evidence_rerank \
+  --limit 20 \
+  --profile ./eval_runs/profiles/<source-job>.yaml
+```
+
+The first stage is the existing card vector (Title / Tags / Summary) top 20.
+The second stage embeds each candidate card's Episode and linked RAW chunks
+with the source run's embedding configuration, takes the maximum evidence
+cosine per card (MaxP), and selects the top three. RAW chunks default to 1,800
+characters with 180-character overlap. This mode does not alter production QA
+retrieval or the source instance database.
+
+Document and question vectors are cached in
+`retrieval_cache/evidence_embeddings.sqlite3`. Keys include the embedding
+model/profile, query/document prefixes, and text hash; reruns therefore reuse
+valid vectors and automatically miss after model or source-text changes. The
+same cached question vector is reused by both retrieval stages. The cache
+stores hashes and vectors, not Episode/RAW text. A remote Embedding
+Connection does receive that text as normal embedding input, with its API key
+used only for Connection authentication. For review, the separate
+`retrieval_replay.json` artifact intentionally retains up to 600 characters of
+the evidence selected for each top-three card. The Web Console shows the
+document-indexing phase, cache activity, completion/fallback, added latency,
+and vector-to-evidence top-three rescue/harm.
+
+Gatekeeper query fusion can be evaluated in the same replay without generating
+answers:
+
+```bash
+python -m evals.locomo.retrieval_replay \
+  --run ./eval_runs/runs/qwen3_14b_web_v27 \
+  --modes vector dual_query \
+  --limit 25 \
+  --profile ./eval_runs/profiles/<source-job>.yaml
+```
+
+For a new dual-query run, replay reuses the query saved in each QA result. For
+an older run it calls the Gatekeeper from the supplied/source profile once per
+problem and then makes two embedding calls. The result records original,
+rewritten, and fused Recall@1/3/20, query source/status, and top-three
+rescue/harm. It never writes to the source workspace.
+
+The Web Console starts this replay as a persistent background job. Its run
+history panel refreshes progress, current mode/question ID, and recent logs
+every two seconds, then restores aggregate and per-question results from
+`retrieval_replay.json` after a page or Backend restart. The generic Jobs tab
+and the replay panel can stop or rerun the same job.
+
+`run`, `resume`, `rerun-qa`, and `retrieval_replay` emit flushed live progress
+to stderr, so the Colab run cell shows the active sample, session, or question
+even during long model calls.
 Replay, Sleeptime, and QA each count as one equal work unit and occupy 0–90%;
 scoring occupies 90–96%, and report generation finishes at 100%. The percentage
 is therefore a simple completed-work indicator, not an elapsed-time estimate.

@@ -5,6 +5,7 @@ LLM に 3 つのスコア（rc/ew/cn）を出力させ、Python 側で reflex/mi
 """
 
 import json
+import re
 import time
 from pathlib import Path
 
@@ -99,6 +100,9 @@ class ContextClassifier:
                     "continuity_need": float
                 },
                 "need_intent": "past_fact" | "glossary" | "relationship" | None,
+                "retrieval_query": str | None,
+                "retrieval_query_status": "ok" | "missing" | "empty"
+                    | "invalid" | "same_as_original" | "fallback",
                 "classifier_status": "ok" | "fallback",
                 "fallback_reason": "provider_error" | "empty_response"
                     | "parse_error" | "missing_need_intent"
@@ -234,11 +238,17 @@ class ContextClassifier:
             need_intent, intent_fallback_reason = self._parse_need_intent(
                 data, user_input
             )
+            retrieval_query, retrieval_query_status = self._parse_retrieval_query(
+                data,
+                user_input,
+            )
 
             return {
                 "tier": tier,
                 "llm_scoring": llm_scoring,
                 "need_intent": need_intent,
+                "retrieval_query": retrieval_query,
+                "retrieval_query_status": retrieval_query_status,
                 # need_intent のみルール fallback の場合も "fallback" を報告する
                 # (tier/scores は LLM 由来。区別は fallback_reason で可能)
                 "classifier_status": (
@@ -328,9 +338,44 @@ class ContextClassifier:
             "tier": "mid",
             "llm_scoring": {},
             "need_intent": self._rule_based_need_intent(user_input),
+            "retrieval_query": None,
+            "retrieval_query_status": "fallback",
             "classifier_status": "fallback",
             "fallback_reason": fallback_reason,
         }
+
+    @staticmethod
+    def _parse_retrieval_query(
+        data: dict,
+        user_input: str,
+    ) -> tuple[str | None, str]:
+        """Parse the optional standalone memory-search query.
+
+        Older Gatekeeper models and saved fixtures do not know this field, so a
+        missing value is an observable, safe fallback rather than a classifier
+        failure.  The original utterance remains the primary retrieval query.
+        """
+        raw = data.get("retrieval_query", "__missing__")
+        if raw == "__missing__":
+            return None, "missing"
+        if raw is None or raw == "null":
+            return None, "empty"
+        if not isinstance(raw, str):
+            return None, "invalid"
+        query = re.sub(r"\s+", " ", raw).strip()
+        if not query:
+            return None, "empty"
+        # A retrieval query is data sent to an embedding model, not another
+        # prompt.  Keep it concise and reject unexpectedly large model output.
+        if len(query) > 500:
+            return None, "invalid"
+
+        def normalize(value: str) -> str:
+            return re.sub(r"\s+", " ", value).strip().casefold()
+
+        if normalize(query) == normalize(user_input or ""):
+            return None, "same_as_original"
+        return query, "ok"
 
     def _format_history(
         self,

@@ -237,6 +237,52 @@ class TestNeedIntentParsing:
         assert result["need_intent"] is None
 
 
+class TestRetrievalQueryParsing:
+    @pytest.fixture
+    def classifier(self):
+        return ContextClassifier()
+
+    def test_accepts_standalone_query(self, classifier):
+        raw = (
+            '{"llm_scoring":{"response_complexity":0.4,'
+            '"emotional_weight":0.0,"continuity_need":0.8},'
+            '"need_intent":"past_fact",'
+            '"retrieval_query":"由紀が前回選んだ陶芸教室の名前"}'
+        )
+        result = classifier._parse_response(raw, user_input="あれの名前なんだっけ？")
+        assert result["retrieval_query"] == "由紀が前回選んだ陶芸教室の名前"
+        assert result["retrieval_query_status"] == "ok"
+
+    def test_missing_query_is_backward_compatible(self, classifier):
+        raw = (
+            '{"llm_scoring":{"response_complexity":0.4,'
+            '"emotional_weight":0.0,"continuity_need":0.8},'
+            '"need_intent":"past_fact"}'
+        )
+        result = classifier._parse_response(raw, user_input="前回の店は？")
+        assert result["retrieval_query"] is None
+        assert result["retrieval_query_status"] == "missing"
+        assert result["classifier_status"] == "ok"
+
+    def test_same_query_avoids_duplicate_embedding(self, classifier):
+        query = "Melanie charity race date"
+        parsed, status = classifier._parse_retrieval_query(
+            {"retrieval_query": f"  {query}  "},
+            query,
+        )
+        assert parsed is None
+        assert status == "same_as_original"
+
+    @pytest.mark.parametrize("value", [123, ["query"], "x" * 501])
+    def test_invalid_query_falls_back_to_original(self, classifier, value):
+        parsed, status = classifier._parse_retrieval_query(
+            {"retrieval_query": value},
+            "question",
+        )
+        assert parsed is None
+        assert status == "invalid"
+
+
 class TestClassifierDiagnostics:
     """classifier_status / fallback_reason の観測フィールドのテスト"""
 

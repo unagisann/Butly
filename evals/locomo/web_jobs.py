@@ -32,8 +32,15 @@ RUN_MODES = (
     "stage3-off",
     "stage3-on",
 )
-SEARCH_MODES = ("vector", "hybrid")
-RETRIEVAL_REPLAY_MODES = ("bm25", "vector", "hybrid")
+SEARCH_MODES = ("vector", "hybrid", "dual_query")
+RETRIEVAL_REPLAY_MODES = (
+    "bm25",
+    "vector",
+    "hybrid",
+    "dual_query",
+    "reranked",
+    "evidence_rerank",
+)
 RETRIEVAL_EXECUTIONS = ("always", "intent_gated")
 INJECTION_POLICIES = ("intent_gated", "retrieval_assisted", "candidates")
 ACTIVE_JOB_STATUSES = frozenset({"queued", "running", "stopping"})
@@ -43,7 +50,17 @@ _PROGRESS_LINE = re.compile(
     r"^\[(?:LoCoMo|DialogueAB)\s+([0-9.]+)%\]"
     r"(?:\s+\[[^\]]+\])?\s+(\S+)\s+\|\s+(.*)$"
 )
-_PROFILE_ROLES = ("chat", "gatekeeper", "summary", "knowledge", "embedding")
+_INSTANCE_PROFILE_ROLES = (
+    "chat",
+    "gatekeeper",
+    "summary",
+    "knowledge",
+    "embedding",
+    "reranker",
+)
+_EVALUATION_MODEL_ROLES = (*_INSTANCE_PROFILE_ROLES, "judge")
+_JUDGE_JOB_TYPES = frozenset({"locomo_judge", "dialogue_ab_judge"})
+_RETRIEVAL_REPLAY_JOB_TYPE = "retrieval_replay"
 
 
 class EvaluationJobError(ValueError):
@@ -145,6 +162,112 @@ def gatekeeper_token_warning(
     )
 
 
+def _normalize_role_models(raw_models: Any) -> dict[str, dict[str, Any]]:
+    """Validate and normalize model selections persisted by evaluation jobs."""
+    if raw_models is None:
+        return {}
+    if not isinstance(raw_models, dict):
+        raise EvaluationJobError("role_models must be an object")
+    unknown_roles = set(raw_models) - set(_EVALUATION_MODEL_ROLES)
+    if unknown_roles:
+        raise EvaluationJobError(
+            f"unsupported role_models: {sorted(unknown_roles)}"
+        )
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for role, raw_role in raw_models.items():
+        if not isinstance(raw_role, dict):
+            raise EvaluationJobError(f"role_models.{role} must be an object")
+        model_name = str(raw_role.get("model_name") or "").strip()
+        if not model_name:
+            raise EvaluationJobError(
+                f"role_models.{role}.model_name must be non-empty"
+            )
+        role_config: dict[str, Any] = {"model_name": model_name}
+        connection = str(raw_role.get("connection") or "").strip()
+        if connection:
+            role_config["connection"] = connection
+        generation_config = raw_role.get("generation_config") or {}
+        if not isinstance(generation_config, dict):
+            raise EvaluationJobError(
+                f"role_models.{role}.generation_config must be an object"
+            )
+        generation = dict(generation_config)
+        if role == "judge":
+            # Evaluation classifiers are fixed for reproducibility.
+            generation["temperature"] = 0.0
+            max_tokens = generation.get("max_output_tokens", 2048)
+            if (
+                isinstance(max_tokens, bool)
+                or not isinstance(max_tokens, int)
+                or max_tokens < 1
+            ):
+                raise EvaluationJobError(
+                    f"role_models.{role}.generation_config.max_output_tokens "
+                    "must be a positive integer"
+                )
+            generation["max_output_tokens"] = max_tokens
+        if generation:
+            role_config["generation_config"] = generation
+        if role == "embedding":
+            for key in ("profile", "query_prefix", "document_prefix"):
+                value = raw_role.get(key)
+                if isinstance(value, str) and value.strip():
+                    role_config[key] = value
+        if role == "judge":
+            from evals.semantic_judge import JudgeConfig
+
+            judge_config = JudgeConfig.from_mapping(role_config)
+            if judge_config is None:  # pragma: no cover - model was validated
+                raise EvaluationJobError("judge config is missing")
+            if not judge_config.connection:
+                from butly_core.llm.model_registry import normalize_model_ref
+
+                try:
+                    normalize_model_ref(judge_config.provider_config())
+                except ValueError as exc:
+                    raise EvaluationJobError(str(exc)) from exc
+            role_config["config_signature"] = judge_config.signature()
+        if role == "reranker":
+            from butly_core.core.reranker import RerankerConfig, RerankerError
+
+            reranker_mapping = dict(raw_role)
+            reranker_mapping["model_name"] = model_name
+            reranker_mapping["generation_config"] = generation
+            if connection:
+                reranker_mapping["connection"] = connection
+            else:
+                reranker_mapping.pop("connection", None)
+            try:
+                reranker_config = RerankerConfig.from_mapping(
+                    reranker_mapping
+                )
+            except RerankerError as exc:
+                raise EvaluationJobError(str(exc)) from exc
+            if reranker_config is None:  # pragma: no cover - model validated
+                raise EvaluationJobError("reranker config is missing")
+            if (
+                reranker_config.engine == "llm"
+                and not reranker_config.connection
+            ):
+                from butly_core.llm.model_registry import normalize_model_ref
+
+                try:
+                    normalize_model_ref(reranker_config.provider_config())
+                except ValueError as exc:
+                    raise EvaluationJobError(str(exc)) from exc
+            role_config = reranker_config.public_dict()
+            for key in (
+                "enabled",
+                "candidate_limit",
+                "max_candidate_chars",
+                "prompt_version",
+            ):
+                role_config.pop(key, None)
+        normalized[role] = role_config
+    return normalized
+
+
 def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
     """Build the same profile sections used by the Colab parameter cell."""
     run_mode = str(request.get("run_mode") or "standard")
@@ -153,13 +276,8 @@ def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
         "locale": request.get("locale") or "en",
     }
 
-    role_models = request.get("role_models") or {}
-    unknown_roles = set(role_models) - set(_PROFILE_ROLES)
-    if unknown_roles:
-        raise EvaluationJobError(
-            f"unsupported role_models: {sorted(unknown_roles)}"
-        )
-    for role in _PROFILE_ROLES:
+    role_models = _normalize_role_models(request.get("role_models"))
+    for role in _INSTANCE_PROFILE_ROLES:
         raw_role = role_models.get(role)
         if not isinstance(raw_role, dict):
             continue
@@ -180,7 +298,33 @@ def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
                 value = raw_role.get(key)
                 if isinstance(value, str) and value.strip():
                     role_config[key] = value
+        if role == "reranker":
+            for key in (
+                "engine",
+                "model_revision",
+                "batch_size",
+                "score_threshold",
+                "device",
+            ):
+                if key in raw_role:
+                    role_config[key] = raw_role[key]
+            role_config.update(
+                {
+                    "enabled": True,
+                    "candidate_limit": int(
+                        request.get("reranker_candidate_limit", 20)
+                    ),
+                    "max_candidate_chars": int(
+                        request.get("reranker_max_candidate_chars", 1600)
+                    ),
+                }
+            )
         profile[role] = role_config
+
+    # Judge is evaluation-only. EvaluationProfile keeps this top-level section
+    # separate so it is never merged into an instance config.
+    if "judge" in role_models:
+        profile["judge"] = dict(role_models["judge"])
 
     use_rag = bool(request.get("context_rag", True))
     profile["memory"] = {
@@ -205,6 +349,18 @@ def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
                 "bm25_max_df_ratio": float(
                     request.get("bm25_max_df_ratio", 0.5)
                 ),
+            }
+        )
+    elif search_mode == "dual_query":
+        profile["brain"].update(
+            {
+                "dual_query_candidates": int(
+                    request.get("dual_query_candidates", 15)
+                ),
+                "dual_query_pool_limit": int(
+                    request.get("dual_query_pool_limit", 25)
+                ),
+                "rrf_k": int(request.get("rrf_k", 60)),
             }
         )
     profile["memory_probe"] = {
@@ -377,6 +533,10 @@ def validate_job_request(
         )
     normalized["source_memory_run_id"] = source_run_id or None
 
+    normalized["role_models"] = _normalize_role_models(
+        normalized.get("role_models")
+    )
+
     allow_mismatch = bool(normalized.get("allow_embedding_mismatch"))
     normalized["allow_embedding_mismatch"] = allow_mismatch
     if source_run_id and not allow_mismatch:
@@ -429,12 +589,36 @@ def validate_job_request(
     for name, default in (
         ("bm25_candidates", 20),
         ("vector_candidates", 20),
+        ("dual_query_candidates", 15),
+        ("dual_query_pool_limit", 25),
         ("rrf_k", 60),
+        ("reranker_candidate_limit", 20),
     ):
         value = normalized.get(name, default)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise EvaluationJobError(f"{name} must be a positive integer")
         normalized[name] = value
+
+    if normalized["reranker_candidate_limit"] > 100:
+        raise EvaluationJobError(
+            "reranker_candidate_limit must be at most 100"
+        )
+
+    reranker_max_chars = normalized.get("reranker_max_candidate_chars", 1600)
+    if (
+        isinstance(reranker_max_chars, bool)
+        or not isinstance(reranker_max_chars, int)
+        or not 100 <= reranker_max_chars <= 10000
+    ):
+        raise EvaluationJobError(
+            "reranker_max_candidate_chars must be between 100 and 10000"
+        )
+    normalized["reranker_max_candidate_chars"] = reranker_max_chars
+    if (
+        "reranker" in normalized["role_models"]
+        and normalized["search_mode"] != "vector"
+    ):
+        raise EvaluationJobError("reranker currently requires search_mode=vector")
 
     df_ratio = normalized.get("bm25_max_df_ratio", 0.5)
     if isinstance(df_ratio, bool) or not isinstance(df_ratio, (int, float)):
@@ -572,6 +756,8 @@ def validate_dialogue_ab_request(
         ("candidates_vector_search_limit", 3),
         ("bm25_candidates", 20),
         ("vector_candidates", 20),
+        ("dual_query_candidates", 15),
+        ("dual_query_pool_limit", 25),
         ("rrf_k", 60),
     ):
         value = normalized.get(name, default)
@@ -641,15 +827,197 @@ def validate_dialogue_ab_request(
         normalized["seed_instance_path"] = None
     normalized["reembed"] = bool(normalized.get("reembed"))
 
-    role_models = normalized.get("role_models") or {}
-    if not isinstance(role_models, dict):
-        raise EvaluationJobError("role_models must be an object")
-    unknown_roles = set(role_models) - set(_PROFILE_ROLES)
-    if unknown_roles:
-        raise EvaluationJobError(
-            f"unsupported role_models: {sorted(unknown_roles)}"
-        )
+    normalized["role_models"] = _normalize_role_models(
+        normalized.get("role_models")
+    )
+    if (
+        "reranker" in normalized["role_models"]
+        and normalized["search_mode"] != "vector"
+    ):
+        raise EvaluationJobError("reranker currently requires search_mode=vector")
     return normalized
+
+
+def validate_judge_request(
+    request: dict[str, Any],
+    *,
+    run_id: str,
+    run_type: str,
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Validate a post-hoc semantic judge request for an existing run."""
+    if run_type not in {"locomo", "dialogue_ab"}:
+        raise EvaluationJobError(f"unsupported judge run_type: {run_type}")
+    normalized_run_id = str(run_id or "").strip()
+    if not _SAFE_RUN_ID.fullmatch(normalized_run_id):
+        raise EvaluationJobError(f"invalid run_id: {run_id}")
+    run_dir = output_dir / normalized_run_id
+    config = None
+    try:
+        config = json.loads(
+            (run_dir / "run_config.json").read_text(encoding="utf-8")
+        )
+    except FileNotFoundError as exc:
+        raise KeyError(normalized_run_id) from exc
+    except json.JSONDecodeError as exc:
+        raise EvaluationJobError(
+            f"invalid evaluation run: {normalized_run_id}"
+        ) from exc
+    if not isinstance(config, dict):
+        raise EvaluationJobError(
+            f"invalid evaluation run: {normalized_run_id}"
+        )
+    actual_type = (
+        "dialogue_ab" if config.get("run_type") == "dialogue_ab" else "locomo"
+    )
+    if actual_type != run_type:
+        raise EvaluationJobError(
+            f"run {normalized_run_id} is {actual_type}, not {run_type}"
+        )
+    if not (run_dir / "scores.json").is_file():
+        raise EvaluationJobConflict(
+            f"evaluation scores are not ready: {normalized_run_id}"
+        )
+
+    judge_model = {
+        "connection": request.get("connection"),
+        "model_name": request.get("model_name"),
+        "generation_config": {
+            "temperature": 0.0,
+            "max_output_tokens": request.get("max_output_tokens", 2048),
+        },
+    }
+    judge = _normalize_role_models({"judge": judge_model})["judge"]
+    return {
+        "run_id": normalized_run_id,
+        "run_type": run_type,
+        "run_dir": str(run_dir.resolve()),
+        "judge": judge,
+    }
+
+
+def build_judge_command(
+    request: dict[str, Any],
+    *,
+    python_executable: str = sys.executable,
+) -> list[str]:
+    """Build a post-hoc judge CLI command without including any secret."""
+    run_type = str(request["run_type"])
+    judge = request["judge"]
+    generation = judge.get("generation_config") or {}
+    if run_type == "dialogue_ab":
+        command = [
+            python_executable,
+            "-m",
+            "evals.dialogue_ab",
+            "judge",
+            "--run-dir",
+            str(request["run_dir"]),
+            "--judge-model-name",
+            str(judge["model_name"]),
+        ]
+        connection_flag = "--judge-connection"
+        max_tokens_flag = "--judge-max-output-tokens"
+    elif run_type == "locomo":
+        command = [
+            python_executable,
+            "-m",
+            "evals.locomo.cli",
+            "judge",
+            "--run-dir",
+            str(request["run_dir"]),
+            "--judge-model-name",
+            str(judge["model_name"]),
+        ]
+        connection_flag = "--judge-connection"
+        max_tokens_flag = "--judge-max-output-tokens"
+    else:  # pragma: no cover - validated before command construction
+        raise EvaluationJobError(f"unsupported judge run_type: {run_type}")
+    if judge.get("connection"):
+        command.extend([connection_flag, str(judge["connection"])])
+    command.extend(
+        [max_tokens_flag, str(generation.get("max_output_tokens", 2048))]
+    )
+    return command
+
+
+def build_retrieval_replay_command(
+    request: dict[str, Any],
+    *,
+    python_executable: str = sys.executable,
+) -> list[str]:
+    """Build a restart-safe offline retrieval replay command."""
+    command = [
+        python_executable,
+        "-m",
+        "evals.locomo.retrieval_replay",
+        "--run",
+        str(request["run_dir"]),
+        "--modes",
+        *[str(mode) for mode in request["modes"]],
+        "--limit",
+        str(request["limit"]),
+        "--out",
+        str(request["result_path"]),
+        "--job-id",
+        str(request["job_id"]),
+    ]
+    profile_path = request.get("profile_path")
+    if profile_path:
+        command.extend(["--profile", str(profile_path)])
+
+    if "evidence_rerank" in request["modes"]:
+        command.extend(
+            [
+                "--evidence-raw-chunk-chars",
+                str(request["evidence_raw_chunk_chars"]),
+                "--evidence-cache",
+                str(request["evidence_cache_path"]),
+            ]
+        )
+
+    reranker = request.get("reranker")
+    if not isinstance(reranker, dict):
+        return command
+    command.extend(
+        [
+            "--reranker-engine",
+            str(reranker.get("engine") or "auto"),
+            "--reranker-model-name",
+            str(reranker["model_name"]),
+            "--reranker-max-candidate-chars",
+            str(request["reranker_max_candidate_chars"]),
+        ]
+    )
+    if reranker.get("connection"):
+        command.extend(
+            ["--reranker-connection", str(reranker["connection"])]
+        )
+    if reranker.get("engine") == "cross_encoder":
+        command.extend(
+            [
+                "--reranker-batch-size",
+                str(reranker.get("batch_size", 20)),
+                "--reranker-device",
+                str(reranker.get("device") or "auto"),
+            ]
+        )
+        if reranker.get("score_threshold") is not None:
+            command.extend(
+                [
+                    "--reranker-score-threshold",
+                    str(reranker["score_threshold"]),
+                ]
+            )
+    else:
+        generation = reranker.get("generation_config") or {}
+        command.extend(
+            [
+                "--reranker-max-output-tokens",
+                str(generation.get("max_output_tokens", 2048)),
+            ]
+        )
+    return command
 
 
 class EvaluationJobManager:
@@ -917,6 +1285,133 @@ class EvaluationJobManager:
             self._save_record(record)
             return self._launch(record, command)
 
+    def start_judge(
+        self,
+        run_id: str,
+        request: dict[str, Any],
+        *,
+        run_type: str,
+    ) -> dict[str, Any]:
+        """Launch semantic judging for an already completed evaluation run."""
+        with self._lock:
+            self._refresh_records()
+            active = [
+                record["job_id"]
+                for record in self._records.values()
+                if record.get("status") in ACTIVE_JOB_STATUSES
+            ]
+            if active:
+                raise EvaluationJobConflict(
+                    f"another evaluation job is active: {active[0]}"
+                )
+            output_dir = (
+                self.dialogue_output_dir
+                if run_type == "dialogue_ab"
+                else self.output_dir
+            )
+            normalized = validate_judge_request(
+                request,
+                run_id=run_id,
+                run_type=run_type,
+                output_dir=output_dir,
+            )
+            job_id = uuid4().hex
+            command = build_judge_command(
+                normalized,
+                python_executable=self.python_executable,
+            )
+            record = {
+                "schema_version": 1,
+                "job_type": f"{run_type}_judge",
+                "job_id": job_id,
+                "run_id": normalized["run_id"],
+                "run_mode": "semantic-judge",
+                "status": "queued",
+                "progress": 0.0,
+                "phase": "queued",
+                "message": "Waiting to start semantic judge",
+                "created_at": utc_now(),
+                "started_at": None,
+                "ended_at": None,
+                "pid": None,
+                "process_created_at": None,
+                "return_code": None,
+                "attempt": 0,
+                "stop_requested": False,
+                "output_dir": str(output_dir),
+                "run_dir": normalized["run_dir"],
+                "profile_path": None,
+                "log_path": str(self.jobs_dir / f"{job_id}.log"),
+                "request": normalized,
+                "command": command,
+            }
+            self._records[job_id] = record
+            self._save_record(record)
+            return self._launch(record, command)
+
+    def start_retrieval_replay(
+        self,
+        request: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Launch an offline retrieval comparison as a persistent job."""
+        with self._lock:
+            self._refresh_records()
+            active = [
+                record["job_id"]
+                for record in self._records.values()
+                if record.get("status") in ACTIVE_JOB_STATUSES
+            ]
+            if active:
+                raise EvaluationJobConflict(
+                    f"another evaluation job is active: {active[0]}"
+                )
+            normalized, _override_config = (
+                self._prepare_retrieval_replay_request(request)
+            )
+            job_id = uuid4().hex
+            result_path = Path(normalized["run_dir"]) / (
+                "retrieval_replay.json"
+            )
+            normalized.update(
+                {
+                    "job_id": job_id,
+                    "result_path": str(result_path),
+                }
+            )
+            command = build_retrieval_replay_command(
+                normalized,
+                python_executable=self.python_executable,
+            )
+            record = {
+                "schema_version": 1,
+                "job_type": _RETRIEVAL_REPLAY_JOB_TYPE,
+                "job_id": job_id,
+                "run_id": normalized["run_id"],
+                "run_mode": "retrieval-replay",
+                "status": "queued",
+                "progress": 0.0,
+                "phase": "queued",
+                "message": "Waiting to compare retrieval modes",
+                "created_at": utc_now(),
+                "started_at": None,
+                "ended_at": None,
+                "pid": None,
+                "process_created_at": None,
+                "return_code": None,
+                "attempt": 0,
+                "stop_requested": False,
+                "output_dir": str(self.output_dir),
+                "run_dir": normalized["run_dir"],
+                "profile_path": normalized.get("profile_path"),
+                "result_path": str(result_path),
+                "log_path": str(self.jobs_dir / f"{job_id}.log"),
+                "request": normalized,
+                "command": command,
+            }
+            self._records[job_id] = record
+            self._save_record(record)
+            return self._launch(record, command)
+
     def stop(self, job_id: str) -> dict[str, Any]:
         with self._lock:
             record = self._require_job(job_id)
@@ -960,7 +1455,18 @@ class EvaluationJobManager:
                 raise EvaluationJobConflict(
                     "run directory was not created; start a new run instead"
                 )
-            if record.get("job_type") == "dialogue_ab":
+            job_type = record.get("job_type")
+            if job_type in _JUDGE_JOB_TYPES:
+                command = build_judge_command(
+                    record["request"],
+                    python_executable=self.python_executable,
+                )
+            elif job_type == _RETRIEVAL_REPLAY_JOB_TYPE:
+                command = build_retrieval_replay_command(
+                    record["request"],
+                    python_executable=self.python_executable,
+                )
+            elif job_type == "dialogue_ab":
                 command = [
                     self.python_executable,
                     "-m",
@@ -1022,9 +1528,9 @@ class EvaluationJobManager:
     def list_runs(self) -> list[dict[str, Any]]:
         with self._lock:
             self._refresh_records()
-            jobs_by_run = {
-                record["run_id"]: record for record in self._records.values()
-            }
+            jobs_by_run = self._latest_jobs_by_run(
+                {"locomo", "locomo_judge"}
+            )
         runs = []
         for config_path in self.output_dir.glob("*/run_config.json"):
             try:
@@ -1037,7 +1543,8 @@ class EvaluationJobManager:
                 continue
             job = jobs_by_run.get(summary["run_id"])
             if job is not None:
-                summary["run_mode"] = job.get("run_mode")
+                if job.get("job_type", "locomo") == "locomo":
+                    summary["run_mode"] = job.get("run_mode")
                 summary["job_id"] = job["job_id"]
                 if job.get("status") in ACTIVE_JOB_STATUSES:
                     summary["status"] = job["status"]
@@ -1052,11 +1559,9 @@ class EvaluationJobManager:
     def list_dialogue_ab_runs(self) -> list[dict[str, Any]]:
         with self._lock:
             self._refresh_records()
-            jobs_by_run = {
-                record["run_id"]: record
-                for record in self._records.values()
-                if record.get("job_type") == "dialogue_ab"
-            }
+            jobs_by_run = self._latest_jobs_by_run(
+                {"dialogue_ab", "dialogue_ab_judge"}
+            )
         runs = []
         for config_path in self.dialogue_output_dir.glob("*/run_config.json"):
             try:
@@ -1082,6 +1587,22 @@ class EvaluationJobManager:
             reverse=True,
         )
 
+    def _latest_jobs_by_run(
+        self,
+        job_types: set[str],
+    ) -> dict[str, dict[str, Any]]:
+        latest: dict[str, dict[str, Any]] = {}
+        for record in self._records.values():
+            if record.get("job_type", "locomo") not in job_types:
+                continue
+            run_id = str(record.get("run_id") or "")
+            current = latest.get(run_id)
+            if current is None or (record.get("created_at") or "") > (
+                current.get("created_at") or ""
+            ):
+                latest[run_id] = record
+        return latest
+
     def get_dialogue_ab_result(self, run_id: str) -> dict[str, Any]:
         if not _SAFE_RUN_ID.fullmatch(run_id):
             raise EvaluationJobError(f"invalid run_id: {run_id}")
@@ -1091,49 +1612,205 @@ class EvaluationJobManager:
             raise KeyError(run_id)
         return scores
 
+    def get_run_result(self, run_id: str) -> dict[str, Any]:
+        """Return LoCoMo official answers merged with current judge details."""
+        if not _SAFE_RUN_ID.fullmatch(run_id):
+            raise EvaluationJobError(f"invalid run_id: {run_id}")
+        run_dir = self.output_dir / run_id
+        scores = self._read_json(run_dir / "scores.json")
+        if not isinstance(scores, dict):
+            raise KeyError(run_id)
+
+        from .semantic_judge_runner import build_semantic_question_details
+
+        semantic, questions = build_semantic_question_details(
+            scores,
+            self._read_json(run_dir / "semantic_scores.json"),
+        )
+        semantic_public = dict(semantic) if isinstance(semantic, dict) else None
+        if semantic_public is not None:
+            # The merged rows below are the canonical problem-level response.
+            # Avoid returning a second, potentially bulky copy.
+            semantic_public.pop("questions", None)
+        review_count = sum(
+            1 for item in questions if item.get("review_required")
+        )
+        if not semantic or semantic.get("status") == "stale":
+            review_count = None
+        return {
+            "run_id": str(scores.get("run_id") or run_id),
+            "question_count": scores.get("question_count", len(questions)),
+            "official": scores.get("official") or {},
+            "semantic_judge": semantic_public,
+            "review_required_count": review_count,
+            "questions": questions,
+        }
+
+    def get_retrieval_replay_result(
+        self,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Return the latest completed offline retrieval comparison."""
+        if not _SAFE_RUN_ID.fullmatch(run_id):
+            raise EvaluationJobError(f"invalid run_id: {run_id}")
+        run_dir = self.output_dir / run_id
+        if not (run_dir / "run_config.json").is_file():
+            raise KeyError(run_id)
+        result = self._read_json(run_dir / "retrieval_replay.json")
+        if not isinstance(result, dict):
+            raise KeyError(run_id)
+        return result
+
+    def _prepare_retrieval_replay_request(
+        self,
+        request: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Validate replay input and resolve the source run profile."""
+        if not isinstance(request, dict):
+            raise EvaluationJobError("retrieval replay request must be a mapping")
+        run_id = str(request.get("run_id") or "").strip()
+        if not _SAFE_RUN_ID.fullmatch(run_id):
+            raise EvaluationJobError(f"invalid run_id: {run_id}")
+        raw_modes = request.get("modes")
+        if not isinstance(raw_modes, list):
+            raw_modes = []
+        modes = [str(mode) for mode in raw_modes]
+        unknown = [mode for mode in modes if mode not in RETRIEVAL_REPLAY_MODES]
+        if not modes or unknown:
+            raise EvaluationJobError(
+                f"modes must be a subset of {list(RETRIEVAL_REPLAY_MODES)}"
+            )
+        if len(set(modes)) != len(modes):
+            raise EvaluationJobError("modes must not contain duplicates")
+
+        limit = request.get("limit", 20)
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise EvaluationJobError("limit must be a positive integer")
+        if limit > 100:
+            raise EvaluationJobError("limit must be at most 100")
+        max_chars = request.get("reranker_max_candidate_chars", 1600)
+        if (
+            isinstance(max_chars, bool)
+            or not isinstance(max_chars, int)
+            or not 100 <= max_chars <= 10000
+        ):
+            raise EvaluationJobError(
+                "reranker_max_candidate_chars must be between 100 and 10000"
+            )
+        evidence_raw_chunk_chars = request.get(
+            "evidence_raw_chunk_chars", 1800
+        )
+        if (
+            isinstance(evidence_raw_chunk_chars, bool)
+            or not isinstance(evidence_raw_chunk_chars, int)
+            or not 200 <= evidence_raw_chunk_chars <= 10000
+        ):
+            raise EvaluationJobError(
+                "evidence_raw_chunk_chars must be between 200 and 10000"
+            )
+
+        run_dir = self.output_dir / run_id
+        config = self._read_json(run_dir / "run_config.json")
+        if not isinstance(config, dict):
+            raise KeyError(run_id)
+        override_config = self._run_profile_sections(run_dir)
+        normalized_reranker = None
+        reranker = request.get("reranker")
+        if reranker is not None:
+            normalized_reranker = _normalize_role_models(
+                {"reranker": reranker}
+            )["reranker"]
+            override_config["reranker"] = {
+                **normalized_reranker,
+                "enabled": True,
+                "candidate_limit": limit,
+                "max_candidate_chars": max_chars,
+            }
+        if "reranked" in modes and not (
+            isinstance(override_config.get("reranker"), dict)
+            and override_config["reranker"].get("model_name")
+        ):
+            raise EvaluationJobError(
+                "reranked mode requires a reranker model selection"
+            )
+
+        profile_path = None
+        raw_profile_path = config.get("profile_path")
+        if raw_profile_path:
+            candidate = Path(str(raw_profile_path))
+            if candidate.is_file():
+                profile_path = str(candidate)
+        normalized = {
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "modes": modes,
+            "limit": limit,
+            "reranker": normalized_reranker,
+            "reranker_max_candidate_chars": max_chars,
+            "evidence_raw_chunk_chars": evidence_raw_chunk_chars,
+            "evidence_cache_path": str(
+                run_dir
+                / "retrieval_cache"
+                / "evidence_embeddings.sqlite3"
+            ),
+            "profile_path": profile_path,
+        }
+        return normalized, override_config
+
     def retrieval_replay(
         self,
         run_id: str,
         modes: list[str],
         *,
         limit: int = 20,
+        reranker: Optional[dict[str, Any]] = None,
+        reranker_max_candidate_chars: int = 1600,
+        evidence_raw_chunk_chars: int = 1800,
     ) -> dict[str, Any]:
         """既存 run の記憶に対して検索だけを回し、Recall@k を比較する。
 
         QA を回す前の足切り（検索改修計画 §8）。``bm25`` は embedding を
-        呼ばないので即返る。``vector`` / ``hybrid`` は質問1件につき embedding を
-        1回呼ぶため、run の規模に比例して時間がかかる。
+        呼ばない。``vector`` / ``hybrid`` は質問1件につきembeddingを1回、
+        ``dual_query``は2回（旧runは加えてGatekeeperを1回）呼ぶため、
+        ``evidence_rerank``は初回にEpisode/RAW文書もembeddingするため、runの
+        規模に比例して時間がかかる。
         結果は run 直下の ``retrieval_replay.json`` に残す。
         """
         from evals.locomo.retrieval_replay import evaluate
 
-        if not _SAFE_RUN_ID.fullmatch(run_id):
-            raise EvaluationJobError(f"invalid run_id: {run_id}")
-        unknown = [m for m in modes if m not in RETRIEVAL_REPLAY_MODES]
-        if not modes or unknown:
-            raise EvaluationJobError(
-                f"modes must be a subset of {list(RETRIEVAL_REPLAY_MODES)}"
-            )
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-            raise EvaluationJobError("limit must be a positive integer")
-
-        run_dir = self.output_dir / run_id
-        if not (run_dir / "run_config.json").is_file():
-            raise KeyError(run_id)
-
-        override_config = self._run_profile_sections(run_dir)
+        normalized, override_config = self._prepare_retrieval_replay_request(
+            {
+                "run_id": run_id,
+                "modes": list(modes),
+                "limit": limit,
+                "reranker": reranker,
+                "reranker_max_candidate_chars": (
+                    reranker_max_candidate_chars
+                ),
+                "evidence_raw_chunk_chars": evidence_raw_chunk_chars,
+            }
+        )
+        run_dir = Path(normalized["run_dir"])
         try:
             result = evaluate(
                 run_dir,
-                list(modes),
-                limit=limit,
+                normalized["modes"],
+                limit=normalized["limit"],
                 override_config=override_config,
+                evidence_cache_path=Path(
+                    normalized["evidence_cache_path"]
+                ),
+                evidence_raw_chunk_chars=normalized[
+                    "evidence_raw_chunk_chars"
+                ],
             )
         except (FileNotFoundError, ValueError) as exc:
             raise EvaluationJobError(str(exc)) from exc
 
+        result["status"] = "completed"
         result["generated_at"] = utc_now()
-        result["limit"] = limit
+        result["limit"] = normalized["limit"]
+        result["modes"] = normalized["modes"]
         atomic_write_text(
             run_dir / "retrieval_replay.json",
             json.dumps(result, ensure_ascii=False, indent=2),
@@ -1156,7 +1833,13 @@ class EvaluationJobManager:
         try:
             from evals.locomo.config import load_profile
 
-            return dict(load_profile(path).sections)
+            profile = load_profile(path)
+            sections = dict(profile.sections)
+            if profile.locale:
+                sections.setdefault("agent_profile", {})["locale"] = (
+                    profile.locale
+                )
+            return sections
         except (OSError, ValueError) as exc:
             print(f"[Evaluation] profile 読み込み失敗 ({path}): {exc}")
             return {}
@@ -1170,7 +1853,9 @@ class EvaluationJobManager:
             raise EvaluationJobError("run_ids must be unique")
 
         rows = []
-        question_maps: dict[str, dict[str, dict[str, Any]]] = {}
+        question_maps: dict[
+            tuple[str, str], dict[str, dict[str, Any]]
+        ] = {}
         for run_id in run_ids:
             if not _SAFE_RUN_ID.fullmatch(run_id):
                 raise EvaluationJobError(f"invalid run_id: {run_id}")
@@ -1182,9 +1867,12 @@ class EvaluationJobManager:
             scores = self._read_json(run_dir / "scores.json") or {}
             for question in scores.get("questions", []):
                 question_id = str(question.get("question_id") or "")
-                if not question_id:
+                sample_id = str(question.get("sample_id") or "")
+                if not question_id or not sample_id:
                     continue
-                question_maps.setdefault(question_id, {})[run_id] = {
+                question_maps.setdefault((sample_id, question_id), {})[
+                    run_id
+                ] = {
                     "score": question.get("official_score"),
                     "prediction": question.get("prediction"),
                     "expected_answer": question.get("expected_answer"),
@@ -1195,7 +1883,7 @@ class EvaluationJobManager:
         questions = []
         baseline = run_ids[0]
         comparison = run_ids[-1]
-        for question_id, by_run in question_maps.items():
+        for (sample_id, question_id), by_run in question_maps.items():
             base_score = by_run.get(baseline, {}).get("score")
             comparison_score = by_run.get(comparison, {}).get("score")
             delta = None
@@ -1207,7 +1895,7 @@ class EvaluationJobManager:
             questions.append(
                 {
                     "question_id": question_id,
-                    "sample_id": seed.get("sample_id"),
+                    "sample_id": sample_id,
                     "question": seed.get("question"),
                     "expected_answer": seed.get("expected_answer"),
                     "delta": delta,
@@ -1218,6 +1906,7 @@ class EvaluationJobManager:
             key=lambda item: (
                 item["delta"] is None,
                 item["delta"] if item["delta"] is not None else 0.0,
+                item["sample_id"],
                 item["question_id"],
             )
         )
@@ -1233,6 +1922,9 @@ class EvaluationJobManager:
         record: dict[str, Any],
         command: list[str],
     ) -> dict[str, Any]:
+        # Capture the attempt boundary before the child can write a completion
+        # artifact.  A cached post-hoc judge may finish before Popen returns.
+        attempt_started_at = utc_now()
         log_path = Path(record["log_path"])
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as log_file:
@@ -1269,8 +1961,12 @@ class EvaluationJobManager:
 
         record["status"] = "running"
         record["phase"] = "setup"
-        record["message"] = "Evaluation process started"
-        record["started_at"] = utc_now()
+        record["message"] = (
+            "Retrieval replay process started"
+            if record.get("job_type") == _RETRIEVAL_REPLAY_JOB_TYPE
+            else "Evaluation process started"
+        )
+        record["started_at"] = attempt_started_at
         record["pid"] = process.pid
         record["process_created_at"] = self._process_create_time(process.pid)
         record["attempt"] = int(record.get("attempt", 0)) + 1
@@ -1311,11 +2007,36 @@ class EvaluationJobManager:
                 record["status"] = "stopped"
                 record["phase"] = "stopped"
                 record["message"] = "Evaluation stopped"
+            elif (
+                return_code == 0
+                and self._record_judge_config(record) is not None
+                and not self._judge_output_complete(record)
+            ):
+                record["status"] = "failed"
+                record["phase"] = "judge"
+                record["message"] = (
+                    "Semantic judge exited without a matching result"
+                )
+            elif (
+                return_code == 0
+                and record.get("job_type") == _RETRIEVAL_REPLAY_JOB_TYPE
+                and not self._retrieval_replay_output_complete(record)
+            ):
+                record["status"] = "failed"
+                record["phase"] = "retrieval"
+                record["message"] = (
+                    "Retrieval replay exited without a matching result"
+                )
             elif return_code == 0:
                 record["status"] = "completed"
                 record["progress"] = 100.0
                 record["phase"] = "complete"
-                record["message"] = "Evaluation completed"
+                record["message"] = (
+                    "Retrieval replay completed"
+                    if record.get("job_type")
+                    == _RETRIEVAL_REPLAY_JOB_TYPE
+                    else "Evaluation completed"
+                )
             else:
                 record["status"] = "failed"
                 record["phase"] = "failed"
@@ -1385,7 +2106,35 @@ class EvaluationJobManager:
         record["pid"] = None
         record["process_created_at"] = None
         record["ended_at"] = record.get("ended_at") or utc_now()
-        if (run_dir / "scores.json").is_file():
+        if record.get("job_type") == _RETRIEVAL_REPLAY_JOB_TYPE:
+            if self._retrieval_replay_output_complete(record):
+                record["status"] = "completed"
+                record["progress"] = 100.0
+                record["phase"] = "complete"
+                record["message"] = "Retrieval replay completed"
+            elif record.get("stop_requested"):
+                record["status"] = "stopped"
+                record["phase"] = "stopped"
+                record["message"] = "Retrieval replay stopped"
+            else:
+                record["status"] = "interrupted"
+                record["phase"] = "interrupted"
+                record["message"] = "Retrieval replay is no longer running"
+        elif self._record_judge_config(record) is not None:
+            if self._judge_output_complete(record):
+                record["status"] = "completed"
+                record["progress"] = 100.0
+                record["phase"] = "complete"
+                record["message"] = "Semantic judge completed"
+            elif record.get("stop_requested"):
+                record["status"] = "stopped"
+                record["phase"] = "stopped"
+                record["message"] = "Semantic judge stopped"
+            else:
+                record["status"] = "interrupted"
+                record["phase"] = "interrupted"
+                record["message"] = "Semantic judge is no longer running"
+        elif (run_dir / "scores.json").is_file():
             record["status"] = "completed"
             record["progress"] = 100.0
             record["phase"] = "complete"
@@ -1400,6 +2149,134 @@ class EvaluationJobManager:
             record["message"] = "Evaluation process is no longer running"
         self._save_record(record)
 
+    def _retrieval_replay_output_complete(
+        self,
+        record: dict[str, Any],
+    ) -> bool:
+        """Return whether this replay attempt wrote its matching artifact."""
+        result_path = record.get("result_path") or (
+            Path(record["run_dir"]) / "retrieval_replay.json"
+        )
+        result = self._read_json(Path(result_path))
+        if not isinstance(result, dict) or result.get("status") != "completed":
+            return False
+        if result.get("job_id") != record.get("job_id"):
+            return False
+        request = record.get("request") or {}
+        if result.get("modes") != request.get("modes"):
+            return False
+        if result.get("limit") != request.get("limit"):
+            return False
+        return self._judge_result_is_fresh(
+            result.get("generated_at"),
+            record.get("started_at"),
+        )
+
+    def _judge_output_complete(self, record: dict[str, Any]) -> bool:
+        """Return whether the run has a complete result for this judge model."""
+        run_dir = Path(record["run_dir"])
+        job_type = record.get("job_type", "locomo")
+        if job_type in {"dialogue_ab", "dialogue_ab_judge"}:
+            scores = self._read_json(run_dir / "scores.json") or {}
+            result = scores.get("semantic_judge")
+            generated_at = (
+                result.get("generated_at")
+                if isinstance(result, dict)
+                else None
+            ) or scores.get("generated_at")
+            actual_model = (
+                result.get("model") if isinstance(result, dict) else None
+            )
+        elif job_type in {"locomo", "locomo_judge"}:
+            result = self._read_json(run_dir / "semantic_scores.json")
+            scores = self._read_json(run_dir / "scores.json")
+            if isinstance(result, dict) and isinstance(scores, dict):
+                from .semantic_judge_runner import (
+                    semantic_scores_for_current_inputs,
+                )
+
+                result = semantic_scores_for_current_inputs(scores, result)
+            generated_at = (
+                result.get("generated_at")
+                if isinstance(result, dict)
+                else None
+            )
+            actual_model = None
+            if isinstance(result, dict):
+                actual_model = result.get("judge") or result.get("model")
+                if not isinstance(actual_model, dict):
+                    summary = result.get("summary") or {}
+                    actual_model = (
+                        summary.get("model")
+                        if isinstance(summary, dict)
+                        else None
+                    )
+        else:
+            return False
+        if not isinstance(result, dict) or result.get("status") != "completed":
+            return False
+        if not isinstance(actual_model, dict):
+            return False
+        if not self._judge_result_is_fresh(
+            generated_at,
+            record.get("started_at"),
+        ):
+            return False
+        expected = self._record_judge_config(record) or {}
+        if result.get("config_signature") != expected.get("config_signature"):
+            return False
+        if actual_model.get("model_name") != expected.get("model_name"):
+            return False
+        if (actual_model.get("connection") or None) != (
+            expected.get("connection") or None
+        ):
+            return False
+        expected_generation = expected.get("generation_config") or {}
+        actual_generation = actual_model.get("generation_config") or {}
+        return actual_generation.get("max_output_tokens", 2048) == (
+            expected_generation.get("max_output_tokens", 2048)
+        )
+
+    @staticmethod
+    def _judge_result_is_fresh(
+        generated_at: Any,
+        started_at: Any,
+    ) -> bool:
+        """Reject a matching aggregate left by an earlier judge attempt."""
+        if not started_at:
+            # Legacy records and unit-level callers predate attempt timestamps.
+            return True
+        if not isinstance(generated_at, str) or not generated_at.strip():
+            return False
+        try:
+            generated = datetime.fromisoformat(
+                generated_at.strip().replace("Z", "+00:00")
+            )
+            started = datetime.fromisoformat(
+                str(started_at).strip().replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+        if generated.tzinfo is None or started.tzinfo is None:
+            return False
+        return generated >= started
+
+    @staticmethod
+    def _record_judge_config(
+        record: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        request = record.get("request") or {}
+        if record.get("job_type") in _JUDGE_JOB_TYPES:
+            judge = request.get("judge")
+        else:
+            role_models = request.get("role_models") or {}
+            judge = (
+                role_models.get("judge")
+                if isinstance(role_models, dict)
+                else None
+            )
+        return judge if isinstance(judge, dict) else None
+
     def _summarize_run(self, run_dir: Path) -> dict[str, Any]:
         config = self._read_json(run_dir / "run_config.json")
         if not isinstance(config, dict):
@@ -1413,6 +2290,26 @@ class EvaluationJobManager:
             scores.get("auxiliary", {}) if isinstance(scores, dict) else {}
         )
         official = scores.get("official", {}) if isinstance(scores, dict) else {}
+        raw_semantic = self._read_json(run_dir / "semantic_scores.json")
+        semantic_questions: list[dict[str, Any]] = []
+        if isinstance(scores, dict):
+            from .semantic_judge_runner import (
+                build_semantic_question_details,
+            )
+
+            semantic, semantic_questions = build_semantic_question_details(
+                scores,
+                raw_semantic,
+            )
+        else:
+            semantic = raw_semantic
+        semantic = semantic or {}
+        semantic_summary = (
+            semantic.get("summary", {})
+            if isinstance(semantic.get("summary"), dict)
+            else {}
+        )
+        semantic_judge = semantic.get("judge") or semantic_summary.get("model")
         status = "created"
         if isinstance(scores, dict):
             status = "completed"
@@ -1447,7 +2344,35 @@ class EvaluationJobManager:
             # 注入されたカードでしか測っていない）。
             "search_execution_rate": butly_scores.get("search_execution_rate"),
             "retrieval_recall_at_3": butly_scores.get("retrieval_recall_at_3"),
+            "retrieval_query_rate": butly_scores.get("retrieval_query_rate"),
+            "dual_query_original_recall_at_3": butly_scores.get(
+                "dual_query_original_recall_at_3"
+            ),
+            "dual_query_rewrite_recall_at_3": butly_scores.get(
+                "dual_query_rewrite_recall_at_3"
+            ),
+            "dual_query_rescue_rate_at_3": butly_scores.get(
+                "dual_query_rescue_rate_at_3"
+            ),
+            "dual_query_harm_rate_at_3": butly_scores.get(
+                "dual_query_harm_rate_at_3"
+            ),
             "bm25_rescue_rate": butly_scores.get("bm25_rescue_rate"),
+            "reranker_completion_rate": butly_scores.get(
+                "reranker_completion_rate"
+            ),
+            "reranker_fallback_rate": butly_scores.get(
+                "reranker_fallback_rate"
+            ),
+            "reranker_rescue_rate_at_3": butly_scores.get(
+                "reranker_rescue_rate_at_3"
+            ),
+            "reranker_harm_rate_at_3": butly_scores.get(
+                "reranker_harm_rate_at_3"
+            ),
+            "reranker_latency_ms_p95": butly_scores.get(
+                "reranker_latency_ms_p95"
+            ),
             # 分類器が空応答/パース失敗で倒れると need_intent が立たず RAG が
             # 丸ごと不発になる（Reasoning モデル + 小さい出力上限で起きる）。
             "classifier_fallback_rate": butly_scores.get(
@@ -1472,6 +2397,31 @@ class EvaluationJobManager:
             "run_mode": None,
             "connection": config.get("connection"),
             "model_name": config.get("model_name"),
+            "semantic_status": semantic.get("status"),
+            "semantic_coverage": semantic.get("coverage"),
+            "semantic_judged_count": semantic.get(
+                "judged_count",
+                semantic_summary.get("judged_count"),
+            ),
+            "semantic_error_count": semantic.get("error_count"),
+            "semantic_score_mean": semantic_summary.get(
+                "normalized_score_mean"
+            ),
+            "semantic_pass_rate": semantic_summary.get("pass_rate"),
+            "semantic_review_count": (
+                sum(
+                    1
+                    for item in semantic_questions
+                    if item.get("review_required")
+                )
+                if semantic and semantic.get("status") != "stale"
+                else None
+            ),
+            "semantic_judge_model": (
+                semantic_judge.get("model_name")
+                if isinstance(semantic_judge, dict)
+                else None
+            ),
         }
 
     def _summarize_dialogue_ab_run(
@@ -1492,6 +2442,12 @@ class EvaluationJobManager:
         )
         comparison = (
             scores.get("comparison", {}) if isinstance(scores, dict) else {}
+        )
+        semantic = (
+            scores.get("semantic_judge", {})
+            if isinstance(scores, dict)
+            and isinstance(scores.get("semantic_judge"), dict)
+            else {}
         )
         intent = (
             policies.get("intent_gated", {})
@@ -1561,6 +2517,20 @@ class EvaluationJobManager:
             "intent_latency_ms_mean": intent.get("latency_ms_mean"),
             "candidates_latency_ms_mean": candidates.get(
                 "latency_ms_mean"
+            ),
+            "semantic_status": semantic.get("status"),
+            "semantic_judged_count": semantic.get("judged_prompt_count"),
+            "semantic_review_count": semantic.get("review_required_count"),
+            "semantic_winner_counts": semantic.get("winner_counts"),
+            "semantic_score_delta": (
+                semantic.get("comparison", {}).get("normalized_score_delta")
+                if isinstance(semantic.get("comparison"), dict)
+                else None
+            ),
+            "semantic_judge_model": (
+                semantic.get("model", {}).get("model_name")
+                if isinstance(semantic.get("model"), dict)
+                else None
             ),
         }
 

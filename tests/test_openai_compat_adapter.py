@@ -63,6 +63,40 @@ class TestClassifyAcrossConnections:
         # model_name はそのまま (OpenAI は prefix strip なし)
         args, kwargs = mock_openai_client.chat.completions.create.call_args
         assert kwargs["model"] == "gpt-4o-mini"
+        assert "response_format" not in kwargs
+
+    def test_classify_forwards_json_schema_response_format(
+        self, mock_openai_client
+    ):
+        adapter = OpenAICompatAdapter(connection=get_connection("openai"))
+        _attach_client(adapter, mock_openai_client)
+        mock_openai_client.chat.completions.create.return_value = MagicMock(
+            choices=[MagicMock(message=MagicMock(content='{"ok":true}'))]
+        )
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "test_result",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {"ok": {"type": "boolean"}},
+                    "required": ["ok"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+        adapter.classify(
+            "prompt",
+            {
+                "model_name": "gpt-4o-mini",
+                "response_format": response_format,
+            },
+        )
+
+        _args, kwargs = mock_openai_client.chat.completions.create.call_args
+        assert kwargs["response_format"] == response_format
 
     def test_xai_classify_strips_prefix(self, mock_openai_client):
         adapter = OpenAICompatAdapter(connection=get_connection("xai"))

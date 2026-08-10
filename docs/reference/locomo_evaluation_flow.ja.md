@@ -193,18 +193,96 @@ RRFで融合する検索へ切り替えられる（既定は`vector`）。profil
 hybridの候補dictでは`score`が**RRFスコア**になり、cosineは`vector_score`へ入る。
 `retrieval_source`（vector/bm25/both）と両者の順位も残る。
 
-Run履歴の「検索だけ比較（offline retrieval replay）」から、回答生成なしで
-`bm25` / `vector` / `hybrid` のRecall@1/3/20を比べられる
-（`POST /evaluations/runs/retrieval-replay`）。結果はrun直下の
-`retrieval_replay.json`にも残る。`bm25`はembeddingを呼ばないので即終わるが、
-`vector` / `hybrid`は質問1件につきembeddingを1回呼ぶ。
+### Gatekeeper検索文とのDual Query（`brain.search_mode: dual_query`）
 
-Webコンソールの「検索設定（ハイブリッド検索 A/B）」から
+`dual_query`は、ユーザーの元発話とGatekeeperが同じ分類応答内で作る
+`retrieval_query`を独立してベクトル検索する。既定では各top15をカードIDで
+重複排除し、等重みRRF（`rrf_k: 60`）で融合した最大25件から、MemoryProbeが
+要求した通常の上位3件だけを返す。固有名・日時・否定・関係を維持しつつ、履歴中の
+代名詞や省略された主語を解決したstandalone検索文を使う。検索文が空、不正、または
+元発話と同一なら2回目のembeddingを省略し、従来の元発話vector順位へ戻る。
+
+設定は`dual_query_candidates`（既定15）、`dual_query_pool_limit`（既定25）、
+`rrf_k`。Gatekeeper呼び出しは従来の1回のままで、検索文をJSONの追加フィールドとして
+得るため生成LLMコストは増えない。`retrieval_source`は引き続きvector/BM25の
+検索方式を表し、どちらのqueryで見つかったかは`query_source`と両queryのrankへ
+分離して記録する。
+
+Run履歴の「検索だけ比較（offline retrieval replay）」から、回答生成なしで
+`bm25` / `vector` / `hybrid` / `dual_query` / `reranked` /
+`evidence_rerank` のRecall@1/3/20を比べられる
+（Web UIは`POST /evaluations/runs/retrieval-replay/jobs`で永続ジョブを開始する。
+従来の同期APIも互換用に残る）。進捗率・現在のモードと問題ID・直近ログは2秒ごとに
+更新され、画面を離れても継続する。停止／同条件での再実行、完了後の集計と問題別
+rescue/harm/fallback・候補順位・raw scoreの確認も同じUIで行える。結果はrun直下の
+`retrieval_replay.json`にも残る。`bm25`はembeddingを呼ばないので即終わるが、
+`vector` / `hybrid`は質問1件につきembeddingを1回呼ぶ。`dual_query`は保存済みの
+検索文を優先して2回embeddingし、検索文のない旧runではさらに元runのGatekeeperを
+1回呼ぶ。`reranked`はvector embeddingに加えて
+選択したRerankerで候補を一括採点する。成果物の問題別`details`には質問、evidence、
+元のvector順位、実際に選択した0〜3件、全候補のraw score、エラーを残すため、
+救済・悪化した問題の確認とモデル別thresholdの校正に使える。
+
+`evidence_rerank`は、既存のTitle / Tags / Summary embeddingでvector top N
+（既定20）を取り、候補カードのEpisodeと紐づくRAW会話を同じembedding空間へ追加し、
+カードごとの最大cosine（MaxP）で並べ替えてtop 3を選ぶ評価専用モードである。
+RAWは既定1800文字・180文字overlapで分割し、EpisodeもRAWもない旧カードだけSummaryへ
+fallbackする。文書embeddingは初回にまとめて準備し、質問embeddingとともに
+`retrieval_cache/evidence_embeddings.sqlite3`へ保存する。キーにはmodel、profile、
+query/document prefix、本文hashを含むため、設定や本文変更後に古いvectorを再利用しない。
+質問vectorは一段目のSummary検索と二段目の根拠採点で共有し、同じ質問への重複呼び出しを
+避ける。キャッシュはhashとvectorだけを持ち、元runのinstance DB、カード、RAWは
+変更しない。
+
+外部Embedding ConnectionではEpisode / RAW本文が通常のembedding入力として送られる。
+API keyはConnection認証にだけ使われ、cacheや成果物へ保存しない。一方、問題別レビューを
+可能にするため`retrieval_replay.json`には選択根拠のpreview（最大600文字）を保存する。
+集計とUIはembedding準備の進捗、cache hit/miss/write、完了／fallback、追加latency、
+vector top3からのrescue/harmを分けて表示する。
+
+Webコンソールの「検索設定（Dual Query / Hybrid / Reranker）」から
 `search_mode` / `retrieval_execution` / `injection_policy` を選べる。
 `hybrid`のときだけ`bm25_candidates` / `vector_candidates` / `rrf_k` /
 `bm25_max_df_ratio`の入力欄が出て、profile YAMLの`brain`・`memory_probe`
 セクションへ書き込まれる（`vector` runのprofileにBM25キーは残さない）。
-run履歴と比較表には`search_exec` / `recall@3` / `bm25_rescue`列が並ぶ。
+`dual_query`では各query候補数・pool上限・RRF kをprofileへ書く。run履歴と比較表には
+検索文生成率、original/rewrite Recall@3、rescue/harmも並ぶ。
+
+### Memory Reranker（`reranker`）
+
+任意の`reranker` profileセクションを有効にすると、純粋vector検索の上位候補
+（既定20件）を並べ替え、最大3件を通常のRAG候補として注入する。推奨経路は
+生成を行わない`cross_encoder`で、質問と各カードの`title` / `summary` /
+`episode` / `source_date`をペアにして1バッチで関連度スコアへ変換する。
+
+許可済みモデルは日本語対応の
+`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1`と
+`Alibaba-NLP/gte-multilingual-reranker-base`。依存は通常起動に含めず、使う環境だけ
+`pip install -r requirements-reranker.txt`で導入する。モデルは初回利用時に読み込み、
+process内で再利用する。`score_threshold`を設定した場合は条件を満たすカードが
+なければ0枚を返し、Deep Searchで迂回せず注入を見送る。raw scoreは確率とは
+限らないため、しきい値はoffline評価でモデルごとに校正する。
+
+```yaml
+reranker:
+  enabled: true
+  engine: cross_encoder
+  model_name: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+  candidate_limit: 20
+  max_candidate_chars: 1600
+  batch_size: 20
+  device: auto
+  score_threshold: null
+```
+
+旧`llm` engineも比較再現用に残す。こちらは候補を不透明ラベル付きJSONとして
+Connectionへ送り、厳格JSON Schemaとローカル検証を通す。不正応答・接続失敗時は
+どちらのengineも元のvector順位へフォールバックする。
+
+v1は`search_mode: vector`専用で、Hybrid / Dual Queryとの同時利用はWeb/APIで拒否する。
+無効または未設定なら従来挙動と同一で、本番instanceでも同じ任意セクションを使える。
+診断には`vector_candidate_ids`（元順位）と`effective_candidate_ids`（注入順位）、
+engine、完了／fallback、追加レイテンシ、LLMの場合はusageを別々に保存する。
 
 検索の実行と注入判定は`memory_probe.retrieval_execution`（既定`always`）と
 `memory_probe.injection_policy`（既定`intent_gated`）で独立に制御する。
@@ -223,6 +301,9 @@ scorerが出す検索系の指標:
 | `retrieval_recall_at_1/3/20` | oracleカードがある問 | 上位k候補の`source_files`がevidenceターンを覆う割合 |
 | `vector_only_recall_at_3` | 同上 | BM25を外した対照値 |
 | `bm25_rescue_rate` | 同上 | 融合top3がベクトル単独top3を上回った割合 |
+| `reranker_completion_rate` / `reranker_fallback_rate` | Reranker実行問 | 構造化判定の完了率／元vector順位へ戻した割合 |
+| `reranker_rescue_rate_at_3` / `reranker_harm_rate_at_3` | oracleカードがあり判定完了した問 | リランク後top3が元vector top3より改善／悪化した割合 |
+| `reranker_latency_ms_p50/p95` | Reranker実行問 | Reranker呼び出しだけの追加レイテンシ |
 | `retrieval_latency_ms_p50/p95` | 実行した問 | 検索のみのレイテンシ（embedding呼び出しを含む） |
 | `bm25_short_term_hit_rate` | 実行した問 | 2文字CJK語のLIKE補助候補が入った割合 |
 

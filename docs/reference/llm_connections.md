@@ -191,6 +191,11 @@ Register NanoGPT as two Connections:
 Both use `NANOGPT_API_KEY`. Saving it from either row configures both;
 clearing it from either row affects both.
 
+NanoGPT may expose multiple route/model IDs with the same display name.
+Subscription eligibility follows the exact `id` returned by
+`/api/subscription/v1/models`, not the display name. Do not substitute a
+same-named ID that appears only in `/api/paid/v1/models`.
+
 ### Do not add pay-as-you-go overrides to Pro
 
 `nanogpt-sub` exists to keep calls on subscription-covered routing. Do not add
@@ -216,6 +221,12 @@ Select the `nanogpt` Connection and paste the exact `id` returned by
 `Qwen/Qwen3-Embedding-0.6B`. Do not add a Butly-specific `nanogpt/` prefix.
 
 Availability and pricing change; the examples are not availability guarantees.
+
+### Do not truncate large model catalogs
+
+NanoGPT's text-model catalog can contain more than 200 entries. Butly caches
+the complete `/models` response per Connection and exposes all of it to the
+selected Connection's picker, including models late in the provider's order.
 
 ### Official NanoGPT documentation
 

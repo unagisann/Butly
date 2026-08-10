@@ -41,6 +41,30 @@ from evals.locomo.workspace import EvaluationWorkspace, WorkspaceError
 FIXTURE = Path(__file__).parent / "fixtures" / "mini_locomo.json"
 
 
+@pytest.fixture(autouse=True)
+def _run_fake_chat_workers_inline(monkeypatch):
+    """Keep this fake-only suite independent of workers and tokenizer I/O.
+
+    Production calls remain on the threadpool. These tests use immediate fake
+    providers, for which two near-simultaneous worker completions can leave the
+    event loop asleep even though both workers are already idle. The simple
+    token counter also prevents tiktoken from downloading its vocabulary in a
+    suite explicitly documented as external-API-free.
+    """
+
+    async def inline(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "butly_core.chat.service.run_in_threadpool",
+        inline,
+    )
+    monkeypatch.setattr(
+        "butly_core.core.raw_memory_reader.count_tokens",
+        lambda text: len(str(text).split()),
+    )
+
+
 def test_qa_system_instruction_is_grounded_and_has_no_unexpanded_slots():
     prompt = _build_qa_system_instruction("Maya")
 
@@ -638,6 +662,11 @@ chat:
 gatekeeper:
   generation_config:
     temperature: 0.1
+judge:
+  connection: judge-connection
+  model_name: judge-model
+  generation_config:
+    max_output_tokens: 2048
 brain:
   use_rag: false
 context_levels:
@@ -696,6 +725,7 @@ context_levels:
         == 0.1
     )
     assert target_config["brain"]["use_rag"] is False
+    assert "judge" not in target_config
     assert target_config["context_levels"]["levels"] == {
         "current_time": "off",
         "mid_term": "off",
@@ -708,6 +738,13 @@ context_levels:
     assert run_config["memory_reused_from_run_id"] == "reuse-source"
     assert run_config["run_sleeptime_per_session"] is False
     assert run_config["qa_prompt_version"] == LOCOMO_QA_PROMPT_VERSION
+    assert run_config["judge"]["connection"] == "judge-connection"
+    assert run_config["judge"]["model_name"] == "judge-model"
+    assert run_config["judge"]["generation_config"] == {
+        "temperature": 0.0,
+        "max_output_tokens": 2048,
+    }
+    assert len(run_config["judge"]["config_signature"]) == 64
     checkpoint = Checkpoint.load("reuse-target", rerun.workspace.checkpoints_dir)
     progress = checkpoint.samples["synthetic-conv-1"]
     assert progress.replayed_sessions == ["session_1"]

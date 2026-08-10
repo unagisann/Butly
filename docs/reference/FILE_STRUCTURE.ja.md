@@ -19,6 +19,7 @@
 | `butly_api/` | 正式フロントエンド向け `/api/v1` transport 層（app factory / schemas / error contract / sidecar CLI） |
 | `openapi/butly.openapi.json` | `/api/v1` の OpenAPI 3.1 snapshot（`scripts/generate_openapi.py` で生成） |
 | `evals/locomo/` | LoCoMo長期記憶評価CLI。正式APIへ混入せず、checkpoint付き隔離Workspace上でReplay → Sleeptime → QA → 公式互換採点・レポートまで実行 |
+| `evals/semantic_judge.py` | 日本語対話A/BとLoCoMoが共有する評価専用LLM Judge。厳格JSON、prompt injection耐性、fingerprint、意味判定集計を担当 |
 | `frontend/` | 正式デスクトップ frontend（pnpm + Tauri v2 + React + TypeScript + Vite）。Phase 1 は app shell + sidecar lifecycle のみ |
 | `packaging/pyinstaller/` | FastAPI sidecar の PyInstaller spec（`butly-backend.spec`）と entry script |
 
@@ -113,13 +114,15 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、独立／逐次QAの結果とTraceを保存 |
 | `replay.py` | セッションReplay、Sleeptime、独立／逐次QA、checkpoint更新のオーケストレーション。逐次QAはcheckpoint commit前の中断時にinstance・結果・Traceをrollbackし、`resume_evaluation()`で重複なく途中再開。`rerun_qa_from_memory()`は独立runのpost-Sleeptime instanceを新runへ複製してQAだけ再実行 |
 | `artifacts.py` | JSON/JSONL、Traceコピー、セッション前後スナップショットの保存 |
-| `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。検索実行率／注入率／`retrieval_recall_at_k`／`bm25_rescue_rate`も集計。`scores.json` / `errors.jsonl`出力 |
-| `retrieval_replay.py` | LLM回答を生成しないoffline retrieval replay。既存runのDBを一時ディレクトリへ複製し、`bm25` / `vector` / `hybrid`のRecall@kを比較する（`python -m evals.locomo.retrieval_replay`）。元runは変更しない |
+| `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。検索実行率／注入率／`retrieval_recall_at_k`／BM25・Rerankerのrescue/fallbackも集計。`scores.json` / `errors.jsonl`出力 |
+| `semantic_judge_runner.py` | 公式スコアを変更しない任意の意味判定。問題単位atomic artifact、fingerprint再開、`semantic_scores.json`を生成 |
+| `retrieval_replay.py` | 回答を生成しないoffline retrieval replay。既存runのDBを一時ディレクトリへ複製し、`bm25` / `vector` / `hybrid` / `dual_query` / `reranked` / `evidence_rerank`のRecall@kを比較する（`python -m evals.locomo.retrieval_replay`）。`dual_query`は保存済み検索文を再利用し、無い旧runだけGatekeeperを呼ぶ。元runのDB・カード・RAWは変更せず、結果とembedding cacheだけrun直下へ書く |
+| `evidence_reranker.py` | `evidence_rerank`用の評価専用二段検索。Summary系vector候補をEpisode / RAW chunk embeddingのMaxP cosineで並べ替え、本文を含まないSQLite vector cacheとレビュー用の選択根拠previewを管理 |
 | `stemming.py` | 依存追加なしのPorter (1980) stemmer。公式のnltk stemmerと稀な語で差が出る旨をdocstringに明記 |
-| `report.py` | `scores.json`から`summary.md`を生成 |
+| `report.py` | `scores.json`と任意の`semantic_scores.json`から`summary.md`を生成 |
 | `checkpoint.py` | セッション/Sleeptime/QA単位のatomicなcheckpoint。run ID照合と破損検出つき |
 | `config.py` | CLI設定DTO（QA mode、sample/session/question範囲、localeを含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
-| `cli.py` | `run` / `resume` / `rerun-qa` / `score` / `report` subcommands。`run`は`--qa-mode`、各`--*-limit` / `--all-*`、`--locale`を受け付け、`rerun-qa`は元runを変更せず同じカードでQAを再実行 |
+| `cli.py` | `run` / `resume` / `rerun-qa` / `score` / `judge` / `report` subcommands。`judge`は既存runのQAを再実行せず別モデルで意味判定 |
 | `progress.py` | CLI / Colab向けの即時進捗ログ。Replay・Sleeptime・QAの完了unitを0〜90%、採点・レポートを90〜100%としてstderrへ表示 |
 | `web_jobs.py` | Web Console用の永続subprocessジョブ管理。CLI command/profile生成（検索設定を含む）、進捗ログ解析、停止・resume、既存run走査・スコア比較、offline retrieval replayの実行 |
 | `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`）。top-level `locale`は内部prompt／memory出力言語、`brain.time_decay_rate`は評価runの検索時間減衰を指定 |
@@ -130,7 +133,9 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 日本語の通常対話に対する`intent_gated` / `candidates`比較runner。
 同じseed memoryを一度だけKnowledge化し、30プロンプトを独立cloneへ投入する。
 プロンプト単位のatomic結果、停止・resume、policy/category別のtoken・RAG・latency・
-対象語recall集計を提供する。CLIは`python -m evals.dialogue_ab run|resume`。
+対象語recall集計を提供する。任意のSemantic JudgeはA/B順を反転して2回判定し、
+不一致を人手確認対象として保存する。CLIは
+`python -m evals.dialogue_ab run|resume|judge`で、`judge`は既存runのQAを再実行しない。
 
 記憶の種は2通り。`memory_seed`から生成する従来経路と、`memory_source`
 （または`--seed-instance`）で**実インスタンスを複製する経路**。後者はSleeptimeを
@@ -388,13 +393,22 @@ LLM 呼び出しと RAG 検索のエンジン。Provider に依存しない中�
   - `extract_keywords(text, override_config)` — RAG 用キーワードを LLM で抽出（`search_mode="vector"` の Layer 2 のみ使用）
   - `search_knowledge(keywords, query, instance_name, limit, override_config)` — Layer 2（Deep）検索。`vector` では keywords の LIKE 絞り込み + コサイン再ランク、`hybrid` では keywords を使わずベクトル閾値なしのハイブリッド検索（`keywords=None` 可）
   - `quick_vector_search(user_input, instance_name, limit, threshold, override_config)` — キーワード抽出なしの純粋なベクトル検索。新旧を問わず全knowledge cardを類似度計算し、時間減衰・archive補正後の上位`limit`件を返す
-  - `quick_vector_search_diag(...)` — Layer 別診断情報（全候補数 / 閾値判定 / スコア等）を含む診断付き版。互換フィールド`fetch_limit`は全件検索を示す`null`。`brain.search_mode="hybrid"` ならハイブリッド検索へ分岐する
+  - `quick_vector_search_diag(..., retrieval_query=None)` — Layer 別診断情報（全候補数 / 閾値判定 / スコア等）を含む診断付き版。互換フィールド`fetch_limit`は全件検索を示す`null`。`brain.search_mode`に応じて`hybrid`または`dual_query`へ分岐する
+  - `_dual_query_search_diag(...)` — 元発話とGatekeeper検索文を既定各top15でvector検索し、カードIDで重複排除、等重みRRFで最大25件に融合する。呼び出し元へは要求されたtop-kだけ返し、検索文が無い／同一なら元発話vector順位へフォールバックする
   - `_hybrid_search_diag(...)` — BM25（FTS5/trigram）とベクトルの候補を**全インスタンス分集めてからグローバル順位を付け**、RRF で融合する。返す候補の `score` は **RRF スコア**で、cosine は `vector_score` / `raw_score` に退避する（下流が `score` 降順で並べ直しても融合順位が壊れないようにするため）
   - `_bm25_search_single(spec, instance_name, limit, brain_conf)` — 単一 DB の BM25 候補。索引が無ければ一度だけ生成し、それでも使えなければ空を返す（＝実質 vector へフォールバック）
   - `summarize_conversation(conversation_text, override_config)` — 会話テキストを要約（summary モデル使用）
   - `generate_knowledge_card(text, override_config)` — ナレッジカード JSON を生成（knowledge モデル使用）
   - `_calculate_cosine_similarity(vec1, vec2)` — コサイン類似度計算
   - `_get_provider(model_name)` — ProviderFactory 経由で Provider を取得
+
+### `butly_core/core/reranker.py`
+
+任意のMemory Reranker。推奨のCross-EncoderはmMiniLMv2 / GTE multilingualの
+質問・カードペアを1バッチで採点し、任意の関連度しきい値で0〜3枚を選べる。
+比較再現用の旧LLM engineは一時ラベル付きJSONと厳格JSON Schemaを使う。
+どちらも元vector順位を保持し、実行失敗時に安全にvector順位へ戻せる診断情報を返す。
+`RerankerConfig`はengine、候補数、文字数上限、batch size、device、しきい値を正規化する。
 
 ---
 
@@ -478,7 +492,7 @@ ADB over TCP で Fire TV を制御するモジュール。ADB 未インストー
 
 ```
 Gatekeeper.classify(user_input, history, session_state)
-    ├─ ContextClassifier.classify()  → tier (reflex / mid) を決定（3スコア: rc/ew/cn）
+    ├─ ContextClassifier.classify()  → tier / need_intent / retrieval_query
     ├─ StateUpdater.update()         → session_state の差分を生成
     └─ MemoryProbe.probe()           → LLM不要の事実ベース記憶検索（ベクトル検索 + 用語集マッチ）
     ※ tier と need は独立。need は MemoryProbe のヒットから設定され、tier に関係なく RAG 注入を決定する
@@ -501,6 +515,9 @@ Gatekeeper.classify(user_input, history, session_state)
     "topic": str,
     "need": str | None,           # LLM 意図 + 事実裏付け の両方が成立した時のみ
     "need_intent": str | None,    # LLM が出した意図: past_fact / glossary / relationship / None
+    "original_query": str,        # 元のユーザー発話
+    "retrieval_query": str | None,# 履歴の省略を解決したstandalone検索文
+    "retrieval_query_status": str,# ok / missing / empty / invalid / same_as_original / fallback
     "search_targets": list | None, # need 有時の候補タイトル / glossary 用語
     "state_delta": dict,
     "llm_tier": str,
@@ -524,7 +541,8 @@ Gatekeeper.classify(user_input, history, session_state)
 ---
 
 ### `gatekeeper/context_classifier.py`
-LLM に 3 スコア（0–1）+ `need_intent` を出力させ、Python 側でルールに基づき tier を決定する。
+LLM に 3 スコア（0–1）+ `need_intent` + 任意の`retrieval_query`を出力させ、
+Python 側でルールに基づき tier を決定する。
 
 - `ContextClassifier(base_dir)`
   - `classify(user_input, history_msgs, current_topic, recent_headlines, override_config)` — tier 判定 + need_intent 出力を実行。`recent_headlines` でダイジェストから抽出した見出しを注入
@@ -545,13 +563,17 @@ LLM に 3 スコア（0–1）+ `need_intent` を出力させ、Python 側でル
 
 parse 失敗時は `asks_for_specific_past_detail()` を fallback として使用（マッチで past_fact、なしで null）。parse 成功で LLM が null を出した場合も、同パターンがマッチすれば past_fact に引き上げる（floor — null では vector probe が走らないため）。JSON 抽出は `core/json_extract.py` の `extract_json_str()` を使用。返却 dict は観測用に `classifier_status`（ok/fallback）/ `fallback_reason` / `original_need_intent` / `intent_floor_applied` を含む。
 
+`past_fact` / `relationship`では、直近履歴やtopicから代名詞・省略主語を解決し、
+固有名・日時・否定・関係を保つ同言語のstandalone検索文も返す。`glossary` / `null`、
+空・500文字超・元発話と同一の値は採用せず、元発話検索へフォールバックする。
+
 ---
 
 ### `gatekeeper/memory_probe.py`
 LLM 呼び出しなしの事実ベース記憶検索。**検索の実行と、検索結果をプロンプトへ注入するかの判定は分離されている**（`memory_probe.retrieval_execution` / `injection_policy`）。既定では Glossary scan と Layer 1 を全ターン実行し、注入は従来どおり `need_intent` で判定する。Deep (Layer 2) は Layer 1 空振り時、かつ「注入され得る」ケース（`need_intent ∈ {past_fact, relationship}` または `injection_policy=retrieval_assisted`）でのみ発火する — Layer 2 は LLM 呼び出しを伴うため。
 
 - `MemoryProbe()`
-  - `probe(user_input, brain, memory_manager, history_msgs=None, need_intent=None, recent_headlines=None, override_config=None, instance_name=None)` — Layer 1.5 を必ず実行し、`need_intent` に応じて Layer 1 / Layer 2 を選択的に実行。返却値の `layers` に Layer 別の診断情報を含む
+  - `probe(user_input, brain, memory_manager, history_msgs=None, need_intent=None, retrieval_query=None, recent_headlines=None, override_config=None, instance_name=None)` — Layer 1.5 を必ず実行し、`need_intent` に応じて Layer 1 / Layer 2 を選択的に実行。Gatekeeper検索文をLayer 1へ渡し、返却値の`layers`に両queryの順位と融合診断を含む
   - `_match_glossary(user_input, memory_manager, history_msgs=None, override_config=None)` — Lorebook 統合: term/aliases を user_input + 直近履歴でマッチし、raw hits を返却（フィルタ・ソート無し）。各 hit に `priority` / `_yaml_index` / `match_source` ("user"|"history") を付与
   - `_quick_vector_search_diag(user_input, brain, instance_name, limit, threshold, override_config)` — `brain.quick_vector_search_diag()` のラッパー
   - `_deep_search_diag(user_input, brain, instance_name, override_config)` — keyword 抽出 + `search_knowledge` を呼び、診断データ付きで返す
@@ -562,7 +584,7 @@ LLM 呼び出しなしの事実ベース記憶検索。**検索の実行と、�
 | レイヤー | 内容 | 実行条件 |
 |---|---|---|
 | Layer 1.5 | Glossary Match (term/aliases、user_input + 履歴 scan_depth ターン) | **常時実行**（regex のみ・LLM 不要） |
-| Layer 1 | Quick Retrieval（`search_mode` に応じ vector / hybrid） | `retrieval_execution="always"`（既定）なら**常時実行**。`"intent_gated"` で旧挙動（`need_intent ∈ {past_fact, relationship}` のみ） |
+| Layer 1 | Quick Retrieval（`search_mode` に応じ vector / hybrid / dual_query） | `retrieval_execution="always"`（既定）なら**常時実行**。`"intent_gated"` で旧挙動（`need_intent ∈ {past_fact, relationship}` のみ） |
 | Layer 2 | Deep Search | Layer 1 ヒット無し + 過去参照パターン + 「注入され得る」ケースのみ |
 
 **注入判定（`injection_policy`）:**
@@ -654,7 +676,7 @@ RAG (`rag_context`) は `need` に連動する独立判定で、tier ではな�
 
 | キー | デフォルト | 説明 |
 |---|---|---|
-| `scan_depth` | 2 | 直近何ターン分の履歴をスキャンするか (1 ターン = user+assistant 1 ペア)。0 で user_input のみ |
+| `scan_depth` | 0 | 直近何ターン分の履歴をスキャンするか (1 ターン = user+assistant 1 ペア)。既定の0では現在のuser_inputだけを検索し、会話履歴からglossaryが再ヒットするのを防ぐ |
 | `scan_target` | "both" | "user" / "assistant" / "both" |
 | `max_entries` | 20 | 注入する最大エントリ数 |
 | `max_chars` | 4000 | 注入合計文字数の上限。greedy skip で個別エントリをスキップ |

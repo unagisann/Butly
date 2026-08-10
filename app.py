@@ -1745,6 +1745,74 @@ def _evaluation_role_models(
     return choices
 
 
+def _evaluation_judge_model(
+    api_url: str,
+    current: dict,
+    connections: list,
+    *,
+    key_prefix: str,
+) -> ModelChoice:
+    """Render an evaluation-only judge selector using chat-capable models."""
+    current = current if isinstance(current, dict) else {}
+    return _model_selector(
+        label="Semantic Judge（回答の意味判定）",
+        current_value=str(current.get("model_name") or ""),
+        current_connection=current.get("connection"),
+        candidates=_get_selector_candidates(
+            api_url,
+            "chat",
+            current.get("connection"),
+            key_prefix,
+        ),
+        connections=connections,
+        key_prefix=key_prefix,
+    )
+
+
+def _evaluation_reranker_model(
+    api_url: str,
+    current: dict,
+    connections: list,
+    *,
+    key_prefix: str,
+) -> ModelChoice:
+    """Render the retrieval reranker selector using chat-capable models."""
+    current = current if isinstance(current, dict) else {}
+    return _model_selector(
+        label="Memory Reranker（候補20件→注入3件）",
+        current_value=str(current.get("model_name") or ""),
+        current_connection=current.get("connection"),
+        candidates=_get_selector_candidates(
+            api_url,
+            "chat",
+            current.get("connection"),
+            key_prefix,
+        ),
+        connections=connections,
+        key_prefix=key_prefix,
+    )
+
+
+def _evaluation_cross_encoder_model(
+    current_model: str,
+    *,
+    key: str,
+) -> str:
+    """Render the reviewed local multilingual reranker presets."""
+    from butly_core.core.reranker import CROSS_ENCODER_MODELS
+
+    options = [spec.model_name for spec in CROSS_ENCODER_MODELS]
+    labels = {spec.model_name: spec.label for spec in CROSS_ENCODER_MODELS}
+    selected = current_model if current_model in options else options[0]
+    return st.selectbox(
+        "Cross-Encoder model",
+        options=options,
+        index=_evaluation_option_index(options, selected),
+        format_func=lambda value: labels[value],
+        key=key,
+    )
+
+
 def _evaluation_embedding_profile(
     model_name: str,
     current_profile: str | None = None,
@@ -2073,16 +2141,43 @@ def _render_evaluation_start_form(
                 key="evaluation_time_decay_rate",
             )
 
-    with st.expander("検索設定（ハイブリッド検索 A/B）", expanded=False):
+    previous_search_models = previous_request.get("role_models") or {}
+    previous_reranker = (
+        previous_search_models.get("reranker") or {}
+        if isinstance(previous_search_models, dict)
+        else {}
+    )
+    reranker_enabled = False
+    reranker_candidate_limit = int(
+        previous_request.get("reranker_candidate_limit", 20)
+    )
+    reranker_max_candidate_chars = int(
+        previous_request.get("reranker_max_candidate_chars", 1600)
+    )
+    previous_reranker_engine = str(
+        previous_reranker.get("engine")
+        or ("llm" if previous_reranker else "cross_encoder")
+    )
+    reranker_engine = previous_reranker_engine
+    reranker_batch_size = int(previous_reranker.get("batch_size") or 20)
+    reranker_device = str(previous_reranker.get("device") or "auto")
+    reranker_threshold_enabled = (
+        previous_reranker.get("score_threshold") is not None
+    )
+    reranker_score_threshold = float(
+        previous_reranker.get("score_threshold") or 0.0
+    )
+    with st.expander("検索設定（Dual Query / Hybrid / Reranker）", expanded=False):
         st.caption(
             "search_mode=hybrid で BM25(FTS5/trigram) とベクトルを RRF 融合する。"
+            "dual_query は元発話とGatekeeper検索文を各15件検索してRRF融合する。"
             "検索の実行と注入判定は別設定。"
         )
         search_cols = st.columns(3)
         with search_cols[0]:
             search_mode_options = (
                 evaluation_config.get("search_modes")
-                or ["vector", "hybrid"]
+                or ["vector", "hybrid", "dual_query"]
             )
             search_mode = st.selectbox(
                 "Search mode",
@@ -2139,6 +2234,12 @@ def _render_evaluation_start_form(
         vector_candidates = int(
             previous_request.get("vector_candidates", 20)
         )
+        dual_query_candidates = int(
+            previous_request.get("dual_query_candidates", 15)
+        )
+        dual_query_pool_limit = int(
+            previous_request.get("dual_query_pool_limit", 25)
+        )
         rrf_k = int(previous_request.get("rrf_k", 60))
         bm25_max_df_ratio = float(
             previous_request.get("bm25_max_df_ratio", 0.5)
@@ -2178,6 +2279,129 @@ def _render_evaluation_start_form(
                     step=0.05,
                     key="evaluation_bm25_max_df_ratio",
                 )
+        elif search_mode == "dual_query":
+            dual_cols = st.columns(3)
+            with dual_cols[0]:
+                dual_query_candidates = st.number_input(
+                    "Candidates / query",
+                    min_value=1,
+                    value=dual_query_candidates,
+                    step=1,
+                    key="evaluation_dual_query_candidates",
+                    help="元発話とGatekeeper検索文からそれぞれ取得する件数",
+                )
+            with dual_cols[1]:
+                dual_query_pool_limit = st.number_input(
+                    "Deduped pool limit",
+                    min_value=1,
+                    value=dual_query_pool_limit,
+                    step=1,
+                    key="evaluation_dual_query_pool_limit",
+                    help="RRF融合・重複排除後に診断へ残す最大件数",
+                )
+            with dual_cols[2]:
+                rrf_k = st.number_input(
+                    "RRF k",
+                    min_value=1,
+                    value=rrf_k,
+                    step=1,
+                    key="evaluation_dual_query_rrf_k",
+                )
+            st.caption(
+                "追加の生成LLMは呼ばず、通常のGatekeeper出力に検索文を含めます。"
+                "検索文が無い場合は元発話だけの順位へフォールバックします。"
+            )
+        if search_mode == "vector":
+            st.markdown("##### Memory Reranker（任意）")
+            reranker_enabled = st.checkbox(
+                "Vector上位候補をリランクしてから注入する",
+                value=bool(previous_reranker),
+                key="evaluation_reranker_enabled",
+                help=(
+                    "vector top-Nを別モデルで順位付けし、通常どおり上位3件を"
+                    "注入します。Cross-Encoderは生成LLMを呼びません。"
+                ),
+            )
+            if reranker_enabled:
+                reranker_engine_options = ["cross_encoder", "llm"]
+                reranker_engine = st.selectbox(
+                    "Reranker engine",
+                    options=reranker_engine_options,
+                    index=_evaluation_option_index(
+                        reranker_engine_options, previous_reranker_engine
+                    ),
+                    format_func=lambda value: (
+                        "Cross-Encoder（推奨）"
+                        if value == "cross_encoder"
+                        else "生成LLM（旧方式・比較用）"
+                    ),
+                    key="evaluation_reranker_engine",
+                )
+                reranker_cols = st.columns(2)
+                with reranker_cols[0]:
+                    reranker_candidate_limit = st.number_input(
+                        "Reranker candidate pool",
+                        min_value=3,
+                        max_value=100,
+                        value=reranker_candidate_limit,
+                        step=1,
+                        key="evaluation_reranker_candidate_limit",
+                    )
+                with reranker_cols[1]:
+                    reranker_max_candidate_chars = st.number_input(
+                        "Max chars / candidate",
+                        min_value=100,
+                        max_value=10000,
+                        value=reranker_max_candidate_chars,
+                        step=100,
+                        key="evaluation_reranker_max_candidate_chars",
+                    )
+                if reranker_engine == "cross_encoder":
+                    cross_cols = st.columns(2)
+                    with cross_cols[0]:
+                        reranker_batch_size = st.number_input(
+                            "Cross-Encoder batch size",
+                            min_value=1,
+                            max_value=100,
+                            value=reranker_batch_size,
+                            step=1,
+                            key="evaluation_reranker_batch_size",
+                        )
+                    with cross_cols[1]:
+                        device_options = ["auto", "cpu", "cuda", "mps"]
+                        reranker_device = st.selectbox(
+                            "Cross-Encoder device",
+                            options=device_options,
+                            index=_evaluation_option_index(
+                                device_options, reranker_device
+                            ),
+                            key="evaluation_reranker_device",
+                        )
+                    reranker_threshold_enabled = st.checkbox(
+                        "関連度しきい値を使い、該当なしなら0枚にする",
+                        value=reranker_threshold_enabled,
+                        key="evaluation_reranker_threshold_enabled",
+                        help=(
+                            "モデルのraw scoreは確率とは限りません。"
+                            "offline評価で校正するまではOFFを推奨します。"
+                        ),
+                    )
+                    if reranker_threshold_enabled:
+                        reranker_score_threshold = st.number_input(
+                            "Cross-Encoder score threshold",
+                            value=reranker_score_threshold,
+                            step=0.1,
+                            key="evaluation_reranker_score_threshold",
+                        )
+                st.caption(
+                    "推奨初期値: vector top20 → reranker → top3。"
+                    "失敗時は元のvector順位へ自動フォールバックします。"
+                )
+        else:
+            st.info(
+                "Rerankerはvector検索専用です。Hybrid / Dual Queryとは"
+                "同時に使えません。"
+            )
 
     stage3_batch_size = int(
         previous_request.get("stage3_batch_size", 10)
@@ -2289,6 +2513,88 @@ def _render_evaluation_start_form(
         if _token_warning:
             st.warning(_token_warning)
 
+        reranker_choice = None
+        reranker_cross_encoder_model = None
+        reranker_max_output_tokens = 2048
+        if reranker_enabled:
+            st.markdown("##### Memory Reranker")
+            current_reranker = previous_role_models.get("reranker") or {}
+            if reranker_engine == "cross_encoder":
+                reranker_cross_encoder_model = (
+                    _evaluation_cross_encoder_model(
+                        str(current_reranker.get("model_name") or ""),
+                        key="evaluation_reranker_cross_encoder_model",
+                    )
+                )
+                st.caption(
+                    "質問と候補カードをローカルで一括採点します。"
+                    "生成LLM・外部Connection・JSON出力は使いません。"
+                )
+            else:
+                reranker_choice = _evaluation_reranker_model(
+                    api_url,
+                    current_reranker,
+                    connections,
+                    key_prefix="evaluation_reranker_model",
+                )
+                reranker_max_output_tokens = st.number_input(
+                    "Reranker max output tokens",
+                    min_value=1,
+                    value=int(
+                        (current_reranker.get("generation_config") or {}).get(
+                            "max_output_tokens", 2048
+                        )
+                    ),
+                    step=256,
+                    key="evaluation_reranker_max_output_tokens",
+                )
+                st.caption(
+                    "temperatureは0に固定。選択したConnectionへ現在の質問と"
+                    "候補カードのtitle/summary/episodeを上限付きで送信します。"
+                    "DB全体やAPIキーをprompt・成果物へ含めません。"
+                )
+
+        st.markdown("##### Semantic Judge（任意）")
+        judge_enabled = st.checkbox(
+            "AIで回答の意味的な正しさも判定する",
+            value="judge" in previous_role_models,
+            key="evaluation_judge_enabled",
+            help=(
+                "LoCoMo公式スコアは保持し、別のsemantic指標として"
+                "追加します。問題数分の追加LLM呼び出しが発生します。"
+            ),
+        )
+        judge_choice = None
+        judge_max_output_tokens = 2048
+        if judge_enabled:
+            current_judge = previous_role_models.get("judge") or {}
+            judge_choice = _evaluation_judge_model(
+                api_url,
+                current_judge,
+                connections,
+                key_prefix="evaluation_judge_model",
+            )
+            judge_max_output_tokens = st.number_input(
+                "Judge max output tokens",
+                min_value=1,
+                value=int(
+                    (current_judge.get("generation_config") or {}).get(
+                        "max_output_tokens", 2048
+                    )
+                ),
+                step=256,
+                key="evaluation_judge_max_output_tokens",
+            )
+            st.caption(
+                "temperatureは0に固定。評価対象のChatとは別系統の"
+                "モデルを推奨します。"
+            )
+            st.caption(
+                "JudgeのConnectionへ各問のquestion・reference answer・"
+                "predictionを送信します。記憶DB全体は送信しません。APIキーは"
+                "判定promptや成果物に含めず、Connection認証にだけ使います。"
+            )
+
     can_start = bool(
         dataset_path.strip()
         and run_id.strip()
@@ -2314,6 +2620,51 @@ def _render_evaluation_start_form(
             }
             if role == "embedding" and embedding_profile:
                 role_models[role]["profile"] = embedding_profile
+        if reranker_enabled:
+            if reranker_engine == "cross_encoder":
+                if not reranker_cross_encoder_model:
+                    empty_roles.append("reranker")
+                else:
+                    role_models["reranker"] = {
+                        "engine": "cross_encoder",
+                        "model_name": reranker_cross_encoder_model,
+                        "batch_size": int(reranker_batch_size),
+                        "device": reranker_device,
+                        "score_threshold": (
+                            float(reranker_score_threshold)
+                            if reranker_threshold_enabled
+                            else None
+                        ),
+                    }
+            elif (
+                reranker_choice is None
+                or not reranker_choice.model_name.strip()
+            ):
+                empty_roles.append("reranker")
+            else:
+                role_models["reranker"] = {
+                    "engine": "llm",
+                    "connection": reranker_choice.connection_id,
+                    "model_name": reranker_choice.model_name.strip(),
+                    "generation_config": {
+                        "temperature": 0.0,
+                        "max_output_tokens": int(
+                            reranker_max_output_tokens
+                        ),
+                    },
+                }
+        if judge_enabled:
+            if judge_choice is None or not judge_choice.model_name.strip():
+                empty_roles.append("judge")
+            else:
+                role_models["judge"] = {
+                    "connection": judge_choice.connection_id,
+                    "model_name": judge_choice.model_name.strip(),
+                    "generation_config": {
+                        "temperature": 0.0,
+                        "max_output_tokens": int(judge_max_output_tokens),
+                    },
+                }
         if empty_roles:
             st.error(
                 "モデルが未設定のロールがあります: "
@@ -2343,6 +2694,12 @@ def _render_evaluation_start_form(
             "injection_policy": injection_policy,
             "bm25_candidates": int(bm25_candidates),
             "vector_candidates": int(vector_candidates),
+            "dual_query_candidates": int(dual_query_candidates),
+            "dual_query_pool_limit": int(dual_query_pool_limit),
+            "reranker_candidate_limit": int(reranker_candidate_limit),
+            "reranker_max_candidate_chars": int(
+                reranker_max_candidate_chars
+            ),
             "rrf_k": int(rrf_k),
             "bm25_max_df_ratio": float(bm25_max_df_ratio),
             "stage3_batch_size": int(stage3_batch_size),
@@ -2473,7 +2830,10 @@ def _render_evaluation_jobs(api_url: str) -> None:
                 timeout=10,
             )
             if response.ok:
-                st.success("checkpointから再開しました。")
+                if selected.get("job_type") == "retrieval_replay":
+                    st.success("検索比較を再実行しました。")
+                else:
+                    st.success("checkpointから再開しました。")
             else:
                 st.error(_api_error_detail(response))
 
@@ -2486,6 +2846,405 @@ def _render_evaluation_jobs(api_url: str) -> None:
             st.code(log_payload.get("text") or "ログはまだありません。")
         except Exception as exc:
             st.error(f"ログ取得エラー: {exc}")
+
+
+def _format_retrieval_reranker_scores(scores) -> str:
+    """Format problem-level reranker scores for the compact UI table."""
+    formatted = []
+    for item in scores or []:
+        if not isinstance(item, dict):
+            continue
+        card_id = item.get("id") or item.get("card_id") or "?"
+        score = item.get("score")
+        if isinstance(score, (int, float)) and not isinstance(score, bool):
+            formatted.append(f"{card_id}:{score:.4f}")
+        else:
+            formatted.append(f"{card_id}:{score}")
+    return " / ".join(formatted)
+
+
+def _render_retrieval_replay_result(result: dict) -> None:
+    """Render aggregate and problem-level offline retrieval results."""
+    st.markdown("#### 検索比較の結果")
+    st.caption(
+        f"{result.get('run')} / oracleカードがある問: "
+        f"{result.get('oracle_questions')} / "
+        f"保存日時: {result.get('generated_at') or '—'}"
+    )
+    rows = []
+    detail_modes = []
+    for mode in (
+        "bm25",
+        "vector",
+        "hybrid",
+        "dual_query",
+        "reranked",
+        "evidence_rerank",
+    ):
+        stats = result.get(mode)
+        if not isinstance(stats, dict):
+            continue
+        if isinstance(stats.get("details"), list):
+            detail_modes.append(mode)
+        row = {
+            "mode": mode,
+            "questions": stats.get("questions"),
+            "recall@1": stats.get("recall_at_1"),
+            "recall@3": stats.get("recall_at_3"),
+            "recall@20": stats.get("recall_at_20"),
+            "hit@3": stats.get("hit_at_3"),
+            "hit@20": stats.get("hit_at_20"),
+        }
+        reranker = stats.get("reranker") or {}
+        if reranker:
+            row.update(
+                {
+                    "reranker": reranker.get("model_name"),
+                    "engine": reranker.get("engine"),
+                    "reranker完了率": reranker.get("completion_rate"),
+                    "fallback率": reranker.get("fallback_rate"),
+                    "rescue@3": reranker.get("rescued_at_3"),
+                    "harm@3": reranker.get("harmed_at_3"),
+                    "selected recall@3": reranker.get(
+                        "selected_recall_at_3"
+                    ),
+                    "reranker mean ms": reranker.get("latency_ms_mean"),
+                    "reranker p95 ms": reranker.get("latency_ms_p95"),
+                }
+            )
+        query_fusion = stats.get("query_fusion") or {}
+        if query_fusion:
+            row.update(
+                {
+                    "query model": query_fusion.get(
+                        "gatekeeper_model_name"
+                    ),
+                    "query生成率": query_fusion.get("query_available_rate"),
+                    "original recall@3": query_fusion.get(
+                        "original_recall_at_3"
+                    ),
+                    "rewrite recall@3": query_fusion.get(
+                        "retrieval_query_recall_at_3"
+                    ),
+                    "rescue@3": query_fusion.get("rescued_at_3"),
+                    "harm@3": query_fusion.get("harmed_at_3"),
+                }
+            )
+        evidence = stats.get("evidence_reranker") or {}
+        if evidence:
+            cache = evidence.get("cache") or {}
+            embedding = cache.get("embedding") or {}
+            row.update(
+                {
+                    "evidence embedding": embedding.get("model_name"),
+                    "evidence完了率": evidence.get("completion_rate"),
+                    "fallback率": evidence.get("fallback_rate"),
+                    "rescue@3": evidence.get("rescued_at_3"),
+                    "harm@3": evidence.get("harmed_at_3"),
+                    "selected recall@3": evidence.get(
+                        "selected_recall_at_3"
+                    ),
+                    "evidence mean ms": evidence.get("latency_ms_mean"),
+                    "cache hits": cache.get("hits"),
+                    "cache writes": cache.get("writes"),
+                }
+            )
+        rows.append(row)
+    st.dataframe(rows, width="stretch", hide_index=True)
+    st.caption(
+        "recall は「上位k候補が evidence ターンを覆った割合」の平均、"
+        "hit は1件でも覆えた問数です。結果は run 直下の "
+        "retrieval_replay.json にも保存されます。"
+    )
+
+    if not detail_modes:
+        return
+    detail_key = "evaluation_replay_detail_mode"
+    if st.session_state.get(detail_key) not in detail_modes:
+        st.session_state[detail_key] = detail_modes[-1]
+    selected_mode = st.selectbox(
+        "問題別結果を表示するモード",
+        options=detail_modes,
+        key=detail_key,
+    )
+    stats = result.get(selected_mode) or {}
+    details = stats.get("details") or []
+    filter_options = ["all"]
+    if selected_mode in (
+        "reranked",
+        "dual_query",
+        "evidence_rerank",
+    ):
+        filter_options.extend(
+            ["rescue", "harm", "fallback", "error", "unchanged"]
+        )
+    filter_key = "evaluation_replay_detail_filter"
+    if st.session_state.get(filter_key) not in filter_options:
+        st.session_state[filter_key] = "all"
+    selected_filter = st.selectbox(
+        "問題の絞り込み",
+        options=filter_options,
+        format_func=lambda value: {
+            "all": "すべて",
+            "rescue": "rescue（改善）",
+            "harm": "harm（悪化）",
+            "fallback": "fallback",
+            "error": "error",
+            "unchanged": "変化なし",
+        }.get(value, value),
+        key=filter_key,
+    )
+    detail_rows = []
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        delta = item.get("reranker_delta_at_3")
+        if selected_mode == "evidence_rerank":
+            delta = item.get("evidence_delta_at_3")
+        if selected_mode == "dual_query":
+            fused_recall = item.get("recall_at_3")
+            original_recall = item.get("original_recall_at_3")
+            if isinstance(fused_recall, (int, float)) and isinstance(
+                original_recall, (int, float)
+            ):
+                delta = fused_recall - original_recall
+        query_fusion = item.get("query_fusion") or {}
+        if item.get("error"):
+            change = "error"
+        elif item.get("reranker_fallback") or item.get(
+            "evidence_rerank_fallback"
+        ) or (
+            selected_mode == "dual_query"
+            and query_fusion.get("status") == "fallback"
+        ):
+            change = "fallback"
+        elif isinstance(delta, (int, float)) and delta > 0:
+            change = "rescue"
+        elif isinstance(delta, (int, float)) and delta < 0:
+            change = "harm"
+        else:
+            change = "unchanged"
+        if selected_filter != "all" and change != selected_filter:
+            continue
+        candidate_ids = item.get("candidate_ids") or []
+        vector_ids = item.get("vector_candidate_ids") or []
+        selected_ids = item.get("selected_candidate_ids") or []
+        original_ids = item.get("original_candidate_ids") or []
+        rewrite_ids = item.get("retrieval_query_candidate_ids") or []
+        detail_rows.append(
+            {
+                "question_id": item.get("question_id"),
+                "category": item.get("category"),
+                "question": item.get("question"),
+                "recall@1": item.get("recall_at_1"),
+                "recall@3": item.get("recall_at_3"),
+                "recall@20": item.get("recall_at_20"),
+                "vector recall@3": item.get("vector_recall_at_3"),
+                "original recall@3": item.get("original_recall_at_3"),
+                "rewrite recall@3": item.get(
+                    "retrieval_query_recall_at_3"
+                ),
+                "selected recall@3": item.get("selected_recall_at_3"),
+                "delta@3": delta,
+                "change": change,
+                "reranker status": item.get("reranker_status"),
+                "evidence status": item.get("evidence_rerank_status"),
+                "retrieval query": item.get("retrieval_query"),
+                "query source": item.get("retrieval_query_source"),
+                "query status": item.get("retrieval_query_status"),
+                "fusion status": query_fusion.get("status"),
+                "latency ms": (
+                    item.get("evidence_rerank_latency_ms")
+                    if selected_mode == "evidence_rerank"
+                    else item.get("reranker_latency_ms")
+                ),
+                "vector top3": ", ".join(
+                    str(value) for value in vector_ids[:3]
+                ),
+                "selected top3": ", ".join(
+                    str(value) for value in selected_ids[:3]
+                ),
+                "original top3": ", ".join(
+                    str(value) for value in original_ids[:3]
+                ),
+                "rewrite top3": ", ".join(
+                    str(value) for value in rewrite_ids[:3]
+                ),
+                "vector IDs": ", ".join(
+                    str(value) for value in vector_ids
+                ),
+                "candidate IDs": ", ".join(
+                    str(value) for value in candidate_ids
+                ),
+                "reranker scores": _format_retrieval_reranker_scores(
+                    item.get("reranker_scores")
+                ),
+                "evidence scores": _format_retrieval_reranker_scores(
+                    item.get("evidence_scores")
+                ),
+                "selected evidence": " / ".join(
+                    (
+                        f"{match.get('card_id')} "
+                        f"[{match.get('evidence_type')}] "
+                        f"{match.get('source_file') or 'Episode'}: "
+                        f"{match.get('preview') or ''}"
+                    )
+                    for match in (item.get("selected_evidence") or [])
+                    if isinstance(match, dict)
+                ),
+                "evidence": ", ".join(
+                    str(value) for value in (item.get("evidence") or [])
+                ),
+                "error": item.get("error"),
+            }
+        )
+    if detail_rows:
+        st.dataframe(detail_rows, width="stretch", hide_index=True)
+    else:
+        st.info("選択した条件に該当する問題はありません。")
+
+
+@st.fragment(run_every=2)
+def _render_retrieval_replay_status(
+    api_url: str,
+    target_run: str,
+) -> None:
+    """Poll one replay job and restore its persisted result after reload."""
+    import requests
+
+    try:
+        jobs = _evaluation_get(api_url, "/evaluations/jobs").get("jobs", [])
+    except Exception as exc:
+        st.error(f"検索比較の進捗取得エラー: {exc}")
+        return
+    matching_jobs = [
+        job
+        for job in jobs
+        if job.get("job_type") == "retrieval_replay"
+        and str(job.get("run_id")) == target_run
+    ]
+    matching_jobs.sort(
+        key=lambda item: str(item.get("created_at") or ""),
+        reverse=True,
+    )
+    job = matching_jobs[0] if matching_jobs else None
+    result = None
+    if job is not None:
+        job_id = str(job.get("job_id"))
+        status = str(job.get("status") or "unknown")
+        progress = float(job.get("progress") or 0.0)
+        st.markdown("#### 実行状況")
+        st.progress(min(max(progress / 100.0, 0.0), 1.0))
+        st.caption(
+            f"{progress:.1f}% · {job.get('phase')} · "
+            f"{job.get('message')} · job {job_id[:8]}"
+        )
+        action_cols = st.columns(2)
+        with action_cols[0]:
+            if st.button(
+                "■ 検索比較を停止",
+                disabled=status not in _EVALUATION_ACTIVE_STATUSES,
+                key=f"evaluation_replay_stop_{job_id}",
+                width="stretch",
+            ):
+                response = requests.post(
+                    f"{api_url}/evaluations/jobs/{job_id}/stop",
+                    timeout=10,
+                )
+                if response.ok:
+                    st.success("停止要求を送信しました。")
+                else:
+                    st.error(_api_error_detail(response))
+        with action_cols[1]:
+            if st.button(
+                "▶ 検索比較を再実行",
+                disabled=status not in _EVALUATION_RESUMABLE_STATUSES,
+                key=f"evaluation_replay_resume_{job_id}",
+                width="stretch",
+            ):
+                response = requests.post(
+                    f"{api_url}/evaluations/jobs/{job_id}/resume",
+                    timeout=10,
+                )
+                if response.ok:
+                    st.session_state.evaluation_replay_result = None
+                    st.session_state.evaluation_replay_result_job_id = None
+                    st.success("同じ条件で検索比較を再実行しました。")
+                else:
+                    st.error(_api_error_detail(response))
+        try:
+            log_payload = _evaluation_get(
+                api_url,
+                f"/evaluations/jobs/{job_id}/log?tail_lines=12",
+            )
+            st.caption("直近の実行ログ")
+            st.code(log_payload.get("text") or "ログはまだありません。")
+        except Exception as exc:
+            st.warning(f"ログ取得エラー: {exc}")
+
+        if status == "completed":
+            try:
+                candidate = _evaluation_get(
+                    api_url,
+                    f"/evaluations/runs/{target_run}/retrieval-replay",
+                )
+            except Exception as exc:
+                st.error(f"検索比較の結果取得エラー: {exc}")
+                return
+            artifact_job_id = candidate.get("job_id")
+            if artifact_job_id and artifact_job_id != job_id:
+                st.warning(
+                    "完了ジョブと保存結果が一致しません。"
+                    "同じ条件で再実行してください。"
+                )
+                return
+            result = candidate
+            st.session_state.evaluation_replay_result = result
+            st.session_state.evaluation_replay_result_job_id = job_id
+            st.session_state.evaluation_replay_result_run_id = target_run
+        elif status in _EVALUATION_ACTIVE_STATUSES:
+            st.info("検索比較はバックグラウンドで実行中です。")
+            return
+        elif status == "failed":
+            st.error(
+                str(
+                    job.get("message")
+                    or "検索比較に失敗しました。"
+                )
+            )
+            return
+        else:
+            st.warning(
+                str(job.get("message") or f"検索比較: {status}")
+            )
+            return
+    else:
+        cached_run = st.session_state.get(
+            "evaluation_replay_result_run_id"
+        )
+        if cached_run == target_run:
+            result = st.session_state.get("evaluation_replay_result")
+        if not isinstance(result, dict):
+            try:
+                result = _evaluation_get(
+                    api_url,
+                    f"/evaluations/runs/{target_run}/retrieval-replay",
+                )
+            except Exception:
+                st.info("このrunの保存済み検索比較はまだありません。")
+                return
+            st.session_state.evaluation_replay_result = result
+            st.session_state.evaluation_replay_result_job_id = result.get(
+                "job_id"
+            )
+            st.session_state.evaluation_replay_result_run_id = target_run
+
+    if isinstance(result, dict):
+        result_run = Path(str(result.get("run") or "")).name
+        if result_run and result_run != target_run:
+            st.warning("保存結果のrun IDが選択中のrunと一致しません。")
+            return
+        _render_retrieval_replay_result(result)
 
 
 def _render_retrieval_replay(api_url: str, runs: list) -> None:
@@ -2503,8 +3262,13 @@ def _render_retrieval_replay(api_url: str, runs: list) -> None:
     with st.expander("検索だけ比較（offline retrieval replay）", expanded=False):
         st.caption(
             "回答を生成せず、同じカードに対する Recall@k だけを測ります。"
-            "bm25 は embedding を呼ばないので即終わります。vector / hybrid は"
-            "質問1件につき embedding を1回呼ぶため、199問なら数分かかります。"
+            "bm25 は embedding を呼びません。reranked は質問ごとにembeddingと"
+            "リランカーを1回ずつ呼び、vector top-N→top3を評価します。"
+            "evidence_rerank はvector top-Nを、カードのEpisodeと紐づく"
+            "RAW会話断片のEmbeddingでtop3へ再順位付けします。"
+            "dual_query は保存済み検索文を再利用し、無い旧runでは元runの"
+            "Gatekeeperを1回呼んでからembeddingを2回実行します。"
+            " 実行はバックグラウンドで継続し、画面を閉じても中断しません。"
         )
         replay_cols = st.columns([2, 2, 1])
         with replay_cols[0]:
@@ -2516,7 +3280,14 @@ def _render_retrieval_replay(api_url: str, runs: list) -> None:
         with replay_cols[1]:
             modes = st.multiselect(
                 "モード",
-                options=["bm25", "vector", "hybrid"],
+                options=[
+                    "bm25",
+                    "vector",
+                    "hybrid",
+                    "dual_query",
+                    "reranked",
+                    "evidence_rerank",
+                ],
                 default=["bm25"],
                 key="evaluation_replay_modes",
             )
@@ -2529,58 +3300,391 @@ def _render_retrieval_replay(api_url: str, runs: list) -> None:
                 step=1,
                 key="evaluation_replay_limit",
             )
+        replay_reranker_choice = None
+        replay_cross_encoder_model = None
+        replay_reranker_engine = "cross_encoder"
+        replay_reranker_max_tokens = 2048
+        replay_reranker_max_chars = 1600
+        replay_reranker_batch_size = 20
+        replay_reranker_device = "auto"
+        replay_threshold_enabled = False
+        replay_score_threshold = 0.0
+        evidence_raw_chunk_chars = 1800
+        if "evidence_rerank" in modes:
+            evidence_raw_chunk_chars = st.number_input(
+                "RAW chunk max chars",
+                min_value=200,
+                max_value=10000,
+                value=1800,
+                step=100,
+                key="evaluation_replay_evidence_raw_chunk_chars",
+            )
+            st.caption(
+                "EpisodeとRAW会話断片を、このrunが使用したEmbedding "
+                "Connectionへ送信します。評価run内のキャッシュには本文を保存せず、"
+                "ハッシュとベクトルだけを保存します。問題別レビュー用の結果JSONには、"
+                "選択根拠の先頭最大600文字を保存します。API keyは通常のConnection"
+                "認証にだけ使用します。質問Embeddingは二段の検索で共有します。"
+            )
+        if "reranked" in modes:
+            replay_engine_options = ["cross_encoder", "llm"]
+            replay_reranker_engine = st.selectbox(
+                "Reranker engine",
+                options=replay_engine_options,
+                format_func=lambda value: (
+                    "Cross-Encoder（推奨）"
+                    if value == "cross_encoder"
+                    else "生成LLM（旧方式・比較用）"
+                ),
+                key="evaluation_replay_reranker_engine",
+            )
+            if replay_reranker_engine == "cross_encoder":
+                replay_cross_encoder_model = _evaluation_cross_encoder_model(
+                    "",
+                    key="evaluation_replay_cross_encoder_model",
+                )
+                replay_cross_cols = st.columns(3)
+                with replay_cross_cols[0]:
+                    replay_reranker_batch_size = st.number_input(
+                        "Batch size",
+                        min_value=1,
+                        max_value=100,
+                        value=20,
+                        step=1,
+                        key="evaluation_replay_reranker_batch_size",
+                    )
+                with replay_cross_cols[1]:
+                    replay_reranker_device = st.selectbox(
+                        "Device",
+                        options=["auto", "cpu", "cuda", "mps"],
+                        key="evaluation_replay_reranker_device",
+                    )
+                with replay_cross_cols[2]:
+                    replay_reranker_max_chars = st.number_input(
+                        "Max chars / candidate",
+                        min_value=100,
+                        max_value=10000,
+                        value=1600,
+                        step=100,
+                        key="evaluation_replay_reranker_max_chars",
+                    )
+                replay_threshold_enabled = st.checkbox(
+                    "関連度しきい値を使う",
+                    value=False,
+                    key="evaluation_replay_threshold_enabled",
+                )
+                if replay_threshold_enabled:
+                    replay_score_threshold = st.number_input(
+                        "Score threshold",
+                        value=0.0,
+                        step=0.1,
+                        key="evaluation_replay_score_threshold",
+                    )
+            else:
+                replay_reranker_choice = _evaluation_reranker_model(
+                    api_url,
+                    {},
+                    _get_connections(api_url),
+                    key_prefix="evaluation_replay_reranker_model",
+                )
+                replay_reranker_cols = st.columns(2)
+                with replay_reranker_cols[0]:
+                    replay_reranker_max_tokens = st.number_input(
+                        "Reranker max output tokens",
+                        min_value=1,
+                        value=2048,
+                        step=256,
+                        key="evaluation_replay_reranker_max_tokens",
+                    )
+                with replay_reranker_cols[1]:
+                    replay_reranker_max_chars = st.number_input(
+                        "Max chars / candidate",
+                        min_value=100,
+                        max_value=10000,
+                        value=1600,
+                        step=100,
+                        key="evaluation_replay_reranker_max_chars",
+                    )
+            if replay_reranker_engine == "cross_encoder":
+                st.caption(
+                    "候補数は上の値（推奨20）。質問と候補カードを"
+                    "ローカルのCross-Encoderで一括採点します。"
+                )
+            else:
+                st.caption(
+                    "候補数は上の値（推奨20）、注入順位はtop3固定。"
+                    "候補カード本文を選択したConnectionへ送ります。"
+                )
         if st.button(
             "検索を比較",
-            disabled=not modes,
+            disabled=(
+                not modes
+                or (
+                    "reranked" in modes
+                    and (
+                        (
+                            replay_reranker_engine == "cross_encoder"
+                            and not replay_cross_encoder_model
+                        )
+                        or (
+                            replay_reranker_engine == "llm"
+                            and (
+                                replay_reranker_choice is None
+                                or not replay_reranker_choice.model_name.strip()
+                            )
+                        )
+                    )
+                )
+            ),
             key="evaluation_replay_start",
         ):
-            with st.spinner("検索を実行中…"):
-                try:
-                    response = requests.post(
-                        f"{api_url}/evaluations/runs/retrieval-replay",
-                        json={
-                            "run_id": target_run,
-                            "modes": modes,
-                            "limit": int(replay_limit),
+            try:
+                payload = {
+                    "run_id": target_run,
+                    "modes": modes,
+                    "limit": int(replay_limit),
+                    "reranker_max_candidate_chars": int(
+                        replay_reranker_max_chars
+                    ),
+                    "evidence_raw_chunk_chars": int(
+                        evidence_raw_chunk_chars
+                    ),
+                }
+                if (
+                    "reranked" in modes
+                    and replay_reranker_engine == "cross_encoder"
+                ):
+                    payload["reranker"] = {
+                        "engine": "cross_encoder",
+                        "model_name": replay_cross_encoder_model,
+                        "batch_size": int(replay_reranker_batch_size),
+                        "device": replay_reranker_device,
+                        "score_threshold": (
+                            float(replay_score_threshold)
+                            if replay_threshold_enabled
+                            else None
+                        ),
+                    }
+                elif (
+                    "reranked" in modes
+                    and replay_reranker_choice is not None
+                ):
+                    payload["reranker"] = {
+                        "engine": "llm",
+                        "connection": replay_reranker_choice.connection_id,
+                        "model_name": replay_reranker_choice.model_name.strip(),
+                        "generation_config": {
+                            "temperature": 0.0,
+                            "max_output_tokens": int(
+                                replay_reranker_max_tokens
+                            ),
                         },
-                        timeout=1800,
+                    }
+                response = requests.post(
+                    f"{api_url}/evaluations/runs/retrieval-replay/jobs",
+                    json=payload,
+                    timeout=10,
+                )
+                if response.ok:
+                    job = response.json()
+                    st.session_state.evaluation_replay_job_id = job["job_id"]
+                    st.session_state.evaluation_selected_job = job["job_id"]
+                    st.session_state.evaluation_replay_result = None
+                    st.session_state.evaluation_replay_result_job_id = None
+                    st.session_state.evaluation_replay_result_run_id = (
+                        target_run
                     )
-                    if response.ok:
-                        st.session_state.evaluation_replay_result = (
-                            response.json()
-                        )
-                    else:
-                        st.error(_api_error_detail(response))
-                except Exception as exc:
-                    st.error(f"replayエラー: {exc}")
+                    st.success(
+                        f"検索比較を開始しました: {target_run} "
+                        f"(job {job['job_id'][:8]})"
+                    )
+                else:
+                    st.error(_api_error_detail(response))
+            except Exception as exc:
+                st.error(f"replay開始エラー: {exc}")
 
-        result = st.session_state.get("evaluation_replay_result")
-        if not result:
-            return
+        _render_retrieval_replay_status(api_url, str(target_run))
+
+
+def _render_posthoc_judge_controls(
+    api_url: str,
+    runs: list,
+    *,
+    dialogue: bool,
+) -> None:
+    """Run or re-run semantic judging without regenerating QA answers."""
+    import requests
+
+    completed = [
+        str(run["run_id"])
+        for run in runs
+        if run.get("has_scores") and run.get("run_id")
+    ]
+    if not completed:
+        return
+    prefix = "dialogue_ab_posthoc_judge" if dialogue else "locomo_posthoc_judge"
+    with st.expander("🧠 既存runをSemantic Judgeで判定 / 再判定"):
+        run_id = st.selectbox(
+            "判定するrun",
+            options=completed,
+            key=f"{prefix}_run",
+        )
+        choice = _evaluation_judge_model(
+            api_url,
+            {},
+            _get_connections(api_url),
+            key_prefix=f"{prefix}_model",
+        )
+        max_output_tokens = st.number_input(
+            "Judge max output tokens",
+            min_value=1,
+            value=2048,
+            step=256,
+            key=f"{prefix}_max_output_tokens",
+        )
         st.caption(
-            f"{result.get('run')} / oracleカードがある問: "
-            f"{result.get('oracle_questions')}"
+            "QAと記憶構築は再実行しません。temperatureは0固定で、"
+            "既存の公式スコアも保持します。"
+        )
+        st.caption(
+            (
+                "JudgeのConnectionへprompt・最小限の参照事実・A/B両回答を"
+                if dialogue
+                else "JudgeのConnectionへquestion・reference answer・predictionを"
+            )
+            + "送信します。記憶DB全体は送信しません。APIキーは判定promptや"
+            "成果物に含めず、Connection認証にだけ使います。"
+        )
+        if st.button(
+            "Semantic Judgeを開始",
+            type="primary",
+            disabled=not choice.model_name.strip(),
+            key=f"{prefix}_start",
+        ):
+            path = (
+                f"/evaluations/dialogue-ab/runs/{run_id}/judge"
+                if dialogue
+                else f"/evaluations/runs/{run_id}/judge"
+            )
+            try:
+                response = requests.post(
+                    f"{api_url}{path}",
+                    json={
+                        "connection": choice.connection_id,
+                        "model_name": choice.model_name.strip(),
+                        "max_output_tokens": int(max_output_tokens),
+                    },
+                    timeout=10,
+                )
+            except requests.RequestException as exc:
+                st.error(f"Judge開始エラー: {exc}")
+                return
+            if not response.ok:
+                st.error(_api_error_detail(response))
+                return
+            job = response.json()
+            st.session_state.evaluation_selected_job = job["job_id"]
+            st.success(
+                f"Semantic Judgeを開始しました: {run_id} "
+                f"(job {job['job_id'][:8]})"
+            )
+
+
+def _render_locomo_semantic_details(api_url: str, runs: list) -> None:
+    """Show current per-question judge results and review candidates."""
+    scoreable = [
+        str(run["run_id"])
+        for run in runs
+        if run.get("has_scores") and run.get("run_id")
+    ]
+    if not scoreable:
+        return
+
+    with st.expander("🔎 問題別Semantic判定・レビュー候補"):
+        run_id = st.selectbox(
+            "詳細を表示するrun",
+            options=scoreable,
+            key="locomo_semantic_detail_run",
+        )
+        try:
+            result = _evaluation_get(
+                api_url,
+                f"/evaluations/runs/{run_id}",
+            )
+        except Exception as exc:
+            st.error(f"Semantic詳細取得エラー: {exc}")
+            return
+
+        semantic = result.get("semantic_judge")
+        if not isinstance(semantic, dict):
+            st.info("このrunはまだSemantic Judgeで判定されていません。")
+            return
+        if semantic.get("status") == "stale":
+            st.warning(
+                "保存済みSemantic判定は、現在の質問・参照回答・予測または"
+                "Judge設定と一致しないため表示しません。再判定してください。\n\n"
+                f"理由: {semantic.get('stale_reason') or '入力が変更されました'}"
+            )
+            return
+        if semantic.get("status") == "partial":
+            st.warning(
+                "Semantic判定は一部未完了です。エラー項目を含むため、"
+                "同じモデルで再判定すると未完了分を再試行します。"
+            )
+
+        review_count = result.get("review_required_count")
+        st.caption(
+            f"status={semantic.get('status') or 'unknown'} / "
+            f"coverage={semantic.get('coverage')} / "
+            f"レビュー候補={review_count if review_count is not None else '—'}"
+        )
+        review_only = st.checkbox(
+            "レビュー候補だけ表示",
+            value=True,
+            key="locomo_semantic_review_only",
         )
         rows = []
-        for mode in ("bm25", "vector", "hybrid"):
-            stats = result.get(mode)
-            if not isinstance(stats, dict):
+        for item in result.get("questions") or []:
+            if review_only and not item.get("review_required"):
                 continue
             rows.append(
                 {
-                    "mode": mode,
-                    "recall@1": stats.get("recall_at_1"),
-                    "recall@3": stats.get("recall_at_3"),
-                    "recall@20": stats.get("recall_at_20"),
-                    "hit@3": stats.get("hit_at_3"),
-                    "hit@20": stats.get("hit_at_20"),
+                    "sample": item.get("sample_id"),
+                    "question_id": item.get("question_id"),
+                    "category": item.get("category"),
+                    "question": item.get("question"),
+                    "reference": item.get("expected_answer"),
+                    "prediction": item.get("prediction"),
+                    "official score": item.get("official_score"),
+                    "semantic verdict": item.get("semantic_verdict"),
+                    "semantic score": item.get("semantic_score"),
+                    "confidence": item.get("semantic_confidence"),
+                    "contradiction": item.get("semantic_contradiction"),
+                    "critical missing": item.get(
+                        "semantic_missing_critical"
+                    ),
+                    "official disagreement": item.get(
+                        "official_disagreement"
+                    ),
+                    "review reasons": ", ".join(
+                        str(reason)
+                        for reason in (item.get("review_reasons") or [])
+                    ),
+                    "judge reason": item.get("semantic_reason"),
+                    "judge error": item.get("semantic_error"),
                 }
             )
+        if not rows:
+            st.success(
+                "現在の条件に一致するレビュー候補はありません。"
+                if review_only
+                else "表示できる問題別判定はありません。"
+            )
+            return
         st.dataframe(rows, width="stretch", hide_index=True)
         st.caption(
-            "recall は「上位k候補が evidence ターンを覆った割合」の平均、"
-            "hit は1件でも覆えた問数です。結果は run 直下の "
-            "retrieval_replay.json にも保存されます。"
+            "レビュー候補: partial、矛盾、重要情報欠落、low confidence、"
+            "公式スコアとのpossible false positive / false negative。"
         )
 
 
@@ -2604,10 +3708,25 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
             "rag_trigger": run.get("rag_trigger_rate"),
             "search_exec": run.get("search_execution_rate"),
             "recall@3": run.get("retrieval_recall_at_3"),
+            "query生成": run.get("retrieval_query_rate"),
+            "dual original@3": run.get("dual_query_original_recall_at_3"),
+            "dual rewrite@3": run.get("dual_query_rewrite_recall_at_3"),
+            "dual rescue": run.get("dual_query_rescue_rate_at_3"),
+            "dual harm": run.get("dual_query_harm_rate_at_3"),
+            "rerank done": run.get("reranker_completion_rate"),
+            "rerank fallback": run.get("reranker_fallback_rate"),
+            "rerank rescue": run.get("reranker_rescue_rate_at_3"),
+            "rerank harm": run.get("reranker_harm_rate_at_3"),
             "clf_fallback": run.get("classifier_fallback_rate"),
             "latency_ms": run.get("latency_ms_mean"),
             "prompt_tokens": run.get("prompt_tokens_total"),
             "cards": run.get("knowledge_cards_created"),
+            "semantic score": run.get("semantic_score_mean"),
+            "semantic pass": run.get("semantic_pass_rate"),
+            "semantic coverage": run.get("semantic_coverage"),
+            "semantic status": run.get("semantic_status"),
+            "judge review": run.get("semantic_review_count"),
+            "judge model": run.get("semantic_judge_model"),
             "source_run": run.get("source_run_id"),
             "created_at": run.get("created_at"),
         }
@@ -2629,6 +3748,10 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
             "分類器が高頻度で fallback した run があります（need_intent が立たず"
             "RAG が不発になっている可能性）: " + ", ".join(str(r) for r in broken)
         )
+
+    _render_posthoc_judge_controls(api_url, runs, dialogue=False)
+
+    _render_locomo_semantic_details(api_url, runs)
 
     _render_retrieval_replay(api_url, runs)
 
@@ -2681,12 +3804,22 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
             "search_exec": run.get("search_execution_rate"),
             "recall@3": run.get("retrieval_recall_at_3"),
             "bm25_rescue": run.get("bm25_rescue_rate"),
+            "rerank done": run.get("reranker_completion_rate"),
+            "rerank fallback": run.get("reranker_fallback_rate"),
+            "rerank rescue": run.get("reranker_rescue_rate_at_3"),
+            "rerank harm": run.get("reranker_harm_rate_at_3"),
+            "rerank p95 ms": run.get("reranker_latency_ms_p95"),
             "clf_fallback": run.get("classifier_fallback_rate"),
             "latency_ms": run.get("latency_ms_mean"),
             "prompt_tokens": run.get("prompt_tokens_total"),
             "completion_tokens": run.get("completion_tokens_total"),
             "cards": run.get("knowledge_cards_created"),
             "failures": run.get("sleeptime_failures"),
+            "semantic score": run.get("semantic_score_mean"),
+            "semantic pass": run.get("semantic_pass_rate"),
+            "semantic coverage": run.get("semantic_coverage"),
+            "semantic status": run.get("semantic_status"),
+            "judge review": run.get("semantic_review_count"),
         }
         for run in comparison.get("runs", [])
     ]
@@ -2700,6 +3833,7 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
         by_run = question.get("runs", {})
         question_rows.append(
             {
+                "sample_id": question.get("sample_id"),
                 "question_id": question.get("question_id"),
                 "question": question.get("question"),
                 "expected": question.get("expected_answer"),
@@ -2756,8 +3890,9 @@ def _render_dialogue_ab_form(
         "検索条件は両armで共通です。"
     )
     st.info(
-        "自動指標はトークン・RAG注入・対象語recallです。回答の自然さと"
-        "無関係な記憶の持ち出しは、完了後の回答差分で確認してください。"
+        "従来のトークン・RAG注入・対象語recallに加え、"
+        "Semantic Judgeを有効にすると正誤・部分正解・不要な"
+        "記憶の持ち出しを匿名A/Bで判定します。"
     )
 
     dataset_default = str(
@@ -2890,7 +4025,7 @@ def _render_dialogue_ab_form(
         search_mode_options = (
             config.get("search_modes")
             or evaluation_config.get("search_modes")
-            or ["vector", "hybrid"]
+            or ["vector", "hybrid", "dual_query"]
         )
         retrieval_execution_options = (
             config.get("retrieval_executions")
@@ -2909,7 +4044,8 @@ def _render_dialogue_ab_form(
                 key="dialogue_ab_search_mode",
                 help=(
                     "vectorはベクトル検索のみ、hybridはBM25とベクトルを"
-                    "RRFで融合します。"
+                    "RRFで融合します。dual_queryは元発話とGatekeeper検索文を"
+                    "各15件検索し、重複排除してRRF融合します。"
                 ),
             )
         with search_cols[1]:
@@ -2981,6 +4117,12 @@ def _render_dialogue_ab_form(
 
         bm25_candidates = int(previous.get("bm25_candidates", 20))
         vector_candidates = int(previous.get("vector_candidates", 20))
+        dual_query_candidates = int(
+            previous.get("dual_query_candidates", 15)
+        )
+        dual_query_pool_limit = int(
+            previous.get("dual_query_pool_limit", 25)
+        )
         rrf_k = int(previous.get("rrf_k", 60))
         bm25_max_df_ratio = float(
             previous.get("bm25_max_df_ratio", 0.5)
@@ -3021,6 +4163,36 @@ def _render_dialogue_ab_form(
                     format="%.2f",
                     key="dialogue_ab_bm25_max_df_ratio",
                 )
+        elif search_mode == "dual_query":
+            dual_cols = st.columns(3)
+            with dual_cols[0]:
+                dual_query_candidates = st.number_input(
+                    "Candidates / query",
+                    min_value=1,
+                    value=dual_query_candidates,
+                    step=1,
+                    key="dialogue_ab_dual_query_candidates",
+                )
+            with dual_cols[1]:
+                dual_query_pool_limit = st.number_input(
+                    "Deduped pool limit",
+                    min_value=1,
+                    value=dual_query_pool_limit,
+                    step=1,
+                    key="dialogue_ab_dual_query_pool_limit",
+                )
+            with dual_cols[2]:
+                rrf_k = st.number_input(
+                    "RRF k",
+                    min_value=1,
+                    value=rrf_k,
+                    step=1,
+                    key="dialogue_ab_dual_query_rrf_k",
+                )
+            st.caption(
+                "両armで同じprompt・Gatekeeper設定を使います。生成された検索文と"
+                "両ランキングはarm別に保存するため、差が出た場合も確認できます。"
+            )
 
     stage3_batch_size = int(previous.get("stage3_batch_size", 10))
     stage3_bootstrap_max_cards = int(
@@ -3140,6 +4312,47 @@ def _render_dialogue_ab_form(
         if warning:
             st.warning(warning)
 
+        st.markdown("##### Semantic Judge（任意）")
+        dialogue_judge_enabled = st.checkbox(
+            "A/B回答をAIで匿名・順序反転判定する",
+            value="judge" in previous_models,
+            key="dialogue_ab_judge_enabled",
+            help=(
+                "A/Bの表示順を入れ替えて2回判定し、不一致は"
+                "要人手確認として残します。"
+            ),
+        )
+        dialogue_judge_choice = None
+        dialogue_judge_max_output_tokens = 2048
+        if dialogue_judge_enabled:
+            current_judge = previous_models.get("judge") or {}
+            dialogue_judge_choice = _evaluation_judge_model(
+                api_url,
+                current_judge,
+                _get_connections(api_url),
+                key_prefix="dialogue_ab_judge_model",
+            )
+            dialogue_judge_max_output_tokens = st.number_input(
+                "Judge max output tokens",
+                min_value=1,
+                value=int(
+                    (current_judge.get("generation_config") or {}).get(
+                        "max_output_tokens", 2048
+                    )
+                ),
+                step=256,
+                key="dialogue_ab_judge_max_output_tokens",
+            )
+            st.caption(
+                "temperatureは0に固定。回答生成とは別系統の"
+                "モデルを推奨します。"
+            )
+            st.caption(
+                "JudgeのConnectionへprompt・最小限の参照事実・A/B両回答を"
+                "送信します。記憶DB全体は送信しません。APIキーは判定promptや"
+                "成果物に含めず、Connection認証にだけ使います。"
+            )
+
     if st.button(
         "▶ 日本語対話A/Bを開始",
         type="primary",
@@ -3160,6 +4373,23 @@ def _render_dialogue_ab_form(
             }
             if role == "embedding" and embedding_profile:
                 role_models[role]["profile"] = embedding_profile
+        if dialogue_judge_enabled:
+            if (
+                dialogue_judge_choice is None
+                or not dialogue_judge_choice.model_name.strip()
+            ):
+                empty_roles.append("judge")
+            else:
+                role_models["judge"] = {
+                    "connection": dialogue_judge_choice.connection_id,
+                    "model_name": dialogue_judge_choice.model_name.strip(),
+                    "generation_config": {
+                        "temperature": 0.0,
+                        "max_output_tokens": int(
+                            dialogue_judge_max_output_tokens
+                        ),
+                    },
+                }
         if empty_roles:
             st.error(
                 "モデルが未設定のロールがあります: "
@@ -3198,6 +4428,8 @@ def _render_dialogue_ab_form(
             "deep_search_enabled": bool(deep_search_enabled),
             "bm25_candidates": int(bm25_candidates),
             "vector_candidates": int(vector_candidates),
+            "dual_query_candidates": int(dual_query_candidates),
+            "dual_query_pool_limit": int(dual_query_pool_limit),
             "rrf_k": int(rrf_k),
             "bm25_max_df_ratio": float(bm25_max_df_ratio),
             "role_models": role_models,
@@ -3246,12 +4478,18 @@ def _render_dialogue_ab_history(api_url: str, runs: list) -> None:
             "token Δ/turn": run.get("prompt_tokens_mean_delta"),
             "required recall Δ": run.get("required_recall_delta"),
             "irrelevant mention Δ": run.get("irrelevant_mention_delta"),
+            "judge score Δ": run.get("semantic_score_delta"),
+            "judge review": run.get("semantic_review_count"),
+            "judge winners": run.get("semantic_winner_counts"),
+            "judge model": run.get("semantic_judge_model"),
             "created_at": run.get("created_at"),
         }
         for run in runs
     ]
     st.markdown("#### A/B履歴")
     st.dataframe(rows, width="stretch", hide_index=True)
+
+    _render_posthoc_judge_controls(api_url, runs, dialogue=True)
 
     completed = [
         run["run_id"]
@@ -3282,6 +4520,8 @@ def _render_dialogue_ab_history(api_url: str, runs: list) -> None:
                 "policy": policy,
                 "RAG trigger": stats.get("rag_trigger_rate"),
                 "search exec": stats.get("search_execution_rate"),
+                "retrieval query": stats.get("retrieval_query_rate"),
+                "dual fusion exec": stats.get("dual_query_execution_rate"),
                 "prompt tokens mean": stats.get("prompt_tokens_mean"),
                 "latency ms mean": stats.get("latency_ms_mean"),
                 "latency p95": stats.get("latency_ms_p95"),
@@ -3311,6 +4551,10 @@ def _render_dialogue_ab_history(api_url: str, runs: list) -> None:
         arms = prompt.get("arms") or {}
         intent = arms.get("intent_gated") or {}
         candidates = arms.get("candidates") or {}
+        judgment = prompt.get("judgment") or {}
+        judged_arms = judgment.get("arms") or {}
+        judged_intent = judged_arms.get("intent_gated") or {}
+        judged_candidates = judged_arms.get("candidates") or {}
         prompt_rows.append(
             {
                 "id": prompt.get("prompt_id"),
@@ -3319,9 +4563,59 @@ def _render_dialogue_ab_history(api_url: str, runs: list) -> None:
                 "review": prompt.get("review_point"),
                 "intent RAG": intent.get("rag_triggered"),
                 "candidate RAG": candidates.get("rag_triggered"),
+                "intent query": intent.get("retrieval_query"),
+                "intent query status": intent.get(
+                    "retrieval_query_status"
+                ),
+                "candidate query": candidates.get("retrieval_query"),
+                "candidate query status": candidates.get(
+                    "retrieval_query_status"
+                ),
+                "intent original top3": ", ".join(
+                    str(value)
+                    for value in (intent.get("original_candidate_ids") or [])[:3]
+                ),
+                "intent rewrite top3": ", ".join(
+                    str(value)
+                    for value in (
+                        intent.get("retrieval_query_candidate_ids") or []
+                    )[:3]
+                ),
+                "intent fused top3": ", ".join(
+                    str(value)
+                    for value in (intent.get("fused_candidate_ids") or [])[:3]
+                ),
+                "candidate original top3": ", ".join(
+                    str(value)
+                    for value in (
+                        candidates.get("original_candidate_ids") or []
+                    )[:3]
+                ),
+                "candidate rewrite top3": ", ".join(
+                    str(value)
+                    for value in (
+                        candidates.get("retrieval_query_candidate_ids") or []
+                    )[:3]
+                ),
+                "candidate fused top3": ", ".join(
+                    str(value)
+                    for value in (candidates.get("fused_candidate_ids") or [])[:3]
+                ),
                 "token Δ": prompt.get("prompt_tokens_delta"),
                 "intent answer": intent.get("response"),
                 "candidates answer": candidates.get("response"),
+                "judge winner": judgment.get("winner"),
+                "needs review": judgment.get("review_required"),
+                "intent verdict": judged_intent.get("label"),
+                "candidates verdict": judged_candidates.get("label"),
+                "intent reason": " / ".join(
+                    str(item)
+                    for item in (judged_intent.get("reasons") or [])
+                ),
+                "candidates reason": " / ".join(
+                    str(item)
+                    for item in (judged_candidates.get("reasons") or [])
+                ),
             }
         )
     st.markdown("#### プロンプト別回答")

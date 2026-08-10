@@ -223,6 +223,8 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
         "total_completion_tokens": token_usage_total.get("completion_tokens"),
         "tier": gatekeeper.get("tier", row.get("tier")),
         "need_intent": gatekeeper.get("need_intent"),
+        "retrieval_query": gatekeeper.get("retrieval_query"),
+        "retrieval_query_status": gatekeeper.get("retrieval_query_status"),
         "classifier_status": gatekeeper.get("classifier_status"),
         "fallback_reason": gatekeeper.get("fallback_reason"),
         "intent_floor_applied": gatekeeper.get("intent_floor_applied"),
@@ -236,6 +238,20 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
         "injection_allowed": retrieval.get("injection_allowed"),
         "injection_reason": retrieval.get("injection_reason"),
         "bm25_short_term_hit": _has_short_term_hit(retrieval),
+        "reranker_status": (retrieval.get("reranker") or {}).get("status"),
+        "reranker_fallback": (retrieval.get("reranker") or {}).get(
+            "fallback"
+        ),
+        "reranker_latency_ms": (retrieval.get("reranker") or {}).get(
+            "latency_ms"
+        ),
+        "reranker_model_name": (retrieval.get("reranker") or {}).get(
+            "model_name"
+        ),
+        "reranker_engine": (retrieval.get("reranker") or {}).get("engine"),
+        "reranker_selected_count": (retrieval.get("reranker") or {}).get(
+            "selected_count"
+        ),
     }
     entry["evidence_coverage"] = _evidence_provenance_coverage(row, provenance)
     entry.update(_retrieval_coverage(row, provenance, retrieval))
@@ -265,6 +281,12 @@ def _retrieval_coverage(
         "recall_at_3": None,
         "recall_at_20": None,
         "vector_recall_at_3": None,
+        "original_recall_at_1": None,
+        "original_recall_at_3": None,
+        "original_recall_at_20": None,
+        "retrieval_query_recall_at_1": None,
+        "retrieval_query_recall_at_3": None,
+        "retrieval_query_recall_at_20": None,
     }
     if not retrieval.get("executed"):
         return out
@@ -272,10 +294,26 @@ def _retrieval_coverage(
     out["oracle_available"] = oracle
     if not oracle:
         return out
-    fused = retrieval.get("fused_candidate_ids") or []
+    fused = (
+        retrieval.get("effective_candidate_ids")
+        or retrieval.get("reranked_candidate_ids")
+        or retrieval.get("fused_candidate_ids")
+        or []
+    )
     vector_ids = retrieval.get("vector_candidate_ids") or []
+    original_ids = retrieval.get("original_candidate_ids") or vector_ids
+    retrieval_query_ids = retrieval.get("retrieval_query_candidate_ids") or []
+    retrieval_query_executed = bool(retrieval.get("retrieval_query"))
     for k in (1, 3, 20):
         out[f"recall_at_{k}"] = _coverage_for_card_ids(row, provenance, fused[:k])
+        out[f"original_recall_at_{k}"] = _coverage_for_card_ids(
+            row, provenance, original_ids[:k]
+        )
+        out[f"retrieval_query_recall_at_{k}"] = (
+            _coverage_for_card_ids(row, provenance, retrieval_query_ids[:k])
+            if retrieval_query_executed
+            else None
+        )
     out["vector_recall_at_3"] = _coverage_for_card_ids(
         row, provenance, vector_ids[:3]
     )
@@ -522,6 +560,19 @@ def _retrieval_aggregate(question_scores: list[dict]) -> dict:
     short_term = [
         e for e in question_scores if e.get("bm25_short_term_hit") is not None
     ]
+    reranker_configured = [
+        e for e in question_scores if e.get("reranker_status") is not None
+    ]
+    reranked = [
+        e
+        for e in reranker_configured
+        if e.get("reranker_status") != "skipped"
+    ]
+    reranker_latencies = sorted(
+        e["reranker_latency_ms"]
+        for e in reranked
+        if e.get("reranker_latency_ms") is not None
+    )
     return {
         "search_execution_rate": _mean(
             [float(bool(e.get("search_executed"))) for e in question_scores]
@@ -539,6 +590,12 @@ def _retrieval_aggregate(question_scores: list[dict]) -> dict:
         "retrieval_mode_distribution": _distribution(
             question_scores, "retrieval_mode"
         ),
+        "retrieval_query_rate": _mean(
+            [float(bool(e.get("retrieval_query"))) for e in question_scores]
+        ),
+        "retrieval_query_status_distribution": _distribution(
+            question_scores, "retrieval_query_status"
+        ),
         "injection_reason_distribution": _distribution(
             question_scores, "injection_reason"
         ),
@@ -547,13 +604,88 @@ def _retrieval_aggregate(question_scores: list[dict]) -> dict:
         "retrieval_recall_at_3": _mean(_present(oracle, "recall_at_3")),
         "retrieval_recall_at_20": _mean(_present(oracle, "recall_at_20")),
         "vector_only_recall_at_3": _mean(_present(oracle, "vector_recall_at_3")),
+        "dual_query_original_recall_at_3": _mean(
+            _present(
+                [e for e in oracle if e.get("retrieval_mode") == "dual_query"],
+                "original_recall_at_3",
+            )
+        ),
+        "dual_query_rewrite_recall_at_3": _mean(
+            _present(
+                [e for e in oracle if e.get("retrieval_mode") == "dual_query"],
+                "retrieval_query_recall_at_3",
+            )
+        ),
+        "dual_query_rescue_rate_at_3": _mean(
+            [
+                float((e["recall_at_3"] or 0) > (e["original_recall_at_3"] or 0))
+                for e in oracle
+                if e.get("retrieval_mode") == "dual_query"
+                and e.get("recall_at_3") is not None
+                and e.get("original_recall_at_3") is not None
+            ]
+        ),
+        "dual_query_harm_rate_at_3": _mean(
+            [
+                float((e["recall_at_3"] or 0) < (e["original_recall_at_3"] or 0))
+                for e in oracle
+                if e.get("retrieval_mode") == "dual_query"
+                and e.get("recall_at_3") is not None
+                and e.get("original_recall_at_3") is not None
+            ]
+        ),
         "bm25_rescue_rate": _mean(
             [
                 float((e["recall_at_3"] or 0) > (e["vector_recall_at_3"] or 0))
                 for e in oracle
-                if e["recall_at_3"] is not None
+                if e.get("retrieval_mode") == "hybrid"
+                and e["recall_at_3"] is not None
                 and e["vector_recall_at_3"] is not None
             ]
+        ),
+        "reranker_execution_rate": _mean(
+            [
+                float(
+                    e.get("reranker_status") is not None
+                    and e.get("reranker_status") != "skipped"
+                )
+                for e in question_scores
+            ]
+        ),
+        "reranker_completion_rate": _mean(
+            [
+                float(e.get("reranker_status") == "completed")
+                for e in reranked
+            ]
+        ),
+        "reranker_fallback_rate": _mean(
+            [float(bool(e.get("reranker_fallback"))) for e in reranked]
+        ),
+        "reranker_rescue_rate_at_3": _mean(
+            [
+                float((e["recall_at_3"] or 0) > (e["vector_recall_at_3"] or 0))
+                for e in oracle
+                if e.get("reranker_status") == "completed"
+                and e["recall_at_3"] is not None
+                and e["vector_recall_at_3"] is not None
+            ]
+        ),
+        "reranker_harm_rate_at_3": _mean(
+            [
+                float((e["recall_at_3"] or 0) < (e["vector_recall_at_3"] or 0))
+                for e in oracle
+                if e.get("reranker_status") == "completed"
+                and e["recall_at_3"] is not None
+                and e["vector_recall_at_3"] is not None
+            ]
+        ),
+        "reranker_latency_ms_p50": _percentile(reranker_latencies, 50),
+        "reranker_latency_ms_p95": _percentile(reranker_latencies, 95),
+        "reranker_model_distribution": _distribution(
+            reranked, "reranker_model_name"
+        ),
+        "reranker_engine_distribution": _distribution(
+            reranked, "reranker_engine"
         ),
         "retrieval_latency_ms_p50": _percentile(retrieval_latencies, 50),
         "retrieval_latency_ms_p95": _percentile(retrieval_latencies, 95),

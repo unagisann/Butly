@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, time as datetime_time, timezone
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -32,6 +33,17 @@ from evals.locomo.workspace import (
     PROJECT_ROOT,
     EvaluationWorkspace,
     IndependentQAWorkspace,
+)
+from evals.semantic_judge import (
+    JUDGE_PROMPT_VERSION,
+    JUDGE_SCHEMA_VERSION,
+    JudgeConfig,
+    SemanticJudge,
+    SemanticJudgeError,
+    build_dialogue_judge_input,
+    combined_judge_fingerprint,
+    judge_dialogue_pair,
+    summarize_dialogue_judgments,
 )
 
 
@@ -72,6 +84,7 @@ class DialoguePrompt:
     expected_memory_behavior: str
     target_memory_ids: tuple[str, ...]
     expected_terms: tuple[str, ...]
+    source_fact: Optional[str]
     review_point: Optional[str]
 
 
@@ -110,6 +123,7 @@ class DialogueABConfig:
     reembed: bool = False
     intent_gated_search_limit: int = 3
     candidates_search_limit: int = 3
+    judge_config: Optional[JudgeConfig] = None
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -118,6 +132,10 @@ class DialogueABConfig:
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise DialogueABError(f"{name} must be a positive integer")
+        if self.judge_config is not None and not isinstance(
+            self.judge_config, JudgeConfig
+        ):
+            raise DialogueABError("judge_config must be a JudgeConfig")
 
 
 def load_dialogue_dataset(path: Path) -> DialogueDataset:
@@ -236,6 +254,7 @@ def load_dialogue_dataset(path: Path) -> DialogueDataset:
                         f"{context}.expected_terms",
                     )
                 ),
+                source_fact=_optional_text(item.get("source_fact")),
                 review_point=_optional_text(
                     item.get("review_point")
                     or item.get("memory_would_help")
@@ -270,6 +289,119 @@ def _load_memory_source(raw: Any) -> Optional[InstanceMemorySource]:
     )
 
 
+def _dialogue_dataset_fingerprint(dataset: DialogueDataset) -> str:
+    """Fingerprint every dataset field that can affect QA or judging."""
+    memory_source = dataset.memory_source
+    payload = {
+        "dataset_id": dataset.dataset_id,
+        "locale": dataset.locale,
+        "memory_source": (
+            {
+                "name": memory_source.name,
+                "path": str(memory_source.path) if memory_source.path else None,
+            }
+            if memory_source is not None
+            else None
+        ),
+        "memory_seed": [
+            {
+                "seed_id": item.seed_id,
+                "timestamp": item.timestamp.isoformat(),
+                "user": item.user,
+                "assistant": item.assistant,
+            }
+            for item in dataset.memory_seed
+        ],
+        "prompts": [
+            {
+                "prompt_id": item.prompt_id,
+                "category": item.category,
+                "text": item.text,
+                "expected_memory_behavior": item.expected_memory_behavior,
+                "target_memory_ids": list(item.target_memory_ids),
+                "expected_terms": list(item.expected_terms),
+                "source_fact": item.source_fact,
+                "review_point": item.review_point,
+            }
+            for item in dataset.prompts
+        ],
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _validate_posthoc_dataset_snapshot(
+    dataset: DialogueDataset,
+    *,
+    run_payload: dict[str, Any],
+    scores: Optional[dict[str, Any]],
+    results: list[dict[str, Any]],
+) -> None:
+    """Refuse to attach new judgments to answers from another dataset state."""
+    current_fingerprint = _dialogue_dataset_fingerprint(dataset)
+    stored_fingerprint = run_payload.get("dataset_fingerprint")
+    if isinstance(stored_fingerprint, str) and stored_fingerprint:
+        if stored_fingerprint != current_fingerprint:
+            raise DialogueABError(
+                "dialogue dataset changed since QA; restore the original "
+                "dataset before post-hoc judging"
+            )
+        return
+
+    current_by_id = {item.prompt_id: item for item in dataset.prompts}
+    if scores is not None and isinstance(scores.get("prompts"), list):
+        stored_rows = [
+            item for item in scores["prompts"] if isinstance(item, dict)
+        ]
+        stored_ids = {str(item.get("prompt_id") or "") for item in stored_rows}
+        if stored_ids != set(current_by_id):
+            raise DialogueABError(
+                "dialogue dataset prompt IDs changed since QA; refusing "
+                "post-hoc judging"
+            )
+        for row in stored_rows:
+            prompt_id = str(row.get("prompt_id"))
+            prompt = current_by_id[prompt_id]
+            _require_stored_prompt_fields_match(prompt, row)
+
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        prompt_id = str(row.get("prompt_id") or "")
+        prompt = current_by_id.get(prompt_id)
+        if prompt is None:
+            raise DialogueABError(
+                f"dialogue dataset no longer contains prompt {prompt_id!r}"
+            )
+        _require_stored_prompt_fields_match(prompt, row)
+
+
+def _require_stored_prompt_fields_match(
+    prompt: DialoguePrompt,
+    stored: dict[str, Any],
+) -> None:
+    expected = {
+        "category": prompt.category,
+        "prompt": prompt.text,
+        "expected_memory_behavior": prompt.expected_memory_behavior,
+        "target_memory_ids": list(prompt.target_memory_ids),
+        "expected_terms": list(prompt.expected_terms),
+        "source_fact": prompt.source_fact,
+        "review_point": prompt.review_point,
+    }
+    for field, value in expected.items():
+        if field in stored and stored.get(field) != value:
+            raise DialogueABError(
+                "dialogue dataset changed since QA: "
+                f"prompt {prompt.prompt_id!r} field {field!r} differs"
+            )
+
+
 def _flatten_prompts(raw: Any) -> list:
     """``prompts`` を (item, 暗黙のカテゴリ) の列へ正規化する。
 
@@ -294,6 +426,10 @@ def _flatten_prompts(raw: Any) -> list:
 async def run_dialogue_ab(config: DialogueABConfig) -> dict[str, Any]:
     dataset = load_dialogue_dataset(config.dataset_path)
     profile = load_profile(config.profile_path)
+    judge_config = config.judge_config or JudgeConfig.from_mapping(
+        getattr(profile, "judge", None)
+    )
+    config = replace(config, judge_config=judge_config)
     workspace = EvaluationWorkspace.create(
         config.output_dir,
         run_id=config.run_id,
@@ -307,6 +443,7 @@ async def run_dialogue_ab(config: DialogueABConfig) -> dict[str, Any]:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "dataset_path": str(config.dataset_path.resolve()),
             "dataset_id": dataset.dataset_id,
+            "dataset_fingerprint": _dialogue_dataset_fingerprint(dataset),
             "locale": dataset.locale,
             "output_dir": str(config.output_dir.resolve()),
             "profile_path": str(config.profile_path.resolve()),
@@ -321,6 +458,11 @@ async def run_dialogue_ab(config: DialogueABConfig) -> dict[str, Any]:
                 "intent_gated": config.intent_gated_search_limit,
                 "candidates": config.candidates_search_limit,
             },
+            "judge": (
+                config.judge_config.public_dict()
+                if config.judge_config is not None
+                else None
+            ),
         }
     )
     _write_checkpoint(
@@ -365,9 +507,102 @@ async def resume_dialogue_ab(run_dir: Path) -> dict[str, Any]:
                 "candidates", legacy_search_limit
             )
         ),
+        judge_config=JudgeConfig.from_mapping(payload.get("judge")),
     )
     dataset = load_dialogue_dataset(config.dataset_path)
     return await _execute(workspace, config, dataset, profile)
+
+
+async def judge_dialogue_ab_run(
+    run_dir: Path,
+    *,
+    judge_config: Optional[JudgeConfig] = None,
+) -> dict[str, Any]:
+    """Semantically judge an existing run without replaying any QA calls."""
+    workspace = EvaluationWorkspace.open(run_dir)
+    run_payload = _read_json(workspace.run_config_path)
+    if run_payload.get("run_type") != "dialogue_ab":
+        raise DialogueABError(f"not a dialogue A/B run: {run_dir}")
+    dataset = load_dialogue_dataset(Path(run_payload["dataset_path"]))
+    scores_path = workspace.run_dir / "scores.json"
+    existing_scores = _read_json(scores_path) if scores_path.is_file() else None
+    results = _load_results(workspace)
+    _validate_posthoc_dataset_snapshot(
+        dataset,
+        run_payload=run_payload,
+        scores=existing_scores,
+        results=results,
+    )
+    effective_judge = judge_config or JudgeConfig.from_mapping(
+        run_payload.get("judge")
+    )
+    if effective_judge is None:
+        profile_path = run_payload.get("profile_path")
+        if profile_path:
+            profile = load_profile(Path(profile_path))
+            effective_judge = JudgeConfig.from_mapping(
+                getattr(profile, "judge", None)
+            )
+    if effective_judge is None:
+        raise DialogueABError(
+            "post-hoc judge requires --judge-model-name or a saved judge config"
+        )
+
+    write_json(
+        workspace.run_config_path,
+        {**run_payload, "judge": effective_judge.public_dict()},
+    )
+    instance_dir = workspace.instances_dir / _INSTANCE_NAME
+    judgments = await _run_dialogue_judgments(
+        workspace=workspace,
+        dataset=dataset,
+        results=results,
+        judge_config=effective_judge,
+        instance_dir=instance_dir,
+    )
+    if existing_scores is not None:
+        scores = _merge_dialogue_judgments(
+            existing_scores,
+            judgments,
+            expected_prompt_count=len(dataset.prompts),
+        )
+    else:
+        # A run interrupted after writing per-arm results may not have reached
+        # its initial aggregate yet.  Keep that recovery path, while treating
+        # an existing aggregate (including legacy v5 output) as authoritative.
+        scores = build_dialogue_scores(
+            dataset,
+            results,
+            run_id=workspace.run_id,
+            knowledge_cards=count_knowledge_cards(
+                instance_dir / "butly_memory.db"
+            ),
+            judgments=judgments,
+        )
+    write_json(scores_path, scores)
+    summary = scores["semantic_judge"]
+    checkpoint = _load_checkpoint(workspace)
+    checkpoint_status = (
+        "completed" if summary["status"] == "completed" else "judge_failed"
+    )
+    _write_checkpoint(
+        workspace,
+        {
+            **checkpoint,
+            "status": checkpoint_status,
+            "judge_status": summary["status"],
+            "judge_completed_prompts": summary["judged_prompt_count"],
+            "judge_error_prompts": summary["error_prompt_count"],
+        },
+    )
+    if summary["status"] != "completed":
+        raise SemanticJudgeError(
+            "semantic judge completed only partially: "
+            f"{summary['judged_prompt_count']}/{summary['expected_prompt_count']} "
+            f"complete, {summary['error_prompt_count']} errors"
+        )
+    _emit_progress(100.0, "complete", "Post-hoc semantic judge completed")
+    return scores
 
 
 async def _execute(
@@ -446,15 +681,47 @@ async def _execute(
                     },
                 )
 
+    results = _load_results(workspace)
+    judgments: Optional[list[dict[str, Any]]] = None
+    if config.judge_config is not None:
+        judgments = await _run_dialogue_judgments(
+            workspace=workspace,
+            dataset=dataset,
+            results=results,
+            judge_config=config.judge_config,
+            instance_dir=instance_dir,
+        )
+
     scores = build_dialogue_scores(
         dataset,
-        _load_results(workspace),
+        results,
         run_id=workspace.run_id,
         knowledge_cards=count_knowledge_cards(
             instance_dir / "butly_memory.db"
         ),
+        judgments=judgments,
     )
     write_json(workspace.run_dir / "scores.json", scores)
+    if judgments is not None and scores["semantic_judge"]["status"] != "completed":
+        summary = scores["semantic_judge"]
+        _write_checkpoint(
+            workspace,
+            {
+                **checkpoint,
+                "status": "judge_failed",
+                "seed_completed": True,
+                "completed_prompts": total,
+                "total_prompts": total,
+                "judge_status": summary["status"],
+                "judge_completed_prompts": summary["judged_prompt_count"],
+                "judge_error_prompts": summary["error_prompt_count"],
+            },
+        )
+        raise SemanticJudgeError(
+            "semantic judge completed only partially: "
+            f"{summary['judged_prompt_count']}/{summary['expected_prompt_count']} "
+            f"complete, {summary['error_prompt_count']} errors"
+        )
     _write_checkpoint(
         workspace,
         {
@@ -463,6 +730,11 @@ async def _execute(
             "seed_completed": True,
             "completed_prompts": total,
             "total_prompts": total,
+            "judge_status": (
+                scores["semantic_judge"]["status"]
+                if judgments is not None
+                else "disabled"
+            ),
         },
     )
     _emit_progress(100.0, "complete", "Japanese dialogue A/B completed")
@@ -783,6 +1055,11 @@ async def _run_prompt(
         if isinstance(rag.get("retrieval"), dict)
         else {}
     )
+    gatekeeper = (
+        debug_info.get("gatekeeper")
+        if isinstance(debug_info.get("gatekeeper"), dict)
+        else {}
+    )
     token_usage = (
         debug_info.get("token_usage")
         if isinstance(debug_info.get("token_usage"), dict)
@@ -819,6 +1096,25 @@ async def _run_prompt(
         "latency_ms": latency_ms,
         "rag_triggered": bool(rag_results),
         "search_executed": bool(retrieval.get("executed")),
+        "retrieval_mode": retrieval.get("mode"),
+        "need_intent": gatekeeper.get("need_intent"),
+        "retrieval_query": (
+            retrieval.get("retrieval_query")
+            or gatekeeper.get("retrieval_query")
+        ),
+        "retrieval_query_status": gatekeeper.get(
+            "retrieval_query_status"
+        ),
+        "query_fusion": retrieval.get("query_fusion"),
+        "original_candidate_ids": list(
+            retrieval.get("original_candidate_ids") or []
+        ),
+        "retrieval_query_candidate_ids": list(
+            retrieval.get("retrieval_query_candidate_ids") or []
+        ),
+        "fused_candidate_ids": list(
+            retrieval.get("fused_candidate_ids") or []
+        ),
         "injection_reason": retrieval.get("injection_reason"),
         "retrieved_card_ids": resolve_retrieved_card_ids(
             isolated.instance_dir / "butly_memory.db",
@@ -844,12 +1140,268 @@ async def _run_prompt(
     }
 
 
+async def _run_dialogue_judgments(
+    *,
+    workspace: EvaluationWorkspace,
+    dataset: DialogueDataset,
+    results: list[dict[str, Any]],
+    judge_config: JudgeConfig,
+    instance_dir: Path,
+    judge: Optional[SemanticJudge] = None,
+) -> list[dict[str, Any]]:
+    """Judge every completed A/B pair with durable success-only caching."""
+    by_key = {
+        (str(item.get("policy")), str(item.get("prompt_id"))): item
+        for item in results
+        if item.get("policy") in POLICIES and item.get("prompt_id")
+    }
+    judge_error: Optional[Exception] = None
+    if judge is None:
+        try:
+            judge = SemanticJudge(judge_config)
+        except Exception as exc:
+            judge_error = exc
+
+    judgments = []
+    total = len(dataset.prompts)
+    for index, prompt in enumerate(dataset.prompts, start=1):
+        answers = {
+            policy: str(
+                (by_key.get((policy, prompt.prompt_id)) or {}).get(
+                    "response", ""
+                )
+            )
+            for policy in POLICIES
+        }
+        reference_fact = _resolve_judge_reference(
+            dataset,
+            prompt,
+            instance_dir=instance_dir,
+        )
+        judge_input = build_dialogue_judge_input(
+            prompt_id=prompt.prompt_id,
+            category=prompt.category,
+            question=prompt.text,
+            expected_behavior=prompt.expected_memory_behavior,
+            reference_fact=reference_fact,
+            expected_terms=list(prompt.expected_terms),
+            review_point=prompt.review_point,
+            answers=answers,
+        )
+        fingerprints = combined_judge_fingerprint(
+            judge_config,
+            task="dialogue_ab",
+            input_payload=judge_input,
+        )
+        artifact_path = _judgment_path(workspace, prompt.prompt_id)
+        cached = _load_cached_judgment(artifact_path, fingerprints)
+        if cached is not None:
+            judgments.append(cached)
+            _emit_progress(
+                95.0 + 4.0 * index / total,
+                "judge",
+                f"{prompt.prompt_id} ({index}/{total}) cached",
+            )
+            continue
+
+        try:
+            missing = [
+                policy
+                for policy in POLICIES
+                if (policy, prompt.prompt_id) not in by_key
+            ]
+            if missing:
+                raise SemanticJudgeError(
+                    f"missing A/B responses for policies: {missing}"
+                )
+            if prompt.category == "memory_required" and not reference_fact:
+                raise SemanticJudgeError(
+                    "authoritative reference is unavailable for a "
+                    "memory_required prompt"
+                )
+            if judge_error is not None:
+                raise judge_error
+            if judge is None:  # type narrowing for static readers
+                raise SemanticJudgeError("judge provider is unavailable")
+            judgment = judge_dialogue_pair(
+                judge,
+                prompt_id=prompt.prompt_id,
+                category=prompt.category,
+                question=prompt.text,
+                expected_behavior=prompt.expected_memory_behavior,
+                reference_fact=reference_fact,
+                expected_terms=list(prompt.expected_terms),
+                review_point=prompt.review_point,
+                answers=answers,
+            )
+        except Exception as exc:
+            judgment = _judge_error_artifact(
+                prompt=prompt,
+                judge_config=judge_config,
+                fingerprints=fingerprints,
+                exc=exc,
+            )
+            logger.warning(
+                "semantic judge failed for %s: %s", prompt.prompt_id, exc
+            )
+        write_json(artifact_path, judgment)
+        judgments.append(judgment)
+        _emit_progress(
+            95.0 + 4.0 * index / total,
+            "judge",
+            f"{prompt.prompt_id} ({index}/{total}) {judgment['status']}",
+        )
+    return judgments
+
+
+def _resolve_judge_reference(
+    dataset: DialogueDataset,
+    prompt: DialoguePrompt,
+    *,
+    instance_dir: Path,
+) -> Optional[str]:
+    """Resolve the smallest authoritative memory excerpt for one prompt."""
+    if prompt.source_fact:
+        return prompt.source_fact
+
+    seed_by_id = {seed.seed_id: seed for seed in dataset.memory_seed}
+    seed_parts = []
+    for target_id in prompt.target_memory_ids:
+        seed = seed_by_id.get(target_id)
+        if seed is None:
+            continue
+        seed_parts.append(
+            f"[{target_id}] ユーザー: {seed.user}\n"
+            f"アシスタント: {seed.assistant}"
+        )
+    if seed_parts:
+        return "\n\n".join(seed_parts)
+
+    card_parts = _load_target_card_facts(
+        instance_dir / "butly_memory.db",
+        prompt.target_memory_ids,
+    )
+    return "\n\n".join(card_parts) if card_parts else None
+
+
+def _load_target_card_facts(
+    database_path: Path,
+    card_ids: tuple[str, ...],
+) -> list[str]:
+    if not card_ids or not database_path.is_file():
+        return []
+    placeholders = ",".join("?" for _ in card_ids)
+    try:
+        with sqlite3.connect(database_path) as connection:
+            rows = connection.execute(
+                "SELECT id, title, summary, episode FROM knowledge_cards "
+                f"WHERE id IN ({placeholders})",
+                tuple(card_ids),
+            ).fetchall()
+    except sqlite3.Error:
+        logger.exception("failed to load target cards for semantic judge")
+        return []
+    by_id = {str(row[0]): row for row in rows}
+    facts = []
+    for card_id in card_ids:
+        row = by_id.get(card_id)
+        if row is None:
+            continue
+        fields = [
+            f"[{card_id}] {row[1] or ''}".strip(),
+            str(row[2] or "").strip(),
+            str(row[3] or "").strip(),
+        ]
+        facts.append("\n".join(item for item in fields if item)[:6000])
+    return facts
+
+
+def _judgment_path(
+    workspace: EvaluationWorkspace,
+    prompt_id: str,
+) -> Path:
+    return (
+        workspace.results_dir
+        / "dialogue_ab_judge"
+        / f"{safe_artifact_name(prompt_id)}.json"
+    )
+
+
+def _load_cached_judgment(
+    path: Path,
+    fingerprints: dict[str, str],
+) -> Optional[dict[str, Any]]:
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.exception("failed to read semantic judge cache: %s", path)
+        return None
+    if not isinstance(payload, dict) or payload.get("status") != "complete":
+        return None
+    if any(payload.get(key) != value for key, value in fingerprints.items()):
+        return None
+    if not isinstance(payload.get("arms"), dict) or len(
+        payload.get("passes") or []
+    ) != 2:
+        return None
+    return payload
+
+
+def _judge_error_artifact(
+    *,
+    prompt: DialoguePrompt,
+    judge_config: JudgeConfig,
+    fingerprints: dict[str, str],
+    exc: Exception,
+) -> dict[str, Any]:
+    raw_response = getattr(exc, "raw_response", None)
+    return {
+        "schema_version": JUDGE_SCHEMA_VERSION,
+        "prompt_version": JUDGE_PROMPT_VERSION,
+        **fingerprints,
+        "status": "error",
+        "prompt_id": prompt.prompt_id,
+        "category": prompt.category,
+        "model": judge_config.public_dict(),
+        "error": {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "raw_response": (
+                raw_response[:4000]
+                if isinstance(raw_response, str)
+                else None
+            ),
+            "token_usage": getattr(exc, "token_usage", None),
+            "completion_metadata": getattr(
+                exc, "completion_metadata", None
+            ),
+        },
+    }
+
+
+def _load_judgments(workspace: EvaluationWorkspace) -> list[dict[str, Any]]:
+    judgments = []
+    root = workspace.results_dir / "dialogue_ab_judge"
+    for path in sorted(root.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.exception("failed to read semantic judgment: %s", path)
+            continue
+        if isinstance(payload, dict):
+            judgments.append(payload)
+    return judgments
+
+
 def build_dialogue_scores(
     dataset: DialogueDataset,
     results: list[dict[str, Any]],
     *,
     run_id: str,
     knowledge_cards: int,
+    judgments: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Aggregate automatic proxies while retaining responses for human review."""
     by_policy: dict[str, list[dict[str, Any]]] = {
@@ -868,6 +1420,11 @@ def build_dialogue_scores(
         policy: _summarize_policy(items)
         for policy, items in by_policy.items()
     }
+    judgment_by_prompt = {
+        str(item.get("prompt_id")): item
+        for item in (judgments or [])
+        if item.get("prompt_id")
+    }
     prompts = []
     for prompt in dataset.prompts:
         arms = {
@@ -882,6 +1439,7 @@ def build_dialogue_scores(
                 "category": prompt.category,
                 "prompt": prompt.text,
                 "expected_memory_behavior": prompt.expected_memory_behavior,
+                "source_fact": prompt.source_fact,
                 "review_point": prompt.review_point,
                 "prompt_tokens_delta": _numeric_delta(
                     candidate.get("prompt_tokens"),
@@ -897,11 +1455,16 @@ def build_dialogue_scores(
                     else None
                 ),
                 "arms": arms,
+                **(
+                    {"judgment": judgment_by_prompt[prompt.prompt_id]}
+                    if prompt.prompt_id in judgment_by_prompt
+                    else {}
+                ),
             }
         )
     baseline_summary = policy_scores["intent_gated"]
     candidate_summary = policy_scores["candidates"]
-    return {
+    scores = {
         "schema_version": 1,
         "run_type": "dialogue_ab",
         "run_id": run_id,
@@ -934,6 +1497,67 @@ def build_dialogue_scores(
         },
         "prompts": prompts,
     }
+    if judgments is not None:
+        scores["semantic_judge"] = summarize_dialogue_judgments(
+            judgments,
+            expected_prompt_count=len(dataset.prompts),
+        )
+    return scores
+
+
+def _merge_dialogue_judgments(
+    scores: dict[str, Any],
+    judgments: list[dict[str, Any]],
+    *,
+    expected_prompt_count: int,
+) -> dict[str, Any]:
+    """Add post-hoc judgments without rebuilding an existing aggregate.
+
+    Older runs may contain proxy metrics or extension fields that the current
+    aggregator does not know about.  A semantic re-evaluation must therefore
+    update only its own auxiliary fields and leave the original timestamp,
+    automatic metrics, and unknown data untouched.
+    """
+    prompts = scores.get("prompts")
+    if not isinstance(prompts, list):
+        raise DialogueABError(
+            "scores.json prompts must be an array for post-hoc judging"
+        )
+
+    judgment_by_prompt = {
+        str(item.get("prompt_id")): item
+        for item in judgments
+        if isinstance(item, dict) and item.get("prompt_id")
+    }
+    merged_prompts: list[Any] = []
+    found_prompt_ids: set[str] = set()
+    for prompt in prompts:
+        if not isinstance(prompt, dict):
+            merged_prompts.append(prompt)
+            continue
+        prompt_id = str(prompt.get("prompt_id") or "")
+        judgment = judgment_by_prompt.get(prompt_id)
+        if judgment is None:
+            merged_prompts.append(prompt)
+            continue
+        found_prompt_ids.add(prompt_id)
+        merged_prompts.append({**prompt, "judgment": judgment})
+
+    missing = sorted(set(judgment_by_prompt) - found_prompt_ids)
+    if missing:
+        raise DialogueABError(
+            "scores.json is missing prompts required by semantic judge: "
+            + ", ".join(missing)
+        )
+
+    return {
+        **scores,
+        "prompts": merged_prompts,
+        "semantic_judge": summarize_dialogue_judgments(
+            judgments,
+            expected_prompt_count=expected_prompt_count,
+        ),
+    }
 
 
 def _summarize_policy(items: list[dict[str, Any]]) -> dict[str, Any]:
@@ -953,6 +1577,13 @@ def _summarize_policy(items: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "search_execution_rate": _rate(
             bool(item.get("search_executed")) for item in items
+        ),
+        "retrieval_query_rate": _rate(
+            bool(item.get("retrieval_query")) for item in items
+        ),
+        "dual_query_execution_rate": _rate(
+            bool((item.get("query_fusion") or {}).get("executed"))
+            for item in items
         ),
         "prompt_tokens_total": _sum_numeric(
             item.get("prompt_tokens") for item in items
@@ -1234,9 +1865,81 @@ def _build_parser() -> argparse.ArgumentParser:
         default=3,
         help="candidates armのQuick Retrieval候補上限",
     )
+    _add_judge_arguments(run_parser)
     resume_parser = subparsers.add_parser("resume")
     resume_parser.add_argument("--run-dir", type=Path, required=True)
+    judge_parser = subparsers.add_parser(
+        "judge",
+        help="Judge an existing dialogue A/B run without replaying QA",
+    )
+    judge_parser.add_argument("--run-dir", type=Path, required=True)
+    _add_judge_arguments(judge_parser)
     return parser
+
+
+def _add_judge_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--judge-connection",
+        help="Evaluation-only judge Connection ID",
+    )
+    parser.add_argument(
+        "--judge-model-name",
+        help="Evaluation-only semantic judge model",
+    )
+    parser.add_argument(
+        "--judge-max-output-tokens",
+        type=int,
+        help="Judge output limit (default: profile/saved value or 2048)",
+    )
+
+
+def _judge_config_from_args(
+    args: argparse.Namespace,
+    *,
+    fallback: Optional[JudgeConfig] = None,
+) -> Optional[JudgeConfig]:
+    model_name = str(getattr(args, "judge_model_name", None) or "").strip()
+    connection_arg = str(
+        getattr(args, "judge_connection", None) or ""
+    ).strip()
+    max_tokens_arg = getattr(args, "judge_max_output_tokens", None)
+    if not model_name:
+        if connection_arg or max_tokens_arg is not None:
+            if fallback is None:
+                raise DialogueABError(
+                    "--judge-connection/--judge-max-output-tokens require "
+                    "--judge-model-name when no saved judge exists"
+                )
+        else:
+            return fallback
+    base = fallback.public_dict() if fallback is not None else {}
+    if (
+        model_name
+        and fallback is not None
+        and model_name != fallback.model_name
+        and not connection_arg
+    ):
+        # A connection belongs to a model selection, not to the run forever.
+        # Dropping it lets the normal model-prefix resolver choose a built-in
+        # provider.  Custom model names must provide their connection anew.
+        base.pop("connection", None)
+    generation = dict(base.get("generation_config") or {})
+    if max_tokens_arg is not None:
+        generation["max_output_tokens"] = max_tokens_arg
+    payload = {
+        "model_name": model_name or base.get("model_name"),
+        "connection": connection_arg or base.get("connection"),
+        "generation_config": generation,
+    }
+    config = JudgeConfig.from_mapping(payload)
+    if config is not None and not config.connection:
+        from butly_core.llm.model_registry import normalize_model_ref
+
+        try:
+            normalize_model_ref(config.provider_config())
+        except ValueError as exc:
+            raise DialogueABError(str(exc)) from exc
+    return config
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -1251,8 +1954,25 @@ def main(argv: Optional[list[str]] = None) -> int:
             reembed=args.reembed,
             intent_gated_search_limit=args.intent_gated_search_limit,
             candidates_search_limit=args.candidates_search_limit,
+            judge_config=_judge_config_from_args(args),
         )
         asyncio.run(run_dialogue_ab(config))
+        return 0
+    if args.command == "judge":
+        saved_config = None
+        try:
+            workspace = EvaluationWorkspace.open(args.run_dir)
+            payload = _read_json(workspace.run_config_path)
+            saved_config = JudgeConfig.from_mapping(payload.get("judge"))
+        except DialogueABError:
+            raise
+        judge_config = _judge_config_from_args(args, fallback=saved_config)
+        asyncio.run(
+            judge_dialogue_ab_run(
+                args.run_dir,
+                judge_config=judge_config,
+            )
+        )
         return 0
     asyncio.run(resume_dialogue_ab(args.run_dir))
     return 0

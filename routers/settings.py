@@ -92,7 +92,7 @@ def _discover_connection_models(conn) -> list[str]:
                 data = json.loads(response.read())
             models = [
                 item.get("id")
-                for item in (data.get("data") or [])[:200]
+                for item in (data.get("data") or [])
                 if isinstance(item, dict) and item.get("id")
             ]
             return list(dict.fromkeys(models))
@@ -797,7 +797,7 @@ def test_connection(connection_id: str = Body(..., embed=True)):
             mid = m.get("id") if isinstance(m, dict) else None
             if mid:
                 models.append(mid)
-        return {"status": "ok", "models": models[:200]}
+        return {"status": "ok", "models": models}
     except Exception as e:
         return {"status": "error", "message": str(e), "models": []}
 

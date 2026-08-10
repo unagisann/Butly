@@ -183,18 +183,113 @@ override `bm25_candidates` / `vector_candidates` / `rrf_k` / `bm25_weights` /
 `score` is the **RRF score** and cosine moves to `vector_score`; each candidate
 also carries `retrieval_source` (vector/bm25/both) and both ranks.
 
+### Gatekeeper dual-query retrieval (`brain.search_mode: dual_query`)
+
+`dual_query` independently vector-searches the original utterance and the
+standalone `retrieval_query` emitted in the same Gatekeeper classification.
+By default it deduplicates each top 15 by card ID, equally RRF-fuses them
+(`rrf_k: 60`), retains at most 25 diagnostic candidates, and returns only the
+normal top three requested by MemoryProbe. The rewrite resolves pronouns or
+omitted subjects from recent history while preserving names, dates, negation,
+and relationships. A missing, invalid, or unchanged query skips the second
+embedding and exactly falls back to the original vector order.
+
+The controls are `dual_query_candidates` (15), `dual_query_pool_limit` (25),
+and `rrf_k`. No additional generative call is needed during normal QA because
+the existing Gatekeeper response owns the extra field. `retrieval_source`
+continues to mean vector/BM25 evidence; query overlap is recorded separately
+as `query_source` and per-query ranks.
+
 The run-history section has an "offline retrieval replay" panel
-(`POST /evaluations/runs/retrieval-replay`) that compares Recall@1/3/20 for
-`bm25` / `vector` / `hybrid` without generating answers; the result is also
-written to `retrieval_replay.json` inside the run. `bm25` needs no embedding
-calls; `vector` / `hybrid` call the embedding model once per question.
+that starts a persistent job through
+`POST /evaluations/runs/retrieval-replay/jobs` (the previous synchronous
+endpoint remains for compatibility). It compares Recall@1/3/20 for `bm25` /
+`vector` / `hybrid` / `dual_query` / `reranked` / `evidence_rerank` without
+generating answers. Percentage,
+current mode/question ID, and recent logs refresh every two seconds; work
+continues after leaving the page and can be stopped or rerun with the same
+settings. The same panel displays aggregates and per-question
+rescue/harm/fallback, candidate order, raw scores, and errors after completion.
+The result is also written to `retrieval_replay.json` inside the run. `bm25`
+needs no embedding calls; `vector` / `hybrid` call the embedding model once per
+question. `dual_query` reuses a QA-time saved query and calls embeddings twice;
+for an old run without one, it also calls the source Gatekeeper once per
+problem. `reranked` additionally batch-scores the selected candidate
+pool. Per-question `details` retain the question, evidence, original vector
+order, actually selected zero-to-three cards, all raw scores, and errors for
+threshold calibration and rescue/harm review.
+
+`evidence_rerank` is an evaluation-only two-stage retrieval mode. It takes the
+vector top N (20 by default) from the existing Title / Tags / Summary card
+embedding, embeds each candidate's Episode and linked RAW conversation in the
+same space, and selects the top three by each card's maximum evidence cosine
+(MaxP). RAW is split into 1,800-character chunks with 180-character overlap;
+only legacy cards with neither Episode nor RAW fall back to Summary. Document
+embeddings are prepared once and cached together with question embeddings in
+`retrieval_cache/evidence_embeddings.sqlite3`. Cache keys include model,
+profile, query/document prefixes, and text hash, so configuration or text
+changes cannot silently reuse an old vector. A single cached question vector
+is shared by the Summary search and evidence scoring, avoiding a duplicate
+embedding call. The cache contains hashes and vectors only, and the source
+instance database, cards, and RAW files are not changed.
+
+A remote Embedding Connection receives Episode and RAW text as normal embedding
+input. Its API key is used only for Connection authentication and is not stored
+in the cache or artifacts. For problem-level review,
+`retrieval_replay.json` does retain a preview of up to 600 characters for each
+selected evidence unit. Aggregates and the UI separate document-indexing
+progress, cache hits/misses/writes, completion/fallback, added latency, and
+top-three rescue/harm relative to the original vector order.
 
 The Web Console exposes `search_mode` / `retrieval_execution` /
-`injection_policy` under "検索設定（ハイブリッド検索 A/B）"; `hybrid` additionally
+`injection_policy` under "検索設定（Dual Query / Hybrid / Reranker）"; `hybrid` additionally
 reveals `bm25_candidates` / `vector_candidates` / `rrf_k` /
 `bm25_max_df_ratio`. Those land in the profile YAML's `brain` and
 `memory_probe` sections (BM25 keys are omitted from `vector` runs), and the run
 history / comparison tables gain `search_exec`, `recall@3`, and `bm25_rescue`.
+`dual_query` writes its candidates-per-query, pool cap, and RRF k; history and
+comparison surfaces include query generation, original/rewrite Recall@3, and
+top-three rescue/harm.
+
+### Memory reranker (`reranker`)
+
+An optional `reranker` profile section takes the top vector candidates
+(20 by default), reorders them, and injects at most three through the normal
+RAG path. The recommended non-generative `cross_encoder` path batch-scores each
+question/card pair using bounded `title`, `summary`, `episode`, and
+`source_date` text.
+
+The reviewed multilingual presets are
+`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` and
+`Alibaba-NLP/gte-multilingual-reranker-base`. Install their optional runtime
+with `pip install -r requirements-reranker.txt`; models load on first use and
+are cached in-process. When `score_threshold` is set, the reranker may select
+zero cards and suppresses the Deep Search bypass. Raw scores are not portable
+probabilities, so calibrate a threshold per model through offline replay.
+
+```yaml
+reranker:
+  enabled: true
+  engine: cross_encoder
+  model_name: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
+  candidate_limit: 20
+  max_candidate_chars: 1600
+  batch_size: 20
+  device: auto
+  score_threshold: null
+```
+
+The legacy `llm` engine remains available for reproducible comparisons. It
+sends opaque, untrusted candidate JSON to a Connection and requires strict
+JSON Schema plus local validation. Either engine falls back to the untouched
+vector order on runtime errors.
+
+Version 1 supports `search_mode: vector` only; Web/API validation rejects a
+Hybrid/Dual-Query+reranker combination. Omitting or disabling the section preserves the
+previous behavior, and normal production instances can use the same optional
+section. Diagnostics retain the original `vector_candidate_ids`, the final
+`effective_candidate_ids`, engine, completion/fallback state, added latency,
+and LLM usage when applicable.
 
 Retrieval execution and prompt injection are controlled independently by
 `memory_probe.retrieval_execution` (default `always`) and
@@ -213,6 +308,9 @@ Retrieval metrics emitted by the scorer:
 | `retrieval_recall_at_1/3/20` | questions with an oracle card | evidence-turn coverage of the top-k candidates |
 | `vector_only_recall_at_3` | same | control value with BM25 removed |
 | `bm25_rescue_rate` | same | share where fused top-3 beat vector-only top-3 |
+| `reranker_completion_rate` / `reranker_fallback_rate` | reranker attempts | share with valid structured output / share restored to vector order |
+| `reranker_rescue_rate_at_3` / `reranker_harm_rate_at_3` | completed reranks with oracle cards | share where effective top-3 improved / degraded vector top-3 |
+| `reranker_latency_ms_p50/p95` | reranker attempts | added reranker-only latency |
 | `retrieval_latency_ms_p50/p95` | executed questions | retrieval-only latency (includes the embedding call) |
 | `bm25_short_term_hit_rate` | executed questions | share where the 2-char CJK LIKE fallback contributed |
 

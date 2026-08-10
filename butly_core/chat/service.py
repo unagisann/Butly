@@ -246,7 +246,9 @@ def _build_rag_debug(
         for result in rag_raw
     ]
     return {
-        "query": gk_result.get("need"),
+        "query": gk_result.get("original_query"),
+        "original_query": gk_result.get("original_query"),
+        "retrieval_query": gk_result.get("retrieval_query"),
         "results": results,
         # 検索の実行/候補/注入判定（計画書 §3.7）。注入されなかった検索も
         # ここに残るので、search_execution と memory_injection を分けて測れる。
@@ -1165,6 +1167,10 @@ class ChatService:
                 "scores": gk_result.get("llm_scoring"),
                 "need": gk_result.get("need"),
                 "need_intent": gk_result.get("need_intent"),
+                "retrieval_query": gk_result.get("retrieval_query"),
+                "retrieval_query_status": gk_result.get(
+                    "retrieval_query_status"
+                ),
                 "classifier_status": gk_result.get("classifier_status"),
                 "fallback_reason": gk_result.get("fallback_reason"),
                 "original_need_intent": gk_result.get("original_need_intent"),
@@ -1339,6 +1345,10 @@ class ChatService:
                 "tier": tier,
                 "need": gk_result.get("need"),
                 "need_intent": gk_result.get("need_intent"),
+                "retrieval_query": gk_result.get("retrieval_query"),
+                "retrieval_query_status": gk_result.get(
+                    "retrieval_query_status"
+                ),
                 "search_targets": gk_result.get("search_targets"),
                 "scores": gk_result.get("llm_scoring"),
                 "memory_probe_status": gk_result.get("memory_probe", {}).get("status"),
@@ -1514,6 +1524,10 @@ class ChatService:
                 "scores": gk_result.get("llm_scoring"),
                 "need": gk_result.get("need"),
                 "need_intent": gk_result.get("need_intent"),
+                "retrieval_query": gk_result.get("retrieval_query"),
+                "retrieval_query_status": gk_result.get(
+                    "retrieval_query_status"
+                ),
                 "classifier_status": gk_result.get("classifier_status"),
                 "fallback_reason": gk_result.get("fallback_reason"),
                 "original_need_intent": gk_result.get("original_need_intent"),

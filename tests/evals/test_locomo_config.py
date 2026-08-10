@@ -101,6 +101,113 @@ def test_load_profile_returns_typed_locale_only_profile(tmp_path):
     assert profile.name == "japanese"
     assert profile.locale == "ja"
     assert profile.sections == {}
+    assert profile.judge is None
+
+
+def test_load_profile_keeps_judge_out_of_instance_sections(tmp_path):
+    path = tmp_path / "judge.yaml"
+    path.write_text(
+        "judge:\n"
+        "  connection: nanogpt\n"
+        "  model_name: TEE/gemma4-31b\n"
+        "  generation_config:\n"
+        "    max_output_tokens: 4096\n",
+        encoding="utf-8",
+    )
+
+    profile = load_profile(path)
+
+    assert profile.sections == {}
+    assert profile.judge == {
+        "connection": "nanogpt",
+        "model_name": "TEE/gemma4-31b",
+        "generation_config": {"max_output_tokens": 4096},
+    }
+
+
+def test_load_profile_normalizes_runtime_reranker_section(tmp_path):
+    path = tmp_path / "reranker.yaml"
+    path.write_text(
+        "reranker:\n"
+        "  connection: nanogpt-sub\n"
+        "  model_name: TEE/gemma4-31b\n"
+        "  candidate_limit: 20\n"
+        "  max_candidate_chars: 1200\n"
+        "  generation_config:\n"
+        "    temperature: 0.9\n"
+        "    max_output_tokens: 4096\n",
+        encoding="utf-8",
+    )
+
+    profile = load_profile(path)
+
+    assert profile.sections["reranker"] == {
+        "enabled": True,
+        "connection": "nanogpt-sub",
+        "model_name": "TEE/gemma4-31b",
+        "candidate_limit": 20,
+        "max_candidate_chars": 1200,
+        "generation_config": {
+            "temperature": 0.0,
+            "max_output_tokens": 4096,
+        },
+    }
+
+
+def test_load_profile_accepts_reviewed_cross_encoder_reranker(tmp_path):
+    path = tmp_path / "cross-encoder.yaml"
+    path.write_text(
+        "reranker:\n"
+        "  engine: cross_encoder\n"
+        "  model_name: mminilmv2\n"
+        "  candidate_limit: 20\n"
+        "  batch_size: 8\n"
+        "  score_threshold: -0.2\n"
+        "  device: cpu\n",
+        encoding="utf-8",
+    )
+
+    profile = load_profile(path)
+
+    assert profile.sections["reranker"] == {
+        "enabled": True,
+        "engine": "cross_encoder",
+        "model_name": "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1",
+        "model_revision": "9b8bd7b40e70f84c2444fa0f6545773ad74c2fa6",
+        "candidate_limit": 20,
+        "max_candidate_chars": 1600,
+        "batch_size": 8,
+        "score_threshold": -0.2,
+        "device": "cpu",
+    }
+
+
+@pytest.mark.parametrize(
+    "yaml_text",
+    [
+        "judge: []\n",
+        "judge: {}\n",
+        "judge:\n  model_name: ''\n",
+        "judge:\n  model_name: judge\n  generation_config: []\n",
+    ],
+)
+def test_load_profile_rejects_invalid_judge_section(tmp_path, yaml_text):
+    path = tmp_path / "bad-judge.yaml"
+    path.write_text(yaml_text, encoding="utf-8")
+
+    with pytest.raises(ProfileError, match="judge"):
+        load_profile(path)
+
+
+def test_load_profile_requires_connection_for_custom_judge_model(tmp_path):
+    path = tmp_path / "custom-judge.yaml"
+    path.write_text(
+        "judge:\n  model_name: gemma-custom-31b\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProfileError, match="Cannot infer connection"):
+        load_profile(path)
 
 
 def test_load_profile_rejects_unknown_locale(tmp_path):

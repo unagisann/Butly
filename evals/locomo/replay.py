@@ -74,7 +74,7 @@ async def run_evaluation(
         clean=config.clean,
     )
     workspace.assert_isolated()
-    _write_run_metadata(workspace, config, conversations)
+    _write_run_metadata(workspace, config, conversations, profile)
     checkpoint = Checkpoint.create(workspace.run_id, workspace.checkpoints_dir)
     return await _execute(
         workspace,
@@ -227,7 +227,7 @@ async def rerun_qa_from_memory(
         clean=False,
     )
     workspace.assert_isolated()
-    _write_run_metadata(workspace, config, conversations)
+    _write_run_metadata(workspace, config, conversations, profile)
     run_payload = json.loads(
         workspace.run_config_path.read_text(encoding="utf-8")
     )
@@ -1209,13 +1209,25 @@ def _write_run_metadata(
     workspace: EvaluationWorkspace,
     config: ReplayConfig,
     conversations: list[LocomoConversation],
+    profile: Optional[EvaluationProfile] = None,
 ) -> None:
+    judge = None
+    if profile is not None and profile.judge is not None:
+        from evals.semantic_judge import JudgeConfig
+
+        resolved_judge = JudgeConfig.from_mapping(profile.judge)
+        if resolved_judge is not None:
+            judge = {
+                **resolved_judge.public_dict(),
+                "config_signature": resolved_judge.signature(),
+            }
     workspace.write_run_config(
         {
             "schema_version": 2,
             "created_at": datetime.now(timezone.utc).isoformat(),
             **config.to_json_dict(),
             "qa_prompt_version": LOCOMO_QA_PROMPT_VERSION,
+            "judge": judge,
             "selected_sample_ids": [item.sample_id for item in conversations],
         }
     )
