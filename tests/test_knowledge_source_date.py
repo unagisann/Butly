@@ -85,6 +85,39 @@ class TestQuickVectorSearchErrorPath:
 
 
 class TestQuickVectorSearchCandidateScope:
+    def test_accepts_precomputed_query_embedding(self, tmp_path, monkeypatch):
+        db_path = _make_instance_db(tmp_path)
+        stored = np.array([1.0, 0.0], dtype=np.float32).tobytes()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                """
+                INSERT INTO knowledge_cards (
+                    id, category, title, summary, embedding_blob
+                ) VALUES ('match', 'Life', 'match', 's', ?)
+                """,
+                (stored,),
+            )
+
+        brain = ButlyBrain(tmp_path)
+        monkeypatch.setattr(
+            brain,
+            "get_embedding",
+            lambda *_args, **_kwargs: pytest.fail(
+                "precomputed query must avoid another embedding call"
+            ),
+        )
+
+        result = brain.quick_vector_search_diag(
+            "query",
+            "test_inst",
+            limit=1,
+            threshold=0.9,
+            override_config={"brain": {"time_decay_rate": 0.0}},
+            query_embedding=np.array([1.0, 0.0], dtype=np.float32),
+        )
+
+        assert [item["id"] for item in result["results"]] == ["match"]
+
     def test_scores_older_card_outside_keyword_fallback_limit(
         self,
         tmp_path,

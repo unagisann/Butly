@@ -311,6 +311,7 @@ class ButlyBrain:
         limit: int = 3,
         threshold: float = 0.6,
         override_config: dict = None,
+        retrieval_query: str = None,
     ) -> list:
         """既存 API: 結果リストのみを返す (後方互換)。"""
         return self.quick_vector_search_diag(
@@ -319,6 +320,7 @@ class ButlyBrain:
             limit,
             threshold,
             override_config,
+            retrieval_query,
         )["results"]
 
     def quick_vector_search_diag(
@@ -328,9 +330,14 @@ class ButlyBrain:
         limit: int = 3,
         threshold: float = 0.6,
         override_config: dict = None,
+        retrieval_query: str = None,
+        query_embedding=None,
     ) -> dict:
         """
         診断情報付きベクトル検索。
+
+        ``query_embedding``はoffline二段検索が同じ質問vectorを再利用するための
+        任意入力。未指定時の本番経路は従来どおり内部でembeddingする。
         Returns:
             {
                 "results": [...],
@@ -353,8 +360,31 @@ class ButlyBrain:
 
         target_instances = self._resolve_target_instances(instance_name, brain_conf)
 
+        if brain_conf.get("search_mode") == "dual_query":
+            output = self._dual_query_search_diag(
+                user_input,
+                retrieval_query,
+                target_instances,
+                limit=limit,
+                threshold=threshold,
+                brain_conf=brain_conf,
+                embedding_conf=embedding_conf,
+            )
+            raw_reranker = (override_config or {}).get("reranker")
+            if raw_reranker and not (
+                isinstance(raw_reranker, dict)
+                and raw_reranker.get("enabled") is False
+            ):
+                output["diagnostics"]["reranker"] = {
+                    "enabled": True,
+                    "status": "unsupported",
+                    "fallback": True,
+                    "error": "reranker currently supports vector search only",
+                }
+            return output
+
         if brain_conf.get("search_mode") == "hybrid":
-            return self._hybrid_search_diag(
+            output = self._hybrid_search_diag(
                 user_input,
                 target_instances,
                 limit=limit,
@@ -362,11 +392,42 @@ class ButlyBrain:
                 brain_conf=brain_conf,
                 embedding_conf=embedding_conf,
             )
+            raw_reranker = (override_config or {}).get("reranker")
+            if raw_reranker and not (
+                isinstance(raw_reranker, dict)
+                and raw_reranker.get("enabled") is False
+            ):
+                diagnostics = output["diagnostics"]
+                diagnostics["effective_candidate_ids"] = list(
+                    diagnostics.get("fused_candidate_ids") or []
+                )
+                diagnostics["reranker"] = {
+                    "enabled": True,
+                    "status": "unsupported",
+                    "fallback": True,
+                    "error": "reranker currently supports vector search only",
+                }
+            return output
 
         t0 = time.time()
         # 上位 limit 件だけを返す一方、A/B とリコール計測のために候補列
         # （hybrid 側の vector_candidates と同じ深さ）まで順位を残す
-        candidate_limit = max(limit, int(brain_conf.get("vector_candidates", 20)))
+        reranker_config = None
+        reranker_config_error = None
+        try:
+            from butly_core.core.reranker import RerankerConfig
+
+            reranker_config = RerankerConfig.from_mapping(
+                (override_config or {}).get("reranker")
+            )
+        except Exception as exc:
+            reranker_config_error = str(exc)
+        if reranker_config is not None:
+            candidate_limit = max(limit, reranker_config.candidate_limit)
+        else:
+            candidate_limit = max(
+                limit, int(brain_conf.get("vector_candidates", 20))
+            )
         all_results = []
         all_raw_scores: list = []
         all_final_scores: list = []
@@ -379,6 +440,7 @@ class ButlyBrain:
                 threshold,
                 brain_conf,
                 embedding_conf,
+                query_embedding=query_embedding,
             )
             # usage_count 用に source_instance を付与（複数 instance 横断時の DB 振り分けに使う）
             for r in single["results"]:
@@ -390,7 +452,73 @@ class ButlyBrain:
 
         all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
         candidates = all_results[:candidate_limit]
-        top = candidates[:limit]
+        effective_candidates = candidates
+        effective_limit = min(limit, len(candidates))
+        reranker_diag = None
+        if reranker_config_error is not None:
+            reranker_diag = {
+                "enabled": True,
+                "status": "error",
+                "fallback": True,
+                "error": reranker_config_error,
+            }
+        elif reranker_config is not None:
+            reranker_diag = {
+                "enabled": True,
+                "status": "error",
+                "fallback": True,
+                "engine": reranker_config.engine,
+                "model_name": reranker_config.model_name,
+                "connection": reranker_config.connection,
+                "score_threshold": reranker_config.score_threshold,
+                "candidate_count": len(candidates),
+                "selected_count": 0,
+            }
+            if not candidates:
+                reranker_diag.update(
+                    {
+                        "status": "skipped",
+                        "fallback": False,
+                        "reason": "no_candidates",
+                        "latency_ms": 0,
+                    }
+                )
+            else:
+                try:
+                    reranker = self._get_reranker(reranker_config)
+                    reranked = reranker.rerank(
+                        user_input,
+                        candidates,
+                        top_n=min(limit, len(candidates)),
+                    )
+                    effective_candidates = reranked["results"]
+                    effective_limit = len(reranked["selected_ids"])
+                    reranker_diag.update(
+                        {
+                            "status": "completed",
+                            "fallback": False,
+                            "selected_count": len(reranked["selected_ids"]),
+                            "selected_candidate_ids": reranked["selected_ids"],
+                            "scores": reranked.get("scores") or [],
+                            "latency_ms": reranked["latency_ms"],
+                            "token_usage": reranked["token_usage"],
+                            "completion_metadata": reranked[
+                                "completion_metadata"
+                            ],
+                        }
+                    )
+                except Exception as exc:
+                    reranker_diag.update(
+                        {
+                            "error": str(exc),
+                            "latency_ms": getattr(exc, "latency_ms", None),
+                            "token_usage": getattr(exc, "token_usage", None),
+                            "completion_metadata": getattr(
+                                exc, "completion_metadata", None
+                            ),
+                        }
+                    )
+        top = effective_candidates[:effective_limit]
 
         all_raw_scores.sort(reverse=True)
         all_final_scores.sort(reverse=True)
@@ -411,9 +539,245 @@ class ButlyBrain:
             "vector_candidate_ids": candidate_ids,
             "bm25_candidate_ids": [],
             "fused_candidate_ids": candidate_ids,
+            "effective_candidate_ids": [
+                str(r.get("id")) for r in effective_candidates
+            ],
             "latency_ms": int((time.time() - t0) * 1000),
         }
+        if reranker_diag is not None:
+            diagnostics["reranked_candidate_ids"] = [
+                str(r.get("id")) for r in effective_candidates
+            ]
+            diagnostics["reranker"] = reranker_diag
         return {"results": top, "diagnostics": diagnostics}
+
+    def _get_reranker(self, config):
+        """Create the selected local or provider-backed reranker."""
+        from butly_core.core.reranker import create_reranker
+
+        return create_reranker(config)
+
+    def _dual_query_search_diag(
+        self,
+        original_query: str,
+        retrieval_query: str,
+        target_instances: list[str],
+        *,
+        limit: int,
+        threshold: float,
+        brain_conf: dict,
+        embedding_conf: dict = None,
+    ) -> dict:
+        """Fuse original and Gatekeeper-rewritten vector rankings with RRF.
+
+        The online contract is deliberately bounded: each query contributes at
+        most 15 candidates by default, the deduplicated diagnostic pool retains
+        at most 25, and the caller still receives only its requested top-k
+        (normally three cards for prompt injection).
+        """
+        t0 = time.time()
+        candidate_limit = max(
+            1, int(brain_conf.get("dual_query_candidates", 15))
+        )
+        pool_limit = max(1, int(brain_conf.get("dual_query_pool_limit", 25)))
+        rrf_k = max(1, int(brain_conf.get("rrf_k", 60)))
+
+        original = self._vector_query_candidates(
+            original_query,
+            target_instances,
+            limit=candidate_limit,
+            threshold=threshold,
+            brain_conf=brain_conf,
+            embedding_conf=embedding_conf,
+        )
+        rewritten_text = self._normalize_retrieval_query(retrieval_query)
+        original_normalized = self._normalize_retrieval_query(original_query)
+        rewrite_executed = bool(
+            rewritten_text
+            and rewritten_text.casefold() != original_normalized.casefold()
+        )
+        if rewrite_executed:
+            rewritten = self._vector_query_candidates(
+                rewritten_text,
+                target_instances,
+                limit=candidate_limit,
+                threshold=threshold,
+                brain_conf=brain_conf,
+                embedding_conf=embedding_conf,
+            )
+            fused = self._fuse_dual_query_rankings(
+                original["results"],
+                rewritten["results"],
+                k=rrf_k,
+                limit=pool_limit,
+            )
+            status = "completed"
+            reason = None
+        else:
+            rewritten = {
+                "results": [],
+                "raw_scores": [],
+                "final_scores": [],
+                "fetched_count": 0,
+            }
+            fused = []
+            for rank, row in enumerate(original["results"][:pool_limit], start=1):
+                item = dict(row)
+                item["original_rank"] = rank
+                item["retrieval_query_rank"] = None
+                item["original_vector_score"] = item.get("score")
+                item["retrieval_query_vector_score"] = None
+                item["query_source"] = "original"
+                item["retrieval_source"] = "vector"
+                fused.append(item)
+            status = "fallback"
+            reason = "missing_or_same_query"
+
+        original_ids = [str(row.get("id")) for row in original["results"]]
+        rewritten_ids = [str(row.get("id")) for row in rewritten["results"]]
+        fused_ids = [str(row.get("id")) for row in fused]
+        all_raw_scores = original["raw_scores"] + rewritten["raw_scores"]
+        all_final_scores = original["final_scores"] + rewritten["final_scores"]
+        all_raw_scores.sort(reverse=True)
+        all_final_scores.sort(reverse=True)
+        overlap = len(set(original_ids) & set(rewritten_ids))
+        diagnostics = {
+            "mode": "dual_query",
+            "threshold": float(threshold),
+            "decay_rate": float(brain_conf.get("time_decay_rate", 0.005)),
+            "fetch_limit": None,
+            "fetched_count": (
+                original["fetched_count"] + rewritten["fetched_count"]
+            ),
+            "passed_threshold": len(fused),
+            "top_raw_scores": [round(score, 3) for score in all_raw_scores[:5]],
+            "top_final_scores": [
+                round(score, 3) for score in all_final_scores[:5]
+            ],
+            "target_instances": target_instances,
+            # vector_candidate_ids remains the original-query baseline for old
+            # scorers and vector-only rescue metrics.
+            "vector_candidate_ids": original_ids,
+            "original_candidate_ids": original_ids,
+            "retrieval_query_candidate_ids": rewritten_ids,
+            "bm25_candidate_ids": [],
+            "fused_candidate_ids": fused_ids,
+            "effective_candidate_ids": fused_ids,
+            "retrieval_query": rewritten_text if rewrite_executed else None,
+            "rrf_k": rrf_k,
+            "query_fusion": {
+                "status": status,
+                "reason": reason,
+                "executed": rewrite_executed,
+                "candidate_limit_per_query": candidate_limit,
+                "pool_limit": pool_limit,
+                "original_count": len(original_ids),
+                "retrieval_query_count": len(rewritten_ids),
+                "overlap_count": overlap,
+                "unique_count": len(fused_ids),
+            },
+            "latency_ms": int((time.time() - t0) * 1000),
+        }
+        return {"results": fused[:limit], "diagnostics": diagnostics}
+
+    def _vector_query_candidates(
+        self,
+        query: str,
+        target_instances: list[str],
+        *,
+        limit: int,
+        threshold: float,
+        brain_conf: dict,
+        embedding_conf: dict = None,
+    ) -> dict:
+        """Collect one global vector ranking across readable instances."""
+        rows: list[dict] = []
+        raw_scores: list[float] = []
+        final_scores: list[float] = []
+        fetched_count = 0
+        for instance_name in target_instances:
+            single = self._quick_vector_search_single_diag(
+                query,
+                instance_name,
+                limit,
+                threshold,
+                brain_conf,
+                embedding_conf,
+            )
+            for row in single["results"]:
+                row["source_instance"] = instance_name
+            rows.extend(single["results"])
+            raw_scores.extend(single["raw_scores"])
+            final_scores.extend(single["final_scores"])
+            fetched_count += single["fetched_count"]
+        rows.sort(key=lambda row: row.get("score", 0.0), reverse=True)
+        return {
+            "results": rows[:limit],
+            "raw_scores": raw_scores,
+            "final_scores": final_scores,
+            "fetched_count": fetched_count,
+        }
+
+    @staticmethod
+    def _normalize_retrieval_query(value: str) -> str:
+        if not isinstance(value, str):
+            return ""
+        return " ".join(value.split()).strip()[:500]
+
+    @staticmethod
+    def _fuse_dual_query_rankings(
+        original_rows: list[dict],
+        retrieval_query_rows: list[dict],
+        *,
+        k: int,
+        limit: int,
+    ) -> list[dict]:
+        """Equal-weight RRF for two vector rankings without BM25 semantics."""
+        fused: dict[tuple, dict] = {}
+
+        def merge(rows: list[dict], source: str, rank_field: str) -> None:
+            score_field = f"{source}_vector_score"
+            for rank, row in enumerate(rows, start=1):
+                key = (row.get("source_instance"), row.get("id"))
+                entry = fused.get(key)
+                if entry is None:
+                    entry = dict(row)
+                    entry["rrf_score"] = 0.0
+                    entry["query_source"] = source
+                    entry["retrieval_source"] = "vector"
+                    fused[key] = entry
+                elif entry["query_source"] != source:
+                    entry["query_source"] = "both"
+                entry[rank_field] = rank
+                entry[score_field] = row.get("score")
+                entry["rrf_score"] += 1.0 / (k + rank)
+
+        merge(original_rows, "original", "original_rank")
+        merge(
+            retrieval_query_rows,
+            "retrieval_query",
+            "retrieval_query_rank",
+        )
+        results = list(fused.values())
+        for row in results:
+            row["score"] = row["rrf_score"]
+            row.setdefault("original_rank", None)
+            row.setdefault("retrieval_query_rank", None)
+            row.setdefault("original_vector_score", None)
+            row.setdefault("retrieval_query_vector_score", None)
+        results.sort(
+            key=lambda row: (
+                -row["rrf_score"],
+                min(
+                    row.get("original_rank") or 10**6,
+                    row.get("retrieval_query_rank") or 10**6,
+                ),
+                row.get("original_rank") or 10**6,
+                row.get("retrieval_query_rank") or 10**6,
+                str(row.get("id")),
+            )
+        )
+        return results[:limit]
 
     @staticmethod
     def _resolve_target_instances(instance_name: str, brain_conf: dict) -> list:
@@ -594,6 +958,7 @@ class ButlyBrain:
         threshold: float,
         brain_conf: dict,
         embedding_conf: dict = None,
+        query_embedding=None,
     ) -> dict:
         """単一インスタンスDBに対する純粋ベクトル検索 + 診断情報。
 
@@ -615,8 +980,9 @@ class ButlyBrain:
         if not instance_db_path.exists():
             return empty
 
-        query_embedding = self.get_embedding(user_input, embedding_conf)
-        if not query_embedding:
+        if query_embedding is None:
+            query_embedding = self.get_embedding(user_input, embedding_conf)
+        if query_embedding is None or np.asarray(query_embedding).size == 0:
             return empty
 
         try:

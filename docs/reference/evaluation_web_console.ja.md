@@ -35,9 +35,17 @@ subprocessとして呼ぶ薄い管理層である。Replay、Sleeptime、QA、ch
 - sample / session / questionの全件または上限
 - Current Time / Mid-term / Session Digest / RAGのON/OFF
 - RAG source、RAW top-k、RAW文字数上限、時間減衰
+- 検索方式。既定の`vector`、BM25併用の`hybrid`に加え、
+  `dual_query`では元発話とGatekeeperが作った検索文を各15件検索し、
+  重複排除・RRF融合した最大25件から通常の上位3件を注入する
 - Stage 3 batch size / bootstrap最大カード数
 - chat / gatekeeper / summary / knowledge / embeddingの
   Connection→モデル割り当て
+- 任意のSemantic Judge用Connection→モデルと出力上限
+- 任意のMemory Reranker。推奨のローカルCross-Encoder
+  （mMiniLMv2 / GTE multilingual）または比較用LLM Connectionを選び、候補数
+  （既定20）、候補本文上限、batch size、任意の関連度しきい値を設定する。
+  vector候補を並べ替え、0〜3件を注入する（Hybrid / Dual Queryとは併用不可）
 - Embedding prefix 規約（既定 `auto` = モデル名から推定。
   詳細は [memory_lifecycle.ja.md](memory_lifecycle.ja.md#embedding-プロファイルモデル別の入力規約)）
 - generation temperatureとGatekeeper出力上限
@@ -52,6 +60,44 @@ ConnectionとAPIキーは通常のWeb Console設定を共有する。フォー�
 StreamlitまたはBackendの再起動後も復元できる。重複を避けるため`RUN_ID`だけは
 末尾が`_vNN`なら次番号、それ以外は時刻ベースの候補へ更新する。
 `allow_embedding_mismatch`は危険な承知操作なので引き継がず、runごとにOFFへ戻す。
+
+LoCoMo履歴の「検索だけ比較（offline retrieval replay）」では`dual_query`、
+`reranked`、`evidence_rerank`を選べる。
+回答生成なしで元vector順位とリランク後のRecall@1/3/20、top3のrescue/harm、
+完了／fallback、追加レイテンシ、LLM使用時のトークン量を保存・表示する。
+検索比較は永続ジョブとしてバックグラウンドで動き、進捗率、現在のモード・問題ID、
+直近ログを2秒ごとに更新する。画面を離れても処理は継続し、停止・同条件での再実行も
+可能である。完了後はモード別集計に加え、問題別のrescue/harm/fallback、
+元vector top3、選択top3、raw score、エラーを表示する。ジョブと
+`retrieval_replay.json`はBackend再起動後も復元される。
+本評価フォームでRerankerを有効にしたrunは、同じ処理がQA経路にも入り、公式／
+Semantic Judgeの回答品質と検索指標を同じrunで確認できる。
+
+`evidence_rerank`は評価専用で、既存カードのTitle / Tags / Summary embeddingによる
+vector top N（既定20）を候補集合とし、各候補に紐づくEpisodeとRAW会話チャンクを
+同じembeddingモデルで再採点する。カードごとに最も高い根拠cosine（MaxP）を使って
+並べ替え、top 3を選ぶ。初回は文書embeddingの準備フェーズがあり、ベクトルとhashを
+`retrieval_cache/evidence_embeddings.sqlite3`へ保存する。モデル、prefix、本文hashが
+変われば自動的に別キャッシュになる。質問vectorは一段目と二段目で共有し、同じ質問を
+二重にembeddingしない。元runのinstance DB、カード、RAWファイルは変更しない。
+
+外部Embedding Connectionを選んだ場合、Episode / RAW本文は通常のembedding入力として
+そのConnectionへ送信される。API keyは通常のConnection認証にだけ使い、キャッシュや
+評価成果物には保存しない。SQLiteキャッシュには本文を保存しないが、レビュー用の
+`retrieval_replay.json`には選択された根拠の先頭最大600文字を保存・表示する。
+
+`dual_query`は、元発話top15と検索文top15を等重みRRFで融合し、重複排除後の
+診断プールを最大25件に制限する。検索文は通常のGatekeeper呼び出しのJSONへ
+同時に含めるため、本評価中に生成LLM呼び出しは増えず、embeddingだけが1問2回に
+なる。新しいrunのoffline replayはQA時に保存した検索文を再利用する。検索文を
+保存していない旧runだけは、元runのGatekeeper設定で問題ごとに1回生成する。
+画面にはoriginal／retrieval-query／融合後のRecall@3、top3 rescue/harm、検索文、
+両ランキングと融合候補IDを表示する。
+
+Cross-Encoderは質問と文字数上限を適用した候補カードをBackend内で採点し、外部
+Connectionへ送らない。比較用LLM engineの場合だけ、Reranker Connectionへ現在の
+質問と候補カードのtitle/summary/episode/source_dateを送る。インスタンスDB全体や
+APIキーはprompt・評価artifactへ含めず、APIキーは通常のConnection認証にだけ使う。
 
 ### 日本語対話A/B
 
@@ -93,10 +139,11 @@ System Instruction・digestをそのまま使うため、トークンや持ち�
 
 Webフォームでは検索条件を変更できる。前回のjob requestは次回フォームへ引き継ぐ。
 
-- `search_mode`: `vector` / `hybrid`
+- `search_mode`: `vector` / `hybrid` / `dual_query`
 - `retrieval_execution`: `always` / `intent_gated`
 - `vector_search_threshold`、Deep Searchの有効・無効
 - hybrid時のBM25候補数、ベクトル候補数、RRF k、BM25最大DF比
+- dual_query時の各query候補数（既定15）、融合pool上限（既定25）、RRF k
 - `vector_search_limit`はarm別に指定できる
   （`intent_gated_vector_search_limit` / `candidates_vector_search_limit`）
 
@@ -111,6 +158,12 @@ policyの効果だけを比較するときは両armのlimitを同じにする。
 自動集計はRAG発火率、検索実行率、平均prompt tokens、latency、記憶必須問の
 対象語recall、記憶不要問でのseed固有語の持ち出し率を保存する。後者2つは
 機械的なproxyであり、自然さ・過剰な個人化の最終判断は画面の回答差分で行う。
+
+Semantic Judgeを有効にすると、各プロンプトのA/B表示順を入れ替えて2回判定する。
+事実の逆転、部分正解、不要な記憶持ち出しを意味で判定し、左右順によって
+結果が変わった問は人手確認対象にする。従来の自動proxyは置き換えない。
+NanoGPTなどOpenAI互換Connectionでは、プロンプト指示だけでなく
+`response_format=json_schema`のstrict schemaで判定JSONを制約する。
 
 成果物はプロンプト単位のatomic JSONなので、停止・失敗後のresumeは完了済みの
 `(policy, prompt_id)`を飛ばす。seed生成中に中断した場合は、部分的な記憶を
@@ -144,10 +197,16 @@ legacy Web Console用Backendに次を追加する。
 | `POST` | `/evaluations/jobs/{job_id}/resume` | 既存runをCLI `resume`で再開 |
 | `GET` | `/evaluations/jobs/{job_id}/log` | 末尾ログ |
 | `GET` | `/evaluations/runs` | 保存済みrunと主要指標 |
+| `GET` | `/evaluations/runs/{run_id}` | 公式採点と現在有効な問題別Semantic判定・レビュー理由 |
 | `POST` | `/evaluations/runs/compare` | 2〜8 runの指標・問題別比較 |
+| `POST` | `/evaluations/runs/{run_id}/judge` | 既存LoCoMo runをQA再実行なしで意味判定 |
+| `POST` | `/evaluations/runs/retrieval-replay/jobs` | 検索だけの比較を永続ジョブとして開始 |
+| `GET` | `/evaluations/runs/{run_id}/retrieval-replay` | 保存済み検索比較の集計・問題別結果 |
+| `POST` | `/evaluations/runs/retrieval-replay` | 検索比較を同期実行（互換用） |
 | `POST` | `/evaluations/dialogue-ab/jobs` | 日本語対話A/Bを開始 |
 | `GET` | `/evaluations/dialogue-ab/runs` | 日本語対話A/Bの履歴 |
 | `GET` | `/evaluations/dialogue-ab/runs/{run_id}` | policy・プロンプト別結果 |
+| `POST` | `/evaluations/dialogue-ab/runs/{run_id}/judge` | 既存A/B runをQA再実行なしで意味判定 |
 
 ローカルLLM/GPUへの過負荷と同一runへの競合書き込みを避けるため、Web APIが
 同時に管理するactive jobは1件だけとする。NanoGPTなど外部APIを使う場合も、
@@ -221,8 +280,33 @@ dataset候補は`BUTLY_LOCOMO_DATASET`、`data/locomo10.json`、合成mini fixtu
 - source run、QA mode、評価範囲
 
 比較APIは先頭runをbaseline、末尾runを主比較対象とし、共通
-`question_id`ごとに`official_score`のdeltaと各predictionを返す。
+`(sample_id, question_id)`ごとに`official_score`のdeltaと各predictionを返す。
 画面はdelta昇順で表示するため、悪化した問題を先に確認できる。
+
+### Semantic Judge
+
+LoCoMo公式Token F1は`scores.json`の正本として維持し、意味判定は
+`semantic_scores.json`と問題単位のatomic artifactへ分離する。日本語回答、
+言い換え、事実の逆転、重要要素の欠落を`correct` / `partial` / `incorrect`に分け、
+公式スコアとの不一致をレビュー候補として表示する。問題別画面では`partial`、矛盾、
+重要情報欠落、low confidence、公式判定とのpossible false positive / false negativeを
+理由付きで絞り込める。判定失敗は0点にせず、
+`partial`として失敗問だけをresume時に再試行する。
+
+`semantic_scores.json`の`question_set_fingerprint`は、現在の`scores.json`にある質問・
+参照回答・予測とJudge設定（prompt versionを含む）から毎回再計算する。一致しない
+成果物は`stale`として扱い、過去の集計値と問題別判定を画面・reportから隠す。
+QA成果物を編集・再生成した場合はSemantic Judgeを再実行する。
+
+Judge用temperatureは0.0に固定し、回答生成と別系統のモデルを選べる。
+OpenAI互換ConnectionではDialogue A/BとLoCoMoそれぞれのstrict JSON Schemaを
+APIへ渡し、余分なキーや壊れたJSONを生成段階で防ぐ。戻り値は従来どおり
+ローカルでも厳格に再検証する。
+LoCoMoでは質問・正解・候補回答、対話A/Bではプロンプト・最小の参照事実・
+両回答が選択したJudge Connectionへ送信される。インスタンスDB全体は送信しない。
+APIキーは判定promptや評価artifactには含めず、通常のConnection認証にだけ使い、
+runへ保存しない（remote Connectionでは認証情報としてprovider endpointへ送る）。
+Judge設定は評価専用で、実行用instance configへは混入しない。
 
 ### 検索指標の読み方
 

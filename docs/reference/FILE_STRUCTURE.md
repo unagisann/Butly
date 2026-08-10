@@ -23,7 +23,8 @@ This document gives an overview of every file and module in the repository. For 
 | `sleeptime.py` | Daily / weekly memory consolidation. Runnable standalone (`python sleeptime.py`) or via HTTP API. `ButlySleeptime(base_dir=None, instances_dir=None)` supports isolated storage for evaluation while preserving the existing default paths. `ask_gemini_to_summarize` returns `(cards, status)` and `stage_2_knowledgeize` returns chunk stats (`{chunks, failed_chunks, cards_created, failures}`); failed chunks keep their RAW files for the next pass, a legitimate empty extraction archives them. |
 | `migrate_embeddings.py` | Regenerates `embedding_blob` after provider switch. CLI: `--instance` / `--batch-size` / `--dry-run` / `--all`. |
 | `evals/locomo/` | Environment-independent LoCoMo evaluation CLI. Runs Replay → synchronous Sleeptime → Runtime QA → official-compatible scoring/reporting in an isolated, checkpointed workspace without adding production API routes. |
-| `evals/dialogue_ab.py` | Isolated Japanese production-dialogue runner comparing `intent_gated` and `candidates` on fresh per-prompt clones, with durable results and resume. Memory comes either from the dataset's `memory_seed` (Sleeptime runs once) or from a **snapshot of a real instance** (`memory_source` / `--seed-instance`; Sleeptime skipped, source read-only, stored vectors reused unless `--reembed`). |
+| `evals/dialogue_ab.py` | Isolated Japanese production-dialogue runner comparing `intent_gated` and `candidates` on fresh per-prompt clones, with durable results and resume. Memory comes either from the dataset's `memory_seed` (Sleeptime runs once) or from a **snapshot of a real instance** (`memory_source` / `--seed-instance`; Sleeptime skipped, source read-only, stored vectors reused unless `--reembed`). An optional two-pass order-reversed semantic judge supports cached resume and post-hoc judging without rerunning QA. |
+| `evals/semantic_judge.py` | Evaluation-only LLM judge shared by Japanese dialogue A/B and LoCoMo: strict JSON, prompt-injection resistance, fingerprints, and semantic aggregates. |
 | `dependencies.py` / `discovery_agent.py` / `news_agent.py` | Dashboard helpers (network discovery, news feed). |
 
 ---
@@ -57,21 +58,33 @@ instances tree. The bundled mini fixture is synthetic.
 - `scorer.py` — official-compatible scoring (normalized + stemmed token F1,
   per-category rules, no-information detection) plus Butly-specific metrics
   (including search-execution vs memory-injection rates, `retrieval_recall_at_k`
-  and `bm25_rescue_rate`); writes `scores.json` and `errors.jsonl`.
+  and BM25/reranker rescue and fallback); writes `scores.json` and `errors.jsonl`.
+- `semantic_judge_runner.py` — optional meaning-based scoring without changing
+  official metrics; writes fingerprinted per-question artifacts and
+  `semantic_scores.json`, and resumes successful items.
 - `retrieval_replay.py` — offline retrieval replay with no answer generation.
   Copies an existing run's DBs into a temp directory and compares Recall@k for
-  `bm25` / `vector` / `hybrid` (`python -m evals.locomo.retrieval_replay`);
-  the source run is never modified.
+  `bm25` / `vector` / `hybrid` / `dual_query` / `reranked` /
+  `evidence_rerank`
+  (`python -m evals.locomo.retrieval_replay`);
+  `dual_query` reuses a saved QA query or invokes the source Gatekeeper only
+  for older runs without one. Source databases, cards, and RAW files are never
+  modified; replay results and embedding caches are written below the run.
+- `evidence_reranker.py` — evaluation-only second-stage retrieval for
+  `evidence_rerank`; MaxP-reranks Summary-vector candidates with Episode/RAW
+  chunk embeddings, maintains a text-free SQLite vector cache, and exposes
+  selected evidence previews for review.
 - `stemming.py` — dependency-free Porter (1980) stemmer; rare words may differ
   from the official nltk stemmer.
-- `report.py` — renders `summary.md` from `scores.json`.
+- `report.py` — renders `summary.md` from `scores.json` and optional
+  `semantic_scores.json`.
 - `checkpoint.py` — atomic per-session/Sleeptime/QA checkpoints with run-id
   validation and corruption detection.
 - `config.py`, `cli.py` — typed CLI configuration (QA mode, sample/session/
   question scope, and locale; rebuildable from `run_config.json` for resume),
-  profile YAML loading, and the `run` / `resume` / `rerun-qa` / `score` / `report`
-  subcommands. `run` accepts `--qa-mode`, paired `--*-limit` / `--all-*`
-  scope flags, and `--locale`, then scores and reports.
+  profile YAML loading, and the `run` / `resume` / `rerun-qa` / `score` /
+  `judge` / `report` subcommands. `judge` evaluates a completed run through a
+  separately selected model without rerunning QA.
 - `profiles/` — Full Local and Fixed Memory Pipeline example profiles;
   top-level `locale` selects the internal prompt and memory-output language.
 - `colab/` — thin notebook limited to Drive, model-server, and CLI calls. Its
@@ -237,11 +250,21 @@ Implements the backward-compat rule: **missing meta = owner / direct / web** (no
 - `ButlyBrain(base_dir)`
   - `get_embedding(text)`, `extract_keywords(text, override_config)` (keyword extraction is only used by Layer 2 when `search_mode="vector"`)
   - `search_knowledge(keywords, query, instance_name, limit, override_config)` — Layer 2 (deep). `vector`: keyword filter + cosine rerank + time decay. `hybrid`: ignores keywords (accepts `None`) and runs the hybrid pipeline without the vector threshold gate.
-  - `quick_vector_search(...)` / `quick_vector_search_diag(...)` — pure vector search (no keyword extraction). It scores every knowledge card, then applies time decay/archive weighting and returns the top `limit`; diagnostics report the full candidate count and retain `fetch_limit: null` for trace compatibility. Evaluation profiles may override `brain.time_decay_rate` without changing the normal system default. Dispatches to the hybrid path when `brain.search_mode="hybrid"`.
+  - `quick_vector_search(...)` / `quick_vector_search_diag(..., retrieval_query=None)` — pure vector search (no keyword extraction). It scores every knowledge card, then applies time decay/archive weighting and returns the top `limit`; diagnostics report the full candidate count and retain `fetch_limit: null` for trace compatibility. Evaluation profiles may override `brain.time_decay_rate` without changing the normal system default. Dispatches according to `brain.search_mode`.
+  - `_dual_query_search_diag(...)` — vector-searches the original and Gatekeeper query for 15 candidates each by default, deduplicates cards, equally RRF-fuses a pool capped at 25, and returns only the caller's top-k. Missing or unchanged rewrites fall back to the original vector order.
   - `_hybrid_search_diag(...)` — collects BM25 and vector candidates from **all** readable instances, ranks them globally, then fuses with RRF. In hybrid results `score` is the **RRF score**; cosine lives in `vector_score` / `raw_score` so that downstream re-sorting by `score` cannot silently undo the fusion.
   - `_bm25_search_single(spec, instance_name, limit, brain_conf)` — BM25 candidates for one DB; builds the FTS index once if missing and returns empty (i.e. vector-only) when FTS5/trigram is unavailable.
   - `summarize_conversation(text, override_config)`, `generate_knowledge_card(text, override_config)`.
   - `_calculate_cosine_similarity(...)`, `_get_provider(model_name)`.
+
+#### `reranker.py`
+
+Optional Memory Reranker. The recommended Cross-Encoder path batch-scores
+question/card pairs with the reviewed mMiniLMv2 or GTE multilingual model and
+can select zero to three cards through an optional relevance threshold. The
+legacy LLM engine remains for comparison and uses opaque JSON plus a strict
+schema. Both preserve vector order for fail-open recovery. `RerankerConfig`
+normalizes engine, pool/candidate limits, batch size, device, and threshold.
 
 #### `chronos.py`
 - `ButlyChronos`
@@ -288,7 +311,7 @@ Two-stage metacognitive engine: tier is `reflex` or `mid`; RAG is decided indepe
 
 ```
 Gatekeeper.classify(user_input, history, session_state, brain, memory_manager, ...)
-    ├─ ContextClassifier.classify()  → tier (rc/ew/cn scores) + need_intent
+    ├─ ContextClassifier.classify()  → tier + need_intent + retrieval_query
     └─ MemoryProbe.probe()           → vector + glossary + (conditional deep) — no LLM
        ├─ Layer 1.5: Glossary Match — always runs
        ├─ Layer 1:   Quick Vector Search — gated by need_intent
@@ -303,7 +326,7 @@ Gatekeeper.update_state(...) is called in parallel from ChatService (post-respon
 - `migrate_context_order_to_levels(config)` — backward-compat migration helper.
 
 #### `context_classifier.py`
-- `ContextClassifier(base_dir)` — `classify(user_input, history_msgs, current_topic, recent_headlines, override_config)` calls the LLM and parses 3 scores (`response_complexity`, `emotional_weight`, `continuity_need`) + `need_intent`.
+- `ContextClassifier(base_dir)` — `classify(user_input, history_msgs, current_topic, recent_headlines, override_config)` calls the LLM and parses 3 scores (`response_complexity`, `emotional_weight`, `continuity_need`) + `need_intent` + an optional standalone `retrieval_query`.
 
 **Tier rule** (Python side):
 | Condition | Result |
@@ -315,11 +338,17 @@ Defaults: `rc=0.4`, `cn=0.3`. Override via `SYSTEM_CONFIG["gatekeeper"]` or per-
 
 **`need_intent` values**: `past_fact` / `glossary` / `relationship` / `null`. Parse failures fall back to `asks_for_specific_past_detail(user_input)` (regex). Even on a successful parse, an LLM `null` is promoted to `past_fact` when the same patterns match (floor — with `null` the vector probe never runs). JSON extraction uses `extract_json_str()` from `core/json_extract.py`. The returned dict carries observability fields `classifier_status` (ok/fallback), `fallback_reason`, `original_need_intent`, and `intent_floor_applied`.
 
+For `past_fact` and `relationship`, the classifier also resolves pronouns and
+omitted subjects from recent history/topic into a same-language retrieval query
+while preserving names, dates, negation, and relationships. Glossary/null,
+empty, over-500-character, and unchanged values are rejected so retrieval
+safely falls back to the original utterance.
+
 #### `memory_probe.py`
 LLM-free fact-based retrieval. **Running retrieval and injecting its results are separate decisions** (`memory_probe.retrieval_execution` / `injection_policy`). By default glossary scan and Layer 1 run on every turn while injection still follows `need_intent`.
 
 - `MemoryProbe()`
-  - `probe(user_input, brain, memory_manager, history_msgs=None, need_intent=None, recent_headlines=None, override_config=None, instance_name=None)` — Layer 1.5 always runs. Layer 1 runs on every turn when `retrieval_execution="always"` (default; `"intent_gated"` restores the old behavior). Deep (Layer 2) fires on a Layer 1 miss when a past-reference pattern matches **and** the result could be injected (`need_intent ∈ {past_fact, relationship}` or `injection_policy="retrieval_assisted"`), because Layer 2 costs an LLM call.
+  - `probe(user_input, brain, memory_manager, history_msgs=None, need_intent=None, retrieval_query=None, recent_headlines=None, override_config=None, instance_name=None)` — Layer 1.5 always runs. Layer 1 runs on every turn when `retrieval_execution="always"` (default; `"intent_gated"` restores the old behavior), passes the optional Gatekeeper query into retrieval, and records both rankings and fusion diagnostics. Deep (Layer 2) fires on a Layer 1 miss when a past-reference pattern matches **and** the result could be injected (`need_intent ∈ {past_fact, relationship}` or `injection_policy="retrieval_assisted"`), because Layer 2 costs an LLM call.
   - `_resolve_injection(candidates, injection_policy, intent_wants_memory)` — `intent_gated` (default) keeps the classifier as the gate; `retrieval_assisted` promotes candidates supported by **both** vector and BM25 (`retrieval_source="both"`) even when the classifier returned null, and sets `retrieval.need_hint="past_fact"` (hybrid only). `candidates` injects whenever candidates exist — measurement on v26 showed no retrieval-side signal (cosine, rank margin, BM25 agreement) separates LoCoMo's adversarial cat5 questions, while the reader tolerates irrelevant memory (cat5 accuracy 0.810 with memory vs 0.800 without).
   - `_match_glossary(user_input, memory_manager, history_msgs=None, override_config=None)` — term/aliases match on `user_input` + recent history. Raw hits with `priority` / `_yaml_index` / `match_source`.
   - `_quick_vector_search_diag(...)` — wraps `brain.quick_vector_search_diag()`.
@@ -366,7 +395,7 @@ Resolves RAG candidate cards back to the RAW conversation JSON they were built f
 **Glossary controls** (`SYSTEM_CONFIG["glossary"]`):
 | key | default | meaning |
 |---|---|---|
-| `scan_depth` | 2 | recent turns to scan (1 turn = user+assistant pair). `0` = user_input only. |
+| `scan_depth` | 0 | recent turns to scan (1 turn = user+assistant pair). The default `0` matches terms only in the current user input and prevents glossary entries from being re-triggered by conversation history. |
 | `scan_target` | `"both"` | `"user"` / `"assistant"` / `"both"` |
 | `max_entries` | 20 | max number of injected entries |
 | `max_chars` | 4000 | max total chars (greedy skip per entry) |

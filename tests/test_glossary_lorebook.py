@@ -111,23 +111,46 @@ class TestMatchGlossaryWithHistory:
         assert hits[0]["_yaml_index"] == 0
         assert hits[0]["priority"] == 100
 
-    def test_history_user_message_hits(self, probe, memory_basic):
-        """直近 user メッセージでヒット (scan_target=both)"""
+    def test_default_ignores_history(self, probe, memory_basic):
+        """既定では現在の user_input だけをスキャンする"""
+        history = [
+            {"role": "user", "parts": ["RAGについて話したよね"]},
+            {"role": "model", "parts": ["魔法学院について説明しました"]},
+        ]
+        hits = probe._match_glossary(
+            "普通の話", memory_basic, history_msgs=history
+        )
+        assert hits == []
+
+    def test_history_user_message_hits_when_enabled(self, probe, memory_basic):
+        """scan_depthを明示すれば直近 user メッセージも検索できる"""
         history = [
             {"role": "user", "parts": ["昨日RAGについて話したよね"]},
             {"role": "model", "parts": ["はい、Retrieval-Augmented Generationですね"]},
         ]
-        hits = probe._match_glossary("で、続きだけど", memory_basic, history_msgs=history)
+        override = {"glossary": {"scan_depth": 2, "scan_target": "both"}}
+        hits = probe._match_glossary(
+            "で、続きだけど",
+            memory_basic,
+            history_msgs=history,
+            override_config=override,
+        )
         terms = {h["term"] for h in hits}
         assert "RAG" in terms
 
-    def test_history_assistant_message_hits_when_both(self, probe, memory_basic):
-        """assistant 発言だけにあるキーワードもヒット (scan_target=both)"""
+    def test_history_assistant_message_hits_when_enabled(self, probe, memory_basic):
+        """scan_depthを明示すればassistant発言も検索できる"""
         history = [
             {"role": "user", "parts": ["説明して"]},
             {"role": "model", "parts": ["魔法学院は国立の教育機関です"]},
         ]
-        hits = probe._match_glossary("続けて", memory_basic, history_msgs=history)
+        override = {"glossary": {"scan_depth": 2, "scan_target": "both"}}
+        hits = probe._match_glossary(
+            "続けて",
+            memory_basic,
+            history_msgs=history,
+            override_config=override,
+        )
         terms = {h["term"] for h in hits}
         assert "魔法学院" in terms
 
@@ -137,7 +160,7 @@ class TestMatchGlossaryWithHistory:
             {"role": "user", "parts": ["普通の話"]},
             {"role": "model", "parts": ["魔法学院について"]},
         ]
-        override = {"glossary": {"scan_target": "user"}}
+        override = {"glossary": {"scan_depth": 2, "scan_target": "user"}}
         hits = probe._match_glossary(
             "続けて", memory_basic, history_msgs=history, override_config=override
         )
@@ -150,7 +173,7 @@ class TestMatchGlossaryWithHistory:
             {"role": "user", "parts": ["Gatekeeperを変更"]},
             {"role": "model", "parts": ["魔法学院を変更"]},
         ]
-        override = {"glossary": {"scan_target": "assistant"}}
+        override = {"glossary": {"scan_depth": 2, "scan_target": "assistant"}}
         hits = probe._match_glossary(
             "普通の話", memory_basic, history_msgs=history, override_config=override
         )
@@ -192,7 +215,13 @@ class TestMatchGlossaryWithHistory:
         history = [
             {"role": "user", "parts": ["前にGatekeeperの話"]},
         ]
-        hits = probe._match_glossary("Gatekeeperの続き", memory_basic, history_msgs=history)
+        override = {"glossary": {"scan_depth": 2, "scan_target": "both"}}
+        hits = probe._match_glossary(
+            "Gatekeeperの続き",
+            memory_basic,
+            history_msgs=history,
+            override_config=override,
+        )
         gk_hits = [h for h in hits if h["term"] == "Gatekeeper"]
         assert len(gk_hits) == 1
         assert gk_hits[0]["match_source"] == "user"

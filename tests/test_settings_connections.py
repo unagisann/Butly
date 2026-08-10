@@ -233,6 +233,39 @@ class TestTestConnection:
         assert res["status"] == "ok"
         assert "llama-3.3-70b" in res["models"]
 
+    def test_openai_compat_reports_more_than_200_models(self, monkeypatch):
+        from routers.settings import test_connection
+        from butly_core.llm.connections import Connection, register_connection
+
+        register_connection(Connection(
+            id="large-catalog",
+            protocol="openai_compat",
+            base_url="https://large-catalog.example/v1",
+        ))
+        model_ids = [f"model-{index}" for index in range(201)]
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self):
+                return json.dumps({
+                    "data": [{"id": model_id} for model_id in model_ids],
+                }).encode()
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen",
+            lambda request, timeout=10: _FakeResp(),
+        )
+
+        result = test_connection(connection_id="large-catalog")
+
+        assert result["status"] == "ok"
+        assert result["models"] == model_ids
+
     def test_openai_compat_http_failure_returns_error(self, monkeypatch):
         from routers.settings import test_connection
         from butly_core.llm.connections import Connection, register_connection

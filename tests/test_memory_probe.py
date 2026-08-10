@@ -375,6 +375,32 @@ class TestProbe:
         assert result["status"] == "no_hit"
         assert result["candidates"] == []
 
+    def test_cross_encoder_abstention_does_not_bypass_via_deep_search(
+        self, probe, mock_brain_no_hit, mock_memory_empty_glossary
+    ):
+        mock_brain_no_hit.quick_vector_search_diag.return_value[
+            "diagnostics"
+        ]["reranker"] = {
+            "engine": "cross_encoder",
+            "status": "completed",
+            "selected_count": 0,
+            "score_threshold": 0.25,
+        }
+
+        result = probe.probe(
+            user_input="前に話したプロジェクトの件",
+            brain=mock_brain_no_hit,
+            memory_manager=mock_memory_empty_glossary,
+            need_intent="past_fact",
+        )
+
+        assert result["status"] == "no_hit"
+        assert result["layers"]["deep"] == {
+            "executed": False,
+            "reason": "reranker_abstained",
+        }
+        mock_brain_no_hit.extract_keywords.assert_not_called()
+
     def test_glossary_hits_returned(self, probe, mock_brain_no_hit):
         mm = MagicMock()
         mm.get_glossary_raw.return_value = {
@@ -676,6 +702,62 @@ class TestGatekeeperIntegration:
         assert result["need"] == "past_fact"
         assert result["need_intent"] == "past_fact"
         assert result["memory_probe"]["status"] == "hit"
+
+    def test_retrieval_query_is_forwarded_to_probe(
+        self, mock_gatekeeper, test_instance_dir
+    ):
+        mock_gatekeeper.context_classifier.classify.return_value.update(
+            {
+                "retrieval_query": "前回選んだ陶芸教室の名前",
+                "retrieval_query_status": "ok",
+            }
+        )
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "no_hit",
+            "candidates": [],
+            "glossary_hits": [],
+        }
+        result = mock_gatekeeper.classify(
+            user_input="あれの名前なんだっけ？",
+            history_msgs=[],
+            session_state={},
+            instance_dir=test_instance_dir,
+            brain=MagicMock(),
+        )
+        assert mock_gatekeeper.memory_probe.probe.call_args.kwargs[
+            "retrieval_query"
+        ] == "前回選んだ陶芸教室の名前"
+        assert result["retrieval_query"] == "前回選んだ陶芸教室の名前"
+
+    def test_non_memory_intent_drops_retrieval_query(
+        self, mock_gatekeeper, test_instance_dir
+    ):
+        mock_gatekeeper.context_classifier.classify.return_value.update(
+            {
+                "need_intent": None,
+                "retrieval_query": "モデルが誤って出した検索文",
+                "retrieval_query_status": "ok",
+            }
+        )
+        mock_gatekeeper.memory_probe.probe.return_value = {
+            "status": "no_hit",
+            "candidates": [],
+            "glossary_hits": [],
+        }
+        result = mock_gatekeeper.classify(
+            user_input="おはよう",
+            history_msgs=[],
+            session_state={},
+            instance_dir=test_instance_dir,
+            brain=MagicMock(),
+        )
+        assert mock_gatekeeper.memory_probe.probe.call_args.kwargs[
+            "retrieval_query"
+        ] is None
+        assert result["retrieval_query"] is None
+        assert result["retrieval_query_status"] == (
+            "ignored_non_memory_intent"
+        )
 
     def test_probe_no_hit_stays_mid(self, mock_gatekeeper, test_instance_dir):
         """probe no_hit → mid のまま、need=null (事実裏付け失敗)"""

@@ -11,6 +11,7 @@ from typing import Optional, Sequence
 from .config import ReplayConfig, SUPPORTED_EVALUATION_LOCALES
 from .progress import (
     EVALUATION_PROGRESS_MAX,
+    JUDGING_PROGRESS_MAX,
     SCORING_PROGRESS_MAX,
     ProgressReporter,
     create_console_progress,
@@ -140,6 +141,18 @@ def build_parser() -> argparse.ArgumentParser:
         "report", help="Regenerate summary.md from an existing scores.json"
     )
     report_parser.add_argument("--run-dir", type=Path, required=True)
+
+    judge_parser = subparsers.add_parser(
+        "judge",
+        help="Run or resume optional semantic judging for an official-scored run",
+    )
+    judge_parser.add_argument("--run-dir", type=Path, required=True)
+    judge_parser.add_argument("--judge-model-name")
+    judge_parser.add_argument("--judge-connection")
+    judge_parser.add_argument(
+        "--judge-max-output-tokens",
+        type=_positive_int,
+    )
     return parser
 
 
@@ -155,6 +168,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _command_score(args)
     if args.command == "report":
         return _command_report(args)
+    if args.command == "judge":
+        return _command_judge(args)
     raise ValueError(f"Unsupported command: {args.command}")
 
 
@@ -282,6 +297,68 @@ def _command_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_judge(args: argparse.Namespace) -> int:
+    from .report import write_report
+    from .semantic_judge_runner import (
+        LocomoJudgeError,
+        resolve_judge_config,
+        run_locomo_semantic_judge,
+    )
+
+    config = resolve_judge_config(
+        args.run_dir,
+        model_name=args.judge_model_name,
+        connection=args.judge_connection,
+        max_output_tokens=args.judge_max_output_tokens,
+    )
+    if config is None:
+        raise LocomoJudgeError(
+            "no judge is configured; pass --judge-model-name or add judge to "
+            "the run profile"
+        )
+    progress_reporter = create_console_progress()
+    progress_reporter.emit(0.0, "judge", f"{args.run_dir} starting")
+    semantic_scores = run_locomo_semantic_judge(
+        args.run_dir,
+        config,
+        progress=lambda completed, total, message: progress_reporter.emit(
+            100.0 * completed / total,
+            "judge",
+            message,
+            completed=completed,
+            total=total,
+        ),
+    )
+    summary_path = write_report(args.run_dir)
+    progress_reporter.emit(
+        100.0,
+        "judge",
+        f"{semantic_scores['status']}; report updated: {summary_path}",
+    )
+    if semantic_scores["status"] != "completed":
+        raise LocomoJudgeError(
+            "semantic judging is partial; "
+            f"{semantic_scores['error_count']} question(s) must be retried"
+        )
+    print(
+        json.dumps(
+            {
+                "run_id": semantic_scores["run_id"],
+                "status": semantic_scores["status"],
+                "judged_count": semantic_scores["judged_count"],
+                "error_count": semantic_scores["error_count"],
+                "coverage": semantic_scores["coverage"],
+                "semantic_scores_path": str(
+                    Path(args.run_dir) / "semantic_scores.json"
+                ),
+                "summary_path": str(summary_path),
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
 def _finish(
     result,
     *,
@@ -317,8 +394,16 @@ def _finish(
             "score",
             f"completed; overall={scores['official']['overall']:.4f}",
         )
+        semantic_scores = _run_configured_judge(
+            result.workspace.run_dir,
+            progress_reporter,
+        )
         progress_reporter.emit(
-            SCORING_PROGRESS_MAX,
+            (
+                JUDGING_PROGRESS_MAX
+                if semantic_scores is not None
+                else SCORING_PROGRESS_MAX
+            ),
             "report",
             "summary.md generation starting",
         )
@@ -331,8 +416,60 @@ def _finish(
         payload["overall_score"] = scores["official"]["overall"]
         payload["scores_path"] = str(result.workspace.run_dir / "scores.json")
         payload["summary_path"] = str(summary_path)
+        if semantic_scores is not None:
+            payload["semantic_judge_status"] = semantic_scores["status"]
+            payload["semantic_scores_path"] = str(
+                result.workspace.run_dir / "semantic_scores.json"
+            )
+            if semantic_scores["status"] != "completed":
+                from .semantic_judge_runner import LocomoJudgeError
+
+                raise LocomoJudgeError(
+                    "semantic judging is partial; "
+                    f"{semantic_scores['error_count']} question(s) must be retried"
+                )
     print(json.dumps(payload, ensure_ascii=False))
     return 0
+
+
+def _run_configured_judge(
+    run_dir: Path,
+    progress_reporter: ProgressReporter,
+) -> Optional[dict]:
+    from .semantic_judge_runner import (
+        resolve_judge_config,
+        run_locomo_semantic_judge,
+    )
+
+    config = resolve_judge_config(run_dir)
+    if config is None:
+        return None
+    progress_reporter.emit(
+        SCORING_PROGRESS_MAX,
+        "judge",
+        "Semantic judging starting",
+    )
+    span = JUDGING_PROGRESS_MAX - SCORING_PROGRESS_MAX
+    scores = run_locomo_semantic_judge(
+        run_dir,
+        config,
+        progress=lambda completed, total, message: progress_reporter.emit(
+            SCORING_PROGRESS_MAX + span * completed / total,
+            "judge",
+            message,
+            completed=completed,
+            total=total,
+        ),
+    )
+    progress_reporter.emit(
+        JUDGING_PROGRESS_MAX,
+        "judge",
+        (
+            f"{scores['status']}; judged={scores['judged_count']}/"
+            f"{scores['question_count']}, errors={scores['error_count']}"
+        ),
+    )
+    return scores
 
 
 def _positive_int(value: str) -> int:

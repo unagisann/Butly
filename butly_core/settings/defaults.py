@@ -125,10 +125,14 @@ SYSTEM_CONFIG = {
         "default_use_google_search": False,
         # --- ハイブリッド検索（検索改修計画 §3.5） ---
         # "vector" = 従来のベクトル単独。"hybrid" = BM25(FTS5/trigram) と RRF 融合。
+        # "dual_query" = 元発話と Gatekeeper の自己完結検索文を各15件検索し、
+        # RRFで重複排除・融合して最大25件の診断候補を残す（注入は通常どおり上位3件）。
         # eval で効果を確認してから既定を昇格させる。
         "search_mode": "vector",
         "bm25_candidates": 20,
         "vector_candidates": 20,
+        "dual_query_candidates": 15,
+        "dual_query_pool_limit": 25,
         "rrf_k": 60,
         # bm25() の column weight。trigram トークン上の BM25 は語単位 BM25 と
         # 挙動が異なるため、この値は推測でしかない（offline replay のスイープ対象）。
@@ -174,7 +178,7 @@ SYSTEM_CONFIG = {
         "streaming_enabled": True,
     },
     "glossary": {
-        "scan_depth": 2,
+        "scan_depth": 0,
         "scan_target": "both",
         "max_entries": 20,
         "max_chars": 4000,

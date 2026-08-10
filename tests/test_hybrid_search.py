@@ -449,3 +449,101 @@ class TestBrainHybrid:
             ["pottery"], "pottery", instance_name="00_master",
         )
         assert [r["id"] for r in results][:1] == ["v1"]
+
+
+class TestBrainDualQuery:
+    @staticmethod
+    def _ranking(ids):
+        return {
+            "results": [
+                {
+                    "id": card_id,
+                    "source_instance": "Jarvis",
+                    "score": 0.9 - index * 0.05,
+                    "retrieval_source": "vector",
+                }
+                for index, card_id in enumerate(ids)
+            ],
+            "raw_scores": [0.9],
+            "final_scores": [0.9],
+            "fetched_count": 10,
+        }
+
+    def test_fuses_original_and_gatekeeper_query(self, tmp_path, monkeypatch):
+        brain = ButlyBrain(tmp_path)
+        calls = []
+
+        def fake_candidates(query, *_args, **_kwargs):
+            calls.append(query)
+            if query == "あれっていつだっけ？":
+                return self._ranking(["original-only", "shared"])
+            return self._ranking(["shared", "rewrite-only"])
+
+        monkeypatch.setattr(brain, "_vector_query_candidates", fake_candidates)
+        output = brain.quick_vector_search_diag(
+            "あれっていつだっけ？",
+            "Jarvis",
+            limit=3,
+            threshold=0.4,
+            override_config={
+                "brain": {
+                    "search_mode": "dual_query",
+                    "dual_query_candidates": 15,
+                    "dual_query_pool_limit": 25,
+                }
+            },
+            retrieval_query="由紀が陶芸教室へ行った日付",
+        )
+        diagnostics = output["diagnostics"]
+        assert calls == ["あれっていつだっけ？", "由紀が陶芸教室へ行った日付"]
+        assert [row["id"] for row in output["results"]][0] == "shared"
+        assert diagnostics["mode"] == "dual_query"
+        assert diagnostics["original_candidate_ids"] == [
+            "original-only",
+            "shared",
+        ]
+        assert diagnostics["retrieval_query_candidate_ids"] == [
+            "shared",
+            "rewrite-only",
+        ]
+        assert diagnostics["query_fusion"]["overlap_count"] == 1
+        assert diagnostics["query_fusion"]["executed"] is True
+        shared = output["results"][0]
+        assert shared["query_source"] == "both"
+        # Query overlap is not BM25 evidence and must not activate the
+        # retrieval_assisted injection policy.
+        assert shared["retrieval_source"] == "vector"
+
+    def test_missing_rewrite_preserves_original_ranking(
+        self, tmp_path, monkeypatch
+    ):
+        brain = ButlyBrain(tmp_path)
+        calls = []
+
+        def fake_candidates(query, *_args, **_kwargs):
+            calls.append(query)
+            return self._ranking(["first", "second"])
+
+        monkeypatch.setattr(brain, "_vector_query_candidates", fake_candidates)
+        output = brain.quick_vector_search_diag(
+            "standalone question",
+            "Jarvis",
+            limit=3,
+            threshold=0.4,
+            override_config={"brain": {"search_mode": "dual_query"}},
+            retrieval_query=None,
+        )
+        assert calls == ["standalone question"]
+        assert [row["id"] for row in output["results"]] == ["first", "second"]
+        assert output["results"][0]["score"] == pytest.approx(0.9)
+        assert output["diagnostics"]["query_fusion"] == {
+            "status": "fallback",
+            "reason": "missing_or_same_query",
+            "executed": False,
+            "candidate_limit_per_query": 15,
+            "pool_limit": 25,
+            "original_count": 2,
+            "retrieval_query_count": 0,
+            "overlap_count": 0,
+            "unique_count": 2,
+        }

@@ -91,6 +91,15 @@ class Gatekeeper:
 
         # CC が出した意図種別を取り出して probe ゲートに使う
         need_intent = ctx_result.get("need_intent")
+        raw_retrieval_query = ctx_result.get("retrieval_query")
+        retrieval_query = (
+            raw_retrieval_query
+            if need_intent in ("past_fact", "relationship")
+            else None
+        )
+        retrieval_query_status = ctx_result.get("retrieval_query_status")
+        if raw_retrieval_query and retrieval_query is None:
+            retrieval_query_status = "ignored_non_memory_intent"
 
         # C. MemoryProbe
         # Glossary scan (Layer 1.5) は regex のみで軽量なので常時実行する。
@@ -105,6 +114,7 @@ class Gatekeeper:
             override_config=override_config,
             history_msgs=history_msgs,
             need_intent=need_intent,
+            retrieval_query=retrieval_query,
         )
 
         tier = ctx_result["tier"]  # "reflex" or "mid"
@@ -131,6 +141,9 @@ class Gatekeeper:
             "topic": current_topic,
             "need": need,
             "need_intent": need_intent,
+            "original_query": user_input,
+            "retrieval_query": retrieval_query,
+            "retrieval_query_status": retrieval_query_status,
             "search_targets": search_targets,
             "state_delta": {},  # post-response で別途更新
             "llm_scoring": ctx_result.get("llm_scoring"),

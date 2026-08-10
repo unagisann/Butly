@@ -1,6 +1,8 @@
 from fastapi import HTTPException
+from pydantic import ValidationError
+import pytest
 
-from evals.locomo.web_jobs import EvaluationJobConflict
+from evals.locomo.web_jobs import EvaluationJobConflict, EvaluationJobError
 from routers import evaluations
 
 
@@ -23,6 +25,15 @@ class FakeManager:
             "job_id": "job-dialogue",
             "run_id": request["run_id"],
             "job_type": "dialogue_ab",
+            "status": "running",
+        }
+
+    def start_judge(self, run_id, request, *, run_type):
+        return {
+            "job_id": f"job-{run_type}-judge",
+            "run_id": run_id,
+            "job_type": f"{run_type}_judge",
+            "request": request,
             "status": "running",
         }
 
@@ -54,13 +65,49 @@ class FakeManager:
             raise KeyError(run_id)
         return {"run_id": run_id, "run_type": "dialogue_ab"}
 
+    def get_run_result(self, run_id):
+        if run_id == "missing":
+            raise KeyError(run_id)
+        return {
+            "run_id": run_id,
+            "semantic_judge": {"status": "completed"},
+            "questions": [{"question_id": "q1"}],
+        }
+
     def compare_runs(self, run_ids):
         return {"run_ids": run_ids}
 
-    def retrieval_replay(self, run_id, modes, *, limit):
+    def retrieval_replay(
+        self,
+        run_id,
+        modes,
+        *,
+        limit,
+        evidence_raw_chunk_chars,
+    ):
         if run_id == "missing":
             raise KeyError(run_id)
-        return {"run": run_id, "modes": modes, "limit": limit}
+        return {
+            "run": run_id,
+            "modes": modes,
+            "limit": limit,
+            "evidence_raw_chunk_chars": evidence_raw_chunk_chars,
+        }
+
+    def start_retrieval_replay(self, request):
+        if request["run_id"] == "missing":
+            raise KeyError(request["run_id"])
+        return {
+            "job_id": "job-retrieval",
+            "job_type": "retrieval_replay",
+            "run_id": request["run_id"],
+            "status": "running",
+        }
+
+    def get_retrieval_replay_result(self, run_id):
+        if run_id == "missing":
+            raise KeyError(run_id)
+        return {"run_id": run_id, "status": "completed"}
 
 
 def _start_request():
@@ -89,6 +136,25 @@ def _dialogue_start_request():
     )
 
 
+def test_start_request_accepts_evaluation_only_judge_role():
+    request = evaluations.EvaluationStartRequest(
+        dataset_path="/tmp/locomo.json",
+        run_id="judge-run",
+        role_models={
+            "judge": {
+                "connection": "nanogpt-sub",
+                "model_name": "TEE/gemma4-31b",
+                "generation_config": {
+                    "temperature": 0.0,
+                    "max_output_tokens": 4096,
+                },
+            }
+        },
+    )
+
+    assert request.role_models["judge"].model_name == "TEE/gemma4-31b"
+
+
 def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
     manager = FakeManager()
     monkeypatch.setattr(evaluations, "_get_manager", lambda: manager)
@@ -114,6 +180,20 @@ def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
         evaluations.get_dialogue_ab_result("dialogue-a")["run_type"]
         == "dialogue_ab"
     )
+    assert evaluations.get_evaluation_run_result("run-a")["questions"] == [
+        {"question_id": "q1"}
+    ]
+    judge_request = evaluations.SemanticJudgeRequest(
+        connection="nanogpt-sub",
+        model_name="TEE/gemma4-31b",
+        max_output_tokens=4096,
+    )
+    assert evaluations.judge_evaluation_run(
+        "run-a", judge_request
+    )["job_type"] == "locomo_judge"
+    assert evaluations.judge_dialogue_ab_run(
+        "dialogue-a", judge_request
+    )["job_type"] == "dialogue_ab_judge"
     compared = evaluations.compare_evaluation_runs(
         evaluations.RunCompareRequest(run_ids=["run-a", "run-b"])
     )
@@ -127,7 +207,27 @@ def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
         "run": "run-a",
         "modes": ["bm25", "hybrid"],
         "limit": 5,
+        "evidence_raw_chunk_chars": 1800,
     }
+    replay_request = evaluations.RetrievalReplayRequest(
+        run_id="run-a",
+        modes=[
+            "vector",
+            "dual_query",
+            "reranked",
+            "evidence_rerank",
+        ],
+    )
+    replay_job = evaluations.start_retrieval_replay_job(replay_request)
+    assert replay_job["job_type"] == "retrieval_replay"
+    assert (
+        evaluations.get_retrieval_replay_result("run-a")["status"]
+        == "completed"
+    )
+    routes = {route.path: route for route in evaluations.router.routes}
+    assert routes[
+        "/evaluations/runs/retrieval-replay/jobs"
+    ].status_code == 202
 
 
 def test_evaluation_endpoints_translate_conflicts_and_missing_jobs(monkeypatch):
@@ -149,6 +249,23 @@ def test_evaluation_endpoints_translate_conflicts_and_missing_jobs(monkeypatch):
         raise AssertionError("missing job was not translated")
 
     try:
+        evaluations.get_evaluation_run_result("missing")
+    except HTTPException as exc:
+        assert exc.status_code == 404
+    else:
+        raise AssertionError("missing run was not translated")
+
+    with pytest.raises(HTTPException) as raised:
+        evaluations.start_retrieval_replay_job(
+            evaluations.RetrievalReplayRequest(run_id="missing")
+        )
+    assert raised.value.status_code == 404
+
+    with pytest.raises(HTTPException) as raised:
+        evaluations.get_retrieval_replay_result("missing")
+    assert raised.value.status_code == 404
+
+    try:
         evaluations.replay_run_retrieval(
             evaluations.RetrievalReplayRequest(run_id="missing")
         )
@@ -157,3 +274,58 @@ def test_evaluation_endpoints_translate_conflicts_and_missing_jobs(monkeypatch):
         assert "評価run" in exc.detail
     else:
         raise AssertionError("missing run was not translated")
+
+
+def test_semantic_judge_routes_and_validation(monkeypatch):
+    manager = FakeManager()
+    monkeypatch.setattr(evaluations, "_get_manager", lambda: manager)
+    payload = {
+        "connection": "nanogpt-sub",
+        "model_name": "TEE/gemma4-31b",
+        "max_output_tokens": 4096,
+    }
+
+    judge_request = evaluations.SemanticJudgeRequest(**payload)
+    locomo = evaluations.judge_evaluation_run("run-a", judge_request)
+    dialogue = evaluations.judge_dialogue_ab_run(
+        "dialogue-a", judge_request
+    )
+    routes = {route.path: route for route in evaluations.router.routes}
+
+    assert locomo["job_type"] == "locomo_judge"
+    assert locomo["request"] == payload
+    assert dialogue["job_type"] == "dialogue_ab_judge"
+    assert routes["/evaluations/runs/{run_id}/judge"].status_code == 202
+    assert routes["/evaluations/runs/{run_id}"].methods == {"GET"}
+    assert routes[
+        "/evaluations/dialogue-ab/runs/{run_id}/judge"
+    ].status_code == 202
+    with pytest.raises(ValidationError):
+        evaluations.SemanticJudgeRequest(
+            **{**payload, "max_output_tokens": 0}
+        )
+
+
+def test_semantic_judge_endpoints_translate_404_409_and_400(monkeypatch):
+    manager = FakeManager()
+
+    def fail_start(run_id, request, *, run_type):
+        del request, run_type
+        if run_id == "missing":
+            raise KeyError(run_id)
+        if run_id == "busy":
+            raise EvaluationJobConflict("judge already running")
+        raise EvaluationJobError("invalid judge request")
+
+    manager.start_judge = fail_start
+    monkeypatch.setattr(evaluations, "_get_manager", lambda: manager)
+    request = evaluations.SemanticJudgeRequest(model_name="judge-model")
+
+    for run_id, expected_status in (
+        ("missing", 404),
+        ("busy", 409),
+        ("invalid", 400),
+    ):
+        with pytest.raises(HTTPException) as raised:
+            evaluations.judge_evaluation_run(run_id, request)
+        assert raised.value.status_code == expected_status

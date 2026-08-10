@@ -30,6 +30,12 @@ class RoleModelRequest(BaseModel):
     profile: Optional[str] = None
     query_prefix: Optional[str] = None
     document_prefix: Optional[str] = None
+    # reranker ロールのみ。cross_encoder は生成LLMを呼ばずローカルで
+    # query/card ペアを一括採点する。
+    engine: Optional[Literal["llm", "cross_encoder"]] = None
+    batch_size: Optional[int] = Field(default=None, ge=1, le=100)
+    score_threshold: Optional[float] = None
+    device: Optional[str] = None
 
 
 class EvaluationStartRequest(BaseModel):
@@ -61,13 +67,17 @@ class EvaluationStartRequest(BaseModel):
     stage3_batch_size: int = Field(default=10, ge=1)
     stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
     # --- 検索設定（検索改修計画 §3.5）。hybrid は eval で先行検証する ---
-    search_mode: Literal["vector", "hybrid"] = "vector"
+    search_mode: Literal["vector", "hybrid", "dual_query"] = "vector"
     retrieval_execution: Literal["always", "intent_gated"] = "always"
     injection_policy: Literal[
         "intent_gated", "retrieval_assisted", "candidates"
     ] = "intent_gated"
     bm25_candidates: int = Field(default=20, ge=1)
     vector_candidates: int = Field(default=20, ge=1)
+    dual_query_candidates: int = Field(default=15, ge=1)
+    dual_query_pool_limit: int = Field(default=25, ge=1)
+    reranker_candidate_limit: int = Field(default=20, ge=1, le=100)
+    reranker_max_candidate_chars: int = Field(default=1600, ge=100, le=10000)
     rrf_k: int = Field(default=60, ge=1)
     bm25_max_df_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
     role_models: dict[str, RoleModelRequest] = Field(default_factory=dict)
@@ -88,10 +98,22 @@ class RetrievalReplayRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run_id: str
-    modes: list[Literal["bm25", "vector", "hybrid"]] = Field(
-        default_factory=lambda: ["bm25"], min_length=1, max_length=3
+    modes: list[
+        Literal[
+            "bm25",
+            "vector",
+            "hybrid",
+            "dual_query",
+            "reranked",
+            "evidence_rerank",
+        ]
+    ] = Field(
+        default_factory=lambda: ["bm25"], min_length=1, max_length=6
     )
     limit: int = Field(default=20, ge=1, le=100)
+    reranker: Optional[RoleModelRequest] = None
+    reranker_max_candidate_chars: int = Field(default=1600, ge=100, le=10000)
+    evidence_raw_chunk_chars: int = Field(default=1800, ge=200, le=10000)
 
 
 class DialogueABStartRequest(BaseModel):
@@ -112,7 +134,7 @@ class DialogueABStartRequest(BaseModel):
     stage3_enabled: bool = True
     stage3_batch_size: int = Field(default=10, ge=1)
     stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
-    search_mode: Literal["vector", "hybrid"] = "vector"
+    search_mode: Literal["vector", "hybrid", "dual_query"] = "vector"
     retrieval_execution: Literal["always", "intent_gated"] = "always"
     vector_search_limit: int = Field(default=3, ge=1)
     intent_gated_vector_search_limit: int = Field(default=3, ge=1)
@@ -121,6 +143,8 @@ class DialogueABStartRequest(BaseModel):
     deep_search_enabled: bool = True
     bm25_candidates: int = Field(default=20, ge=1)
     vector_candidates: int = Field(default=20, ge=1)
+    dual_query_candidates: int = Field(default=15, ge=1)
+    dual_query_pool_limit: int = Field(default=25, ge=1)
     rrf_k: int = Field(default=60, ge=1)
     bm25_max_df_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
     role_models: dict[str, RoleModelRequest] = Field(default_factory=dict)
@@ -129,6 +153,16 @@ class DialogueABStartRequest(BaseModel):
     seed_instance: Optional[str] = None
     # 複製側のカードを profile の embedding で貼り直す。既定は保存済みベクトルを使う。
     reembed: bool = False
+
+
+class SemanticJudgeRequest(BaseModel):
+    """Evaluation-only model selection for judging an existing run."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    connection: Optional[str] = None
+    model_name: str = Field(min_length=1)
+    max_output_tokens: int = Field(default=2048, ge=1)
 
 
 _manager: Optional[EvaluationJobManager] = None
@@ -250,24 +284,97 @@ def get_dialogue_ab_result(run_id: str) -> dict[str, Any]:
         raise _translate_error(exc) from exc
 
 
+@router.get("/runs/{run_id}")
+def get_evaluation_run_result(run_id: str) -> dict[str, Any]:
+    """Return official and current semantic results for each LoCoMo problem."""
+    try:
+        return _get_manager().get_run_result(run_id)
+    except (KeyError, EvaluationJobError) as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/runs/{run_id}/judge", status_code=202)
+def judge_evaluation_run(
+    run_id: str,
+    request: SemanticJudgeRequest,
+) -> dict[str, Any]:
+    try:
+        return _get_manager().start_judge(
+            run_id,
+            request.model_dump(mode="json"),
+            run_type="locomo",
+        )
+    except (KeyError, EvaluationJobConflict, EvaluationJobError) as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/dialogue-ab/runs/{run_id}/judge", status_code=202)
+def judge_dialogue_ab_run(
+    run_id: str,
+    request: SemanticJudgeRequest,
+) -> dict[str, Any]:
+    try:
+        return _get_manager().start_judge(
+            run_id,
+            request.model_dump(mode="json"),
+            run_type="dialogue_ab",
+        )
+    except (KeyError, EvaluationJobConflict, EvaluationJobError) as exc:
+        raise _translate_error(exc) from exc
+
+
 @router.post("/runs/retrieval-replay")
 def replay_run_retrieval(request: RetrievalReplayRequest) -> dict[str, Any]:
     """既存 run の記憶に対して検索だけ再実行する。
 
-    ``bm25`` は embedding を呼ばないので即返る。``vector`` / ``hybrid`` は
-    質問1件につき embedding を1回呼ぶため、応答まで分単位でかかりうる。
+    ``bm25`` は embedding を呼ばない。``vector`` / ``hybrid`` は質問1件につき
+    embedding 1回、``dual_query`` は必要に応じてGatekeeper 1回とembedding 2回を
+    呼ぶ。``evidence_rerank``は初回にEpisode/RAW文書もembeddingするため、応答まで
+    分単位でかかりうる。長いrunでは永続job endpointを推奨する。
     """
     try:
+        replay_options: dict[str, Any] = {
+            "limit": request.limit,
+            "evidence_raw_chunk_chars": request.evidence_raw_chunk_chars,
+        }
+        if request.reranker is not None:
+            replay_options["reranker"] = request.reranker.model_dump(
+                mode="json"
+            )
+            replay_options["reranker_max_candidate_chars"] = (
+                request.reranker_max_candidate_chars
+            )
         return _get_manager().retrieval_replay(
             request.run_id,
             list(request.modes),
-            limit=request.limit,
+            **replay_options,
         )
     except KeyError as exc:
         raise HTTPException(
             status_code=404, detail=f"評価runが見つかりません: {request.run_id}"
         ) from exc
     except EvaluationJobError as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/runs/retrieval-replay/jobs", status_code=202)
+def start_retrieval_replay_job(
+    request: RetrievalReplayRequest,
+) -> dict[str, Any]:
+    """Start an offline retrieval comparison with persistent progress."""
+    try:
+        return _get_manager().start_retrieval_replay(
+            request.model_dump(mode="json")
+        )
+    except (KeyError, EvaluationJobConflict, EvaluationJobError) as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.get("/runs/{run_id}/retrieval-replay")
+def get_retrieval_replay_result(run_id: str) -> dict[str, Any]:
+    try:
+        return _get_manager().get_retrieval_replay_result(run_id)
+    except (KeyError, EvaluationJobError) as exc:
         raise _translate_error(exc) from exc
 
 

@@ -25,14 +25,36 @@ def write_report(run_dir: Path) -> Path:
             f"scores.json not found under {run_path}; run the score command first"
         )
     run_config = _read_json(run_path / "run_config.json") or {}
+    semantic_scores = _read_json(run_path / "semantic_scores.json")
+    if semantic_scores is not None:
+        from .semantic_judge_runner import semantic_scores_for_current_inputs
+
+        semantic_scores = semantic_scores_for_current_inputs(
+            scores,
+            semantic_scores,
+        )
     error_count = _count_lines(run_path / "errors.jsonl")
 
     summary_path = run_path / "summary.md"
-    atomic_write_text(summary_path, _render(scores, run_config, error_count))
+    atomic_write_text(
+        summary_path,
+        _render(
+            scores,
+            run_config,
+            error_count,
+            semantic_scores=semantic_scores,
+        ),
+    )
     return summary_path
 
 
-def _render(scores: dict, run_config: dict, error_count: int) -> str:
+def _render(
+    scores: dict,
+    run_config: dict,
+    error_count: int,
+    *,
+    semantic_scores: Optional[dict] = None,
+) -> str:
     official = scores.get("official", {})
     auxiliary = scores.get("auxiliary", {})
     butly = scores.get("butly", {})
@@ -90,6 +112,10 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         f"- Exact match rate: {_fmt(auxiliary.get('exact_match_rate'))}",
         f"- Answer containment rate: "
         f"{_fmt(auxiliary.get('answer_containment_rate'))}",
+    ]
+    if semantic_scores is not None:
+        lines += _render_semantic_judge(semantic_scores)
+    lines += [
         "",
         "## Butly metrics",
         "",
@@ -97,6 +123,27 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         f"- RAG trigger rate when correct / incorrect: "
         f"{_fmt(butly.get('rag_trigger_rate_when_correct'))} / "
         f"{_fmt(butly.get('rag_trigger_rate_when_incorrect'))}",
+        f"- Retrieval recall @1 / @3 / @20: "
+        f"{_fmt(butly.get('retrieval_recall_at_1'))} / "
+        f"{_fmt(butly.get('retrieval_recall_at_3'))} / "
+        f"{_fmt(butly.get('retrieval_recall_at_20'))}",
+        f"- Retrieval query generation rate: "
+        f"{_fmt(butly.get('retrieval_query_rate'))}",
+        f"- Dual-query original / rewritten recall at top 3: "
+        f"{_fmt(butly.get('dual_query_original_recall_at_3'))} / "
+        f"{_fmt(butly.get('dual_query_rewrite_recall_at_3'))}",
+        f"- Dual-query rescue / harm rate at top 3: "
+        f"{_fmt(butly.get('dual_query_rescue_rate_at_3'))} / "
+        f"{_fmt(butly.get('dual_query_harm_rate_at_3'))}",
+        f"- Reranker completion / fallback rate: "
+        f"{_fmt(butly.get('reranker_completion_rate'))} / "
+        f"{_fmt(butly.get('reranker_fallback_rate'))}",
+        f"- Reranker rescue / harm rate at top 3: "
+        f"{_fmt(butly.get('reranker_rescue_rate_at_3'))} / "
+        f"{_fmt(butly.get('reranker_harm_rate_at_3'))}",
+        f"- Reranker latency ms p50 / p95: "
+        f"{_fmt(butly.get('reranker_latency_ms_p50'), digits=0)} / "
+        f"{_fmt(butly.get('reranker_latency_ms_p95'), digits=0)}",
         f"- Evidence retrieval rate (provenance, source_files): "
         f"{_fmt(butly.get('evidence_retrieval_rate'))}",
         f"- Retrieved cards per question (mean): "
@@ -177,6 +224,64 @@ def _render(scores: dict, run_config: dict, error_count: int) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _render_semantic_judge(semantic_scores: dict) -> list[str]:
+    summary = semantic_scores.get("summary") or {}
+    judge = semantic_scores.get("judge") or summary.get("model") or {}
+    if semantic_scores.get("status") == "stale":
+        return [
+            "",
+            "## Semantic judge (auxiliary, not official)",
+            "",
+            "- Status: stale (re-judging required)",
+            f"- Model: {judge.get('model_name') or 'unknown'} "
+            f"(connection: {judge.get('connection') or 'inferred/default'})",
+            "- Reason: "
+            f"{semantic_scores.get('stale_reason') or 'judge inputs changed'}",
+            "- Previous semantic metrics and per-question judgments are hidden.",
+        ]
+    disagreements = summary.get("official_disagreement") or {}
+    question_count = int(semantic_scores.get("question_count") or 0)
+    judged_count = int(semantic_scores.get("judged_count") or 0)
+    lines = [
+        "",
+        "## Semantic judge (auxiliary, not official)",
+        "",
+        f"- Status: {semantic_scores.get('status') or 'unknown'}",
+        f"- Model: {judge.get('model_name') or 'unknown'} "
+        f"(connection: {judge.get('connection') or 'inferred/default'})",
+        f"- Prompt version: {summary.get('prompt_version') or 'unknown'}",
+        f"- Coverage: {judged_count}/{question_count} "
+        f"({_fmt(semantic_scores.get('coverage'))}); errors: "
+        f"{semantic_scores.get('error_count', 0)}",
+        f"- Normalized semantic score mean: "
+        f"{_fmt(summary.get('normalized_score_mean'))}",
+        f"- Pass / partial / fail rate: "
+        f"{_fmt(summary.get('pass_rate'))} / "
+        f"{_fmt(summary.get('partial_rate'))} / "
+        f"{_fmt(summary.get('fail_rate'))}",
+        f"- Contradiction / critical-missing rate: "
+        f"{_fmt(summary.get('contradiction_rate'))} / "
+        f"{_fmt(summary.get('missing_critical_rate'))}",
+        f"- Possible official false negatives / false positives: "
+        f"{disagreements.get('possible_false_negative_count', 0)} / "
+        f"{disagreements.get('possible_false_positive_count', 0)}",
+        "",
+        "| Category | Semantic score | Judged | Pass | Partial | Fail |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    categories = summary.get("categories") or {}
+    for category in ("1", "2", "3", "4", "5"):
+        entry = categories.get(category) or {}
+        lines.append(
+            f"| {category} | {_fmt(entry.get('normalized_score_mean'))} | "
+            f"{entry.get('judged_count', 0)} | "
+            f"{_fmt(entry.get('pass_rate'))} | "
+            f"{_fmt(entry.get('partial_rate'))} | "
+            f"{_fmt(entry.get('fail_rate'))} |"
+        )
+    return lines
 
 
 def _read_json(path: Path) -> Optional[dict]:

@@ -9,7 +9,8 @@ from typing import Any, Optional
 import yaml
 
 
-# モデル role 5種 + instance-config にそのまま流し込む非モデルセクション
+# モデル role 5種 + instance-config にそのまま流し込む非モデルセクション。
+# ``judge`` は評価だけで使うため、ここに含めない。
 # (memory: RAG source、brain: 検索、context_levels: prompt注入のablation、
 #  sleeptime: update_targets 等の Stage 制御。適用は再帰マージなので
 #  update_targets の 1 キー上書きが他の既定を消さない)
@@ -19,6 +20,7 @@ PROFILE_ROLE_SECTIONS = (
     "summary",
     "knowledge",
     "embedding",
+    "reranker",
     "memory",
     "brain",
     "context_levels",
@@ -36,11 +38,12 @@ class ProfileError(ValueError):
 
 @dataclass(frozen=True)
 class EvaluationProfile:
-    """Typed top-level settings plus instance-config role overrides."""
+    """Typed settings with evaluation-only data kept out of the instance."""
 
     name: Optional[str]
     locale: Optional[str]
     sections: dict[str, dict[str, Any]]
+    judge: Optional[dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -163,18 +166,24 @@ def load_profile(path: Path) -> EvaluationProfile:
         )
 
     sections = {}
+    judge = None
     for key, value in payload.items():
         if key in {"name", "locale"}:
+            continue
+        if key == "judge":
+            judge = _load_judge_section(profile_path, value)
             continue
         if key not in PROFILE_ROLE_SECTIONS:
             raise ProfileError(
                 f"{profile_path}: unknown profile section {key!r}; "
-                f"expected one of {PROFILE_ROLE_SECTIONS}"
+                f"expected one of {PROFILE_ROLE_SECTIONS} or 'judge'"
             )
         if not isinstance(value, dict):
             raise ProfileError(f"{profile_path}: section {key!r} must be a mapping")
+        if key == "reranker":
+            value = _load_reranker_section(profile_path, value)
         sections[key] = value
-    if not sections and raw_locale is None:
+    if not sections and raw_locale is None and judge is None:
         raise ProfileError(
             f"{profile_path}: profile defines neither locale nor role sections"
         )
@@ -182,7 +191,69 @@ def load_profile(path: Path) -> EvaluationProfile:
         name=raw_name.strip() if isinstance(raw_name, str) else None,
         locale=raw_locale.strip() if isinstance(raw_locale, str) else None,
         sections=sections,
+        judge=judge,
     )
+
+
+def _load_judge_section(path: Path, value: Any) -> dict[str, Any]:
+    """Validate the evaluation-only judge without treating it as a role."""
+    if not isinstance(value, dict):
+        raise ProfileError(f"{path}: section 'judge' must be a mapping")
+    model_name = value.get("model_name")
+    if not isinstance(model_name, str) or not model_name.strip():
+        raise ProfileError(
+            f"{path}: judge.model_name must be a non-empty string"
+        )
+    connection = value.get("connection")
+    if connection is not None and (
+        not isinstance(connection, str) or not connection.strip()
+    ):
+        raise ProfileError(
+            f"{path}: judge.connection must be a non-empty string when set"
+        )
+    generation = value.get("generation_config", {})
+    if not isinstance(generation, dict):
+        raise ProfileError(
+            f"{path}: judge.generation_config must be a mapping"
+        )
+    normalized = {
+        "model_name": model_name.strip(),
+        **(
+            {"connection": connection.strip()}
+            if isinstance(connection, str)
+            else {}
+        ),
+        "generation_config": dict(generation),
+    }
+    from butly_core.llm.model_registry import normalize_model_ref
+
+    try:
+        normalize_model_ref(normalized)
+    except ValueError as exc:
+        raise ProfileError(f"{path}: {exc}") from exc
+    return normalized
+
+
+def _load_reranker_section(path: Path, value: Any) -> dict[str, Any]:
+    """Validate and normalize the optional runtime retrieval reranker."""
+    from butly_core.core.reranker import RerankerConfig, RerankerError
+
+    try:
+        config = RerankerConfig.from_mapping(value)
+    except RerankerError as exc:
+        raise ProfileError(f"{path}: {exc}") from exc
+    if config is None:
+        return {"enabled": False}
+    if config.engine == "llm" and not config.connection:
+        from butly_core.llm.model_registry import normalize_model_ref
+
+        try:
+            normalize_model_ref(config.provider_config())
+        except ValueError as exc:
+            raise ProfileError(f"{path}: {exc}") from exc
+    normalized = config.public_dict()
+    normalized.pop("prompt_version", None)
+    return normalized
 
 
 def resolve_evaluation_locale(

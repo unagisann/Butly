@@ -9,6 +9,7 @@ from typing import Optional, TextIO
 
 EVALUATION_PROGRESS_MAX = 90.0
 SCORING_PROGRESS_MAX = 96.0
+JUDGING_PROGRESS_MAX = 99.0
 
 
 class ProgressReporter:

@@ -1,0 +1,7 @@
+# Optional local Cross-Encoder reranking support for Butly's CPU host.
+# Install in addition to requirements.txt; model weights are downloaded lazily.
+# Pinning the +cpu build prevents PyPI's Linux wheel from pulling CUDA 13.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cpu
+transformers>=4.41,<5
+sentence-transformers>=5,<6

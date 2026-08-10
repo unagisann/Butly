@@ -138,6 +138,7 @@ class MemoryProbe:
         override_config: dict = None,
         history_msgs: list = None,
         need_intent: str | None = None,
+        retrieval_query: str | None = None,
     ) -> dict:
         """
         Returns:
@@ -226,7 +227,8 @@ class MemoryProbe:
         vector_threshold = probe_conf.get("vector_search_threshold", 0.4)
         deep_enabled = probe_conf.get("deep_search_enabled", True)
 
-        # Layer 1: Quick Retrieval（search_mode に応じて vector / hybrid）
+        # Layer 1: Quick Retrieval（search_mode に応じて
+        # vector / hybrid / dual_query）
         v_diag = self._quick_vector_search_diag(
             user_input,
             brain,
@@ -234,6 +236,7 @@ class MemoryProbe:
             limit=vector_limit,
             threshold=vector_threshold,
             override_config=override_config,
+            retrieval_query=retrieval_query,
         )
         candidates = v_diag["results"]
         diagnostics = v_diag.get("diagnostics", {})
@@ -249,6 +252,13 @@ class MemoryProbe:
 
         t1 = time.time()
         status = "no_hit"
+        reranker_diag = diagnostics.get("reranker") or {}
+        reranker_abstained = (
+            reranker_diag.get("engine") == "cross_encoder"
+            and reranker_diag.get("status") == "completed"
+            and reranker_diag.get("selected_count") == 0
+            and reranker_diag.get("score_threshold") is not None
+        )
 
         if candidates:
             status = "hit"
@@ -256,6 +266,16 @@ class MemoryProbe:
                 f"[MemoryProbe] Layer 1 hit (intent={need_intent}): "
                 f"{len(candidates)} candidates, "
                 f"glossary={len(glossary_hits)} ({int((t1-t0)*1000)}ms)"
+            )
+        elif reranker_abstained:
+            layers["deep"] = {
+                "executed": False,
+                "reason": "reranker_abstained",
+            }
+            print(
+                f"[MemoryProbe] no_hit (intent={need_intent}, reranker "
+                f"abstained), glossary={len(glossary_hits)} "
+                f"({int((t1-t0)*1000)}ms)"
             )
         elif not deep_enabled or not (
             intent_wants_memory
@@ -319,7 +339,23 @@ class MemoryProbe:
         retrieval["candidate_count"] = len(candidates)
         retrieval["candidate_ids"] = [str(c.get("id")) for c in candidates]
         retrieval["fused_candidate_ids"] = diagnostics.get("fused_candidate_ids", [])
+        retrieval["effective_candidate_ids"] = diagnostics.get(
+            "effective_candidate_ids",
+            diagnostics.get("fused_candidate_ids", []),
+        )
+        retrieval["reranked_candidate_ids"] = diagnostics.get(
+            "reranked_candidate_ids", []
+        )
+        retrieval["reranker"] = diagnostics.get("reranker")
         retrieval["vector_candidate_ids"] = diagnostics.get("vector_candidate_ids", [])
+        retrieval["original_candidate_ids"] = diagnostics.get(
+            "original_candidate_ids", []
+        )
+        retrieval["retrieval_query_candidate_ids"] = diagnostics.get(
+            "retrieval_query_candidate_ids", []
+        )
+        retrieval["retrieval_query"] = diagnostics.get("retrieval_query")
+        retrieval["query_fusion"] = diagnostics.get("query_fusion")
         retrieval["bm25_candidate_ids"] = diagnostics.get("bm25_candidate_ids", [])
         retrieval["retrieval_sources"] = diagnostics.get("retrieval_sources")
         bm25_diags = list((diagnostics.get("bm25") or {}).values())
@@ -400,6 +436,7 @@ class MemoryProbe:
         limit=3,
         threshold=0.6,
         override_config=None,
+        retrieval_query=None,
     ) -> list:
         """Layer 1: キーワード抽出なしの純粋なベクトル検索。"""
         return self._quick_vector_search_diag(
@@ -409,6 +446,7 @@ class MemoryProbe:
             limit,
             threshold,
             override_config,
+            retrieval_query,
         )["results"]
 
     def _quick_vector_search_diag(
@@ -419,6 +457,7 @@ class MemoryProbe:
         limit=3,
         threshold=0.6,
         override_config=None,
+        retrieval_query=None,
     ) -> dict:
         """Layer 1 + 診断情報。Returns {"results": [...], "diagnostics": {...}}"""
         try:
@@ -428,6 +467,7 @@ class MemoryProbe:
                 limit=limit,
                 threshold=threshold,
                 override_config=override_config,
+                retrieval_query=retrieval_query,
             )
         except Exception as e:
             print(f"[MemoryProbe] Quick vector search error: {e}")
@@ -471,7 +511,7 @@ class MemoryProbe:
         glossary_conf = dict(SYSTEM_CONFIG.get("glossary", {}))
         if override_config:
             glossary_conf.update(override_config.get("glossary", {}))
-        scan_depth = int(glossary_conf.get("scan_depth", 2))
+        scan_depth = int(glossary_conf.get("scan_depth", 0))
         scan_target = glossary_conf.get("scan_target", "both")
 
         # --- スキャン対象テキスト構築 ---

@@ -17,14 +17,14 @@ echo "Using Python: $($PYTHON --version)"
 echo
 echo "1/5 compileall"
 "$PYTHON" -m compileall -q \
-  app.py main.py dependencies.py butly_api butly_core routers tests \
+  app.py main.py dependencies.py butly_api butly_core evals routers tests \
   scripts/build_backend_sidecar.py scripts/smoke_test_sidecar.py \
   packaging/pyinstaller/sidecar_entry.py
 
 echo
 echo "2/5 flake8 fatal checks"
 "$PYTHON" -m flake8 --select=E9,F63,F7,F82 \
-  app.py main.py dependencies.py butly_api butly_core routers tests \
+  app.py main.py dependencies.py butly_api butly_core evals routers tests \
   scripts/build_backend_sidecar.py scripts/smoke_test_sidecar.py \
   packaging/pyinstaller/sidecar_entry.py
 

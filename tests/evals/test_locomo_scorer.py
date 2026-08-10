@@ -487,6 +487,52 @@ class TestScoreRun:
         assert butly["retrieval_recall_at_3"] is None
         assert butly["bm25_short_term_hit_rate"] is None
 
+    def test_dual_query_metrics_compare_original_rewrite_and_fused(
+        self, tmp_path
+    ):
+        row = _qa_row(
+            "qa-dual",
+            diagnostics={
+                "gatekeeper": {
+                    "tier": "mid",
+                    "need_intent": "past_fact",
+                    "retrieval_query": "Maya pottery workshop plan",
+                    "retrieval_query_status": "ok",
+                },
+                "rag": {
+                    "results": [{"title": "Maya learns pottery"}],
+                    "retrieval": {
+                        "executed": True,
+                        "mode": "dual_query",
+                        "candidate_count": 2,
+                        "injection_allowed": True,
+                        "injection_reason": "intent",
+                        "retrieval_query": "Maya pottery workshop plan",
+                        "original_candidate_ids": ["missing"],
+                        "retrieval_query_candidate_ids": ["k1"],
+                        "vector_candidate_ids": ["missing"],
+                        "fused_candidate_ids": ["k1", "missing"],
+                    },
+                },
+            },
+        )
+        run_dir = _write_run(tmp_path, [row])
+        _write_workspace(run_dir)
+
+        scores = score_run(run_dir)
+        question = scores["questions"][0]
+        butly = scores["butly"]
+
+        assert question["retrieval_query"] == "Maya pottery workshop plan"
+        assert question["original_recall_at_3"] == 0.0
+        assert question["retrieval_query_recall_at_3"] == 1.0
+        assert question["recall_at_3"] == 1.0
+        assert butly["retrieval_query_rate"] == 1.0
+        assert butly["dual_query_original_recall_at_3"] == 0.0
+        assert butly["dual_query_rewrite_recall_at_3"] == 1.0
+        assert butly["dual_query_rescue_rate_at_3"] == 1.0
+        assert butly["dual_query_harm_rate_at_3"] == 0.0
+
     def test_classifier_fallback_and_floor_rates(self, tmp_path):
         rows = [
             _qa_row("qa-1"),  # status ok / floor False

@@ -6,6 +6,9 @@ import time
 import pytest
 
 import evals.locomo.web_jobs as web_jobs
+from evals.locomo.semantic_judge_runner import (
+    calculate_question_set_fingerprint,
+)
 from evals.locomo.web_jobs import (
     EvaluationJobConflict,
     EvaluationJobError,
@@ -13,10 +16,14 @@ from evals.locomo.web_jobs import (
     build_dialogue_ab_command,
     build_dialogue_ab_profile_payload,
     build_job_command,
+    build_judge_command,
     build_profile_payload,
+    build_retrieval_replay_command,
     validate_dialogue_ab_request,
     validate_job_request,
+    validate_judge_request,
 )
+from evals.semantic_judge import JudgeConfig
 
 
 FIXTURE = (
@@ -107,7 +114,7 @@ def _write_run(
     *,
     overall: float,
     prediction: str,
-) -> None:
+) -> Path:
     run_dir = output_dir / run_id
     (run_dir / "checkpoints").mkdir(parents=True)
     (run_dir / "run_config.json").write_text(
@@ -148,6 +155,7 @@ def _write_run(
                     {
                         "question_id": "q1",
                         "sample_id": "sample",
+                        "category": 2,
                         "question": "When?",
                         "expected_answer": "Monday",
                         "prediction": prediction,
@@ -158,6 +166,7 @@ def _write_run(
         ),
         encoding="utf-8",
     )
+    return run_dir
 
 
 def _write_source_run(
@@ -321,6 +330,572 @@ class TestEmbeddingProfileInProfilePayload:
         assert "profile" not in profile["chat"]
 
 
+class TestSemanticJudgeWebConfig:
+    def _judge_role(self, **generation_overrides):
+        return {
+            "connection": "nanogpt-sub",
+            "model_name": "TEE/gemma4-31b",
+            "generation_config": {
+                "temperature": 1.0,
+                "max_output_tokens": 4096,
+                **generation_overrides,
+            },
+        }
+
+    def test_judge_is_top_level_evaluation_profile_section(self):
+        request = _request()
+        request["role_models"]["judge"] = self._judge_role()
+
+        profile = build_profile_payload(request)
+
+        assert profile["judge"]["connection"] == "nanogpt-sub"
+        assert profile["judge"]["model_name"] == "TEE/gemma4-31b"
+        assert profile["judge"]["generation_config"] == {
+            "temperature": 0.0,
+            "max_output_tokens": 4096,
+        }
+        assert len(profile["judge"]["config_signature"]) == 64
+
+    def test_validate_accepts_judge_and_forces_temperature(self, tmp_path):
+        request = _request()
+        request["role_models"]["judge"] = self._judge_role()
+
+        normalized = validate_job_request(request, output_dir=tmp_path)
+
+        judge = normalized["role_models"]["judge"]
+        assert judge["generation_config"]["temperature"] == 0.0
+        assert judge["generation_config"]["max_output_tokens"] == 4096
+
+    def test_validate_rejects_bad_judge_max_tokens(self, tmp_path):
+        request = _request()
+        request["role_models"]["judge"] = self._judge_role(
+            max_output_tokens=0
+        )
+
+        with pytest.raises(EvaluationJobError, match="max_output_tokens"):
+            validate_job_request(request, output_dir=tmp_path)
+
+    def test_validate_requires_connection_for_custom_judge_model(
+        self, tmp_path
+    ):
+        request = _request()
+        request["role_models"]["judge"] = {
+            "model_name": "gemma-custom-31b",
+            "generation_config": {"max_output_tokens": 2048},
+        }
+
+        with pytest.raises(EvaluationJobError, match="Cannot infer connection"):
+            validate_job_request(request, output_dir=tmp_path)
+
+
+class TestRerankerWebConfig:
+    @staticmethod
+    def _reranker_role():
+        return {
+            "connection": "nanogpt-sub",
+            "model_name": "TEE/gemma4-31b",
+            "generation_config": {
+                "temperature": 1.0,
+                "max_output_tokens": 4096,
+            },
+        }
+
+    def test_profile_contains_optional_runtime_reranker(self):
+        request = _request(
+            reranker_candidate_limit=20,
+            reranker_max_candidate_chars=1200,
+        )
+        request["role_models"]["reranker"] = self._reranker_role()
+
+        profile = build_profile_payload(request)
+
+        assert profile["reranker"] == {
+            "enabled": True,
+            "connection": "nanogpt-sub",
+            "model_name": "TEE/gemma4-31b",
+            "candidate_limit": 20,
+            "max_candidate_chars": 1200,
+            "generation_config": {
+                "temperature": 0.0,
+                "max_output_tokens": 4096,
+            },
+        }
+
+    def test_validate_rejects_hybrid_with_reranker(self, tmp_path):
+        request = _request(search_mode="hybrid")
+        request["role_models"]["reranker"] = self._reranker_role()
+
+        with pytest.raises(EvaluationJobError, match="requires search_mode=vector"):
+            validate_job_request(request, output_dir=tmp_path)
+
+    def test_validate_requires_connection_for_custom_reranker(
+        self, tmp_path
+    ):
+        request = _request()
+        request["role_models"]["reranker"] = {
+            "model_name": "custom-reranker",
+            "generation_config": {"max_output_tokens": 2048},
+        }
+
+        with pytest.raises(EvaluationJobError, match="Cannot infer connection"):
+            validate_job_request(request, output_dir=tmp_path)
+
+    def test_profile_contains_cross_encoder_without_llm_connection(self):
+        request = _request(
+            reranker_candidate_limit=20,
+            reranker_max_candidate_chars=1400,
+        )
+        request["role_models"]["reranker"] = {
+            "engine": "cross_encoder",
+            "model_name": "Alibaba-NLP/gte-multilingual-reranker-base",
+            "batch_size": 10,
+            "score_threshold": 0.25,
+            "device": "cpu",
+        }
+
+        profile = build_profile_payload(request)
+
+        assert profile["reranker"] == {
+            "enabled": True,
+            "engine": "cross_encoder",
+            "model_name": "Alibaba-NLP/gte-multilingual-reranker-base",
+            "model_revision": "a6258e9d2b1a11aa7bccdff9efde562bbca4393d",
+            "candidate_limit": 20,
+            "max_candidate_chars": 1400,
+            "batch_size": 10,
+            "score_threshold": 0.25,
+            "device": "cpu",
+        }
+
+
+class TestPosthocJudgeWebJob:
+    def _request(self):
+        return {
+            "connection": "nanogpt-sub",
+            "model_name": "TEE/gemma4-31b",
+            "max_output_tokens": 4096,
+        }
+
+    def _dialogue_run(self, output_dir: Path, run_id: str = "dialogue-v5"):
+        run_dir = output_dir / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "run_config.json").write_text(
+            json.dumps({"run_id": run_id, "run_type": "dialogue_ab"}),
+            encoding="utf-8",
+        )
+        (run_dir / "scores.json").write_text("{}", encoding="utf-8")
+        return run_dir
+
+    def test_validates_existing_locomo_run_and_builds_command(self, tmp_path):
+        _write_run(tmp_path, "locomo-v1", overall=0.5, prediction="Monday")
+
+        normalized = validate_judge_request(
+            self._request(),
+            run_id="locomo-v1",
+            run_type="locomo",
+            output_dir=tmp_path,
+        )
+        command = build_judge_command(
+            normalized,
+            python_executable="python-test",
+        )
+
+        assert command[:4] == [
+            "python-test", "-m", "evals.locomo.cli", "judge"
+        ]
+        assert command[command.index("--judge-model-name") + 1] == (
+            "TEE/gemma4-31b"
+        )
+        assert command[command.index("--judge-connection") + 1] == (
+            "nanogpt-sub"
+        )
+        assert command[command.index("--judge-max-output-tokens") + 1] == (
+            "4096"
+        )
+        assert len(normalized["judge"]["config_signature"]) == 64
+
+    def test_builds_dialogue_posthoc_command(self, tmp_path):
+        self._dialogue_run(tmp_path)
+        normalized = validate_judge_request(
+            self._request(),
+            run_id="dialogue-v5",
+            run_type="dialogue_ab",
+            output_dir=tmp_path,
+        )
+
+        command = build_judge_command(normalized, python_executable="py")
+
+        assert command[:4] == ["py", "-m", "evals.dialogue_ab", "judge"]
+        assert "--judge-model-name" in command
+
+    def test_dialogue_completion_uses_semantic_timestamp_after_legacy_merge(
+        self, tmp_path
+    ):
+        manager = EvaluationJobManager(tmp_path / "data")
+        run_dir = self._dialogue_run(manager.dialogue_output_dir)
+        normalized = validate_judge_request(
+            self._request(),
+            run_id="dialogue-v5",
+            run_type="dialogue_ab",
+            output_dir=manager.dialogue_output_dir,
+        )
+        (run_dir / "scores.json").write_text(
+            json.dumps({
+                "generated_at": "2025-01-01T00:00:00+00:00",
+                "semantic_judge": {
+                    "status": "completed",
+                    "generated_at": "2026-08-08T10:00:01+00:00",
+                    "config_signature": normalized["judge"][
+                        "config_signature"
+                    ],
+                    "model": normalized["judge"],
+                },
+            }),
+            encoding="utf-8",
+        )
+        record = {
+            "job_type": "dialogue_ab_judge",
+            "run_dir": str(run_dir),
+            "started_at": "2026-08-08T10:00:00+00:00",
+            "request": normalized,
+        }
+
+        assert manager._judge_output_complete(record) is True
+
+    def test_rejects_missing_or_unfinished_run(self, tmp_path):
+        with pytest.raises(KeyError):
+            validate_judge_request(
+                self._request(),
+                run_id="missing",
+                run_type="locomo",
+                output_dir=tmp_path,
+            )
+        run_dir = tmp_path / "unfinished"
+        run_dir.mkdir()
+        (run_dir / "run_config.json").write_text("{}", encoding="utf-8")
+        with pytest.raises(EvaluationJobConflict, match="scores are not ready"):
+            validate_judge_request(
+                self._request(),
+                run_id="unfinished",
+                run_type="locomo",
+                output_dir=tmp_path,
+            )
+
+    def test_manager_starts_posthoc_job_and_persists_safe_request(
+        self, tmp_path, monkeypatch
+    ):
+        manager = EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+            project_root=Path(__file__).parents[1],
+        )
+        _write_run(
+            manager.output_dir,
+            "locomo-v1",
+            overall=0.5,
+            prediction="Monday",
+        )
+        monkeypatch.setattr(
+            manager,
+            "_launch",
+            lambda record, command: manager._public_record(record),
+        )
+
+        job = manager.start_judge(
+            "locomo-v1", self._request(), run_type="locomo"
+        )
+
+        assert job["job_type"] == "locomo_judge"
+        assert job["request"]["judge"]["model_name"] == "TEE/gemma4-31b"
+        assert "api_key" not in json.dumps(job).lower()
+
+    def test_latest_job_for_same_run_prefers_new_judge_job(self, tmp_path):
+        manager = EvaluationJobManager(tmp_path)
+        manager._records = {
+            "base": {
+                "job_id": "base",
+                "job_type": "locomo",
+                "run_id": "same-run",
+                "created_at": "2026-08-01T00:00:00+00:00",
+            },
+            "judge": {
+                "job_id": "judge",
+                "job_type": "locomo_judge",
+                "run_id": "same-run",
+                "created_at": "2026-08-02T00:00:00+00:00",
+            },
+        }
+
+        latest = manager._latest_jobs_by_run({"locomo", "locomo_judge"})
+
+        assert latest["same-run"]["job_id"] == "judge"
+
+    def test_matching_semantic_sentinel_is_required(self, tmp_path):
+        manager = EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+        )
+        run_dir = _write_run(
+            manager.output_dir,
+            "locomo-v1",
+            overall=0.5,
+            prediction="Monday",
+        )
+        normalized = validate_judge_request(
+            self._request(),
+            run_id="locomo-v1",
+            run_type="locomo",
+            output_dir=manager.output_dir,
+        )
+        record = {
+            "job_type": "locomo_judge",
+            "run_dir": str(run_dir),
+            "request": normalized,
+        }
+
+        assert manager._judge_output_complete(record) is False
+        scores = json.loads(
+            (run_dir / "scores.json").read_text(encoding="utf-8")
+        )
+        judge_config = JudgeConfig.from_mapping(normalized["judge"])
+        assert judge_config is not None
+        (run_dir / "semantic_scores.json").write_text(
+            json.dumps({
+                "status": "completed",
+                "config_signature": normalized["judge"]["config_signature"],
+                "judge": normalized["judge"],
+                "question_set_fingerprint": (
+                    calculate_question_set_fingerprint(scores, judge_config)
+                ),
+            }),
+            encoding="utf-8",
+        )
+        assert manager._judge_output_complete(record) is True
+
+        payload = json.loads(
+            (run_dir / "semantic_scores.json").read_text(encoding="utf-8")
+        )
+        payload["config_signature"] = "old-prompt-signature"
+        (run_dir / "semantic_scores.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+        assert manager._judge_output_complete(record) is False
+
+    def test_matching_old_aggregate_is_not_completion_for_new_attempt(
+        self, tmp_path
+    ):
+        manager = EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+        )
+        run_dir = _write_run(
+            manager.output_dir,
+            "locomo-v1",
+            overall=0.5,
+            prediction="Monday",
+        )
+        normalized = validate_judge_request(
+            self._request(),
+            run_id="locomo-v1",
+            run_type="locomo",
+            output_dir=manager.output_dir,
+        )
+        record = {
+            "job_type": "locomo_judge",
+            "run_dir": str(run_dir),
+            "started_at": "2026-08-08T10:00:00+00:00",
+            "request": normalized,
+        }
+        result = {
+            "status": "completed",
+            "generated_at": "2026-08-08T09:59:59+00:00",
+            "config_signature": normalized["judge"]["config_signature"],
+            "judge": normalized["judge"],
+        }
+        scores = json.loads(
+            (run_dir / "scores.json").read_text(encoding="utf-8")
+        )
+        judge_config = JudgeConfig.from_mapping(normalized["judge"])
+        assert judge_config is not None
+        result["question_set_fingerprint"] = (
+            calculate_question_set_fingerprint(scores, judge_config)
+        )
+        semantic_path = run_dir / "semantic_scores.json"
+        semantic_path.write_text(json.dumps(result), encoding="utf-8")
+
+        assert manager._judge_output_complete(record) is False
+
+        result["generated_at"] = "2026-08-08T10:00:01+00:00"
+        semantic_path.write_text(json.dumps(result), encoding="utf-8")
+        assert manager._judge_output_complete(record) is True
+
+    def test_launch_captures_attempt_time_before_fast_judge_writes(
+        self, tmp_path, monkeypatch
+    ):
+        manager = EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+        )
+        run_dir = _write_run(
+            manager.output_dir,
+            "locomo-v1",
+            overall=0.5,
+            prediction="Monday",
+        )
+        normalized = validate_judge_request(
+            self._request(),
+            run_id="locomo-v1",
+            run_type="locomo",
+            output_dir=manager.output_dir,
+        )
+        record = {
+            "job_id": "fast-judge",
+            "job_type": "locomo_judge",
+            "run_id": "locomo-v1",
+            "run_dir": str(run_dir),
+            "request": normalized,
+            "log_path": str(manager.jobs_dir / "fast-judge.log"),
+            "status": "queued",
+            "attempt": 0,
+        }
+        artifact_time = "2026-08-08T10:00:00+00:00"
+        scores = json.loads(
+            (run_dir / "scores.json").read_text(encoding="utf-8")
+        )
+        judge_config = JudgeConfig.from_mapping(normalized["judge"])
+        assert judge_config is not None
+        question_set_fingerprint = calculate_question_set_fingerprint(
+            scores,
+            judge_config,
+        )
+
+        class FakeProcess:
+            pid = 12345
+
+        class FakeThread:
+            def __init__(self, **_kwargs):
+                pass
+
+            def start(self):
+                pass
+
+        def fast_popen(_command, **_kwargs):
+            (run_dir / "semantic_scores.json").write_text(
+                json.dumps({
+                    "status": "completed",
+                    "generated_at": artifact_time,
+                    "config_signature": normalized["judge"][
+                        "config_signature"
+                    ],
+                    "judge": normalized["judge"],
+                    "question_set_fingerprint": question_set_fingerprint,
+                }),
+                encoding="utf-8",
+            )
+            return FakeProcess()
+
+        launch_times = iter([
+            artifact_time,
+            "2026-08-08T10:00:01+00:00",
+        ])
+        monkeypatch.setattr(web_jobs, "utc_now", lambda: next(launch_times))
+        monkeypatch.setattr(web_jobs.subprocess, "Popen", fast_popen)
+        monkeypatch.setattr(web_jobs.threading, "Thread", FakeThread)
+        monkeypatch.setattr(manager, "_process_create_time", lambda _pid: 1.0)
+
+        manager._launch(record, ["judge"])
+
+        assert record["started_at"] == artifact_time
+        assert manager._judge_output_complete(record) is True
+
+    def test_resume_rebuilds_posthoc_judge_command(self, tmp_path, monkeypatch):
+        manager = EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+        )
+        _write_run(
+            manager.output_dir,
+            "locomo-v1",
+            overall=0.5,
+            prediction="Monday",
+        )
+        normalized = validate_judge_request(
+            self._request(),
+            run_id="locomo-v1",
+            run_type="locomo",
+            output_dir=manager.output_dir,
+        )
+        record = {
+            "schema_version": 1,
+            "job_id": "judge-job",
+            "job_type": "locomo_judge",
+            "run_id": "locomo-v1",
+            "run_dir": normalized["run_dir"],
+            "status": "failed",
+            "request": normalized,
+            "stop_requested": False,
+            "ended_at": "2026-08-01T00:00:00+00:00",
+            "return_code": 1,
+        }
+        manager._records[record["job_id"]] = record
+        captured = {}
+
+        def fake_launch(item, command):
+            captured["command"] = command
+            return manager._public_record(item)
+
+        monkeypatch.setattr(manager, "_launch", fake_launch)
+        monkeypatch.setattr(manager, "_save_record", lambda item: None)
+
+        resumed = manager.resume("judge-job")
+
+        assert resumed["status"] == "queued"
+        assert captured["command"][3] == "judge"
+        assert "--judge-model-name" in captured["command"]
+
+    def test_regular_job_with_judge_does_not_complete_from_scores_alone(
+        self, tmp_path, monkeypatch
+    ):
+        manager = EvaluationJobManager(
+            tmp_path / "data",
+            output_dir=tmp_path / "runs",
+        )
+        request = _request(run_id="locomo-v1")
+        request["role_models"]["judge"] = {
+            "connection": "nanogpt-sub",
+            "model_name": "TEE/gemma4-31b",
+            "generation_config": {"max_output_tokens": 4096},
+        }
+        normalized = validate_job_request(
+            request,
+            output_dir=manager.output_dir,
+        )
+        run_dir = _write_run(
+            manager.output_dir,
+            "locomo-v1",
+            overall=0.5,
+            prediction="Monday",
+        )
+        record = {
+            "job_id": "base-with-judge",
+            "job_type": "locomo",
+            "run_id": "locomo-v1",
+            "run_dir": str(run_dir),
+            "status": "running",
+            "request": normalized,
+            "pid": None,
+            "process_created_at": None,
+            "stop_requested": False,
+            "ended_at": None,
+        }
+        manager._records[record["job_id"]] = record
+        monkeypatch.setattr(manager, "_save_record", lambda item: None)
+
+        manager._refresh_record(record)
+
+        assert record["status"] == "interrupted"
+
+
 def test_build_profile_matches_colab_stage3_controls():
     profile = build_profile_payload(
         _request(
@@ -384,6 +959,26 @@ class TestSearchSettingsInProfile:
             "injection_policy": "retrieval_assisted",
         }
 
+    def test_dual_query_run_writes_bounded_fusion_params(self):
+        profile = build_profile_payload(
+            _request(
+                search_mode="dual_query",
+                dual_query_candidates=15,
+                dual_query_pool_limit=25,
+                rrf_k=40,
+            )
+        )
+
+        assert profile["brain"] == {
+            "time_decay_rate": 0.0,
+            "use_rag": True,
+            "search_mode": "dual_query",
+            "dual_query_candidates": 15,
+            "dual_query_pool_limit": 25,
+            "rrf_k": 40,
+        }
+        assert "bm25_candidates" not in profile["brain"]
+
     def test_profile_sections_are_applicable_to_instance_config(self):
         """profile へ書いたセクションが eval 側で適用対象になっている"""
         from evals.locomo.config import PROFILE_ROLE_SECTIONS
@@ -400,6 +995,8 @@ class TestSearchSettingsInProfile:
             "retrieval_execution",
             "injection_policy",
             "bm25_candidates",
+            "dual_query_candidates",
+            "dual_query_pool_limit",
             "rrf_k",
             "bm25_max_df_ratio",
         ):
@@ -411,6 +1008,8 @@ class TestSearchSettingsInProfile:
         assert normalized["retrieval_execution"] == "always"
         assert normalized["injection_policy"] == "intent_gated"
         assert normalized["bm25_candidates"] == 20
+        assert normalized["dual_query_candidates"] == 15
+        assert normalized["dual_query_pool_limit"] == 25
         assert normalized["rrf_k"] == 60
         assert normalized["bm25_max_df_ratio"] == pytest.approx(0.5)
 
@@ -421,6 +1020,10 @@ class TestSearchSettingsInProfile:
             ({"injection_policy": "always"}, "unsupported injection_policy"),
             ({"retrieval_execution": "never"}, "unsupported retrieval_execution"),
             ({"bm25_candidates": 0}, "bm25_candidates must be a positive"),
+            (
+                {"dual_query_candidates": 0},
+                "dual_query_candidates must be a positive",
+            ),
             ({"bm25_max_df_ratio": 1.5}, "bm25_max_df_ratio must be in"),
         ],
     )
@@ -435,7 +1038,7 @@ class TestSearchSettingsInProfile:
 
         config = manager.config()
 
-        assert config["search_modes"] == ["vector", "hybrid"]
+        assert config["search_modes"] == ["vector", "hybrid", "dual_query"]
         assert config["retrieval_executions"] == ["always", "intent_gated"]
         assert config["injection_policies"] == [
             "intent_gated",
@@ -528,6 +1131,21 @@ class TestDialogueABWebJob:
             "deep_search_enabled": False,
         }
 
+    def test_profile_applies_dual_query_search(self):
+        profile = build_dialogue_ab_profile_payload(
+            _dialogue_request(
+                search_mode="dual_query",
+                dual_query_candidates=12,
+                dual_query_pool_limit=22,
+                rrf_k=45,
+            )
+        )
+
+        assert profile["brain"]["search_mode"] == "dual_query"
+        assert profile["brain"]["dual_query_candidates"] == 12
+        assert profile["brain"]["dual_query_pool_limit"] == 22
+        assert profile["brain"]["rrf_k"] == 45
+
     @pytest.mark.parametrize(
         ("overrides", "message"),
         [
@@ -616,7 +1234,11 @@ class TestDialogueABWebJob:
             config["dialogue_ab"]["last_request"]["run_id"]
             == "dialogue-v1"
         )
-        assert config["dialogue_ab"]["search_modes"] == ["vector", "hybrid"]
+        assert config["dialogue_ab"]["search_modes"] == [
+            "vector",
+            "hybrid",
+            "dual_query",
+        ]
         assert config["dialogue_ab"]["retrieval_executions"] == [
             "always",
             "intent_gated",
@@ -760,16 +1382,237 @@ class TestRetrievalReplayEndpointBacking:
         run_dir = self._write_run(tmp_path / "runs")
         profile_path = tmp_path / "profile.yaml"
         profile_path.write_text(
-            "name: p\nbrain:\n  bm25_max_df_ratio: 0.9\n", encoding="utf-8"
+            "name: p\nlocale: ja\nbrain:\n  bm25_max_df_ratio: 0.9\n",
+            encoding="utf-8",
         )
         (run_dir / "run_config.json").write_text(
             json.dumps({"run_id": "v26", "profile_path": str(profile_path)}),
             encoding="utf-8",
         )
 
-        assert manager._run_profile_sections(run_dir)["brain"] == {
+        sections = manager._run_profile_sections(run_dir)
+        assert sections["brain"] == {
             "bm25_max_df_ratio": 0.9
         }
+        assert sections["agent_profile"] == {"locale": "ja"}
+
+    def test_background_replay_builds_persistent_cross_encoder_job(
+        self, tmp_path, monkeypatch
+    ):
+        manager = self._manager(tmp_path)
+        run_dir = self._write_run(tmp_path / "runs")
+        captured = {}
+
+        def fake_launch(record, command):
+            captured["command"] = command
+            manager._save_record(record)
+            return manager._public_record(record)
+
+        monkeypatch.setattr(manager, "_launch", fake_launch)
+        job = manager.start_retrieval_replay(
+            {
+                "run_id": "v26",
+                "modes": ["vector", "reranked"],
+                "limit": 20,
+                "reranker": {
+                    "engine": "cross_encoder",
+                    "model_name": "mminilmv2",
+                    "batch_size": 8,
+                    "score_threshold": -1.0,
+                    "device": "cpu",
+                },
+                "reranker_max_candidate_chars": 1200,
+            }
+        )
+
+        assert job["job_type"] == "retrieval_replay"
+        assert job["status"] == "queued"
+        assert job["result_path"] == str(
+            run_dir / "retrieval_replay.json"
+        )
+        command = captured["command"]
+        assert command[:3] == [
+            sys.executable,
+            "-m",
+            "evals.locomo.retrieval_replay",
+        ]
+        assert command[command.index("--reranker-engine") + 1] == (
+            "cross_encoder"
+        )
+        assert command[command.index("--reranker-batch-size") + 1] == "8"
+        assert command[command.index("--reranker-score-threshold") + 1] == (
+            "-1.0"
+        )
+        assert command[command.index("--job-id") + 1] == job["job_id"]
+
+    def test_background_evidence_replay_persists_cache_settings(
+        self, tmp_path, monkeypatch
+    ):
+        manager = self._manager(tmp_path)
+        run_dir = self._write_run(tmp_path / "runs")
+        captured = {}
+
+        def fake_launch(record, command):
+            captured["command"] = command
+            return manager._public_record(record)
+
+        monkeypatch.setattr(manager, "_launch", fake_launch)
+        job = manager.start_retrieval_replay(
+            {
+                "run_id": "v26",
+                "modes": ["vector", "evidence_rerank"],
+                "limit": 20,
+                "evidence_raw_chunk_chars": 1400,
+            }
+        )
+
+        command = captured["command"]
+        assert command[command.index("--evidence-raw-chunk-chars") + 1] == (
+            "1400"
+        )
+        assert command[command.index("--evidence-cache") + 1] == str(
+            run_dir / "retrieval_cache" / "evidence_embeddings.sqlite3"
+        )
+        request = manager._records[job["job_id"]]["request"]
+        assert request["evidence_raw_chunk_chars"] == 1400
+
+    def test_evidence_replay_rejects_invalid_chunk_size(self, tmp_path):
+        manager = self._manager(tmp_path)
+        self._write_run(tmp_path / "runs")
+
+        with pytest.raises(
+            EvaluationJobError,
+            match="evidence_raw_chunk_chars must be between",
+        ):
+            manager.start_retrieval_replay(
+                {
+                    "run_id": "v26",
+                    "modes": ["evidence_rerank"],
+                    "evidence_raw_chunk_chars": 100,
+                }
+            )
+
+    def test_background_replay_completion_requires_fresh_matching_artifact(
+        self, tmp_path, monkeypatch
+    ):
+        manager = self._manager(tmp_path)
+        run_dir = self._write_run(tmp_path / "runs")
+        monkeypatch.setattr(
+            manager,
+            "_launch",
+            lambda record, _command: manager._public_record(record),
+        )
+        job = manager.start_retrieval_replay(
+            {"run_id": "v26", "modes": ["bm25"], "limit": 20}
+        )
+        record = manager._records[job["job_id"]]
+        record["started_at"] = "2026-08-09T10:00:00+00:00"
+        result_path = run_dir / "retrieval_replay.json"
+        payload = {
+            "status": "completed",
+            "generated_at": "2026-08-09T10:00:01+00:00",
+            "job_id": job["job_id"],
+            "modes": ["bm25"],
+            "limit": 20,
+        }
+        result_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        assert manager._retrieval_replay_output_complete(record) is True
+        assert manager.get_retrieval_replay_result("v26") == payload
+
+        payload["job_id"] = "older-job"
+        result_path.write_text(json.dumps(payload), encoding="utf-8")
+        assert manager._retrieval_replay_output_complete(record) is False
+
+        payload["job_id"] = job["job_id"]
+        payload["generated_at"] = "2026-08-09T09:59:59+00:00"
+        result_path.write_text(json.dumps(payload), encoding="utf-8")
+        assert manager._retrieval_replay_output_complete(record) is False
+
+    def test_background_replay_resume_rebuilds_same_command(
+        self, tmp_path, monkeypatch
+    ):
+        manager = self._manager(tmp_path)
+        self._write_run(tmp_path / "runs")
+        captured = {}
+
+        def fake_launch(record, command):
+            captured["command"] = command
+            return manager._public_record(record)
+
+        monkeypatch.setattr(manager, "_launch", fake_launch)
+        job = manager.start_retrieval_replay(
+            {"run_id": "v26", "modes": ["bm25"], "limit": 10}
+        )
+        record = manager._records[job["job_id"]]
+        record["status"] = "failed"
+        record["ended_at"] = "2026-08-09T10:00:00+00:00"
+        record["return_code"] = 1
+
+        resumed = manager.resume(job["job_id"])
+
+        assert resumed["status"] == "queued"
+        command = captured["command"]
+        assert command[command.index("--limit") + 1] == "10"
+        assert command[command.index("--job-id") + 1] == job["job_id"]
+
+    def test_background_bm25_job_reports_progress_and_result(self, tmp_path):
+        manager = self._manager(tmp_path)
+        self._write_run(tmp_path / "runs")
+
+        job = manager.start_retrieval_replay(
+            {"run_id": "v26", "modes": ["bm25"], "limit": 20}
+        )
+        deadline = time.monotonic() + 10
+        current = manager.get(job["job_id"])
+        while (
+            current["status"] in web_jobs.ACTIVE_JOB_STATUSES
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.05)
+            current = manager.get(job["job_id"])
+
+        assert current["status"] == "completed"
+        assert current["progress"] == 100.0
+        log = manager.read_log(job["job_id"])
+        assert "[LoCoMo" in log
+        assert "question=1/1" in log
+        result = manager.get_retrieval_replay_result("v26")
+        assert result["job_id"] == job["job_id"]
+        assert result["bm25"]["recall_at_3"] == pytest.approx(1.0)
+
+
+def test_build_retrieval_replay_command_uses_profile_and_llm_settings(
+    tmp_path,
+):
+    request = {
+        "run_dir": str(tmp_path / "run"),
+        "modes": ["reranked"],
+        "limit": 20,
+        "result_path": str(tmp_path / "run" / "retrieval_replay.json"),
+        "job_id": "job-1",
+        "profile_path": str(tmp_path / "profile.yaml"),
+        "reranker_max_candidate_chars": 1400,
+        "reranker": {
+            "engine": "llm",
+            "connection": "nanogpt-sub",
+            "model_name": "model",
+            "generation_config": {"max_output_tokens": 3072},
+        },
+    }
+
+    command = build_retrieval_replay_command(
+        request,
+        python_executable="python-test",
+    )
+
+    assert command[command.index("--profile") + 1] == request["profile_path"]
+    assert command[command.index("--reranker-connection") + 1] == (
+        "nanogpt-sub"
+    )
+    assert command[command.index("--reranker-max-output-tokens") + 1] == (
+        "3072"
+    )
 
 
 class TestDialogueABSeedInstance:
@@ -1164,6 +2007,152 @@ def test_run_history_and_question_comparison(tmp_path):
     assert comparison["comparison_run_id"] == "b"
     assert comparison["questions"][0]["delta"] == 0.5
     assert comparison["questions"][0]["runs"]["b"]["prediction"] == "Monday"
+
+
+def test_locomo_semantic_detail_and_history_reject_stale_artifact(tmp_path):
+    output_dir = tmp_path / "runs"
+    run_dir = _write_run(
+        output_dir,
+        "semantic-run",
+        overall=0.0,
+        prediction="Monday",
+    )
+    scores_path = run_dir / "scores.json"
+    scores = json.loads(scores_path.read_text(encoding="utf-8"))
+    first = scores["questions"][0]
+    second = {
+        **first,
+        "question_id": "q2",
+        "prediction": "Tuesday",
+        "official_score": 1.0,
+    }
+    scores["questions"] = [first, second]
+    scores["question_count"] = 2
+    scores_path.write_text(json.dumps(scores), encoding="utf-8")
+    config = JudgeConfig(
+        model_name="judge-model",
+        connection="judge-connection",
+    )
+    semantic = {
+        "run_id": "semantic-run",
+        "status": "completed",
+        "question_count": 2,
+        "judged_count": 2,
+        "error_count": 0,
+        "coverage": 1.0,
+        "judge": config.public_dict(),
+        "config_signature": config.signature(),
+        "question_set_fingerprint": calculate_question_set_fingerprint(
+            scores,
+            config,
+        ),
+        "summary": {
+            "normalized_score_mean": 0.5,
+            "pass_rate": 0.5,
+            "official_disagreement": {
+                "possible_false_negative_count": 1,
+                "possible_false_positive_count": 1,
+            },
+        },
+        "questions": [
+            {
+                "sample_id": "sample",
+                "question_id": "q1",
+                "status": "complete",
+                "verdict": "correct",
+                "normalized_score": 1.0,
+                "confidence": "high",
+                "contradiction": False,
+                "missing_critical": False,
+                "reason": "equivalent answer",
+            },
+            {
+                "sample_id": "sample",
+                "question_id": "q2",
+                "status": "complete",
+                "verdict": "incorrect",
+                "normalized_score": 0.0,
+                "confidence": "high",
+                "contradiction": True,
+                "missing_critical": False,
+                "reason": "wrong date",
+            },
+        ],
+    }
+    (run_dir / "semantic_scores.json").write_text(
+        json.dumps(semantic),
+        encoding="utf-8",
+    )
+    manager = EvaluationJobManager(
+        tmp_path / "data",
+        output_dir=output_dir,
+    )
+
+    summary = manager.list_runs()[0]
+    detail = manager.get_run_result("semantic-run")
+
+    assert summary["semantic_status"] == "completed"
+    assert summary["semantic_review_count"] == 2
+    assert detail["review_required_count"] == 2
+    assert [
+        item["official_disagreement"] for item in detail["questions"]
+    ] == ["possible_false_negative", "possible_false_positive"]
+
+    scores["questions"][0]["prediction"] = "changed after judging"
+    scores_path.write_text(json.dumps(scores), encoding="utf-8")
+
+    stale_summary = manager.list_runs()[0]
+    stale_detail = manager.get_run_result("semantic-run")
+
+    assert stale_summary["semantic_status"] == "stale"
+    assert stale_summary["semantic_score_mean"] is None
+    assert stale_summary["semantic_review_count"] is None
+    assert stale_detail["semantic_judge"]["status"] == "stale"
+    assert stale_detail["semantic_judge"]["rejudge_required"] is True
+    assert stale_detail["review_required_count"] is None
+    assert all(
+        item["semantic_verdict"] is None
+        for item in stale_detail["questions"]
+    )
+    assert all(
+        item["semantic_status"] == "stale"
+        for item in stale_detail["questions"]
+    )
+
+
+def test_comparison_keeps_same_question_id_from_different_samples(tmp_path):
+    output_dir = tmp_path / "runs"
+    for run_id, overall in (("a", 0.0), ("b", 1.0)):
+        run_dir = _write_run(
+            output_dir,
+            run_id,
+            overall=overall,
+            prediction="answer",
+        )
+        scores_path = run_dir / "scores.json"
+        scores = json.loads(scores_path.read_text(encoding="utf-8"))
+        first = dict(scores["questions"][0])
+        first["sample_id"] = "sample-a"
+        second = {
+            **first,
+            "sample_id": "sample-b",
+            "prediction": "another answer",
+        }
+        scores["questions"] = [first, second]
+        scores["question_count"] = 2
+        scores_path.write_text(json.dumps(scores), encoding="utf-8")
+    manager = EvaluationJobManager(
+        tmp_path / "data",
+        output_dir=output_dir,
+    )
+
+    comparison = manager.compare_runs(["a", "b"])
+
+    assert len(comparison["questions"]) == 2
+    assert {
+        (item["sample_id"], item["question_id"])
+        for item in comparison["questions"]
+    } == {("sample-a", "q1"), ("sample-b", "q1")}
 
 
 def test_dialogue_ab_history_summary(tmp_path):

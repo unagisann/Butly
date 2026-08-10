@@ -61,6 +61,7 @@ _AUX_LABELS: Dict[str, str] = {
     "state_updater": "State Updater (LLM)",
     "embedding": "Embedding",
     "keyword_extract": "Keyword Extract (LLM)",
+    "reranker": "Memory Reranker",
 }
 
 # 補助 LLM ノードをぶら下げる親ノード (メインフロー上の位置)
@@ -68,6 +69,7 @@ _AUX_PARENTS: Dict[str, str] = {
     "context_classifier": "gatekeeper",
     "embedding": "memory_probe",
     "keyword_extract": "memory_probe",
+    "reranker": "memory_probe",
     "state_updater": "state_update",
 }
 
@@ -203,6 +205,11 @@ def build_chat_trace(
                 "tier": tier,
                 "need": need,
                 "need_intent": gk_result.get("need_intent"),
+                "original_query": gk_result.get("original_query"),
+                "retrieval_query": gk_result.get("retrieval_query"),
+                "retrieval_query_status": gk_result.get(
+                    "retrieval_query_status"
+                ),
                 "classifier_status": gk_result.get("classifier_status"),
                 "fallback_reason": gk_result.get("fallback_reason"),
                 "original_need_intent": gk_result.get("original_need_intent"),

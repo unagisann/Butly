@@ -149,6 +149,49 @@ class TestModelCandidatesDynamicDiscovery:
         assert ("groq", "llama-3.3-70b-versatile") in names_by_conn
         assert ("groq", "mixtral-8x7b") in names_by_conn
 
+    def test_dynamic_models_are_not_truncated_after_200_items(self, monkeypatch):
+        """Large provider catalogs retain models beyond the first 200 entries."""
+        from butly_core.llm.connections import Connection, register_connection
+
+        register_connection(Connection(
+            id="large-catalog",
+            protocol="openai_compat",
+            base_url="https://large-catalog.example/v1",
+            api_key_env="LARGE_CATALOG_API_KEY",
+        ))
+        monkeypatch.setenv("LARGE_CATALOG_API_KEY", "test-key")
+        model_ids = [f"model-{index}" for index in range(293)]
+        model_ids.append("google/gemma-4-31b-it")
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def read(self):
+                return json.dumps({
+                    "data": [{"id": model_id} for model_id in model_ids],
+                }).encode()
+
+        def _fake_urlopen(request, timeout=5):
+            if "large-catalog.example" in request.full_url:
+                return _FakeResp()
+            raise AssertionError("unexpected Connection was queried")
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+        from routers.settings import model_candidates
+
+        result = model_candidates(
+            role="chat",
+            connection_id="large-catalog",
+        )
+
+        names = {item["model_name"] for item in result["candidates"]}
+        assert "google/gemma-4-31b-it" in names
+
     def test_connection_without_api_key_skipped(self, monkeypatch):
         """auth 必須 connection で env 未設定なら動的取得スキップ (preset は出る)。"""
         from butly_core.llm.connections import Connection, register_connection

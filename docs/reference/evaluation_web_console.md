@@ -35,9 +35,20 @@ The start form covers:
 - all/limited sample, session, and question scopes;
 - Current Time, Mid-term, Session Digest, and RAG switches;
 - RAG source, RAW top-k and character cap, and time decay;
+- retrieval mode: the default `vector`, BM25-backed `hybrid`, or
+  `dual_query`, which searches the original utterance and a Gatekeeper-built
+  query for 15 candidates each, deduplicates and RRF-fuses at most 25, then
+  injects the normal top three;
 - Stage 3 batch size and bootstrap card cap;
 - Connection-then-model selection for chat, gatekeeper, summary, knowledge,
   and embedding;
+- optional Connection-then-model selection and output limit for the semantic
+  judge;
+- an optional Memory Reranker: either the recommended local Cross-Encoder
+  (mMiniLMv2 or GTE multilingual) or a comparison-only LLM Connection, plus
+  candidate-pool size (20 by default), per-candidate cap, batch size, and an
+  optional relevance threshold; it injects zero to three reordered vector
+  candidates (not combinable with Hybrid or Dual Query in version 1);
 - the embedding prefix convention (defaults to `auto`, inferred from the model
   name — see
   [memory_lifecycle.md](memory_lifecycle.md#embedding-profiles-per-model-input-conventions));
@@ -57,6 +68,52 @@ only `RUN_ID` changes: a trailing `_vNN` is incremented, otherwise a
 time-based suggestion is generated. `allow_embedding_mismatch` is a hazardous
 per-run acknowledgement and always resets to off.
 
+The run-history "offline retrieval replay" panel also offers `dual_query`,
+`reranked`, and `evidence_rerank`.
+Without generating answers it compares original-vector and effective
+Recall@1/3/20, top-three rescue/harm, completion/fallback, added latency, and
+LLM token usage when applicable. The comparison runs as a persistent background
+job; the panel refreshes its percentage, current mode/question ID, and recent
+log every two seconds. It keeps running when the page is left and can be stopped
+or rerun with the same settings. Once complete, the panel shows both mode-level
+aggregates and per-question rescue/harm/fallback, vector and selected top three,
+raw scores, and errors. The job and `retrieval_replay.json` survive Backend
+restarts. Enabling the same reranker in a full LoCoMo run puts it in the QA
+retrieval path, so final official/semantic answer quality and retrieval metrics
+remain attributable in one run.
+
+`evidence_rerank` is evaluation-only. It takes the vector top N (20 by default)
+from each card's existing Title / Tags / Summary embedding, embeds the linked
+Episode and RAW-conversation chunks with the same embedding model, and reorders
+cards by their best evidence cosine (MaxP) before selecting the top three. The
+first run has a document-indexing phase. Vectors and hashes are persisted in
+`retrieval_cache/evidence_embeddings.sqlite3`; model, prefix, or text changes
+produce different cache keys. One cached question vector is shared by both
+stages instead of embedding the same question twice. The source instance
+database, cards, and RAW files are not changed.
+
+With a remote Embedding Connection, Episode and RAW text are sent to that
+Connection as normal embedding input. The API key is used only for normal
+Connection authentication and is not stored in the cache or evaluation
+artifacts. The SQLite cache contains no source text, but
+`retrieval_replay.json` intentionally retains and displays up to 600 characters
+of each selected evidence unit for review.
+
+`dual_query` equally RRF-fuses the original top 15 and retrieval-query top 15
+and caps the deduplicated diagnostic pool at 25. The retrieval query is emitted
+inside the normal Gatekeeper JSON, so a full evaluation adds no generative LLM
+call; it does make two embedding calls per memory question. Offline replay of a
+new run reuses the query saved during QA. For an older run without that field,
+replay calls the source run's Gatekeeper once per problem. The panel shows
+original, rewritten, and fused Recall@3, top-three rescue/harm, both rankings,
+the query text, and fused candidate IDs.
+
+Cross-Encoder candidates are scored inside the Backend and are not sent to an
+external Connection. Only the comparison LLM engine sends the current question
+and bounded candidate-card title/summary/episode/source-date data to its
+Reranker Connection. The instance DB and API keys are not included in prompts
+or evaluation artifacts; keys are used only for normal authentication.
+
 ### Japanese dialogue A/B
 
 `data/ja_dialogue_ab_prompts_v1.json` contains ten memory seeds and thirty
@@ -70,9 +127,12 @@ memory under two arms that share the same retrieval settings:
 1. `injection_policy=intent_gated`;
 2. `injection_policy=candidates`.
 
-The Web form can configure the shared `search_mode`, `retrieval_execution`,
+The Web form can configure the shared `search_mode` (`vector`, `hybrid`, or
+`dual_query`), `retrieval_execution`,
 vector threshold, Deep Search toggle, and the BM25/vector candidate counts,
 RRF k, and maximum BM25 document-frequency ratio used by hybrid search. The
+dual-query controls set candidates per query (15 by default), the deduplicated
+pool cap (25), and RRF k. The
 vector result limit is configurable per arm through
 `intent_gated_vector_search_limit` and
 `candidates_vector_search_limit`. The next run inherits these values from the
@@ -117,6 +177,14 @@ mention proxy for memory-irrelevant prompts. The last two are mechanical
 proxies; reviewers use the side-by-side answers for the final naturalness and
 over-personalization judgment.
 
+When enabled, the semantic judge evaluates every prompt twice with the visible
+A/B order reversed. It checks reversed facts, partial answers, and unnecessary
+memory disclosure by meaning. A judgment that changes with display order is
+flagged for human review. Existing mechanical proxies remain unchanged.
+For OpenAI-compatible Connections such as NanoGPT, the request also carries a
+strict `response_format=json_schema` contract instead of relying on prompt-only
+JSON instructions.
+
 Each prompt result is an atomic JSON artifact. Resume skips completed
 `(policy, prompt_id)` pairs. If seed generation is interrupted, the runner
 rebuilds the dedicated instance instead of trusting partial memory.
@@ -151,10 +219,16 @@ The legacy Web Console Backend exposes:
 | `POST` | `/evaluations/jobs/{job_id}/resume` | Resume through the existing CLI |
 | `GET` | `/evaluations/jobs/{job_id}/log` | Tail the combined log |
 | `GET` | `/evaluations/runs` | List saved runs and headline metrics |
+| `GET` | `/evaluations/runs/{run_id}` | Read official scores and current per-question semantic judgments/review reasons |
 | `POST` | `/evaluations/runs/compare` | Compare metrics and questions for 2–8 runs |
+| `POST` | `/evaluations/runs/{run_id}/judge` | Semantically judge an existing LoCoMo run without rerunning QA |
+| `POST` | `/evaluations/runs/retrieval-replay/jobs` | Start a retrieval-only comparison as a persistent job |
+| `GET` | `/evaluations/runs/{run_id}/retrieval-replay` | Read saved aggregate and per-question retrieval results |
+| `POST` | `/evaluations/runs/retrieval-replay` | Run retrieval comparison synchronously (compatibility) |
 | `POST` | `/evaluations/dialogue-ab/jobs` | Start the Japanese dialogue A/B |
 | `GET` | `/evaluations/dialogue-ab/runs` | List Japanese dialogue A/B runs |
 | `GET` | `/evaluations/dialogue-ab/runs/{run_id}` | Read policy and prompt results |
+| `POST` | `/evaluations/dialogue-ab/runs/{run_id}/judge` | Semantically judge an existing A/B run without rerunning QA |
 
 The manager permits one active Web job at a time. This avoids conflicting
 writes and local LLM/GPU overload; the same conservative rule initially
@@ -226,9 +300,38 @@ latency, token totals, card count, Sleeptime failures, source run, QA mode,
 and scope.
 
 The first selected run is the baseline and the last is the primary comparison
-target. The API joins questions by `question_id` and returns the
+target. The API joins questions by `(sample_id, question_id)` and returns the
 `official_score` delta plus each prediction. The UI sorts by ascending delta
 so regressions appear first.
+
+### Semantic judge
+
+Official LoCoMo Token F1 remains authoritative in `scores.json`. Semantic
+judgments are isolated in `semantic_scores.json` plus atomic per-question
+artifacts. They classify translated or paraphrased answers, reversed facts,
+and missing material details as correct, partial, or incorrect. The per-question
+view flags partial verdicts, contradictions, missing critical information, low
+confidence, and both possible false positives and false negatives against the
+official score. A judge failure is never converted to zero; the aggregate
+becomes partial and resume retries only failed items.
+
+The `question_set_fingerprint` in `semantic_scores.json` is recomputed from the
+current questions, references, predictions, and judge configuration (including
+the prompt version). A mismatch marks the artifact `stale`; reports and the Web
+UI hide its old aggregate and per-question judgments until the run is judged
+again.
+
+Judge temperature is fixed at 0.0, and a model independent from answer
+generation can be selected. OpenAI-compatible Connections receive the strict
+Dialogue A/B or LoCoMo JSON Schema at the API boundary, and the returned object
+is still validated locally. LoCoMo sends the question, reference answer, and
+candidate answer to that Connection. Dialogue A/B sends the prompt, minimal
+reference fact, and both answers. It does not send the whole instance database.
+API keys are excluded from judge prompts and evaluation artifacts, used only
+for normal Connection authentication, and never saved in a run (a remote
+Connection necessarily sends authentication credentials to its provider
+endpoint). The evaluation-only judge config is never merged into the Butly
+instance config.
 
 ### Reading the retrieval metrics
 

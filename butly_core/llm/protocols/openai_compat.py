@@ -151,6 +151,11 @@ class OpenAICompatAdapter(BaseProvider):
         }
         if reasoning_effort is not None:
             normalized["reasoning_effort"] = reasoning_effort
+        response_format = config.get("response_format")
+        if response_format is not None:
+            if not isinstance(response_format, dict):
+                raise ValueError("response_format must be a mapping")
+            normalized["response_format"] = response_format
 
         return normalized
 

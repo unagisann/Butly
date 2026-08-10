@@ -138,9 +138,11 @@ SYSTEM_CONFIG = {
         "dynamic_threshold": 0.6,  # Google Search Dynamic Retrieval Threshold (0.0 - 1.0)
         "default_use_google_search": False,  # デフォルトでGoogle検索グラウンディングを使用するか
         # ハイブリッド検索（検索改修計画 §3.5）。正は settings/defaults.py。
-        "search_mode": "vector",  # "vector" | "hybrid"
+        "search_mode": "vector",  # "vector" | "hybrid" | "dual_query"
         "bm25_candidates": 20,
         "vector_candidates": 20,
+        "dual_query_candidates": 15,
+        "dual_query_pool_limit": 25,
         "rrf_k": 60,
         "bm25_weights": {"title": 5.0, "tags": 3.0, "summary": 2.0, "episode": 1.0},
         "bm25_max_df_ratio": 0.5,
@@ -176,8 +178,9 @@ SYSTEM_CONFIG = {
         "streaming_enabled": True,
     },
     "glossary": {
-        # 1 ターン = user+assistant 1 ペア。0 で user_input のみ
-        "scan_depth": 2,
+        # glossary は現在の user_input に含まれる語句だけを展開する。
+        # 過去の assistant 発話から再ヒットして用語が自己増幅するのを避ける。
+        "scan_depth": 0,
         # "user" | "assistant" | "both"
         "scan_target": "both",
         # 1リクエストで注入する最大エントリ数

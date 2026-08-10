@@ -44,6 +44,14 @@ embedding:
   connection: local_embedding
   model_name: nomic-embed-text
 
+# Optional evaluation-only semantic judge. This is never copied into the
+# Butly instance and never replaces the official LoCoMo score.
+# judge:
+#   connection: nanogpt
+#   model_name: TEE/gemma4-31b
+#   generation_config:
+#     max_output_tokens: 2048
+
 # Non-model override: what the RAG block injects into the prompt.
 # Cards are lossy compression — extraction can drop event dates or status
 # facts. "both" keeps the cards as the search index and appends the original
