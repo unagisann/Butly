@@ -28,11 +28,13 @@ subprocessとして呼ぶ薄い管理層である。Replay、Sleeptime、QA、ch
 新規評価フォームは次を扱う。
 
 - `RUN_ID`
+- 実行内容: 通常評価、または`retrieval_prep`（Replay/Sleeptime後にQAを省略）
 - `RUN_MODE`: `standard` / `stage3-full` / `stage3-source` /
   `stage3-off` / `stage3-on`
 - `SOURCE_MEMORY_RUN_ID`
 - `QA_MODE`、locale
-- sample / session / questionの全件または上限
+- datasetから取得したsample IDの複数選択（未選択時は先頭からの件数指定）
+- session / questionの全件または上限
 - Current Time / Mid-term / Session Digest / RAGのON/OFF
 - RAG source、RAW top-k、RAW文字数上限、時間減衰
 - 検索方式。既定の`vector`、BM25併用の`hybrid`に加え、
@@ -61,8 +63,18 @@ StreamlitまたはBackendの再起動後も復元できる。重複を避ける�
 末尾が`_vNN`なら次番号、それ以外は時刻ベースの候補へ更新する。
 `allow_embedding_mismatch`は危険な承知操作なので引き継がず、runごとにOFFへ戻す。
 
+`retrieval_prep`は選択sampleのReplayと各sessionのSleeptimeだけを実行する。
+Chat回答、公式採点、Semantic Judgeは呼ばず、選択したLoCoMo質問を
+`results/retrieval_questions.json`へatomic保存する。完了runは履歴で
+`retrieval_ready`となり、「検索だけ比較」の対象にできる。これにより、例えば
+`conv-30`だけで記憶を作り、複数の検索方式を試してからQA費用を使うか判断できる。
+採用後は同じrunを`SOURCE_MEMORY_RUN_ID`に選び、正本カードを複製してQAだけを
+実行できる。
+sample IDは開始時にもBackendでdatasetと照合し、未知IDや重複を拒否する。
+
 LoCoMo履歴の「検索だけ比較（offline retrieval replay）」では`dual_query`、
-`reranked`、`evidence_rerank`を選べる。
+`reranked`、`evidence_rerank`、`hybrid_evidence_rerank`、
+`hybrid_evidence_fusion`を選べる。
 回答生成なしで元vector順位とリランク後のRecall@1/3/20、top3のrescue/harm、
 完了／fallback、追加レイテンシ、LLM使用時のトークン量を保存・表示する。
 検索比較は永続ジョブとしてバックグラウンドで動き、進捗率、現在のモード・問題ID、
@@ -70,11 +82,29 @@ LoCoMo履歴の「検索だけ比較（offline retrieval replay）」では`dual
 可能である。完了後はモード別集計に加え、問題別のrescue/harm/fallback、
 元vector top3、選択top3、raw score、エラーを表示する。ジョブと
 `retrieval_replay.json`はBackend再起動後も復元される。
+履歴の「検索比較runの横断比較」では、保存済み成果物がある2〜8 runを選び、
+run×modeのRecall@1/3/20と先頭runからのdeltaを表示する。先頭runと末尾runは
+共通問題ごとの改善・悪化も確認できる。Sample ID、質問集合、候補数limitが異なる
+runは同条件比較とみなさず、UIに警告を表示する。
+通常runは`qa_results.jsonl`、`retrieval_prep` runは固定済みの
+`retrieval_questions.json`を質問入力として使う。後者の`dual_query`はQA時の保存済み
+検索文を持たないため、元runのGatekeeper設定で検索文を生成する。
 本評価フォームでRerankerを有効にしたrunは、同じ処理がQA経路にも入り、公式／
 Semantic Judgeの回答品質と検索指標を同じrunで確認できる。
 
-`evidence_rerank`は評価専用で、既存カードのTitle / Tags / Summary embeddingによる
-vector top N（既定20）を候補集合とし、各候補に紐づくEpisodeとRAW会話チャンクを
+本評価フォームの`Search mode`でも`hybrid_evidence_fusion`を選べる。通常hybridの
+top N（既定20）だけをEpisode / RAWで遅延再評価し、既定0.70 / 0.30で順位融合して
+top 3を注入する。質問vectorは一段目と共有し、run内の永続cacheはvectorとhashだけを
+保存する。失敗時は通常hybrid順位へ戻る。履歴／比較にはFusionの完了・fallback、
+元hybrid top3からのrescue/harm、p95遅延を表示する。
+
+`evidence_rerank`はvector top N、`hybrid_evidence_rerank`はBM25とvectorを
+RRF融合したhybrid top N（既定20）を候補集合とする評価専用モードである。
+`hybrid_evidence_fusion`は同じ候補に対し、hybrid順位とEvidence順位の逆数を
+既定0.70 / 0.30で重み付き融合する。hybridの有効順位を保持しながら2・3位を
+Episode / RAWで補正するモードで、重みはUIから変更できる。offline replayでは
+候補比較だけを行い、本評価では同じ共通順位融合を実際のQA検索へ適用する。
+各候補に紐づくEpisodeとRAW会話チャンクを
 同じembeddingモデルで再採点する。カードごとに最も高い根拠cosine（MaxP）を使って
 並べ替え、top 3を選ぶ。初回は文書embeddingの準備フェーズがあり、ベクトルとhashを
 `retrieval_cache/evidence_embeddings.sqlite3`へ保存する。モデル、prefix、本文hashが
@@ -190,6 +220,7 @@ legacy Web Console用Backendに次を追加する。
 | Method | Path | 動作 |
 |---|---|---|
 | `GET` | `/evaluations/config` | run保存先、dataset候補、run mode、最後の評価request |
+| `GET` | `/evaluations/datasets/samples` | datasetを検証し、sample ID・session数・question数を返す |
 | `POST` | `/evaluations/jobs` | 新しい評価を開始 |
 | `GET` | `/evaluations/jobs` | ジョブ一覧 |
 | `GET` | `/evaluations/jobs/{job_id}` | 状態・進捗 |
@@ -202,6 +233,7 @@ legacy Web Console用Backendに次を追加する。
 | `POST` | `/evaluations/runs/{run_id}/judge` | 既存LoCoMo runをQA再実行なしで意味判定 |
 | `POST` | `/evaluations/runs/retrieval-replay/jobs` | 検索だけの比較を永続ジョブとして開始 |
 | `GET` | `/evaluations/runs/{run_id}/retrieval-replay` | 保存済み検索比較の集計・問題別結果 |
+| `POST` | `/evaluations/runs/retrieval-replay/compare` | 2〜8 runの保存済み検索比較をモード別・問題別に横断比較 |
 | `POST` | `/evaluations/runs/retrieval-replay` | 検索比較を同期実行（互換用） |
 | `POST` | `/evaluations/dialogue-ab/jobs` | 日本語対話A/Bを開始 |
 | `GET` | `/evaluations/dialogue-ab/runs` | 日本語対話A/Bの履歴 |
@@ -269,7 +301,9 @@ dataset候補は`BUTLY_LOCOMO_DATASET`、`data/locomo10.json`、合成mini fixtu
 
 ## 履歴と比較
 
-履歴は保存先直下の`*/run_config.json`を走査する。`scores.json`があれば次を表示する。
+履歴は保存先直下の`*/run_config.json`を走査する。通常runは`scores.json`があれば
+次を表示する。`retrieval_prep` runは選択sample ID、固定質問数、
+`retrieval_ready`状態を表示し、採点済みrunとは区別する。
 
 - official overall
 - question count、exact match、answer containment

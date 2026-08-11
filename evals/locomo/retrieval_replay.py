@@ -19,8 +19,13 @@ LLM の回答生成を伴わないので、`rerun-qa` を回す前に「そも�
     python -m evals.locomo.retrieval_replay --run ./eval_runs/runs/qwen3_14b_web_v26 \
         --modes vector evidence_rerank --profile ./eval_runs/profiles/<id>.yaml
 
+    # hybrid top20を同じEpisode/RAW indexでtop3へ再順位付け／順位融合
+    python -m evals.locomo.retrieval_replay --run ./eval_runs/runs/qwen3_14b_web_v26 \
+        --modes hybrid hybrid_evidence_rerank hybrid_evidence_fusion \
+        --profile ./eval_runs/profiles/<id>.yaml
+
 出力は stdout のサマリと、`--out` 指定時に JSON。検索用DBは一時ディレクトリへ
-複製するため、元runのinstance DB・カード・RAWは変更しない。`evidence_rerank`は
+複製するため、元runのinstance DB・カード・RAWは変更しない。Evidence rerank系は
 再利用可能なembedding cacheを元runの`retrieval_cache/`へ追加する。
 """
 
@@ -35,23 +40,50 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from butly_core.core import hybrid_search as hs
+from butly_core.core.evidence_fusion import (
+    DEFAULT_EVIDENCE_FUSION_BASE_WEIGHT,
+    fuse_hybrid_evidence_ranks,
+)
 from butly_core.io_utils import atomic_write_text
 from evals.locomo import scorer as S
 from evals.locomo.progress import ProgressReporter, create_console_progress
 
 RECALL_KS = (1, 3, 20)
 BM25_COLUMNS = ["id", "title", "summary", "episode", "is_archived"]
+EVIDENCE_RERANK_MODES = frozenset(
+    {
+        "evidence_rerank",
+        "hybrid_evidence_rerank",
+        "hybrid_evidence_fusion",
+    }
+)
+HYBRID_EVIDENCE_MODES = frozenset(
+    {"hybrid_evidence_rerank", "hybrid_evidence_fusion"}
+)
 
 
 def load_questions(run_dir: Path) -> list[dict]:
-    """qa_results.jsonl から質問・evidence・instance を取り出す。"""
+    """Load questions from QA results or a QA-free retrieval manifest."""
     path = run_dir / "results" / "qa_results.jsonl"
-    if not path.is_file():
-        raise FileNotFoundError(f"qa_results.jsonl not found: {path}")
-    rows = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
+    if path.is_file():
+        rows = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
+        return rows
+
+    manifest_path = run_dir / "results" / "retrieval_questions.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            "neither qa_results.jsonl nor retrieval_questions.json exists "
+            f"under {run_dir / 'results'}"
+        )
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    rows = payload.get("questions") if isinstance(payload, dict) else None
+    if not isinstance(rows, list) or not all(
+        isinstance(row, dict) for row in rows
+    ):
+        raise ValueError(f"invalid retrieval question manifest: {manifest_path}")
     return rows
 
 
@@ -106,14 +138,19 @@ def evaluate(
     evidence_embedder: Optional[Callable[[str, str], Any]] = None,
     evidence_cache_path: Optional[Path] = None,
     evidence_raw_chunk_chars: int = 1800,
+    evidence_fusion_base_weight: float = (
+        DEFAULT_EVIDENCE_FUSION_BASE_WEIGHT
+    ),
 ) -> dict:
     """mode ごとに Recall@k / no-hit を集計する。
 
     ``bm25`` mode は embedding を呼ばない。``vector`` / ``hybrid`` は
     質問1件につきembeddingが1回、``dual_query``は保存済み検索文なら2回、
     旧runならGatekeeper生成1回 + embedding 2回が走る。
-    ``evidence_rerank``は初回にEpisode/RAW文書もembeddingし、以後は永続cacheを
-    再利用する。
+    Evidence rerank系は初回にEpisode/RAW文書もembeddingし、以後は永続cacheを
+    再利用する。``evidence_rerank``はvector候補、
+    ``hybrid_evidence_rerank``はhybrid候補をtop 3へ並べ替える。
+    ``hybrid_evidence_fusion``はhybrid順位を主軸にEvidence順位を融合する。
     """
     allowed_modes = {
         "bm25",
@@ -122,6 +159,8 @@ def evaluate(
         "dual_query",
         "reranked",
         "evidence_rerank",
+        "hybrid_evidence_rerank",
+        "hybrid_evidence_fusion",
     }
     unknown_modes = set(modes) - allowed_modes
     if not modes or unknown_modes:
@@ -130,6 +169,12 @@ def evaluate(
         raise ValueError("limit must be a positive integer")
     if "reranked" in modes and limit > 100:
         raise ValueError("reranked candidate limit must be at most 100")
+    if isinstance(evidence_fusion_base_weight, bool) or not isinstance(
+        evidence_fusion_base_weight, (int, float)
+    ):
+        raise ValueError("evidence fusion base weight must be a number")
+    if not 0.0 <= float(evidence_fusion_base_weight) <= 1.0:
+        raise ValueError("evidence fusion base weight must be between 0 and 1")
     rows = load_questions(run_dir)
     provenance = S._load_provenance(run_dir, rows)
     if provenance is None:
@@ -153,6 +198,8 @@ def evaluate(
             "dual_query",
             "reranked",
             "evidence_rerank",
+            "hybrid_evidence_rerank",
+            "hybrid_evidence_fusion",
         } & set(modes):
             from butly_core.core.brain import ButlyBrain
 
@@ -165,7 +212,7 @@ def evaluate(
         evidence_reranker = None
         evidence_work = 0
         try:
-            if "evidence_rerank" in modes:
+            if EVIDENCE_RERANK_MODES & set(modes):
                 from evals.locomo.evidence_reranker import EvidenceReranker
 
                 embedding_conf = brain._resolve_embedding_conf(
@@ -233,6 +280,9 @@ def evaluate(
                         evidence_work + mode_index * len(targets)
                     ),
                     total_work=total_work,
+                    evidence_fusion_base_weight=float(
+                        evidence_fusion_base_weight
+                    ),
                 )
         finally:
             if evidence_reranker is not None:
@@ -254,6 +304,9 @@ def _evaluate_mode(
     progress: Optional[ProgressReporter] = None,
     work_offset: int = 0,
     total_work: int = 0,
+    evidence_fusion_base_weight: float = (
+        DEFAULT_EVIDENCE_FUSION_BASE_WEIGHT
+    ),
 ) -> dict:
     coverage: dict = {k: [] for k in RECALL_KS}
     hits: dict = {k: 0 for k in RECALL_KS}
@@ -296,6 +349,7 @@ def _evaluate_mode(
                     percent,
                     "retrieval",
                     f"mode={mode}; question={row_index}/{len(targets)}; "
+                    f"sample={row.get('sample_id')}; "
                     f"id={row.get('question_id')}",
                     completed=completed,
                     total=total_work,
@@ -334,7 +388,12 @@ def _evaluate_mode(
                     ],
                     "override_config": conf,
                 }
-                if mode == "evidence_rerank":
+                if evidence_reranker is not None and mode in {
+                    "vector",
+                    "hybrid",
+                    "reranked",
+                    *EVIDENCE_RERANK_MODES,
+                }:
                     try:
                         evidence_query_vector = (
                             evidence_reranker.embed_query(
@@ -342,9 +401,9 @@ def _evaluate_mode(
                             )
                         )
                     except Exception:
-                        # Preserve the existing per-question error/fallback
-                        # path. A transient provider may still recover when
-                        # rerank() retries below.
+                        # Preserve each mode's existing provider/fallback path.
+                        # A transient provider may still recover in the search
+                        # call or when the evidence reranker retries below.
                         evidence_query_vector = None
                     if evidence_query_vector is not None:
                         search_kwargs["query_embedding"] = (
@@ -416,22 +475,47 @@ def _evaluate_mode(
                     selected_recall_at_3 = after
                     reranker_rescues += after > before
                     reranker_harms += after < before
-                elif mode == "evidence_rerank":
+                elif mode in EVIDENCE_RERANK_MODES:
                     if evidence_reranker is None:  # pragma: no cover - guarded
                         raise ValueError(
-                            "evidence_rerank requires an evidence index"
+                            f"{mode} requires an evidence index"
                         )
-                    vector_candidates = list(search_output.get("results") or [])
-                    vector_ids = [
+                    evidence_base_candidates = list(
+                        search_output.get("results") or []
+                    )
+                    evidence_base_ids = [
                         str(candidate.get("id"))
-                        for candidate in vector_candidates
+                        for candidate in evidence_base_candidates
                     ]
                     evidence_diag = evidence_reranker.rerank(
                         str(row.get("question") or ""),
-                        vector_candidates,
+                        evidence_base_candidates,
                         top_n=3,
                         query_vector=evidence_query_vector,
                     )
+                    if mode == "hybrid_evidence_fusion":
+                        evidence_only_ids = list(
+                            evidence_diag.get("candidate_ids") or []
+                        )
+                        fused_ids, fusion_scores = (
+                            fuse_hybrid_evidence_ranks(
+                                evidence_base_ids,
+                                list(evidence_diag.get("scores") or []),
+                                base_weight=evidence_fusion_base_weight,
+                            )
+                        )
+                        evidence_diag["evidence_candidate_ids"] = (
+                            evidence_only_ids
+                        )
+                        evidence_diag["candidate_ids"] = fused_ids
+                        evidence_diag["selected_candidate_ids"] = (
+                            fused_ids[:3]
+                        )
+                        # Evidence-only previews may refer to cards that the
+                        # fused ordering did not select. Keep fusion output
+                        # truthful; rank/type/source remain in fusion_scores.
+                        evidence_diag["selected_matches"] = []
+                        evidence_diag["fusion_scores"] = fusion_scores
                     evidence_attempts += 1
                     if evidence_diag.get("status") in {
                         "completed",
@@ -449,19 +533,20 @@ def _evaluate_mode(
                     if isinstance(latency, int):
                         evidence_latencies.append(latency)
                     candidate_ids = list(
-                        evidence_diag.get("candidate_ids") or vector_ids
+                        evidence_diag.get("candidate_ids")
+                        or evidence_base_ids
                     )
                     selected_ids = list(
                         evidence_diag.get("selected_candidate_ids")
                         or candidate_ids[:3]
                     )
                     before = S._coverage_for_card_ids(
-                        row, provenance, vector_ids[:3]
+                        row, provenance, evidence_base_ids[:3]
                     ) or 0.0
                     after = S._coverage_for_card_ids(
                         row, provenance, selected_ids
                     ) or 0.0
-                    vector_recall_at_3 = before
+                    evidence_base_recall_at_3 = before
                     selected_recall_at_3 = after
                     evidence_rescues += after > before
                     evidence_harms += after < before
@@ -501,6 +586,7 @@ def _evaluate_mode(
                     row_coverage[3] < original_row_coverage[3]
                 )
             detail = {
+                "sample_id": row.get("sample_id"),
                 "question_id": row.get("question_id"),
                 "question": row.get("question"),
                 "instance_name": instance_name,
@@ -541,7 +627,7 @@ def _evaluate_mode(
                         "error": reranker_diag.get("error"),
                     }
                 )
-            elif mode == "evidence_rerank":
+            elif mode in EVIDENCE_RERANK_MODES:
                 selected_value = S._coverage_for_card_ids(
                     row, provenance, selected_ids
                 ) or 0.0
@@ -549,15 +635,22 @@ def _evaluate_mode(
                     selected_recall_at_3 = selected_value
                 evidence_selected_coverage.append(selected_value)
                 evidence_selected_hits += selected_value > 0
+                base_search_mode = (
+                    "hybrid"
+                    if mode in HYBRID_EVIDENCE_MODES
+                    else "vector"
+                )
                 detail.update(
                     {
-                        "vector_candidate_ids": vector_ids,
+                        "base_search_mode": base_search_mode,
+                        "base_candidate_ids": evidence_base_ids,
+                        "base_recall_at_3": evidence_base_recall_at_3,
                         "selected_candidate_ids": selected_ids,
-                        "vector_recall_at_3": vector_recall_at_3,
                         "selected_recall_at_3": selected_value,
                         "evidence_delta_at_3": (
-                            selected_recall_at_3 - vector_recall_at_3
-                            if vector_recall_at_3 is not None
+                            selected_recall_at_3
+                            - evidence_base_recall_at_3
+                            if evidence_base_recall_at_3 is not None
                             else None
                         ),
                         "evidence_rerank_status": evidence_diag.get(
@@ -570,6 +663,14 @@ def _evaluate_mode(
                             "latency_ms"
                         ),
                         "evidence_scores": evidence_diag.get("scores") or [],
+                        "evidence_fusion_scores": evidence_diag.get(
+                            "fusion_scores"
+                        )
+                        or [],
+                        "evidence_candidate_ids": evidence_diag.get(
+                            "evidence_candidate_ids"
+                        )
+                        or [],
                         "selected_evidence": evidence_diag.get(
                             "selected_matches"
                         )
@@ -577,6 +678,24 @@ def _evaluate_mode(
                         "error": evidence_diag.get("error"),
                     }
                 )
+                if base_search_mode == "vector":
+                    detail.update(
+                        {
+                            "vector_candidate_ids": evidence_base_ids,
+                            "vector_recall_at_3": (
+                                evidence_base_recall_at_3
+                            ),
+                        }
+                    )
+                else:
+                    detail.update(
+                        {
+                            "hybrid_candidate_ids": evidence_base_ids,
+                            "hybrid_recall_at_3": (
+                                evidence_base_recall_at_3
+                            ),
+                        }
+                    )
             elif mode == "dual_query":
                 detail.update(
                     {
@@ -674,11 +793,27 @@ def _evaluate_mode(
             "completion_tokens_total": reranker_completion_tokens,
             "error_distribution": reranker_errors,
         }
-    elif mode == "evidence_rerank":
+    elif mode in EVIDENCE_RERANK_MODES:
         attempts_denominator = evidence_attempts or 1
         index_diagnostics = evidence_reranker.diagnostics()
         result["evidence_reranker"] = {
             **index_diagnostics,
+            "base_search_mode": (
+                "hybrid"
+                if mode in HYBRID_EVIDENCE_MODES
+                else "vector"
+            ),
+            "fusion": (
+                {
+                    "strategy": "weighted_reciprocal_rank",
+                    "base_weight": evidence_fusion_base_weight,
+                    "evidence_weight": 1.0
+                    - evidence_fusion_base_weight,
+                    "rrf_k": 0,
+                }
+                if mode == "hybrid_evidence_fusion"
+                else None
+            ),
             "candidate_limit": limit,
             "output_limit": 3,
             "attempted": evidence_attempts,
@@ -761,11 +896,17 @@ def _mode_override(
         brain = conf.setdefault("brain", {})
         brain["search_mode"] = "vector"
         brain["vector_candidates"] = limit
-    elif mode == "evidence_rerank":
+    elif mode in EVIDENCE_RERANK_MODES:
         conf.pop("reranker", None)
         brain = conf.setdefault("brain", {})
-        brain["search_mode"] = "vector"
+        brain["search_mode"] = (
+            "hybrid"
+            if mode in HYBRID_EVIDENCE_MODES
+            else "vector"
+        )
         brain["vector_candidates"] = limit
+        if mode in HYBRID_EVIDENCE_MODES:
+            brain["bm25_candidates"] = limit
     else:
         # Profiles from a reranked run must still provide a clean vector/hybrid
         # baseline in the same offline comparison.
@@ -904,6 +1045,8 @@ def main(argv: Optional[list] = None) -> int:
             "dual_query",
             "reranked",
             "evidence_rerank",
+            "hybrid_evidence_rerank",
+            "hybrid_evidence_fusion",
         ],
         help="比較する検索モード（bm25 は embedding を呼ばない）",
     )
@@ -929,12 +1072,18 @@ def main(argv: Optional[list] = None) -> int:
         "--evidence-raw-chunk-chars",
         type=int,
         default=1800,
-        help="evidence_rerankで1つのRAW断片へ入れる最大文字数",
+        help="Evidence rerank系で1つのRAW断片へ入れる最大文字数",
     )
     parser.add_argument(
         "--evidence-cache",
         type=Path,
         help="Episode/RAW/質問EmbeddingのSQLiteキャッシュ",
+    )
+    parser.add_argument(
+        "--evidence-fusion-base-weight",
+        type=float,
+        default=DEFAULT_EVIDENCE_FUSION_BASE_WEIGHT,
+        help="hybrid_evidence_fusionのhybrid順位重み（0〜1）",
     )
     parser.add_argument("--out", type=Path, help="結果 JSON の書き出し先")
     parser.add_argument(
@@ -986,6 +1135,7 @@ def main(argv: Optional[list] = None) -> int:
         progress=progress,
         evidence_cache_path=args.evidence_cache,
         evidence_raw_chunk_chars=args.evidence_raw_chunk_chars,
+        evidence_fusion_base_weight=args.evidence_fusion_base_weight,
     )
     from datetime import datetime, timezone
 
@@ -993,6 +1143,10 @@ def main(argv: Optional[list] = None) -> int:
     result["generated_at"] = datetime.now(timezone.utc).isoformat()
     result["limit"] = args.limit
     result["modes"] = list(args.modes)
+    if "hybrid_evidence_fusion" in args.modes:
+        result["evidence_fusion_base_weight"] = (
+            args.evidence_fusion_base_weight
+        )
     if args.job_id:
         result["job_id"] = args.job_id
 

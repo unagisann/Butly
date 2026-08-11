@@ -200,11 +200,41 @@ the existing Gatekeeper response owns the extra field. `retrieval_source`
 continues to mean vector/BM25 evidence; query overlap is recorded separately
 as `query_source` and per-query ranks.
 
+### QA-free retrieval preparation (`workflow=retrieval_prep`)
+
+Retrieval experiments do not require generating every QA answer first. Pass
+`--workflow retrieval_prep` to `run`; the runner performs normal Replay and
+per-session Sleeptime for the selected samples, then skips QA, official
+scoring, and semantic judging.
+
+```bash
+python -m evals.locomo.cli run \
+  --dataset /path/to/locomo10.json \
+  --output-dir ./eval_runs/runs \
+  --run-id retrieval_conv_30 \
+  --sample-ids conv-30 \
+  --all-sessions \
+  --all-questions \
+  --workflow retrieval_prep \
+  --profile ./eval_runs/profiles/search.yaml
+```
+
+The runner atomically writes selected questions, sample and instance IDs,
+categories, and evidence to `results/retrieval_questions.json`. The checkpoint
+becomes completed only after Replay/Sleeptime and that manifest are complete.
+`resume` restores the workflow, skips checkpointed sessions, and can recreate
+the manifest. Explicit sample IDs override the default `sample_limit=1`,
+including when several IDs are supplied.
+After retrieval comparison, the prep run can be passed to `rerun-qa` (or
+selected as `SOURCE_MEMORY_RUN_ID` in the Web Console). The target workflow is
+forced back to `full`, so QA runs against a clone of the canonical cards.
+
 The run-history section has an "offline retrieval replay" panel
 that starts a persistent job through
 `POST /evaluations/runs/retrieval-replay/jobs` (the previous synchronous
 endpoint remains for compatibility). It compares Recall@1/3/20 for `bm25` /
-`vector` / `hybrid` / `dual_query` / `reranked` / `evidence_rerank` without
+`vector` / `hybrid` / `dual_query` / `reranked` / `evidence_rerank` /
+`hybrid_evidence_rerank` / `hybrid_evidence_fusion` without
 generating answers. Percentage,
 current mode/question ID, and recent logs refresh every two seconds; work
 continues after leaving the page and can be stopped or rerun with the same
@@ -217,11 +247,23 @@ for an old run without one, it also calls the source Gatekeeper once per
 problem. `reranked` additionally batch-scores the selected candidate
 pool. Per-question `details` retain the question, evidence, original vector
 order, actually selected zero-to-three cards, all raw scores, and errors for
-threshold calibration and rescue/harm review.
+threshold calibration and rescue/harm review. Normal runs load questions from
+`qa_results.jsonl`; `retrieval_prep` runs load the fixed manifest. The manifest
+has no QA-time Gatekeeper query, so `dual_query` calls the profile's Gatekeeper
+once per problem.
 
-`evidence_rerank` is an evaluation-only two-stage retrieval mode. It takes the
-vector top N (20 by default) from the existing Title / Tags / Summary card
-embedding, embeds each candidate's Episode and linked RAW conversation in the
+When at least two saved retrieval artifacts exist, the Web Console can compare
+Recall by run and mode and show deltas from the first selected run. Per-question
+deltas use common questions from the first run as the baseline and the last run
+as the target. A warning marks comparisons whose sample IDs, question sets, or
+candidate limits differ, so cross-sample trends are not mistaken for a
+like-for-like delta.
+
+The evaluation-only `evidence_rerank` takes vector top N, while
+`hybrid_evidence_rerank` takes BM25/vector RRF-fused hybrid top N (20 by
+default). `hybrid_evidence_fusion` uses the same pool and combines reciprocal
+hybrid/Evidence ranks; `--evidence-fusion-base-weight` controls the hybrid
+share (0.70 by default). Each mode embeds each candidate's Episode and linked RAW conversation in the
 same space, and selects the top three by each card's maximum evidence cosine
 (MaxP). RAW is split into 1,800-character chunks with 180-character overlap;
 only legacy cards with neither Episode nor RAW fall back to Summary. Document
@@ -311,11 +353,22 @@ Retrieval metrics emitted by the scorer:
 | `reranker_completion_rate` / `reranker_fallback_rate` | reranker attempts | share with valid structured output / share restored to vector order |
 | `reranker_rescue_rate_at_3` / `reranker_harm_rate_at_3` | completed reranks with oracle cards | share where effective top-3 improved / degraded vector top-3 |
 | `reranker_latency_ms_p50/p95` | reranker attempts | added reranker-only latency |
+| `evidence_fusion_completion_rate` / `evidence_fusion_fallback_rate` | fusion attempts | share with usable Episode/RAW scores / share restored to hybrid order |
+| `evidence_fusion_rescue_rate_at_3` / `evidence_fusion_harm_rate_at_3` | completed fusion questions with oracle cards | share where fusion top-3 improved / degraded hybrid top-3 |
+| `evidence_fusion_latency_ms_p50/p95` | fusion attempts | added evidence-fusion latency |
+| `evidence_fusion_cache_hit_rate` | fusion query/document embedding lookups | share served by the persistent run cache |
 | `retrieval_latency_ms_p50/p95` | executed questions | retrieval-only latency (includes the embedding call) |
 | `bm25_short_term_hit_rate` | executed questions | share where the 2-char CJK LIKE fallback contributed |
 
 `evidence_retrieval_rate` measures **injected** cards and therefore reflects the
 injection policy; judge ranking quality with `retrieval_recall_at_k` instead.
+With `brain.search_mode: hybrid_evidence_fusion`, only the normal hybrid top-N
+(20 by default) is rescored by Episode/RAW MaxP cosine. Reciprocal hybrid and
+Evidence ranks are combined at 0.70/0.30 by default before the top three are
+injected. The first-stage question vector is reused, and only document vectors
+and hashes are persisted in a run-scoped SQLite cache. RAW text is not cached.
+Evidence read, embedding, or cache failures fall back to the original hybrid
+order without failing answer generation.
 `python -m evals.locomo.retrieval_replay` compares those recalls offline (no
 answer generation) before spending QA tokens.
 

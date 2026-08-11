@@ -28,6 +28,7 @@ PROFILE_ROLE_SECTIONS = (
     "memory_probe",
 )
 QA_MODES = ("independent", "sequential")
+WORKFLOWS = ("full", "retrieval_prep")
 DEFAULT_EVALUATION_LOCALE = "en"
 SUPPORTED_EVALUATION_LOCALES = ("en", "ja")
 
@@ -56,6 +57,7 @@ class ReplayConfig:
     session_limit: Optional[int] = None
     question_limit: Optional[int] = 1
     qa_mode: str = "independent"
+    workflow: str = "full"
     locale: Optional[str] = None
     model_name: Optional[str] = None
     connection: Optional[str] = None
@@ -68,6 +70,12 @@ class ReplayConfig:
         _validate_optional_limit("question_limit", self.question_limit)
         if self.qa_mode not in QA_MODES:
             raise ValueError(f"qa_mode must be one of {QA_MODES}")
+        if self.workflow not in WORKFLOWS:
+            raise ValueError(f"workflow must be one of {WORKFLOWS}")
+        if self.workflow == "retrieval_prep" and self.qa_mode != "independent":
+            raise ValueError(
+                "retrieval_prep requires qa_mode='independent'"
+            )
         if self.locale is not None and (
             not isinstance(self.locale, str)
             or self.locale.strip() not in SUPPORTED_EVALUATION_LOCALES
@@ -86,6 +94,7 @@ class ReplayConfig:
             "session_limit": self.session_limit,
             "question_limit": self.question_limit,
             "qa_mode": self.qa_mode,
+            "workflow": self.workflow,
             "locale": self.locale,
             "model_name": self.model_name,
             "connection": self.connection,
@@ -121,6 +130,7 @@ class ReplayConfig:
             session_limit=_optional_int(payload.get("session_limit")),
             question_limit=_optional_int(payload.get("question_limit", 1)),
             qa_mode=str(qa_mode),
+            workflow=str(payload.get("workflow") or "full"),
             locale=_optional_text(payload.get("locale")),
             model_name=payload.get("model_name"),
             connection=payload.get("connection"),

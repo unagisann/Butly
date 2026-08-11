@@ -2,7 +2,7 @@
 
 🌐 [日本語](FILE_STRUCTURE.ja.md) | **English**
 
-> Last updated: 2026-07-26
+> Last updated: 2026-08-10
 
 This document gives an overview of every file and module in the repository. For exhaustive per-method commentary, see the Japanese version — this English version covers the same scope but stays concise.
 
@@ -22,7 +22,7 @@ This document gives an overview of every file and module in the repository. For 
 | `dependencies.py` | Cross-router singletons (`InstanceManager`, `Gatekeeper`, `MemoryBlockBuilder`, `instance_store`) and `get_instance_components()` lazy factory. |
 | `sleeptime.py` | Daily / weekly memory consolidation. Runnable standalone (`python sleeptime.py`) or via HTTP API. `ButlySleeptime(base_dir=None, instances_dir=None)` supports isolated storage for evaluation while preserving the existing default paths. `ask_gemini_to_summarize` returns `(cards, status)` and `stage_2_knowledgeize` returns chunk stats (`{chunks, failed_chunks, cards_created, failures}`); failed chunks keep their RAW files for the next pass, a legitimate empty extraction archives them. |
 | `migrate_embeddings.py` | Regenerates `embedding_blob` after provider switch. CLI: `--instance` / `--batch-size` / `--dry-run` / `--all`. |
-| `evals/locomo/` | Environment-independent LoCoMo evaluation CLI. Runs Replay → synchronous Sleeptime → Runtime QA → official-compatible scoring/reporting in an isolated, checkpointed workspace without adding production API routes. |
+| `evals/locomo/` | Environment-independent LoCoMo evaluation CLI. Runs Replay → synchronous Sleeptime → Runtime QA → scoring/reporting in an isolated checkpointed workspace; `retrieval_prep` skips QA and writes an offline-retrieval manifest. |
 | `evals/dialogue_ab.py` | Isolated Japanese production-dialogue runner comparing `intent_gated` and `candidates` on fresh per-prompt clones, with durable results and resume. Memory comes either from the dataset's `memory_seed` (Sleeptime runs once) or from a **snapshot of a real instance** (`memory_source` / `--seed-instance`; Sleeptime skipped, source read-only, stored vectors reused unless `--reembed`). An optional two-pass order-reversed semantic judge supports cached resume and post-hoc judging without rerunning QA. |
 | `evals/semantic_judge.py` | Evaluation-only LLM judge shared by Japanese dialogue A/B and LoCoMo: strict JSON, prompt-injection resistance, fingerprints, and semantic aggregates. |
 | `dependencies.py` / `discovery_agent.py` / `news_agent.py` | Dashboard helpers (network discovery, news feed). |
@@ -47,31 +47,36 @@ instances tree. The bundled mini fixture is synthetic.
 - `replay.py` — replay/Sleeptime/independent-or-sequential QA orchestration
   with checkpoint updates and `resume_evaluation()`; interrupted sequential
   questions roll back instance, result, and Trace state before retry.
+  `workflow=retrieval_prep` skips QA and atomically writes the selected
+  question manifest after memory construction.
   `rerun_qa_from_memory()` clones an independent run's post-Sleeptime instance
   into a new QA-only run.
 - `progress.py` — flushed CLI/Colab stderr progress; completed Replay,
   Sleeptime, and QA units map to 0–90%, followed by scoring and reporting.
-- `web_jobs.py` — durable Web Console subprocess jobs: CLI/profile building
-  (including retrieval settings), progress-log parsing, stop/resume, saved-run
-  discovery, score comparison, and offline retrieval replay.
+- `web_jobs.py` — durable Web Console subprocess jobs: dataset sample listing,
+  exact-ID selection, QA-free retrieval preparation, CLI/profile building,
+  stop/resume, saved-run discovery, and offline retrieval replay.
 - `artifacts.py` — JSON/JSONL, Trace copies, and before/after snapshots.
 - `scorer.py` — official-compatible scoring (normalized + stemmed token F1,
   per-category rules, no-information detection) plus Butly-specific metrics
   (including search-execution vs memory-injection rates, `retrieval_recall_at_k`
-  and BM25/reranker rescue and fallback); writes `scores.json` and `errors.jsonl`.
+  and BM25/reranker/Evidence-Fusion rescue, fallback, and latency); writes
+  `scores.json` and `errors.jsonl`.
 - `semantic_judge_runner.py` — optional meaning-based scoring without changing
   official metrics; writes fingerprinted per-question artifacts and
   `semantic_scores.json`, and resumes successful items.
 - `retrieval_replay.py` — offline retrieval replay with no answer generation.
-  Copies an existing run's DBs into a temp directory and compares Recall@k for
+  Loads normal `qa_results.jsonl` or a QA-free `retrieval_questions.json`,
+  copies the run's DBs into a temp directory, and compares Recall@k for
   `bm25` / `vector` / `hybrid` / `dual_query` / `reranked` /
-  `evidence_rerank`
+  `evidence_rerank` / `hybrid_evidence_rerank` /
+  `hybrid_evidence_fusion`
   (`python -m evals.locomo.retrieval_replay`);
   `dual_query` reuses a saved QA query or invokes the source Gatekeeper only
   for older runs without one. Source databases, cards, and RAW files are never
   modified; replay results and embedding caches are written below the run.
 - `evidence_reranker.py` — evaluation-only second-stage retrieval for
-  `evidence_rerank`; MaxP-reranks Summary-vector candidates with Episode/RAW
+  vector or hybrid evidence modes; MaxP-reranks candidates with Episode/RAW
   chunk embeddings, maintains a text-free SQLite vector cache, and exposes
   selected evidence previews for review.
 - `stemming.py` — dependency-free Porter (1980) stemmer; rare words may differ
@@ -80,8 +85,9 @@ instances tree. The bundled mini fixture is synthetic.
   `semantic_scores.json`.
 - `checkpoint.py` — atomic per-session/Sleeptime/QA checkpoints with run-id
   validation and corruption detection.
-- `config.py`, `cli.py` — typed CLI configuration (QA mode, sample/session/
-  question scope, and locale; rebuildable from `run_config.json` for resume),
+- `config.py`, `cli.py` — typed CLI configuration (workflow, QA mode, exact
+  sample IDs/session/question scope, and locale; rebuildable from
+  `run_config.json` for resume),
   profile YAML loading, and the `run` / `resume` / `rerun-qa` / `score` /
   `judge` / `report` subcommands. `judge` evaluates a completed run through a
   separately selected model without rerunning QA.
@@ -253,9 +259,17 @@ Implements the backward-compat rule: **missing meta = owner / direct / web** (no
   - `quick_vector_search(...)` / `quick_vector_search_diag(..., retrieval_query=None)` — pure vector search (no keyword extraction). It scores every knowledge card, then applies time decay/archive weighting and returns the top `limit`; diagnostics report the full candidate count and retain `fetch_limit: null` for trace compatibility. Evaluation profiles may override `brain.time_decay_rate` without changing the normal system default. Dispatches according to `brain.search_mode`.
   - `_dual_query_search_diag(...)` — vector-searches the original and Gatekeeper query for 15 candidates each by default, deduplicates cards, equally RRF-fuses a pool capped at 25, and returns only the caller's top-k. Missing or unchanged rewrites fall back to the original vector order.
   - `_hybrid_search_diag(...)` — collects BM25 and vector candidates from **all** readable instances, ranks them globally, then fuses with RRF. In hybrid results `score` is the **RRF score**; cosine lives in `vector_score` / `raw_score` so that downstream re-sorting by `score` cannot silently undo the fusion.
+  - `_hybrid_evidence_fusion_search_diag(...)` — fuses hybrid top-N with Episode/RAW MaxP ranks, shares the first-stage query embedding, and restores hybrid order on evidence failure.
   - `_bm25_search_single(spec, instance_name, limit, brain_conf)` — BM25 candidates for one DB; builds the FTS index once if missing and returns empty (i.e. vector-only) when FTS5/trigram is unavailable.
   - `summarize_conversation(text, override_config)`, `generate_knowledge_card(text, override_config)`.
   - `_calculate_cosine_similarity(...)`, `_get_provider(model_name)`.
+
+#### `evidence_fusion.py`
+
+Shared runtime/offline hybrid–Evidence reciprocal-rank fusion, candidate-lazy
+Episode/RAW MaxP scoring, and a text-free SQLite embedding cache. Production
+uses an instance-scoped cache; independent LoCoMo QA uses a run-scoped cache.
+Failures return the original hybrid order.
 
 #### `reranker.py`
 

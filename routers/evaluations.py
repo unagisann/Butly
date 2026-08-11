@@ -51,8 +51,10 @@ class EvaluationStartRequest(BaseModel):
         "stage3-on",
     ] = "standard"
     source_memory_run_id: Optional[str] = None
+    workflow: Literal["full", "retrieval_prep"] = "full"
     qa_mode: Literal["independent", "sequential"] = "independent"
     locale: Literal["en", "ja"] = "en"
+    sample_ids: list[str] = Field(default_factory=list, max_length=100)
     sample_limit: Optional[int] = Field(default=1, ge=1)
     session_limit: Optional[int] = Field(default=3, ge=1)
     question_limit: Optional[int] = Field(default=10, ge=1)
@@ -67,7 +69,9 @@ class EvaluationStartRequest(BaseModel):
     stage3_batch_size: int = Field(default=10, ge=1)
     stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
     # --- 検索設定（検索改修計画 §3.5）。hybrid は eval で先行検証する ---
-    search_mode: Literal["vector", "hybrid", "dual_query"] = "vector"
+    search_mode: Literal[
+        "vector", "hybrid", "dual_query", "hybrid_evidence_fusion"
+    ] = "vector"
     retrieval_execution: Literal["always", "intent_gated"] = "always"
     injection_policy: Literal[
         "intent_gated", "retrieval_assisted", "candidates"
@@ -80,6 +84,8 @@ class EvaluationStartRequest(BaseModel):
     reranker_max_candidate_chars: int = Field(default=1600, ge=100, le=10000)
     rrf_k: int = Field(default=60, ge=1)
     bm25_max_df_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
+    evidence_fusion_base_weight: float = Field(default=0.7, ge=0.0, le=1.0)
+    evidence_raw_chunk_chars: int = Field(default=1800, ge=200, le=10000)
     role_models: dict[str, RoleModelRequest] = Field(default_factory=dict)
     # 記憶を再利用する run で、保存済みベクトルと embedding 設定が
     # 食い違っていても実行する（既定は事前に弾く）。
@@ -106,14 +112,17 @@ class RetrievalReplayRequest(BaseModel):
             "dual_query",
             "reranked",
             "evidence_rerank",
+            "hybrid_evidence_rerank",
+            "hybrid_evidence_fusion",
         ]
     ] = Field(
-        default_factory=lambda: ["bm25"], min_length=1, max_length=6
+        default_factory=lambda: ["bm25"], min_length=1, max_length=8
     )
     limit: int = Field(default=20, ge=1, le=100)
     reranker: Optional[RoleModelRequest] = None
     reranker_max_candidate_chars: int = Field(default=1600, ge=100, le=10000)
     evidence_raw_chunk_chars: int = Field(default=1800, ge=200, le=10000)
+    evidence_fusion_base_weight: float = Field(default=0.7, ge=0.0, le=1.0)
 
 
 class DialogueABStartRequest(BaseModel):
@@ -134,7 +143,9 @@ class DialogueABStartRequest(BaseModel):
     stage3_enabled: bool = True
     stage3_batch_size: int = Field(default=10, ge=1)
     stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
-    search_mode: Literal["vector", "hybrid", "dual_query"] = "vector"
+    search_mode: Literal[
+        "vector", "hybrid", "dual_query", "hybrid_evidence_fusion"
+    ] = "vector"
     retrieval_execution: Literal["always", "intent_gated"] = "always"
     vector_search_limit: int = Field(default=3, ge=1)
     intent_gated_vector_search_limit: int = Field(default=3, ge=1)
@@ -147,6 +158,8 @@ class DialogueABStartRequest(BaseModel):
     dual_query_pool_limit: int = Field(default=25, ge=1)
     rrf_k: int = Field(default=60, ge=1)
     bm25_max_df_ratio: float = Field(default=0.5, gt=0.0, le=1.0)
+    evidence_fusion_base_weight: float = Field(default=0.7, ge=0.0, le=1.0)
+    evidence_raw_chunk_chars: int = Field(default=1800, ge=200, le=10000)
     role_models: dict[str, RoleModelRequest] = Field(default_factory=dict)
     # 既存インスタンスを種にする（本番の記憶量・System Instruction をそのまま使う）。
     # 未指定なら dataset の memory_seed から Sleeptime で作る従来経路。
@@ -191,6 +204,16 @@ def _translate_error(exc: Exception) -> HTTPException:
 @router.get("/config")
 def get_evaluation_config() -> dict[str, Any]:
     return _get_manager().config()
+
+
+@router.get("/datasets/samples")
+def get_evaluation_dataset_samples(
+    dataset_path: str = Query(min_length=1),
+) -> dict[str, Any]:
+    try:
+        return _get_manager().dataset_samples(dataset_path)
+    except EvaluationJobError as exc:
+        raise _translate_error(exc) from exc
 
 
 @router.post("/jobs", status_code=202)
@@ -329,13 +352,17 @@ def replay_run_retrieval(request: RetrievalReplayRequest) -> dict[str, Any]:
 
     ``bm25`` は embedding を呼ばない。``vector`` / ``hybrid`` は質問1件につき
     embedding 1回、``dual_query`` は必要に応じてGatekeeper 1回とembedding 2回を
-    呼ぶ。``evidence_rerank``は初回にEpisode/RAW文書もembeddingするため、応答まで
-    分単位でかかりうる。長いrunでは永続job endpointを推奨する。
+    呼ぶ。Evidence rerank系は初回にEpisode/RAW文書もembeddingするため、応答まで
+    分単位でかかりうる。``hybrid_evidence_rerank``はhybrid候補を再順位付けする。
+    長いrunでは永続job endpointを推奨する。
     """
     try:
         replay_options: dict[str, Any] = {
             "limit": request.limit,
             "evidence_raw_chunk_chars": request.evidence_raw_chunk_chars,
+            "evidence_fusion_base_weight": (
+                request.evidence_fusion_base_weight
+            ),
         }
         if request.reranker is not None:
             replay_options["reranker"] = request.reranker.model_dump(
@@ -375,6 +402,16 @@ def get_retrieval_replay_result(run_id: str) -> dict[str, Any]:
     try:
         return _get_manager().get_retrieval_replay_result(run_id)
     except (KeyError, EvaluationJobError) as exc:
+        raise _translate_error(exc) from exc
+
+
+@router.post("/runs/retrieval-replay/compare")
+def compare_retrieval_replay_runs(
+    request: RunCompareRequest,
+) -> dict[str, Any]:
+    try:
+        return _get_manager().compare_retrieval_runs(request.run_ids)
+    except EvaluationJobError as exc:
         raise _translate_error(exc) from exc
 
 

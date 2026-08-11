@@ -29,6 +29,7 @@ def test_replay_config_roundtrip_preserves_all_limits_and_mode(tmp_path):
         session_limit=None,
         question_limit=None,
         qa_mode="independent",
+        workflow="retrieval_prep",
         locale="ja",
     )
 
@@ -38,6 +39,7 @@ def test_replay_config_roundtrip_preserves_all_limits_and_mode(tmp_path):
     assert restored.session_limit is None
     assert restored.question_limit is None
     assert restored.qa_mode == "independent"
+    assert restored.workflow == "retrieval_prep"
     assert restored.locale == "ja"
 
 
@@ -78,6 +80,15 @@ def test_replay_config_rejects_unknown_mode(tmp_path):
             dataset_path=FIXTURE,
             output_dir=tmp_path,
             qa_mode="shared",
+        )
+
+
+def test_replay_config_rejects_unknown_workflow(tmp_path):
+    with pytest.raises(ValueError, match="workflow"):
+        ReplayConfig(
+            dataset_path=FIXTURE,
+            output_dir=tmp_path,
+            workflow="answers_only",
         )
 
 
@@ -399,13 +410,39 @@ def test_cli_all_flags_and_qa_mode_are_parsed():
     assert args.all_sessions is True
     assert args.all_questions is True
     assert args.qa_mode == "sequential"
+    assert args.workflow == "full"
     assert args.locale == "ja"
     config = _replay_config_from_args(args)
     assert config.sample_limit is None
     assert config.session_limit is None
     assert config.question_limit is None
     assert config.qa_mode == "sequential"
+    assert config.workflow == "full"
     assert config.locale == "ja"
+
+
+def test_cli_retrieval_prep_workflow_is_parsed():
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--dataset",
+            str(FIXTURE),
+            "--output-dir",
+            "/tmp/runs",
+            "--workflow",
+            "retrieval_prep",
+            "--sample-ids",
+            "conv-26",
+            "conv-30",
+        ]
+    )
+
+    config = _replay_config_from_args(args)
+
+    assert config.workflow == "retrieval_prep"
+    assert config.qa_mode == "independent"
+    assert config.sample_ids == ("conv-26", "conv-30")
+    assert config.sample_limit is None
 
 
 def test_cli_rerun_qa_flags_are_parsed():

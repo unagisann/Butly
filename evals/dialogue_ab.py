@@ -978,6 +978,16 @@ def _configure_base_instance(
     )
     for section, overrides in profile.sections.items():
         _merge_mapping(config.setdefault(section, {}), overrides)
+    brain_config = config.setdefault("brain", {})
+    if brain_config.get("search_mode") == "hybrid_evidence_fusion":
+        brain_config.setdefault(
+            "evidence_cache_path",
+            str(
+                Path(runtime.base_dir).parent
+                / "retrieval_cache"
+                / "evidence_embeddings.sqlite3"
+            ),
+        )
     config.setdefault("prompts", {})["allow_user_overrides"] = False
     updated, message = runtime.instance_manager.update_instance_config(
         instance_name,

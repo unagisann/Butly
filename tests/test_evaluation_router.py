@@ -13,6 +13,18 @@ class FakeManager:
     def config(self):
         return {"output_dir": self.output_dir, "run_modes": ["standard"]}
 
+    def dataset_samples(self, dataset_path):
+        if dataset_path == "missing":
+            raise EvaluationJobError("dataset not found")
+        return {
+            "dataset_path": dataset_path,
+            "sample_count": 2,
+            "samples": [
+                {"sample_id": "conv-26"},
+                {"sample_id": "conv-30"},
+            ],
+        }
+
     def start(self, request):
         return {
             "job_id": "job-1",
@@ -77,6 +89,9 @@ class FakeManager:
     def compare_runs(self, run_ids):
         return {"run_ids": run_ids}
 
+    def compare_retrieval_runs(self, run_ids):
+        return {"retrieval_run_ids": run_ids}
+
     def retrieval_replay(
         self,
         run_id,
@@ -84,6 +99,7 @@ class FakeManager:
         *,
         limit,
         evidence_raw_chunk_chars,
+        evidence_fusion_base_weight,
     ):
         if run_id == "missing":
             raise KeyError(run_id)
@@ -92,6 +108,7 @@ class FakeManager:
             "modes": modes,
             "limit": limit,
             "evidence_raw_chunk_chars": evidence_raw_chunk_chars,
+            "evidence_fusion_base_weight": evidence_fusion_base_weight,
         }
 
     def start_retrieval_replay(self, request):
@@ -155,11 +172,29 @@ def test_start_request_accepts_evaluation_only_judge_role():
     assert request.role_models["judge"].model_name == "TEE/gemma4-31b"
 
 
+def test_start_request_accepts_exact_samples_and_retrieval_prep():
+    request = evaluations.EvaluationStartRequest(
+        dataset_path="/tmp/locomo.json",
+        run_id="prep-conv-30",
+        workflow="retrieval_prep",
+        sample_ids=["conv-30"],
+        sample_limit=None,
+    )
+
+    assert request.workflow == "retrieval_prep"
+    assert request.sample_ids == ["conv-30"]
+
+
 def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
     manager = FakeManager()
     monkeypatch.setattr(evaluations, "_get_manager", lambda: manager)
 
     assert evaluations.get_evaluation_config()["run_modes"] == ["standard"]
+    samples = evaluations.get_evaluation_dataset_samples("/tmp/locomo.json")
+    assert [item["sample_id"] for item in samples["samples"]] == [
+        "conv-26",
+        "conv-30",
+    ]
     assert evaluations.start_evaluation_job(_start_request())["job_id"] == "job-1"
     assert (
         evaluations.start_dialogue_ab_job(_dialogue_start_request())[
@@ -198,6 +233,10 @@ def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
         evaluations.RunCompareRequest(run_ids=["run-a", "run-b"])
     )
     assert compared["run_ids"] == ["run-a", "run-b"]
+    retrieval_compared = evaluations.compare_retrieval_replay_runs(
+        evaluations.RunCompareRequest(run_ids=["run-a", "run-b"])
+    )
+    assert retrieval_compared["retrieval_run_ids"] == ["run-a", "run-b"]
     replayed = evaluations.replay_run_retrieval(
         evaluations.RetrievalReplayRequest(
             run_id="run-a", modes=["bm25", "hybrid"], limit=5
@@ -208,6 +247,7 @@ def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
         "modes": ["bm25", "hybrid"],
         "limit": 5,
         "evidence_raw_chunk_chars": 1800,
+        "evidence_fusion_base_weight": 0.7,
     }
     replay_request = evaluations.RetrievalReplayRequest(
         run_id="run-a",
@@ -216,6 +256,8 @@ def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
             "dual_query",
             "reranked",
             "evidence_rerank",
+            "hybrid_evidence_rerank",
+            "hybrid_evidence_fusion",
         ],
     )
     replay_job = evaluations.start_retrieval_replay_job(replay_request)
@@ -225,9 +267,11 @@ def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
         == "completed"
     )
     routes = {route.path: route for route in evaluations.router.routes}
+    assert "/evaluations/datasets/samples" in routes
     assert routes[
         "/evaluations/runs/retrieval-replay/jobs"
     ].status_code == 202
+    assert "/evaluations/runs/retrieval-replay/compare" in routes
 
 
 def test_evaluation_endpoints_translate_conflicts_and_missing_jobs(monkeypatch):
@@ -264,6 +308,10 @@ def test_evaluation_endpoints_translate_conflicts_and_missing_jobs(monkeypatch):
     with pytest.raises(HTTPException) as raised:
         evaluations.get_retrieval_replay_result("missing")
     assert raised.value.status_code == 404
+
+    with pytest.raises(HTTPException) as raised:
+        evaluations.get_evaluation_dataset_samples("missing")
+    assert raised.value.status_code == 400
 
     try:
         evaluations.replay_run_retrieval(

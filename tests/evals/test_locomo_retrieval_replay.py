@@ -15,9 +15,28 @@ from butly_core.core.database import ButlyDatabase
 from evals.locomo.retrieval_replay import (
     _build_gatekeeper_query_generator,
     evaluate,
+    fuse_hybrid_evidence_ranks,
+    load_questions,
     main,
     mirror_workspace,
 )
+
+
+def test_hybrid_evidence_rank_fusion_preserves_base_and_uses_evidence():
+    candidate_ids, scores = fuse_hybrid_evidence_ranks(
+        ["base-1", "base-2", "base-3", "evidence-1"],
+        [
+            {"card_id": "evidence-1", "evidence_rank": 1, "score": 0.9},
+            {"card_id": "base-1", "evidence_rank": 2, "score": 0.8},
+            {"card_id": "base-2", "evidence_rank": 3, "score": 0.7},
+            {"card_id": "base-3", "evidence_rank": 4, "score": 0.6},
+        ],
+        base_weight=0.7,
+    )
+
+    assert candidate_ids[:3] == ["base-1", "evidence-1", "base-2"]
+    assert scores[0]["fusion_rank"] == 1
+    assert scores[0]["fusion_score"] == pytest.approx(0.85)
 
 
 def _write_run(tmp_path: Path) -> Path:
@@ -85,6 +104,7 @@ def _write_run(tmp_path: Path) -> Path:
 
     rows = [
         {
+            "sample_id": "sample-1",
             "question_id": "qa-1",
             "question": "What pottery did they make?",
             "category": 2,
@@ -93,6 +113,7 @@ def _write_run(tmp_path: Path) -> Path:
             "retrieved_card_ids": [],
         },
         {
+            "sample_id": "sample-1",
             # cat5 は対象外
             "question_id": "qa-2",
             "question": "Where do they live?",
@@ -102,6 +123,7 @@ def _write_run(tmp_path: Path) -> Path:
             "retrieved_card_ids": [],
         },
         {
+            "sample_id": "sample-1",
             # oracle カードが無い問（evidence のファイルがどのカードにも無い）
             "question_id": "qa-3",
             "question": "Anything else?",
@@ -121,6 +143,28 @@ def _write_run(tmp_path: Path) -> Path:
 
 
 class TestRetrievalReplay:
+    def test_qa_free_manifest_is_accepted(self, tmp_path):
+        run_dir = _write_run(tmp_path)
+        qa_path = run_dir / "results" / "qa_results.jsonl"
+        rows = [json.loads(line) for line in qa_path.read_text().splitlines()]
+        qa_path.unlink()
+        (run_dir / "results" / "retrieval_questions.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "workflow": "retrieval_prep",
+                    "question_count": len(rows),
+                    "questions": rows,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert load_questions(run_dir) == rows
+        result = evaluate(run_dir, ["bm25"])
+        assert result["oracle_questions"] == 1
+        assert result["bm25"]["recall_at_3"] == pytest.approx(1.0)
+
     def test_bm25_mode_measures_recall(self, tmp_path):
         run_dir = _write_run(tmp_path)
 
@@ -208,6 +252,7 @@ class TestRetrievalReplay:
         assert stats["reranker"]["prompt_tokens_total"] == 30
         assert stats["reranker"]["selected_recall_at_3"] == pytest.approx(1.0)
         assert stats["details"][0]["question"] == "What pottery did they make?"
+        assert stats["details"][0]["sample_id"] == "sample-1"
         assert stats["details"][0]["evidence"] == ["D1:1"]
         assert stats["details"][0]["selected_candidate_ids"][0] == "k1"
         assert stats["details"][0]["reranker_scores"][0]["score"] == 0.9
@@ -294,6 +339,7 @@ class TestRetrievalReplay:
                 connection.close()
 
         source_db_before = source_dump()
+        observed_search_modes = []
 
         def fake_search(
             _brain,
@@ -307,7 +353,12 @@ class TestRetrievalReplay:
         ):
             assert limit == 20
             assert threshold == 0.4
-            assert override_config["brain"]["search_mode"] == "vector"
+            search_mode = override_config["brain"]["search_mode"]
+            assert search_mode in {"vector", "hybrid"}
+            observed_search_modes.append(search_mode)
+            if "bm25_candidates" in override_config["brain"]:
+                assert override_config["brain"]["bm25_candidates"] == 20
+                assert override_config["brain"]["vector_candidates"] == 20
             assert list(query_embedding) == [1.0, 0.0]
             candidates = [
                 {"id": "x1", "source_instance": "conv_1"},
@@ -323,9 +374,12 @@ class TestRetrievalReplay:
                 },
             }
 
+        query_embed_calls = []
+
         def fake_embed(text, kind):
             lowered = text.lower()
             if kind == "query":
+                query_embed_calls.append(text)
                 return [1.0, 0.0]
             if "caroline: we made mugs" in lowered:
                 return [1.0, 0.0]
@@ -341,7 +395,12 @@ class TestRetrievalReplay:
 
         result = evaluate(
             run_dir,
-            ["evidence_rerank"],
+            [
+                "hybrid",
+                "evidence_rerank",
+                "hybrid_evidence_rerank",
+                "hybrid_evidence_fusion",
+            ],
             limit=20,
             override_config={"embedding": {"model_name": "fake"}},
             evidence_embedder=fake_embed,
@@ -366,6 +425,37 @@ class TestRetrievalReplay:
         assert cache_path.is_file()
         assert b"We made mugs" not in cache_path.read_bytes()
         assert source_dump() == source_db_before
+        assert observed_search_modes == [
+            "hybrid",
+            "vector",
+            "hybrid",
+            "hybrid",
+        ]
+        assert result["hybrid"]["recall_at_3"] == pytest.approx(0.0)
+        assert query_embed_calls == ["What pottery did they make?"]
+
+        hybrid_stats = result["hybrid_evidence_rerank"]
+        hybrid_evidence = hybrid_stats["evidence_reranker"]
+        assert hybrid_stats["recall_at_3"] == pytest.approx(1.0)
+        assert hybrid_evidence["base_search_mode"] == "hybrid"
+        hybrid_detail = hybrid_stats["details"][0]
+        assert hybrid_detail["base_search_mode"] == "hybrid"
+        assert hybrid_detail["hybrid_recall_at_3"] == 0.0
+        assert hybrid_detail["selected_candidate_ids"][0] == "k1"
+
+        fusion_stats = result["hybrid_evidence_fusion"]
+        fusion = fusion_stats["evidence_reranker"]
+        assert fusion["base_search_mode"] == "hybrid"
+        assert fusion["fusion"] == {
+            "strategy": "weighted_reciprocal_rank",
+            "base_weight": 0.7,
+            "evidence_weight": pytest.approx(0.3),
+            "rrf_k": 0,
+        }
+        fusion_detail = fusion_stats["details"][0]
+        assert fusion_detail["selected_candidate_ids"][:2] == ["x1", "k1"]
+        assert fusion_detail["evidence_fusion_scores"]
+        assert fusion_detail["recall_at_3"] == pytest.approx(1.0)
 
         def fail_if_called(_text, _kind):
             raise AssertionError("cached embeddings must be reused")

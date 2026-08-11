@@ -487,6 +487,67 @@ class TestScoreRun:
         assert butly["retrieval_recall_at_3"] is None
         assert butly["bm25_short_term_hit_rate"] is None
 
+    def test_evidence_fusion_metrics_compare_against_hybrid(self, tmp_path):
+        def fusion_row(question_id, hybrid_ids, effective_ids, latency, hits, misses):
+            return _qa_row(
+                question_id,
+                diagnostics={
+                    "gatekeeper": {"tier": "mid", "need_intent": "past_fact"},
+                    "rag": {
+                        "results": [{"title": "memory"}],
+                        "retrieval": {
+                            "executed": True,
+                            "mode": "hybrid_evidence_fusion",
+                            "candidate_count": len(effective_ids),
+                            "injection_allowed": True,
+                            "injection_reason": "intent",
+                            "hybrid_candidate_ids": hybrid_ids,
+                            "effective_candidate_ids": effective_ids,
+                            "vector_candidate_ids": [],
+                            "evidence_fusion": {
+                                "status": "completed",
+                                "fallback": False,
+                                "latency_ms": latency,
+                                "scored_count": 4,
+                                "cache": {"hits": hits, "misses": misses},
+                            },
+                        },
+                    },
+                },
+            )
+
+        rows = [
+            fusion_row(
+                "fusion-rescue",
+                ["bad-1", "bad-2", "bad-3", "k1"],
+                ["k1", "bad-1", "bad-2", "bad-3"],
+                10,
+                2,
+                1,
+            ),
+            fusion_row(
+                "fusion-harm",
+                ["k1", "bad-1", "bad-2", "bad-3"],
+                ["bad-1", "bad-2", "bad-3", "k1"],
+                30,
+                1,
+                1,
+            ),
+        ]
+        run_dir = _write_run(tmp_path, rows)
+        _write_workspace(run_dir)
+
+        butly = score_run(run_dir)["butly"]
+
+        assert butly["evidence_fusion_execution_rate"] == pytest.approx(1.0)
+        assert butly["evidence_fusion_completion_rate"] == pytest.approx(1.0)
+        assert butly["evidence_fusion_fallback_rate"] == pytest.approx(0.0)
+        assert butly["evidence_fusion_rescue_rate_at_3"] == pytest.approx(0.5)
+        assert butly["evidence_fusion_harm_rate_at_3"] == pytest.approx(0.5)
+        assert butly["evidence_fusion_latency_ms_p50"] == pytest.approx(20)
+        assert butly["evidence_fusion_latency_ms_p95"] == pytest.approx(29)
+        assert butly["evidence_fusion_cache_hit_rate"] == pytest.approx(0.6)
+
     def test_dual_query_metrics_compare_original_rewrite_and_fused(
         self, tmp_path
     ):

@@ -339,6 +339,16 @@ class MemoryProbe:
         retrieval["candidate_count"] = len(candidates)
         retrieval["candidate_ids"] = [str(c.get("id")) for c in candidates]
         retrieval["fused_candidate_ids"] = diagnostics.get("fused_candidate_ids", [])
+        retrieval["hybrid_candidate_ids"] = diagnostics.get(
+            "hybrid_candidate_ids", []
+        )
+        retrieval["evidence_candidate_ids"] = diagnostics.get(
+            "evidence_candidate_ids", []
+        )
+        retrieval["evidence_fusion_scores"] = diagnostics.get(
+            "evidence_fusion_scores", []
+        )
+        retrieval["evidence_fusion"] = diagnostics.get("evidence_fusion")
         retrieval["effective_candidate_ids"] = diagnostics.get(
             "effective_candidate_ids",
             diagnostics.get("fused_candidate_ids", []),
@@ -680,7 +690,10 @@ class MemoryProbe:
             brain_conf = _resolve_section("brain", override_config)
             # hybrid では検索語を決定論的に組み立てるため、LLM のキーワード抽出は
             # 呼ばない（計画書 §3.6）。vector では従来どおり。
-            if brain_conf.get("search_mode") == "hybrid":
+            if brain_conf.get("search_mode") in {
+                "hybrid",
+                "hybrid_evidence_fusion",
+            }:
                 keywords = []
             else:
                 keyword_data = brain.extract_keywords(user_input, override_config)

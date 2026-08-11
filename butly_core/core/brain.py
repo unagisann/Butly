@@ -13,6 +13,11 @@ from butly_core.trace.collector import record_llm_call
 from butly_core.core.chronos import resolve_now
 from butly_core.core.json_extract import extract_json_str
 from butly_core.core import hybrid_search
+from butly_core.core.evidence_fusion import (
+    DEFAULT_EVIDENCE_FUSION_BASE_WEIGHT,
+    DEFAULT_RAW_CHUNK_CHARS,
+    RuntimeEvidenceFusion,
+)
 from butly_core.llm.embedding_profiles import (
     QUERY,
     apply_prefix as apply_embedding_prefix,
@@ -383,6 +388,33 @@ class ButlyBrain:
                 }
             return output
 
+        if brain_conf.get("search_mode") == "hybrid_evidence_fusion":
+            output = self._hybrid_evidence_fusion_search_diag(
+                user_input,
+                target_instances,
+                default_instance=instance_name,
+                limit=limit,
+                threshold=threshold,
+                brain_conf=brain_conf,
+                embedding_conf=embedding_conf,
+                query_embedding=query_embedding,
+            )
+            raw_reranker = (override_config or {}).get("reranker")
+            if raw_reranker and not (
+                isinstance(raw_reranker, dict)
+                and raw_reranker.get("enabled") is False
+            ):
+                output["diagnostics"]["reranker"] = {
+                    "enabled": True,
+                    "status": "unsupported",
+                    "fallback": True,
+                    "error": (
+                        "reranker cannot be combined with "
+                        "hybrid_evidence_fusion"
+                    ),
+                }
+            return output
+
         if brain_conf.get("search_mode") == "hybrid":
             output = self._hybrid_search_diag(
                 user_input,
@@ -391,6 +423,7 @@ class ButlyBrain:
                 threshold=threshold,
                 brain_conf=brain_conf,
                 embedding_conf=embedding_conf,
+                query_embedding=query_embedding,
             )
             raw_reranker = (override_config or {}).get("reranker")
             if raw_reranker and not (
@@ -797,6 +830,7 @@ class ButlyBrain:
         threshold: Optional[float],
         brain_conf: dict,
         embedding_conf: dict = None,
+        query_embedding=None,
     ) -> dict:
         """BM25 とベクトルの候補をグローバル順位で RRF 融合する。
 
@@ -826,6 +860,7 @@ class ButlyBrain:
                 vector_threshold,
                 brain_conf,
                 embedding_conf,
+                query_embedding=query_embedding,
             )
             for r in single["results"]:
                 r["source_instance"] = inst
@@ -883,6 +918,178 @@ class ButlyBrain:
             "latency_ms": int((time.time() - t0) * 1000),
         }
         return {"results": results, "diagnostics": diagnostics}
+
+    def _hybrid_evidence_fusion_search_diag(
+        self,
+        user_input: str,
+        target_instances: list[str],
+        *,
+        default_instance: str,
+        limit: int,
+        threshold: Optional[float],
+        brain_conf: dict,
+        embedding_conf: dict,
+        query_embedding=None,
+    ) -> dict:
+        """Hybrid top-N followed by lazy Episode/RAW evidence rank fusion.
+
+        Evidence failures never make chat fail: the original hybrid ranking is
+        returned and diagnostics explicitly mark the fallback.
+        """
+        started = time.monotonic()
+        candidate_limit = max(
+            limit,
+            int(brain_conf.get("vector_candidates", 20)),
+            int(brain_conf.get("bm25_candidates", 20)),
+        )
+        weight = float(
+            brain_conf.get(
+                "evidence_fusion_base_weight",
+                DEFAULT_EVIDENCE_FUSION_BASE_WEIGHT,
+            )
+        )
+        raw_chunk_chars = int(
+            brain_conf.get("evidence_raw_chunk_chars", DEFAULT_RAW_CHUNK_CHARS)
+        )
+        raw_cache_path = brain_conf.get("evidence_cache_path")
+        if raw_cache_path:
+            cache_path = Path(str(raw_cache_path)).expanduser()
+            if not cache_path.is_absolute():
+                cache_path = self.base_dir / cache_path
+        else:
+            cache_path = (
+                self.instances_dir
+                / default_instance
+                / "retrieval_cache"
+                / "evidence_embeddings.sqlite3"
+            )
+        locale = str(brain_conf.get("locale") or "")
+        if locale not in {"en", "ja"}:
+            locale = "en"
+
+        fusion = None
+        base_output = None
+        try:
+            fusion = RuntimeEvidenceFusion(
+                self.instances_dir,
+                embedding_conf,
+                cache_path=cache_path,
+                raw_chunk_chars=raw_chunk_chars,
+                locale=locale,
+            )
+            if query_embedding is None:
+                query_embedding = fusion.embed_query(user_input)
+            base_output = self._hybrid_search_diag(
+                user_input,
+                target_instances,
+                limit=candidate_limit,
+                threshold=threshold,
+                brain_conf=brain_conf,
+                embedding_conf=embedding_conf,
+                query_embedding=query_embedding,
+            )
+            base_results = list(base_output.get("results") or [])
+            fusion_diag = fusion.rerank(
+                user_input,
+                base_results,
+                default_instance=default_instance,
+                top_n=limit,
+                base_weight=weight,
+                query_vector=query_embedding,
+            )
+            cache_diag = fusion.cache.diagnostics()
+            fusion_diag["cache"] = {
+                key: cache_diag.get(key)
+                for key in ("hits", "misses", "writes", "errors", "by_kind")
+            }
+            by_id = {str(row.get("id")): row for row in base_results}
+            score_by_id = {
+                str(row.get("card_id")): row
+                for row in fusion_diag.get("fusion_scores") or []
+            }
+            reordered = []
+            for card_id in fusion_diag.get("candidate_ids") or []:
+                source = by_id.get(str(card_id))
+                if source is None:
+                    continue
+                row = dict(source)
+                score = score_by_id.get(str(card_id)) or {}
+                row["hybrid_score"] = row.get("rrf_score", row.get("score"))
+                row["evidence_score"] = score.get("evidence_score")
+                row["fusion_score"] = score.get("fusion_score")
+                if score.get("fusion_score") is not None:
+                    row["score"] = score["fusion_score"]
+                reordered.append(row)
+
+            diagnostics = dict(base_output.get("diagnostics") or {})
+            base_ids = [str(row.get("id")) for row in base_results]
+            effective_ids = [str(row.get("id")) for row in reordered]
+            diagnostics.update(
+                {
+                    "mode": "hybrid_evidence_fusion",
+                    "hybrid_candidate_ids": base_ids,
+                    "evidence_candidate_ids": list(
+                        fusion_diag.get("evidence_candidate_ids") or []
+                    ),
+                    "fused_candidate_ids": effective_ids,
+                    "effective_candidate_ids": effective_ids,
+                    "evidence_fusion_scores": list(
+                        fusion_diag.get("fusion_scores") or []
+                    ),
+                    "evidence_fusion": {
+                        **fusion_diag,
+                        # Candidate order and scores already have dedicated
+                        # fields above; avoid duplicating a large trace payload.
+                        "candidate_ids": None,
+                        "scores": None,
+                        "fusion_scores": None,
+                        "base_weight": weight,
+                        "raw_chunk_chars": raw_chunk_chars,
+                    },
+                    "latency_ms": int((time.monotonic() - started) * 1000),
+                }
+            )
+            return {"results": reordered[:limit], "diagnostics": diagnostics}
+        except Exception as exc:
+            if base_output is None:
+                base_output = self._hybrid_search_diag(
+                    user_input,
+                    target_instances,
+                    limit=candidate_limit,
+                    threshold=threshold,
+                    brain_conf=brain_conf,
+                    embedding_conf=embedding_conf,
+                )
+            results = list(base_output.get("results") or [])
+            diagnostics = dict(base_output.get("diagnostics") or {})
+            base_ids = [str(row.get("id")) for row in results]
+            diagnostics.update(
+                {
+                    "mode": "hybrid_evidence_fusion",
+                    "hybrid_candidate_ids": base_ids,
+                    "evidence_candidate_ids": [],
+                    "fused_candidate_ids": base_ids,
+                    "effective_candidate_ids": base_ids,
+                    "evidence_fusion_scores": [],
+                    "evidence_fusion": {
+                        "status": "fallback",
+                        "fallback": True,
+                        "error": f"{type(exc).__name__}: {exc}"[:500],
+                        "candidate_count": len(results),
+                        "scored_count": 0,
+                        "base_weight": weight,
+                        "raw_chunk_chars": raw_chunk_chars,
+                        "latency_ms": int(
+                            (time.monotonic() - started) * 1000
+                        ),
+                    },
+                    "latency_ms": int((time.monotonic() - started) * 1000),
+                }
+            )
+            return {"results": results[:limit], "diagnostics": diagnostics}
+        finally:
+            if fusion is not None:
+                fusion.close()
 
     def _bm25_search_single(
         self,
@@ -1074,6 +1281,8 @@ class ButlyBrain:
           作った検索語で BM25 + ベクトルを RRF 融合する。Layer 1 と違い
           ベクトル側の閾値ゲートを外す（Layer 1 が空だったときの救済という
           Deep の役割を保つため）。keywords は None を許容する。
+        search_mode="hybrid_evidence_fusion": 同じhybrid候補をEpisode/RAWの
+          Evidence順位と融合する。Evidence障害時はhybridへfallbackする。
         """
         brain_conf = SYSTEM_CONFIG["brain"].copy()
         if override_config and "brain" in override_config:
@@ -1084,6 +1293,17 @@ class ButlyBrain:
             limit = brain_conf["search_limit"]
 
         target_instances = self._resolve_target_instances(instance_name, brain_conf)
+
+        if brain_conf.get("search_mode") == "hybrid_evidence_fusion":
+            return self._hybrid_evidence_fusion_search_diag(
+                user_query,
+                target_instances,
+                default_instance=instance_name,
+                limit=limit,
+                threshold=None,
+                brain_conf=brain_conf,
+                embedding_conf=embedding_conf,
+            )["results"]
 
         if brain_conf.get("search_mode") == "hybrid":
             return self._hybrid_search_diag(
