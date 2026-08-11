@@ -2,7 +2,7 @@
 
 🌐 **日本語** | [English](FILE_STRUCTURE.md)
 
-> 最終更新: 2026-07-26
+> 最終更新: 2026-08-10
 
 ---
 
@@ -18,7 +18,7 @@
 | `migrate_embeddings.py` | プロバイダー切り替え時の embedding 再生成ユーティリティ |
 | `butly_api/` | 正式フロントエンド向け `/api/v1` transport 層（app factory / schemas / error contract / sidecar CLI） |
 | `openapi/butly.openapi.json` | `/api/v1` の OpenAPI 3.1 snapshot（`scripts/generate_openapi.py` で生成） |
-| `evals/locomo/` | LoCoMo長期記憶評価CLI。正式APIへ混入せず、checkpoint付き隔離Workspace上でReplay → Sleeptime → QA → 公式互換採点・レポートまで実行 |
+| `evals/locomo/` | LoCoMo長期記憶評価CLI。checkpoint付き隔離Workspace上でReplay → Sleeptime → QA → 採点を実行。`retrieval_prep`ではQAを省略して検索比較用manifestを作る |
 | `evals/semantic_judge.py` | 日本語対話A/BとLoCoMoが共有する評価専用LLM Judge。厳格JSON、prompt injection耐性、fingerprint、意味判定集計を担当 |
 | `frontend/` | 正式デスクトップ frontend（pnpm + Tauri v2 + React + TypeScript + Vite）。Phase 1 は app shell + sidecar lifecycle のみ |
 | `packaging/pyinstaller/` | FastAPI sidecar の PyInstaller spec（`butly-backend.spec`）と entry script |
@@ -114,17 +114,17 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、独立／逐次QAの結果とTraceを保存 |
 | `replay.py` | セッションReplay、Sleeptime、独立／逐次QA、checkpoint更新のオーケストレーション。逐次QAはcheckpoint commit前の中断時にinstance・結果・Traceをrollbackし、`resume_evaluation()`で重複なく途中再開。`rerun_qa_from_memory()`は独立runのpost-Sleeptime instanceを新runへ複製してQAだけ再実行 |
 | `artifacts.py` | JSON/JSONL、Traceコピー、セッション前後スナップショットの保存 |
-| `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。検索実行率／注入率／`retrieval_recall_at_k`／BM25・Rerankerのrescue/fallbackも集計。`scores.json` / `errors.jsonl`出力 |
+| `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。検索実行率／注入率／`retrieval_recall_at_k`／BM25・Reranker・Evidence Fusionのrescue/fallback/遅延も集計。`scores.json` / `errors.jsonl`出力 |
 | `semantic_judge_runner.py` | 公式スコアを変更しない任意の意味判定。問題単位atomic artifact、fingerprint再開、`semantic_scores.json`を生成 |
-| `retrieval_replay.py` | 回答を生成しないoffline retrieval replay。既存runのDBを一時ディレクトリへ複製し、`bm25` / `vector` / `hybrid` / `dual_query` / `reranked` / `evidence_rerank`のRecall@kを比較する（`python -m evals.locomo.retrieval_replay`）。`dual_query`は保存済み検索文を再利用し、無い旧runだけGatekeeperを呼ぶ。元runのDB・カード・RAWは変更せず、結果とembedding cacheだけrun直下へ書く |
-| `evidence_reranker.py` | `evidence_rerank`用の評価専用二段検索。Summary系vector候補をEpisode / RAW chunk embeddingのMaxP cosineで並べ替え、本文を含まないSQLite vector cacheとレビュー用の選択根拠previewを管理 |
+| `retrieval_replay.py` | 回答を生成しないoffline retrieval replay。通常runの`qa_results.jsonl`またはQAなしrunの`retrieval_questions.json`を読み、DBを一時複製して各検索方式のRecall@kを比較する |
+| `evidence_reranker.py` | `evidence_rerank` / `hybrid_evidence_rerank` / `hybrid_evidence_fusion`用の評価専用二段検索。vectorまたはhybrid候補をEpisode / RAW chunk embeddingのMaxP cosineで採点し、全面再順位付けまたはhybrid順位との重み付き融合を行う。本文を含まないSQLite vector cacheとレビュー用の選択根拠previewを管理 |
 | `stemming.py` | 依存追加なしのPorter (1980) stemmer。公式のnltk stemmerと稀な語で差が出る旨をdocstringに明記 |
 | `report.py` | `scores.json`と任意の`semantic_scores.json`から`summary.md`を生成 |
 | `checkpoint.py` | セッション/Sleeptime/QA単位のatomicなcheckpoint。run ID照合と破損検出つき |
-| `config.py` | CLI設定DTO（QA mode、sample/session/question範囲、localeを含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
+| `config.py` | CLI設定DTO（workflow、QA mode、sample ID/session/question範囲、localeを含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
 | `cli.py` | `run` / `resume` / `rerun-qa` / `score` / `judge` / `report` subcommands。`judge`は既存runのQAを再実行せず別モデルで意味判定 |
 | `progress.py` | CLI / Colab向けの即時進捗ログ。Replay・Sleeptime・QAの完了unitを0〜90%、採点・レポートを90〜100%としてstderrへ表示 |
-| `web_jobs.py` | Web Console用の永続subprocessジョブ管理。CLI command/profile生成（検索設定を含む）、進捗ログ解析、停止・resume、既存run走査・スコア比較、offline retrieval replayの実行 |
+| `web_jobs.py` | Web Console用の永続subprocessジョブ管理。dataset sample一覧、QAなし検索準備、CLI command/profile生成、停止・resume、履歴・offline retrieval replayを担当 |
 | `profiles/` | Full Local / Fixed Memory Pipelineのprofile例（`*.example.yaml`）。top-level `locale`は内部prompt／memory出力言語、`brain.time_decay_rate`は評価runの検索時間減衰を指定 |
 | `colab/` | Drive・モデルサーバー・CLI呼び出しのみの薄いNotebook。ParametersセルでQA mode、locale、sample/session/questionの全件／上限制御、context別ON/OFF、role別temperature、`TIME_DECAY_RATE`、同一カード再利用元runを選択（評価ロジック禁止） |
 
@@ -393,14 +393,21 @@ LLM 呼び出しと RAG 検索のエンジン。Provider に依存しない中�
   - `extract_keywords(text, override_config)` — RAG 用キーワードを LLM で抽出（`search_mode="vector"` の Layer 2 のみ使用）
   - `search_knowledge(keywords, query, instance_name, limit, override_config)` — Layer 2（Deep）検索。`vector` では keywords の LIKE 絞り込み + コサイン再ランク、`hybrid` では keywords を使わずベクトル閾値なしのハイブリッド検索（`keywords=None` 可）
   - `quick_vector_search(user_input, instance_name, limit, threshold, override_config)` — キーワード抽出なしの純粋なベクトル検索。新旧を問わず全knowledge cardを類似度計算し、時間減衰・archive補正後の上位`limit`件を返す
-  - `quick_vector_search_diag(..., retrieval_query=None)` — Layer 別診断情報（全候補数 / 閾値判定 / スコア等）を含む診断付き版。互換フィールド`fetch_limit`は全件検索を示す`null`。`brain.search_mode`に応じて`hybrid`または`dual_query`へ分岐する
+  - `quick_vector_search_diag(..., retrieval_query=None)` — Layer 別診断情報（全候補数 / 閾値判定 / スコア等）を含む診断付き版。互換フィールド`fetch_limit`は全件検索を示す`null`。`brain.search_mode`に応じて`hybrid`、`dual_query`、`hybrid_evidence_fusion`へ分岐する
   - `_dual_query_search_diag(...)` — 元発話とGatekeeper検索文を既定各top15でvector検索し、カードIDで重複排除、等重みRRFで最大25件に融合する。呼び出し元へは要求されたtop-kだけ返し、検索文が無い／同一なら元発話vector順位へフォールバックする
   - `_hybrid_search_diag(...)` — BM25（FTS5/trigram）とベクトルの候補を**全インスタンス分集めてからグローバル順位を付け**、RRF で融合する。返す候補の `score` は **RRF スコア**で、cosine は `vector_score` / `raw_score` に退避する（下流が `score` 降順で並べ直しても融合順位が壊れないようにするため）
+  - `_hybrid_evidence_fusion_search_diag(...)` — hybrid top-NをEpisode/RAW MaxP順位と融合する。質問embeddingを一段目と共有し、Evidence障害時はhybrid順位へ戻す
   - `_bm25_search_single(spec, instance_name, limit, brain_conf)` — 単一 DB の BM25 候補。索引が無ければ一度だけ生成し、それでも使えなければ空を返す（＝実質 vector へフォールバック）
   - `summarize_conversation(conversation_text, override_config)` — 会話テキストを要約（summary モデル使用）
   - `generate_knowledge_card(text, override_config)` — ナレッジカード JSON を生成（knowledge モデル使用）
   - `_calculate_cosine_similarity(vec1, vec2)` — コサイン類似度計算
   - `_get_provider(model_name)` — ProviderFactory 経由で Provider を取得
+
+### `butly_core/core/evidence_fusion.py`
+
+本番RAGとoffline replayで共有するhybrid/Evidence逆順位融合、候補限定のEpisode/RAW
+MaxP採点、本文を保持しないSQLite embedding cache。productionはinstance単位、LoCoMo
+独立QAはrun単位のcacheを使い、失敗時は元hybrid順位を返す。
 
 ### `butly_core/core/reranker.py`
 

@@ -138,7 +138,8 @@ SYSTEM_CONFIG = {
         "dynamic_threshold": 0.6,  # Google Search Dynamic Retrieval Threshold (0.0 - 1.0)
         "default_use_google_search": False,  # デフォルトでGoogle検索グラウンディングを使用するか
         # ハイブリッド検索（検索改修計画 §3.5）。正は settings/defaults.py。
-        "search_mode": "vector",  # "vector" | "hybrid" | "dual_query"
+        # vector | hybrid | dual_query | hybrid_evidence_fusion
+        "search_mode": "vector",
         "bm25_candidates": 20,
         "vector_candidates": 20,
         "dual_query_candidates": 15,
@@ -148,6 +149,10 @@ SYSTEM_CONFIG = {
         "bm25_max_df_ratio": 0.5,
         "bm25_min_weak_df": 5,
         "bm25_scan_limit": 500,
+        # hybrid top-Nの順位を、候補カードに紐づくEpisode/RAWのMaxP順位と融合。
+        # RAW本文はcacheへ保存せず、embedding vectorとhashだけを永続化する。
+        "evidence_fusion_base_weight": 0.7,
+        "evidence_raw_chunk_chars": 1800,
     },
     "backup": {"generations": 7, "dir_name": "db_backups"},
     "search": {

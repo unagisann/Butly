@@ -127,6 +127,8 @@ SYSTEM_CONFIG = {
         # "vector" = 従来のベクトル単独。"hybrid" = BM25(FTS5/trigram) と RRF 融合。
         # "dual_query" = 元発話と Gatekeeper の自己完結検索文を各15件検索し、
         # RRFで重複排除・融合して最大25件の診断候補を残す（注入は通常どおり上位3件）。
+        # "hybrid_evidence_fusion" = hybrid top20をEpisode/RAWで再評価し、
+        # hybrid順位を主軸にEvidence順位を融合して上位3件を注入する。
         # eval で効果を確認してから既定を昇格させる。
         "search_mode": "vector",
         "bm25_candidates": 20,
@@ -145,6 +147,8 @@ SYSTEM_CONFIG = {
         "bm25_min_weak_df": 5,
         # df 計算と語境界検証のためにスキャンする最大ヒット数。
         "bm25_scan_limit": 500,
+        "evidence_fusion_base_weight": 0.7,
+        "evidence_raw_chunk_chars": 1800,
     },
     "backup": {"generations": 7, "dir_name": "db_backups"},
     "search": {

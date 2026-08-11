@@ -19,6 +19,7 @@ from evals.locomo.web_jobs import (
     build_judge_command,
     build_profile_payload,
     build_retrieval_replay_command,
+    describe_locomo_dataset,
     validate_dialogue_ab_request,
     validate_job_request,
     validate_judge_request,
@@ -40,8 +41,10 @@ def _request(**overrides):
         "run_id": "web-test",
         "run_mode": "standard",
         "source_memory_run_id": None,
+        "workflow": "full",
         "qa_mode": "independent",
         "locale": "en",
+        "sample_ids": [],
         "sample_limit": 1,
         "session_limit": 3,
         "question_limit": 10,
@@ -959,6 +962,25 @@ class TestSearchSettingsInProfile:
             "injection_policy": "retrieval_assisted",
         }
 
+    def test_hybrid_evidence_fusion_writes_runtime_params(self):
+        profile = build_profile_payload(
+            _request(
+                search_mode="hybrid_evidence_fusion",
+                bm25_candidates=20,
+                vector_candidates=20,
+                evidence_fusion_base_weight=0.65,
+                evidence_raw_chunk_chars=2200,
+            )
+        )
+
+        assert profile["brain"]["search_mode"] == "hybrid_evidence_fusion"
+        assert profile["brain"]["bm25_candidates"] == 20
+        assert profile["brain"]["vector_candidates"] == 20
+        assert profile["brain"]["evidence_fusion_base_weight"] == pytest.approx(
+            0.65
+        )
+        assert profile["brain"]["evidence_raw_chunk_chars"] == 2200
+
     def test_dual_query_run_writes_bounded_fusion_params(self):
         profile = build_profile_payload(
             _request(
@@ -999,6 +1021,8 @@ class TestSearchSettingsInProfile:
             "dual_query_pool_limit",
             "rrf_k",
             "bm25_max_df_ratio",
+            "evidence_fusion_base_weight",
+            "evidence_raw_chunk_chars",
         ):
             request.pop(key, None)
 
@@ -1012,6 +1036,8 @@ class TestSearchSettingsInProfile:
         assert normalized["dual_query_pool_limit"] == 25
         assert normalized["rrf_k"] == 60
         assert normalized["bm25_max_df_ratio"] == pytest.approx(0.5)
+        assert normalized["evidence_fusion_base_weight"] == pytest.approx(0.7)
+        assert normalized["evidence_raw_chunk_chars"] == 1800
 
     @pytest.mark.parametrize(
         ("overrides", "message"),
@@ -1025,6 +1051,14 @@ class TestSearchSettingsInProfile:
                 "dual_query_candidates must be a positive",
             ),
             ({"bm25_max_df_ratio": 1.5}, "bm25_max_df_ratio must be in"),
+            (
+                {"evidence_fusion_base_weight": 1.1},
+                "evidence_fusion_base_weight must be in",
+            ),
+            (
+                {"evidence_raw_chunk_chars": 199},
+                "evidence_raw_chunk_chars must be between",
+            ),
         ],
     )
     def test_validate_rejects_bad_search_settings(
@@ -1038,7 +1072,12 @@ class TestSearchSettingsInProfile:
 
         config = manager.config()
 
-        assert config["search_modes"] == ["vector", "hybrid", "dual_query"]
+        assert config["search_modes"] == [
+            "vector",
+            "hybrid",
+            "dual_query",
+            "hybrid_evidence_fusion",
+        ]
         assert config["retrieval_executions"] == ["always", "intent_gated"]
         assert config["injection_policies"] == [
             "intent_gated",
@@ -1146,6 +1185,21 @@ class TestDialogueABWebJob:
         assert profile["brain"]["dual_query_pool_limit"] == 22
         assert profile["brain"]["rrf_k"] == 45
 
+    def test_profile_applies_hybrid_evidence_fusion(self):
+        profile = build_dialogue_ab_profile_payload(
+            _dialogue_request(
+                search_mode="hybrid_evidence_fusion",
+                evidence_fusion_base_weight=0.6,
+                evidence_raw_chunk_chars=2400,
+            )
+        )
+
+        assert profile["brain"]["search_mode"] == "hybrid_evidence_fusion"
+        assert profile["brain"]["evidence_fusion_base_weight"] == pytest.approx(
+            0.6
+        )
+        assert profile["brain"]["evidence_raw_chunk_chars"] == 2400
+
     @pytest.mark.parametrize(
         ("overrides", "message"),
         [
@@ -1173,6 +1227,10 @@ class TestDialogueABWebJob:
             (
                 {"bm25_max_df_ratio": 0.0},
                 "bm25_max_df_ratio must be in",
+            ),
+            (
+                {"evidence_fusion_base_weight": -0.1},
+                "evidence_fusion_base_weight must be in",
             ),
         ],
     )
@@ -1238,6 +1296,7 @@ class TestDialogueABWebJob:
             "vector",
             "hybrid",
             "dual_query",
+            "hybrid_evidence_fusion",
         ]
         assert config["dialogue_ab"]["retrieval_executions"] == [
             "always",
@@ -1460,9 +1519,10 @@ class TestRetrievalReplayEndpointBacking:
         job = manager.start_retrieval_replay(
             {
                 "run_id": "v26",
-                "modes": ["vector", "evidence_rerank"],
+                "modes": ["vector", "hybrid_evidence_fusion"],
                 "limit": 20,
                 "evidence_raw_chunk_chars": 1400,
+                "evidence_fusion_base_weight": 0.65,
             }
         )
 
@@ -1473,8 +1533,12 @@ class TestRetrievalReplayEndpointBacking:
         assert command[command.index("--evidence-cache") + 1] == str(
             run_dir / "retrieval_cache" / "evidence_embeddings.sqlite3"
         )
+        assert command[
+            command.index("--evidence-fusion-base-weight") + 1
+        ] == "0.65"
         request = manager._records[job["job_id"]]["request"]
         assert request["evidence_raw_chunk_chars"] == 1400
+        assert request["evidence_fusion_base_weight"] == 0.65
 
     def test_evidence_replay_rejects_invalid_chunk_size(self, tmp_path):
         manager = self._manager(tmp_path)
@@ -1489,6 +1553,22 @@ class TestRetrievalReplayEndpointBacking:
                     "run_id": "v26",
                     "modes": ["evidence_rerank"],
                     "evidence_raw_chunk_chars": 100,
+                }
+            )
+
+    def test_evidence_fusion_rejects_invalid_weight(self, tmp_path):
+        manager = self._manager(tmp_path)
+        self._write_run(tmp_path / "runs")
+
+        with pytest.raises(
+            EvaluationJobError,
+            match="evidence_fusion_base_weight must be between",
+        ):
+            manager.start_retrieval_replay(
+                {
+                    "run_id": "v26",
+                    "modes": ["hybrid_evidence_fusion"],
+                    "evidence_fusion_base_weight": 1.1,
                 }
             )
 
@@ -1717,6 +1797,43 @@ def test_build_fresh_command_preserves_all_scope_flags(tmp_path):
     assert "--all-samples" in command
     assert "--all-sessions" in command
     assert "--all-questions" in command
+    assert command[command.index("--workflow") + 1] == "full"
+
+
+def test_exact_sample_ids_override_sample_limit_in_command(tmp_path):
+    normalized = validate_job_request(
+        _request(
+            sample_ids=["synthetic-conv-1"],
+            sample_limit=1,
+            workflow="retrieval_prep",
+        ),
+        output_dir=tmp_path,
+    )
+
+    command = build_job_command(
+        normalized,
+        output_dir=tmp_path,
+        profile_path=tmp_path / "profile.yaml",
+        python_executable="python-test",
+    )
+
+    assert normalized["sample_limit"] is None
+    assert command[command.index("--workflow") + 1] == "retrieval_prep"
+    assert command[command.index("--sample-ids") + 1] == "synthetic-conv-1"
+    assert "--sample-limit" not in command
+
+
+def test_dataset_description_lists_exact_sample_scope():
+    result = describe_locomo_dataset(FIXTURE)
+
+    assert result["sample_count"] == 1
+    assert result["samples"][0] == {
+        "sample_id": "synthetic-conv-1",
+        "session_count": 2,
+        "question_count": 5,
+        "speaker_a": "Maya",
+        "speaker_b": "Noah",
+    }
 
 
 def test_build_reuse_command_enables_stage3_bootstrap(tmp_path):
@@ -1752,6 +1869,30 @@ def test_build_reuse_command_enables_stage3_bootstrap(tmp_path):
         (
             {"run_id": "../escape"},
             "run_id must start",
+        ),
+        (
+            {"sample_ids": ["missing-sample"]},
+            "unknown sample_ids",
+        ),
+        (
+            {
+                "workflow": "retrieval_prep",
+                "role_models": {
+                    **_request()["role_models"],
+                    "judge": {
+                        "connection": "openai",
+                        "model_name": "gpt-4o-mini",
+                    },
+                },
+            },
+            "judge must be disabled",
+        ),
+        (
+            {
+                "workflow": "retrieval_prep",
+                "run_mode": "stage3-on",
+            },
+            "cannot use Stage 3 QA-only clone modes",
         ),
     ],
 )
@@ -2007,6 +2148,173 @@ def test_run_history_and_question_comparison(tmp_path):
     assert comparison["comparison_run_id"] == "b"
     assert comparison["questions"][0]["delta"] == 0.5
     assert comparison["questions"][0]["runs"]["b"]["prediction"] == "Monday"
+
+
+def _write_retrieval_result(
+    run_dir: Path,
+    *,
+    sample_id: str,
+    recall_at_3: float,
+    limit: int = 20,
+) -> None:
+    detail = {
+        "sample_id": sample_id,
+        "question_id": "q1",
+        "question": "What happened?",
+        "recall_at_1": recall_at_3,
+        "recall_at_3": recall_at_3,
+        "recall_at_20": 1.0,
+    }
+    (run_dir / "retrieval_replay.json").write_text(
+        json.dumps(
+            {
+                "run": str(run_dir),
+                "status": "completed",
+                "generated_at": "2026-08-10T00:00:00+00:00",
+                "limit": limit,
+                "modes": ["vector"],
+                "oracle_questions": 1,
+                "vector": {
+                    "questions": 1,
+                    "recall_at_1": recall_at_3,
+                    "recall_at_3": recall_at_3,
+                    "recall_at_20": 1.0,
+                    "hit_at_1": int(recall_at_3 > 0),
+                    "hit_at_3": int(recall_at_3 > 0),
+                    "hit_at_20": 1,
+                    "details": [detail],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_saved_retrieval_results_can_be_compared_across_runs(tmp_path):
+    output_dir = tmp_path / "runs"
+    run_a = _write_run(output_dir, "a", overall=0.5, prediction="Tuesday")
+    run_b = _write_run(output_dir, "b", overall=1.0, prediction="Monday")
+    _write_retrieval_result(run_a, sample_id="sample", recall_at_3=0.0)
+    _write_retrieval_result(run_b, sample_id="sample", recall_at_3=1.0)
+    manager = EvaluationJobManager(tmp_path / "data", output_dir=output_dir)
+
+    comparison = manager.compare_retrieval_runs(["a", "b"])
+
+    assert comparison["comparable"] is True
+    assert comparison["common_modes"] == ["vector"]
+    target_metric = next(
+        item
+        for item in comparison["metrics"]
+        if item["run_id"] == "b" and item["mode"] == "vector"
+    )
+    assert target_metric["delta_vs_baseline_at_3"] == pytest.approx(1.0)
+    assert comparison["questions"][0]["delta_at_3"] == pytest.approx(1.0)
+    summaries = {item["run_id"]: item for item in manager.list_runs()}
+    assert summaries["a"]["has_retrieval_replay"] is True
+    assert summaries["a"]["retrieval_replay_modes"] == ["vector"]
+
+
+def test_retrieval_run_comparison_warns_for_different_scope(tmp_path):
+    output_dir = tmp_path / "runs"
+    run_a = _write_run(output_dir, "a", overall=0.5, prediction="Tuesday")
+    run_b = _write_run(output_dir, "b", overall=1.0, prediction="Monday")
+    _write_retrieval_result(run_a, sample_id="sample-a", recall_at_3=0.0)
+    _write_retrieval_result(
+        run_b,
+        sample_id="sample-b",
+        recall_at_3=1.0,
+        limit=10,
+    )
+    manager = EvaluationJobManager(tmp_path / "data", output_dir=output_dir)
+
+    comparison = manager.compare_retrieval_runs(["a", "b"])
+
+    assert comparison["comparable"] is False
+    assert comparison["question_set_match"] is False
+    assert comparison["limit_match"] is False
+    assert len(comparison["warnings"]) == 2
+
+
+def test_retrieval_run_comparison_requires_saved_results(tmp_path):
+    output_dir = tmp_path / "runs"
+    run_a = _write_run(output_dir, "a", overall=0.5, prediction="Tuesday")
+    _write_retrieval_result(run_a, sample_id="sample", recall_at_3=0.0)
+    _write_run(output_dir, "b", overall=1.0, prediction="Monday")
+    manager = EvaluationJobManager(tmp_path / "data", output_dir=output_dir)
+
+    with pytest.raises(EvaluationJobError, match="not found for run: b"):
+        manager.compare_retrieval_runs(["a", "b"])
+
+
+def test_retrieval_prep_run_is_replayable_without_scores(tmp_path):
+    output_dir = tmp_path / "runs"
+    run_dir = output_dir / "prep-conv-30"
+    (run_dir / "checkpoints").mkdir(parents=True)
+    (run_dir / "results").mkdir()
+    (run_dir / "run_config.json").write_text(
+        json.dumps(
+            {
+                "run_id": "prep-conv-30",
+                "created_at": "2026-08-10T00:00:00+00:00",
+                "workflow": "retrieval_prep",
+                "selected_sample_ids": ["conv-30"],
+                "sample_ids": ["conv-30"],
+                "sample_limit": None,
+                "question_limit": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "checkpoints" / "checkpoint.json").write_text(
+        json.dumps(
+            {
+                "run_id": "prep-conv-30",
+                "status": "completed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    questions = [
+        {
+            "sample_id": "conv-30",
+            "question_id": "q1",
+            "question": "What happened?",
+            "instance_name": "locomo_conv_30",
+            "category": 2,
+            "evidence": ["D1:1"],
+        }
+    ]
+    (run_dir / "results" / "retrieval_questions.json").write_text(
+        json.dumps(
+            {
+                "run_id": "prep-conv-30",
+                "workflow": "retrieval_prep",
+                "sample_ids": ["conv-30"],
+                "question_count": 1,
+                "questions": questions,
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = EvaluationJobManager(
+        tmp_path / "data",
+        output_dir=output_dir,
+    )
+
+    summary = manager.list_runs()[0]
+
+    assert summary["status"] == "retrieval_ready"
+    assert summary["has_scores"] is False
+    assert summary["has_retrieval_questions"] is True
+    assert summary["retrieval_question_count"] == 1
+    assert summary["selected_sample_ids"] == ["conv-30"]
+    assert manager._retrieval_prep_output_complete(
+        {
+            "run_id": "prep-conv-30",
+            "run_dir": str(run_dir),
+            "workflow": "retrieval_prep",
+        }
+    )
 
 
 def test_locomo_semantic_detail_and_history_reject_stale_artifact(tmp_path):

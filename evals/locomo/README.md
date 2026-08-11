@@ -150,6 +150,31 @@ the single most relevant card its raw (the rest stay summaries) instead of
 every retrieved card's raw, or `brain.time_decay_rate: 0.0` to disable recency
 weighting for a retrieval ablation) to the evaluation instance config — see
 `profiles/*.example.yaml`.
+
+To build memory for exact samples and compare retrieval before paying for QA,
+use the QA-free workflow:
+
+```bash
+python -m evals.locomo.cli run \
+  --dataset /path/to/locomo10.json \
+  --output-dir ./eval_runs/runs \
+  --run-id retrieval_conv_30 \
+  --sample-ids conv-30 \
+  --all-sessions \
+  --all-questions \
+  --workflow retrieval_prep \
+  --profile /path/to/profile.yaml
+```
+
+It runs Replay and Sleeptime, writes
+`results/retrieval_questions.json`, and does not call Chat QA, scoring, or the
+semantic judge. Explicit `--sample-ids` override the default sample limit, so
+several non-leading samples can be selected without `--all-samples`. The Web
+Console exposes the same sample-ID selector and workflow. A completed prep run
+is marked `retrieval_ready` and appears in the offline retrieval panel below.
+If a retrieval setup is accepted, pass the prep run to `rerun-qa` (or select it
+as `SOURCE_MEMORY_RUN_ID` in the Web Console); the target run automatically
+switches back to the full workflow and generates QA against cloned cards.
 Each model role accepts its own `generation_config.temperature`. Context
 injection can be ablated independently, for example:
 
@@ -214,6 +239,9 @@ added latency (plus token usage for the LLM engine). Its per-question details
 retain the question/evidence, vector and selected IDs, raw scores, errors, and
 pinned model/code revisions. Full LoCoMo runs use the same profile section in
 the QA path and retain both original and effective candidate ranks.
+The replay reads `qa_results.jsonl` for normal runs and falls back to the
+QA-free `retrieval_questions.json` manifest. Since that manifest has no saved
+QA-time rewrite, `dual_query` generates one with the run profile's Gatekeeper.
 
 To test Summary candidate generation followed by Episode/RAW embedding
 selection, use the evaluation-only evidence mode:
@@ -226,12 +254,32 @@ python -m evals.locomo.retrieval_replay \
   --profile ./eval_runs/profiles/<source-job>.yaml
 ```
 
-The first stage is the existing card vector (Title / Tags / Summary) top 20.
+To start from the BM25/vector RRF pool instead, select
+`hybrid_evidence_rerank` or weighted `hybrid_evidence_fusion` (they share the
+same evidence embedding cache):
+
+```bash
+python -m evals.locomo.retrieval_replay \
+  --run ./eval_runs/runs/qwen3_14b_web_v28 \
+  --modes hybrid hybrid_evidence_rerank hybrid_evidence_fusion \
+  --limit 20 \
+  --profile ./eval_runs/profiles/<source-job>.yaml
+```
+
+`hybrid_evidence_fusion` combines reciprocal hybrid and Evidence ranks instead
+of replacing the hybrid order. Its default weights are 0.70 and 0.30; use
+`--evidence-fusion-base-weight` to test another hybrid weight.
+
+The first stage is either the existing card vector (Title / Tags / Summary)
+top 20 or the hybrid RRF top 20.
 The second stage embeds each candidate card's Episode and linked RAW chunks
 with the source run's embedding configuration, takes the maximum evidence
 cosine per card (MaxP), and selects the top three. RAW chunks default to 1,800
-characters with 180-character overlap. This mode does not alter production QA
-retrieval or the source instance database.
+characters with 180-character overlap. The source instance database is not
+altered. `hybrid_evidence_fusion` is also available as a full LoCoMo QA
+`brain.search_mode`; the other evidence modes remain offline comparisons.
+During QA it lazily embeds only the current hybrid top-N, shares the question
+vector with the first stage, and falls back to hybrid order on any failure.
 
 Document and question vectors are cached in
 `retrieval_cache/evidence_embeddings.sqlite3`. Keys include the embedding

@@ -316,6 +316,69 @@ def test_replay_sleeptime_qa_and_jsonl_outputs(tmp_path):
     assert progress.qa_completed == 1
 
 
+def test_retrieval_prep_stops_after_sleeptime_and_writes_questions(tmp_path):
+    fake_provider = FakeProvider()
+    config = ReplayConfig(
+        dataset_path=FIXTURE,
+        output_dir=tmp_path,
+        run_id="retrieval-prep",
+        sample_limit=1,
+        session_limit=1,
+        question_limit=2,
+        workflow="retrieval_prep",
+    )
+
+    with patch(
+        "butly_core.llm.factory.ProviderFactory.create",
+        return_value=fake_provider,
+    ), patch("sleeptime.time.sleep", return_value=None):
+        result = asyncio.run(run_evaluation(config))
+
+    assert result.workflow == "retrieval_prep"
+    assert result.answered_questions == 0
+    assert result.prepared_questions == 2
+    assert not (result.workspace.results_dir / "qa_results.jsonl").exists()
+    assert not (result.workspace.run_dir / "scores.json").exists()
+    manifest = json.loads(
+        (
+            result.workspace.results_dir / "retrieval_questions.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert manifest["workflow"] == "retrieval_prep"
+    assert manifest["sample_ids"] == ["synthetic-conv-1"]
+    assert manifest["question_count"] == 2
+    assert manifest["questions"][0]["instance_name"] == (
+        "locomo_synthetic_conv_1"
+    )
+    assert manifest["questions"][0]["evidence"]
+    run_config = json.loads(
+        result.workspace.run_config_path.read_text(encoding="utf-8")
+    )
+    assert run_config["workflow"] == "retrieval_prep"
+    checkpoint = Checkpoint.load(
+        "retrieval-prep", result.workspace.checkpoints_dir
+    )
+    assert checkpoint.status == "completed"
+    progress = checkpoint.progress_for(
+        "synthetic-conv-1", "locomo_synthetic_conv_1"
+    )
+    assert progress.qa_completed == 0
+    assert fake_provider.generate_contexts == []
+
+    (result.workspace.results_dir / "retrieval_questions.json").unlink()
+    with patch(
+        "butly_core.llm.factory.ProviderFactory.create",
+        return_value=fake_provider,
+    ):
+        resumed = asyncio.run(resume_evaluation(result.workspace.run_dir))
+    assert resumed.answered_questions == 0
+    assert resumed.prepared_questions == 2
+    assert (
+        resumed.workspace.results_dir / "retrieval_questions.json"
+    ).is_file()
+    assert not (resumed.workspace.results_dir / "qa_results.jsonl").exists()
+
+
 def test_resume_after_interruption_does_not_reingest(tmp_path):
     fake_provider = FakeProvider()
     config = ReplayConfig(
@@ -599,6 +662,7 @@ def test_rerun_qa_reuses_exact_cards_without_touching_source(tmp_path):
         session_limit=1,
         question_limit=1,
         qa_mode="independent",
+        workflow="retrieval_prep",
     )
     conversation = load_dataset(FIXTURE)[0]
     source_workspace = EvaluationWorkspace.create(
@@ -640,7 +704,7 @@ def test_rerun_qa_reuses_exact_cards_without_touching_source(tmp_path):
     )
     source_progress.replayed_sessions = ["session_1"]
     source_progress.sleeptime_completed = ["session_1"]
-    source_progress.qa_completed = 1
+    source_progress.qa_completed = 0
     source_checkpoint.status = "completed"
     source_checkpoint.save()
     (source_workspace.results_dir / "replay_log.jsonl").write_text(
@@ -736,6 +800,7 @@ context_levels:
         rerun.workspace.run_config_path.read_text(encoding="utf-8")
     )
     assert run_config["memory_reused_from_run_id"] == "reuse-source"
+    assert run_config["workflow"] == "full"
     assert run_config["run_sleeptime_per_session"] is False
     assert run_config["qa_prompt_version"] == LOCOMO_QA_PROMPT_VERSION
     assert run_config["judge"]["connection"] == "judge-connection"
@@ -1004,6 +1069,26 @@ def test_configure_instance_merges_profile_recursively():
     assert targets["digest"] is True
     assert targets["knowledge_cards"] is True
     assert captured["memory"]["knowledge_maturation_enabled"] is True
+
+
+def test_configure_instance_keeps_fusion_cache_outside_qa_clones(tmp_path):
+    runtime = MagicMock()
+    runtime.base_dir = tmp_path / "run" / "workspace"
+    runtime.instance_manager.get_instance_config.return_value = {}
+    runtime.instance_manager.update_instance_config.return_value = (True, "ok")
+    profile = EvaluationProfile(
+        name=None,
+        locale="en",
+        sections={"brain": {"search_mode": "hybrid_evidence_fusion"}},
+    )
+    config = ReplayConfig(dataset_path=FIXTURE, output_dir=tmp_path)
+
+    _configure_instance(runtime, "inst", config, profile)
+
+    captured = runtime.instance_manager.update_instance_config.call_args[0][1]
+    assert captured["brain"]["evidence_cache_path"] == str(
+        tmp_path / "run" / "retrieval_cache" / "evidence_embeddings.sqlite3"
+    )
 
 
 def test_stage3_profile_runs_per_session(tmp_path):

@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .config import ReplayConfig, SUPPORTED_EVALUATION_LOCALES
+from .config import ReplayConfig, SUPPORTED_EVALUATION_LOCALES, WORKFLOWS
 from .progress import (
     EVALUATION_PROGRESS_MAX,
     JUDGING_PROGRESS_MAX,
@@ -28,7 +28,12 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--dataset", type=Path, required=True)
     run_parser.add_argument("--output-dir", type=Path, required=True)
     run_parser.add_argument("--run-id")
-    run_parser.add_argument("--sample-ids", nargs="*", default=[])
+    run_parser.add_argument(
+        "--sample-ids",
+        nargs="*",
+        default=[],
+        help="Select exact sample IDs; explicit IDs override --sample-limit",
+    )
     sample_group = run_parser.add_mutually_exclusive_group()
     sample_group.add_argument("--sample-limit", type=_positive_int, default=1)
     sample_group.add_argument(
@@ -55,6 +60,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("independent", "sequential"),
         default="independent",
         help="Reset to the post-Sleeptime state for each QA, or keep QA history",
+    )
+    run_parser.add_argument(
+        "--workflow",
+        choices=WORKFLOWS,
+        default="full",
+        help=(
+            "full runs QA/scoring; retrieval_prep stops after Replay/Sleeptime "
+            "and writes questions for offline retrieval comparison"
+        ),
     )
     run_parser.add_argument(
         "--locale",
@@ -195,10 +209,13 @@ def _replay_config_from_args(args: argparse.Namespace) -> ReplayConfig:
         output_dir=args.output_dir,
         run_id=args.run_id,
         sample_ids=tuple(args.sample_ids),
-        sample_limit=None if args.all_samples else args.sample_limit,
+        sample_limit=(
+            None if args.all_samples or args.sample_ids else args.sample_limit
+        ),
         session_limit=None if args.all_sessions else args.session_limit,
         question_limit=None if args.all_questions else args.question_limit,
         qa_mode=args.qa_mode,
+        workflow=args.workflow,
         locale=args.locale,
         model_name=args.model_name,
         connection=args.connection,
@@ -373,6 +390,33 @@ def _finish(
         "replayed_sessions": result.replayed_sessions,
         "answered_questions": result.answered_questions,
     }
+    workflow = getattr(result, "workflow", "full")
+    if workflow == "retrieval_prep":
+        manifest_path = (
+            result.workspace.results_dir / "retrieval_questions.json"
+        )
+        payload.update(
+            {
+                "workflow": workflow,
+                "retrieval_question_count": getattr(
+                    result,
+                    "prepared_questions",
+                    0,
+                ),
+                "retrieval_questions_path": str(manifest_path),
+            }
+        )
+        progress_reporter.emit(
+            100.0,
+            "complete",
+            (
+                "Replay and Sleeptime completed; "
+                f"{payload['retrieval_question_count']} questions are ready for "
+                "offline retrieval comparison"
+            ),
+        )
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
     if skip_scoring:
         progress_reporter.emit(
             100.0,

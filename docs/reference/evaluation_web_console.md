@@ -28,11 +28,15 @@ refetched only through the explicit **Refresh model list** action.
 The start form covers:
 
 - `RUN_ID`;
+- workflow: a full evaluation or `retrieval_prep` (stop after
+  Replay/Sleeptime without QA);
 - `RUN_MODE`: `standard`, `stage3-full`, `stage3-source`, `stage3-off`, or
   `stage3-on`;
 - `SOURCE_MEMORY_RUN_ID`;
 - QA mode and locale;
-- all/limited sample, session, and question scopes;
+- exact sample-ID multi-selection loaded from the dataset (or a leading sample
+  limit when no IDs are selected);
+- all/limited session and question scopes;
 - Current Time, Mid-term, Session Digest, and RAG switches;
 - RAG source, RAW top-k and character cap, and time decay;
 - retrieval mode: the default `vector`, BM25-backed `hybrid`, or
@@ -68,8 +72,20 @@ only `RUN_ID` changes: a trailing `_vNN` is incremented, otherwise a
 time-based suggestion is generated. `allow_embedding_mismatch` is a hazardous
 per-run acknowledgement and always resets to off.
 
+`retrieval_prep` replays the selected samples and completes Sleeptime for each
+selected session, then stops. It makes no Chat-answer, official-scoring, or
+semantic-judge calls. Instead it atomically stores the selected LoCoMo
+questions in `results/retrieval_questions.json`. The completed run appears as
+`retrieval_ready` and can be selected in the existing offline-retrieval panel.
+This makes it practical to build memory for only `conv-30`, compare several
+retrieval modes, and decide whether a QA run is worth its cost. The Backend
+can then use that prep run as `SOURCE_MEMORY_RUN_ID` to clone the canonical
+cards and run QA only. It validates selected IDs against the dataset and
+rejects unknown or duplicate IDs.
+
 The run-history "offline retrieval replay" panel also offers `dual_query`,
-`reranked`, and `evidence_rerank`.
+`reranked`, `evidence_rerank`, `hybrid_evidence_rerank`, and
+`hybrid_evidence_fusion`.
 Without generating answers it compares original-vector and effective
 Recall@1/3/20, top-three rescue/harm, completion/fallback, added latency, and
 LLM token usage when applicable. The comparison runs as a persistent background
@@ -78,12 +94,33 @@ log every two seconds. It keeps running when the page is left and can be stopped
 or rerun with the same settings. Once complete, the panel shows both mode-level
 aggregates and per-question rescue/harm/fallback, vector and selected top three,
 raw scores, and errors. The job and `retrieval_replay.json` survive Backend
-restarts. Enabling the same reranker in a full LoCoMo run puts it in the QA
+restarts. A normal run supplies questions from `qa_results.jsonl`; a
+`retrieval_prep` run supplies the fixed `retrieval_questions.json` manifest.
+The run-history cross-run retrieval panel accepts two to eight saved artifacts,
+shows Recall@1/3/20 by run and mode with deltas from the first run, and compares
+common questions between the first and last run. It warns instead of presenting
+the result as like-for-like when sample IDs, question sets, or candidate limits
+differ.
+Because the latter has no QA-time saved query, `dual_query` generates one with
+the source run's Gatekeeper settings. Enabling the same reranker in a full LoCoMo run puts it in the QA
 retrieval path, so final official/semantic answer quality and retrieval metrics
 remain attributable in one run.
 
-`evidence_rerank` is evaluation-only. It takes the vector top N (20 by default)
-from each card's existing Title / Tags / Summary embedding, embeds the linked
+The full-run `Search mode` also offers `hybrid_evidence_fusion`. It lazily
+rescores only the normal hybrid top N (20 by default), combines hybrid and
+Evidence ranks at 0.70/0.30, and injects the resulting top three. The question
+vector is shared with the first stage, while the run-scoped persistent cache
+stores vectors and hashes only. Failures restore hybrid order. Run history and
+comparison expose completion/fallback, rescue/harm against hybrid top three,
+and p95 added latency.
+
+The evaluation-only `evidence_rerank` starts from vector top N, while
+`hybrid_evidence_rerank` starts from the BM25/vector RRF-fused hybrid top N
+(20 by default). `hybrid_evidence_fusion` uses the same hybrid pool but
+combines reciprocal hybrid and Evidence ranks with configurable weights
+(0.70/0.30 by default), preserving the hybrid signal while adjusting its
+second and third positions. Offline replay compares it without answers; a full
+run applies the same shared fusion algorithm to QA retrieval. Each mode embeds the linked
 Episode and RAW-conversation chunks with the same embedding model, and reorders
 cards by their best evidence cosine (MaxP) before selecting the top three. The
 first run has a document-indexing phase. Vectors and hashes are persisted in
@@ -212,6 +249,7 @@ The legacy Web Console Backend exposes:
 | Method | Path | Behavior |
 |---|---|---|
 | `GET` | `/evaluations/config` | Output root, dataset candidates, run modes, and the last evaluation request |
+| `GET` | `/evaluations/datasets/samples` | Validate a dataset and list sample IDs with session/question counts |
 | `POST` | `/evaluations/jobs` | Start a run |
 | `GET` | `/evaluations/jobs` | List jobs |
 | `GET` | `/evaluations/jobs/{job_id}` | Read status and progress |
@@ -293,8 +331,10 @@ absolute dataset path may be entered manually.
 
 ## History and comparison
 
-History scans `*/run_config.json` below the output root. When `scores.json`
-exists it shows overall score, question count, exact match, containment,
+History scans `*/run_config.json` below the output root. A `retrieval_prep` run
+shows its selected sample IDs, fixed retrieval-question count, and
+`retrieval_ready` state without pretending it has answer scores. When
+`scores.json` exists, a normal run shows overall score, question count, exact match, containment,
 evidence retrieval, **RAG trigger rate, classifier fallback rate**, mean
 latency, token totals, card count, Sleeptime failures, source run, QA mode,
 and scope.

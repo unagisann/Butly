@@ -1,9 +1,10 @@
 """Embedding-only Episode/RAW reranking for LoCoMo retrieval replay.
 
-The production card vector remains the first-stage index.  This module builds
+The production card index remains the first-stage source. This module builds
 an evaluation-only sidecar index from each card's Episode and linked RAW
-conversation files, then applies MaxP passage scoring to the vector top-N.
-Only vectors and hashes are cached; RAW text remains in the run workspace.
+conversation files, then applies MaxP passage scoring to vector or hybrid
+top-N candidates. Only vectors and hashes are cached; RAW text remains in the
+run workspace.
 """
 
 from __future__ import annotations
@@ -266,7 +267,7 @@ def _cosine(left: np.ndarray, right: np.ndarray) -> Optional[float]:
 
 
 class EvidenceReranker:
-    """Precompute evidence vectors and rerank a vector candidate pool."""
+    """Precompute evidence vectors and rerank a retrieval candidate pool."""
 
     def __init__(
         self,

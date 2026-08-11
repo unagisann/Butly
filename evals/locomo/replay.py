@@ -58,6 +58,8 @@ class EvaluationRunResult:
     instance_names: list[str]
     replayed_sessions: int
     answered_questions: int
+    workflow: str = "full"
+    prepared_questions: int = 0
 
 
 async def run_evaluation(
@@ -190,6 +192,9 @@ async def rerun_qa_from_memory(
         sample_limit=None if selected_sample_ids else source_config.sample_limit,
         question_limit=resolved_question_limit,
         qa_mode=qa_mode,
+        # A retrieval-prep source is a valid canonical post-Sleeptime memory
+        # baseline, but rerun-qa must always execute the full QA workflow.
+        workflow="full",
         locale=(
             locale
             if locale is not None
@@ -325,7 +330,8 @@ async def _execute(
         (
             f"run={workspace.run_id}; samples={len(conversations)}, "
             f"sessions={session_count}, questions={question_count}, "
-            f"qa_mode={config.qa_mode}, locale={config.locale}"
+            f"workflow={config.workflow}, qa_mode={config.qa_mode}, "
+            f"locale={config.locale}"
         ),
     )
     runtime = workspace.create_runtime()
@@ -442,6 +448,8 @@ async def _execute(
             )
 
         questions = conversation.questions[: config.question_limit]
+        if config.workflow == "retrieval_prep":
+            continue
         if len(questions) > progress.qa_completed:
             checkpoint.status = STATUS_QA
             checkpoint.save()
@@ -564,6 +572,13 @@ async def _execute(
             else:
                 os.environ[CHRONOS_NOW_ENV] = prev_now
 
+    if config.workflow == "retrieval_prep":
+        _write_retrieval_question_manifest(
+            workspace,
+            conversations,
+            config,
+            instance_names_by_sample,
+        )
     checkpoint.status = STATUS_COMPLETED
     checkpoint.save()
     _emit_progress(
@@ -571,7 +586,11 @@ async def _execute(
         progress_total,
         progress_total,
         "evaluation",
-        "Replay, Sleeptime, and QA completed",
+        (
+            "Replay and Sleeptime completed; retrieval questions prepared"
+            if config.workflow == "retrieval_prep"
+            else "Replay, Sleeptime, and QA completed"
+        ),
     )
     return EvaluationRunResult(
         workspace=workspace,
@@ -579,6 +598,10 @@ async def _execute(
         instance_names=instance_names,
         replayed_sessions=replayed_sessions,
         answered_questions=answered_questions,
+        workflow=config.workflow,
+        prepared_questions=(
+            question_count if config.workflow == "retrieval_prep" else 0
+        ),
     )
 
 
@@ -593,7 +616,9 @@ def _evaluation_progress_counts(
     for conversation in conversations:
         sessions = conversation.sessions[: config.session_limit]
         questions = conversation.questions[: config.question_limit]
-        total += len(sessions) * 2 + len(questions)
+        total += len(sessions) * 2
+        if config.workflow == "full":
+            total += len(questions)
         progress = checkpoint.progress_for(
             conversation.sample_id,
             instance_names_by_sample[conversation.sample_id],
@@ -606,8 +631,46 @@ def _evaluation_progress_counts(
             session.session_id in progress.sleeptime_completed
             for session in sessions
         )
-        completed += min(max(progress.qa_completed, 0), len(questions))
+        if config.workflow == "full":
+            completed += min(max(progress.qa_completed, 0), len(questions))
     return total, completed
+
+
+def _write_retrieval_question_manifest(
+    workspace: EvaluationWorkspace,
+    conversations: list[LocomoConversation],
+    config: ReplayConfig,
+    instance_names_by_sample: dict[str, str],
+) -> None:
+    """Persist stable retrieval queries without generating model answers."""
+    questions = []
+    for conversation in conversations:
+        instance_name = instance_names_by_sample[conversation.sample_id]
+        for question in conversation.questions[: config.question_limit]:
+            questions.append(
+                {
+                    "run_id": workspace.run_id,
+                    "sample_id": conversation.sample_id,
+                    "instance_name": instance_name,
+                    "question_id": question.question_id,
+                    "question": question.question,
+                    "expected_answer": question.answer,
+                    "category": question.category,
+                    "evidence": list(question.evidence),
+                }
+            )
+    write_json(
+        workspace.results_dir / "retrieval_questions.json",
+        {
+            "schema_version": 1,
+            "run_id": workspace.run_id,
+            "workflow": "retrieval_prep",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "sample_ids": [item.sample_id for item in conversations],
+            "question_count": len(questions),
+            "questions": questions,
+        },
+    )
 
 
 def _emit_progress(
@@ -821,6 +884,18 @@ def _configure_instance(
             _merge_profile_section(
                 instance_config.setdefault(section, {}), overrides
             )
+    brain_config = instance_config.setdefault("brain", {})
+    if brain_config.get("search_mode") == "hybrid_evidence_fusion":
+        # independent QA clones are deleted after each question.  Keep the
+        # vector sidecar at run scope so later questions reuse it.
+        brain_config.setdefault(
+            "evidence_cache_path",
+            str(
+                Path(runtime.base_dir).parent
+                / "retrieval_cache"
+                / "evidence_embeddings.sqlite3"
+            ),
+        )
     instance_config.setdefault("prompts", {})["allow_user_overrides"] = False
     if config.model_name is not None:
         instance_config.setdefault("chat", {})["model_name"] = config.model_name

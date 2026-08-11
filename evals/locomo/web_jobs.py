@@ -20,6 +20,7 @@ import yaml
 from butly_core.core.embedding_check import check_embeddings
 from butly_core.io_utils import atomic_write_text
 
+from .config import WORKFLOWS
 from .workspace import PROJECT_ROOT
 
 
@@ -32,7 +33,12 @@ RUN_MODES = (
     "stage3-off",
     "stage3-on",
 )
-SEARCH_MODES = ("vector", "hybrid", "dual_query")
+SEARCH_MODES = (
+    "vector",
+    "hybrid",
+    "dual_query",
+    "hybrid_evidence_fusion",
+)
 RETRIEVAL_REPLAY_MODES = (
     "bm25",
     "vector",
@@ -40,6 +46,8 @@ RETRIEVAL_REPLAY_MODES = (
     "dual_query",
     "reranked",
     "evidence_rerank",
+    "hybrid_evidence_rerank",
+    "hybrid_evidence_fusion",
 )
 RETRIEVAL_EXECUTIONS = ("always", "intent_gated")
 INJECTION_POLICIES = ("intent_gated", "retrieval_assisted", "candidates")
@@ -160,6 +168,40 @@ def gatekeeper_token_warning(
         "空応答→need_intent が立たず RAG が発火しなくなります"
         f"（{RECOMMENDED_REASONING_MAX_OUTPUT_TOKENS} 以上を推奨）。"
     )
+
+
+def describe_locomo_dataset(dataset_path: Path) -> dict[str, Any]:
+    """Validate a dataset and return its selectable sample metadata."""
+    path = Path(dataset_path).expanduser()
+    try:
+        path = path.resolve(strict=True)
+    except FileNotFoundError as exc:
+        raise EvaluationJobError(f"dataset not found: {path}") from exc
+    if not path.is_file():
+        raise EvaluationJobError(f"dataset is not a file: {path}")
+
+    from .dataset import LocomoDatasetError, load_dataset
+
+    try:
+        conversations = load_dataset(path)
+    except LocomoDatasetError as exc:
+        raise EvaluationJobError(str(exc)) from exc
+    except (OSError, UnicodeError) as exc:
+        raise EvaluationJobError(f"cannot read dataset {path}: {exc}") from exc
+    return {
+        "dataset_path": str(path),
+        "sample_count": len(conversations),
+        "samples": [
+            {
+                "sample_id": conversation.sample_id,
+                "session_count": len(conversation.sessions),
+                "question_count": len(conversation.questions),
+                "speaker_a": conversation.speaker_a,
+                "speaker_b": conversation.speaker_b,
+            }
+            for conversation in conversations
+        ],
+    }
 
 
 def _normalize_role_models(raw_models: Any) -> dict[str, dict[str, Any]]:
@@ -338,8 +380,8 @@ def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
         "use_rag": use_rag,
         "search_mode": search_mode,
     }
-    if search_mode == "hybrid":
-        # BM25 側のパラメータは hybrid のときだけ書く。vector run の profile に
+    if search_mode in {"hybrid", "hybrid_evidence_fusion"}:
+        # BM25 側のパラメータはhybrid系のときだけ書く。vector runのprofileに
         # 無関係なキーを残さない（run 間 diff を読みやすくするため）。
         profile["brain"].update(
             {
@@ -351,6 +393,17 @@ def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
                 ),
             }
         )
+        if search_mode == "hybrid_evidence_fusion":
+            profile["brain"].update(
+                {
+                    "evidence_fusion_base_weight": float(
+                        request.get("evidence_fusion_base_weight", 0.7)
+                    ),
+                    "evidence_raw_chunk_chars": int(
+                        request.get("evidence_raw_chunk_chars", 1800)
+                    ),
+                }
+            )
     elif search_mode == "dual_query":
         profile["brain"].update(
             {
@@ -419,6 +472,7 @@ def build_job_command(
     source_run_id = str(request.get("source_memory_run_id") or "").strip()
     dataset_path = str(request["dataset_path"])
     qa_mode = str(request.get("qa_mode") or "independent")
+    workflow = str(request.get("workflow") or "full")
     locale = str(request.get("locale") or "en")
 
     if source_run_id:
@@ -466,10 +520,21 @@ def build_job_command(
         str(profile_path),
         "--qa-mode",
         qa_mode,
+        "--workflow",
+        workflow,
         "--locale",
         locale,
     ]
-    for dimension in ("sample", "session", "question"):
+    sample_ids = list(request.get("sample_ids") or [])
+    if sample_ids:
+        command.extend(["--sample-ids", *sample_ids])
+    else:
+        sample_limit = request.get("sample_limit")
+        if sample_limit is None:
+            command.append("--all-samples")
+        else:
+            command.extend(["--sample-limit", str(sample_limit)])
+    for dimension in ("session", "question"):
         limit = request.get(f"{dimension}_limit")
         if limit is None:
             command.append(f"--all-{dimension}s")
@@ -497,14 +562,52 @@ def validate_job_request(
         raise EvaluationJobError(f"unsupported run_mode: {run_mode}")
     normalized["run_mode"] = run_mode
 
-    dataset_path = Path(str(normalized.get("dataset_path") or "")).expanduser()
-    try:
-        dataset_path = dataset_path.resolve(strict=True)
-    except FileNotFoundError as exc:
-        raise EvaluationJobError(f"dataset not found: {dataset_path}") from exc
-    if not dataset_path.is_file():
-        raise EvaluationJobError(f"dataset is not a file: {dataset_path}")
-    normalized["dataset_path"] = str(dataset_path)
+    workflow = str(normalized.get("workflow") or "full")
+    if workflow not in WORKFLOWS:
+        raise EvaluationJobError(f"unsupported workflow: {workflow}")
+    normalized["workflow"] = workflow
+
+    qa_mode = str(normalized.get("qa_mode") or "independent")
+    if qa_mode not in {"independent", "sequential"}:
+        raise EvaluationJobError(f"unsupported qa_mode: {qa_mode}")
+    if workflow == "retrieval_prep" and qa_mode != "independent":
+        raise EvaluationJobError(
+            "retrieval_prep requires qa_mode=independent"
+        )
+    if workflow == "retrieval_prep" and run_mode in {"stage3-off", "stage3-on"}:
+        raise EvaluationJobError(
+            "retrieval_prep cannot use Stage 3 QA-only clone modes"
+        )
+    normalized["qa_mode"] = qa_mode
+
+    dataset_info = describe_locomo_dataset(
+        Path(str(normalized.get("dataset_path") or ""))
+    )
+    normalized["dataset_path"] = dataset_info["dataset_path"]
+    raw_sample_ids = normalized.get("sample_ids") or []
+    if not isinstance(raw_sample_ids, list):
+        raise EvaluationJobError("sample_ids must be an array")
+    sample_ids = []
+    for raw_sample_id in raw_sample_ids:
+        if not isinstance(raw_sample_id, str) or not raw_sample_id.strip():
+            raise EvaluationJobError(
+                "sample_ids must contain non-empty strings"
+            )
+        sample_id = raw_sample_id.strip()
+        if sample_id in sample_ids:
+            raise EvaluationJobError("sample_ids must not contain duplicates")
+        sample_ids.append(sample_id)
+    available_sample_ids = {
+        item["sample_id"] for item in dataset_info["samples"]
+    }
+    unknown_sample_ids = set(sample_ids) - available_sample_ids
+    if unknown_sample_ids:
+        raise EvaluationJobError(
+            f"unknown sample_ids: {sorted(unknown_sample_ids)}"
+        )
+    normalized["sample_ids"] = sample_ids
+    if sample_ids:
+        normalized["sample_limit"] = None
 
     source_run_id = str(
         normalized.get("source_memory_run_id") or ""
@@ -533,9 +636,26 @@ def validate_job_request(
         )
     normalized["source_memory_run_id"] = source_run_id or None
 
+    if source_run_id and sample_ids:
+        raise EvaluationJobError(
+            "sample_ids cannot be changed when source memory is reused"
+        )
+    if workflow == "retrieval_prep" and source_run_id:
+        raise EvaluationJobError(
+            "retrieval_prep builds fresh memory and does not accept "
+            "source_memory_run_id"
+        )
+
     normalized["role_models"] = _normalize_role_models(
         normalized.get("role_models")
     )
+    if (
+        workflow == "retrieval_prep"
+        and "judge" in normalized["role_models"]
+    ):
+        raise EvaluationJobError(
+            "retrieval_prep does not generate answers, so judge must be disabled"
+        )
 
     allow_mismatch = bool(normalized.get("allow_embedding_mismatch"))
     normalized["allow_embedding_mismatch"] = allow_mismatch
@@ -627,7 +747,34 @@ def validate_job_request(
         raise EvaluationJobError("bm25_max_df_ratio must be in (0.0, 1.0]")
     normalized["bm25_max_df_ratio"] = float(df_ratio)
 
+    _validate_evidence_fusion_settings(normalized)
+
     return normalized
+
+
+def _validate_evidence_fusion_settings(request: dict[str, Any]) -> None:
+    """Normalize the runtime Episode/RAW fusion controls in-place."""
+    weight = request.get("evidence_fusion_base_weight", 0.7)
+    if (
+        isinstance(weight, bool)
+        or not isinstance(weight, (int, float))
+        or not 0.0 <= float(weight) <= 1.0
+    ):
+        raise EvaluationJobError(
+            "evidence_fusion_base_weight must be in [0.0, 1.0]"
+        )
+    request["evidence_fusion_base_weight"] = float(weight)
+
+    raw_chunk_chars = request.get("evidence_raw_chunk_chars", 1800)
+    if (
+        isinstance(raw_chunk_chars, bool)
+        or not isinstance(raw_chunk_chars, int)
+        or not 200 <= raw_chunk_chars <= 10000
+    ):
+        raise EvaluationJobError(
+            "evidence_raw_chunk_chars must be between 200 and 10000"
+        )
+    request["evidence_raw_chunk_chars"] = raw_chunk_chars
 
 
 def build_dialogue_ab_profile_payload(
@@ -835,6 +982,7 @@ def validate_dialogue_ab_request(
         and normalized["search_mode"] != "vector"
     ):
         raise EvaluationJobError("reranker currently requires search_mode=vector")
+    _validate_evidence_fusion_settings(normalized)
     return normalized
 
 
@@ -966,13 +1114,19 @@ def build_retrieval_replay_command(
     if profile_path:
         command.extend(["--profile", str(profile_path)])
 
-    if "evidence_rerank" in request["modes"]:
+    if {
+        "evidence_rerank",
+        "hybrid_evidence_rerank",
+        "hybrid_evidence_fusion",
+    } & set(request["modes"]):
         command.extend(
             [
                 "--evidence-raw-chunk-chars",
                 str(request["evidence_raw_chunk_chars"]),
                 "--evidence-cache",
                 str(request["evidence_cache_path"]),
+                "--evidence-fusion-base-weight",
+                str(request.get("evidence_fusion_base_weight", 0.7)),
             ]
         )
 
@@ -1126,6 +1280,7 @@ class EvaluationJobManager:
         return {
             "output_dir": str(self.output_dir),
             "dataset_candidates": candidates,
+            "workflows": list(WORKFLOWS),
             "run_modes": list(RUN_MODES),
             "search_modes": list(SEARCH_MODES),
             "retrieval_executions": list(RETRIEVAL_EXECUTIONS),
@@ -1144,6 +1299,10 @@ class EvaluationJobManager:
                 "seed_instances": self._seed_instance_candidates(),
             },
         }
+
+    def dataset_samples(self, dataset_path: str) -> dict[str, Any]:
+        """Return sample IDs and scope counts for the Web selector."""
+        return describe_locomo_dataset(Path(dataset_path))
 
     def _seed_instance_candidates(self) -> list[str]:
         """種にできる実インスタンス名（カードDBを持つものだけ）。"""
@@ -1195,6 +1354,7 @@ class EvaluationJobManager:
                 "job_id": job_id,
                 "run_id": normalized["run_id"],
                 "run_mode": normalized["run_mode"],
+                "workflow": normalized["workflow"],
                 "status": "queued",
                 "progress": 0.0,
                 "phase": "queued",
@@ -1661,6 +1821,222 @@ class EvaluationJobManager:
             raise KeyError(run_id)
         return result
 
+    def compare_retrieval_runs(
+        self,
+        run_ids: list[str],
+    ) -> dict[str, Any]:
+        """Compare saved offline retrieval results across evaluation runs."""
+        if len(run_ids) < 2:
+            raise EvaluationJobError("select at least two retrieval runs")
+        if len(run_ids) > 8:
+            raise EvaluationJobError("compare at most eight retrieval runs")
+        if len(set(run_ids)) != len(run_ids):
+            raise EvaluationJobError("run_ids must be unique")
+
+        results: dict[str, dict[str, Any]] = {}
+        question_maps: dict[
+            str,
+            dict[str, dict[tuple[str, str], dict[str, Any]]],
+        ] = {}
+        run_rows = []
+        warnings = []
+        for run_id in run_ids:
+            if not _SAFE_RUN_ID.fullmatch(run_id):
+                raise EvaluationJobError(f"invalid run_id: {run_id}")
+            try:
+                result = self.get_retrieval_replay_result(run_id)
+            except KeyError as exc:
+                raise EvaluationJobError(
+                    f"retrieval replay not found for run: {run_id}"
+                ) from exc
+            if result.get("status") != "completed":
+                raise EvaluationJobError(
+                    f"retrieval replay is not completed for run: {run_id}"
+                )
+            modes = [
+                mode
+                for mode in RETRIEVAL_REPLAY_MODES
+                if isinstance(result.get(mode), dict)
+            ]
+            if not modes:
+                raise EvaluationJobError(
+                    f"retrieval modes not found for run: {run_id}"
+                )
+            results[run_id] = result
+            by_mode = {
+                mode: self._retrieval_question_map(result[mode])
+                for mode in modes
+            }
+            question_maps[run_id] = by_mode
+            mode_sets = [set(items) for items in by_mode.values()]
+            canonical = max(mode_sets, key=len, default=set())
+            internally_consistent = all(
+                item_set == canonical for item_set in mode_sets
+            )
+            if not internally_consistent:
+                warnings.append(
+                    f"{run_id}: modeごとの質問集合が一致しません"
+                )
+            run_rows.append(
+                {
+                    "run_id": run_id,
+                    "generated_at": result.get("generated_at"),
+                    "limit": result.get("limit"),
+                    "oracle_questions": result.get("oracle_questions"),
+                    "sample_ids": sorted(
+                        {sample_id for sample_id, _ in canonical}
+                    ),
+                    "question_count": len(canonical),
+                    "question_keys": canonical,
+                    "modes": modes,
+                    "mode_question_counts": {
+                        mode: len(items) for mode, items in by_mode.items()
+                    },
+                }
+            )
+
+        baseline = run_ids[0]
+        comparison = run_ids[-1]
+        baseline_keys = run_rows[0]["question_keys"]
+        question_set_match = all(
+            row["question_keys"] == baseline_keys for row in run_rows
+        )
+        if not question_set_match:
+            warnings.append(
+                "Sample IDまたは質問集合が異なるため、run間の数値は参考比較です"
+            )
+        limits = {row.get("limit") for row in run_rows}
+        limit_match = len(limits) == 1
+        if not limit_match:
+            warnings.append(
+                "候補数limitが異なるため、Recall@kを直接比較できません"
+            )
+        common_modes = [
+            mode
+            for mode in RETRIEVAL_REPLAY_MODES
+            if all(mode in row["modes"] for row in run_rows)
+        ]
+        if not common_modes:
+            warnings.append("全runに共通する検索モードがありません")
+
+        baseline_result = results[baseline]
+        metric_rows = []
+        for row in run_rows:
+            run_id = row["run_id"]
+            result = results[run_id]
+            for mode in row["modes"]:
+                stats = result[mode]
+                diagnostics = (
+                    stats.get("evidence_reranker")
+                    or stats.get("reranker")
+                    or stats.get("query_fusion")
+                    or {}
+                )
+                metric = {
+                    "run_id": run_id,
+                    "mode": mode,
+                    "recall_at_1": stats.get("recall_at_1"),
+                    "recall_at_3": stats.get("recall_at_3"),
+                    "recall_at_20": stats.get("recall_at_20"),
+                    "hit_at_1": stats.get("hit_at_1"),
+                    "hit_at_3": stats.get("hit_at_3"),
+                    "hit_at_20": stats.get("hit_at_20"),
+                    "base_search_mode": diagnostics.get(
+                        "base_search_mode"
+                    ),
+                    "rescued_at_3": diagnostics.get("rescued_at_3"),
+                    "harmed_at_3": diagnostics.get("harmed_at_3"),
+                    "fallback_rate": diagnostics.get("fallback_rate"),
+                }
+                baseline_stats = baseline_result.get(mode)
+                for k in (1, 3, 20):
+                    current_value = stats.get(f"recall_at_{k}")
+                    baseline_value = (
+                        baseline_stats.get(f"recall_at_{k}")
+                        if isinstance(baseline_stats, dict)
+                        else None
+                    )
+                    metric[f"delta_vs_baseline_at_{k}"] = (
+                        current_value - baseline_value
+                        if self._is_number(current_value)
+                        and self._is_number(baseline_value)
+                        else None
+                    )
+                metric_rows.append(metric)
+
+        question_rows = []
+        for mode in common_modes:
+            baseline_map = question_maps[baseline][mode]
+            comparison_map = question_maps[comparison][mode]
+            for key in sorted(set(baseline_map) & set(comparison_map)):
+                base_item = baseline_map[key]
+                comparison_item = comparison_map[key]
+                item = {
+                    "mode": mode,
+                    "sample_id": key[0],
+                    "question_id": key[1],
+                    "question": (
+                        comparison_item.get("question")
+                        or base_item.get("question")
+                    ),
+                }
+                for k in (1, 3, 20):
+                    base_value = base_item.get(f"recall_at_{k}")
+                    comparison_value = comparison_item.get(f"recall_at_{k}")
+                    item[f"baseline_recall_at_{k}"] = base_value
+                    item[f"comparison_recall_at_{k}"] = comparison_value
+                    item[f"delta_at_{k}"] = (
+                        comparison_value - base_value
+                        if self._is_number(comparison_value)
+                        and self._is_number(base_value)
+                        else None
+                    )
+                question_rows.append(item)
+        question_rows.sort(
+            key=lambda item: (
+                item["mode"],
+                item["delta_at_3"] is None,
+                item["delta_at_3"] or 0.0,
+                item["sample_id"],
+                item["question_id"],
+            )
+        )
+
+        for row in run_rows:
+            row.pop("question_keys", None)
+        return {
+            "baseline_run_id": baseline,
+            "comparison_run_id": comparison,
+            "comparable": (
+                question_set_match and limit_match and bool(common_modes)
+            ),
+            "question_set_match": question_set_match,
+            "limit_match": limit_match,
+            "common_modes": common_modes,
+            "warnings": warnings,
+            "runs": run_rows,
+            "metrics": metric_rows,
+            "questions": question_rows,
+        }
+
+    @staticmethod
+    def _retrieval_question_map(
+        stats: dict[str, Any],
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        items = {}
+        for detail in stats.get("details") or []:
+            if not isinstance(detail, dict):
+                continue
+            sample_id = str(detail.get("sample_id") or "")
+            question_id = str(detail.get("question_id") or "")
+            if sample_id and question_id:
+                items[(sample_id, question_id)] = detail
+        return items
+
+    @staticmethod
+    def _is_number(value: Any) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
     def _prepare_retrieval_replay_request(
         self,
         request: dict[str, Any],
@@ -1708,6 +2084,17 @@ class EvaluationJobManager:
             raise EvaluationJobError(
                 "evidence_raw_chunk_chars must be between 200 and 10000"
             )
+        evidence_fusion_base_weight = request.get(
+            "evidence_fusion_base_weight", 0.7
+        )
+        if (
+            isinstance(evidence_fusion_base_weight, bool)
+            or not isinstance(evidence_fusion_base_weight, (int, float))
+            or not 0.0 <= float(evidence_fusion_base_weight) <= 1.0
+        ):
+            raise EvaluationJobError(
+                "evidence_fusion_base_weight must be between 0 and 1"
+            )
 
         run_dir = self.output_dir / run_id
         config = self._read_json(run_dir / "run_config.json")
@@ -1748,6 +2135,9 @@ class EvaluationJobManager:
             "reranker": normalized_reranker,
             "reranker_max_candidate_chars": max_chars,
             "evidence_raw_chunk_chars": evidence_raw_chunk_chars,
+            "evidence_fusion_base_weight": float(
+                evidence_fusion_base_weight
+            ),
             "evidence_cache_path": str(
                 run_dir
                 / "retrieval_cache"
@@ -1766,14 +2156,16 @@ class EvaluationJobManager:
         reranker: Optional[dict[str, Any]] = None,
         reranker_max_candidate_chars: int = 1600,
         evidence_raw_chunk_chars: int = 1800,
+        evidence_fusion_base_weight: float = 0.7,
     ) -> dict[str, Any]:
         """既存 run の記憶に対して検索だけを回し、Recall@k を比較する。
 
         QA を回す前の足切り（検索改修計画 §8）。``bm25`` は embedding を
         呼ばない。``vector`` / ``hybrid`` は質問1件につきembeddingを1回、
         ``dual_query``は2回（旧runは加えてGatekeeperを1回）呼ぶため、
-        ``evidence_rerank``は初回にEpisode/RAW文書もembeddingするため、runの
-        規模に比例して時間がかかる。
+        Evidence rerank系は初回にEpisode/RAW文書もembeddingするため、runの
+        規模に比例して時間がかかる。``hybrid_evidence_rerank``はhybrid候補を
+        同じevidence indexでtop 3へ並べ替える。
         結果は run 直下の ``retrieval_replay.json`` に残す。
         """
         from evals.locomo.retrieval_replay import evaluate
@@ -1788,6 +2180,9 @@ class EvaluationJobManager:
                     reranker_max_candidate_chars
                 ),
                 "evidence_raw_chunk_chars": evidence_raw_chunk_chars,
+                "evidence_fusion_base_weight": (
+                    evidence_fusion_base_weight
+                ),
             }
         )
         run_dir = Path(normalized["run_dir"])
@@ -1802,6 +2197,9 @@ class EvaluationJobManager:
                 ),
                 evidence_raw_chunk_chars=normalized[
                     "evidence_raw_chunk_chars"
+                ],
+                evidence_fusion_base_weight=normalized[
+                    "evidence_fusion_base_weight"
                 ],
             )
         except (FileNotFoundError, ValueError) as exc:
@@ -1878,6 +2276,19 @@ class EvaluationJobManager:
                     "expected_answer": question.get("expected_answer"),
                     "question": question.get("question"),
                     "sample_id": question.get("sample_id"),
+                    "retrieval_recall_at_3": question.get("recall_at_3"),
+                    "hybrid_recall_at_3": question.get(
+                        "hybrid_recall_at_3"
+                    ),
+                    "evidence_fusion_status": question.get(
+                        "evidence_fusion_status"
+                    ),
+                    "evidence_fusion_fallback": question.get(
+                        "evidence_fusion_fallback"
+                    ),
+                    "evidence_fusion_latency_ms": question.get(
+                        "evidence_fusion_latency_ms"
+                    ),
                 }
 
         questions = []
@@ -1964,7 +2375,11 @@ class EvaluationJobManager:
         record["message"] = (
             "Retrieval replay process started"
             if record.get("job_type") == _RETRIEVAL_REPLAY_JOB_TYPE
-            else "Evaluation process started"
+            else (
+                "Retrieval preparation process started"
+                if self._record_workflow(record) == "retrieval_prep"
+                else "Evaluation process started"
+            )
         )
         record["started_at"] = attempt_started_at
         record["pid"] = process.pid
@@ -2027,6 +2442,16 @@ class EvaluationJobManager:
                 record["message"] = (
                     "Retrieval replay exited without a matching result"
                 )
+            elif (
+                return_code == 0
+                and self._record_workflow(record) == "retrieval_prep"
+                and not self._retrieval_prep_output_complete(record)
+            ):
+                record["status"] = "failed"
+                record["phase"] = "retrieval-prep"
+                record["message"] = (
+                    "Retrieval preparation exited without a complete manifest"
+                )
             elif return_code == 0:
                 record["status"] = "completed"
                 record["progress"] = 100.0
@@ -2035,7 +2460,11 @@ class EvaluationJobManager:
                     "Retrieval replay completed"
                     if record.get("job_type")
                     == _RETRIEVAL_REPLAY_JOB_TYPE
-                    else "Evaluation completed"
+                    else (
+                        "Retrieval preparation completed"
+                        if self._record_workflow(record) == "retrieval_prep"
+                        else "Evaluation completed"
+                    )
                 )
             else:
                 record["status"] = "failed"
@@ -2120,6 +2549,22 @@ class EvaluationJobManager:
                 record["status"] = "interrupted"
                 record["phase"] = "interrupted"
                 record["message"] = "Retrieval replay is no longer running"
+        elif self._record_workflow(record) == "retrieval_prep":
+            if self._retrieval_prep_output_complete(record):
+                record["status"] = "completed"
+                record["progress"] = 100.0
+                record["phase"] = "complete"
+                record["message"] = "Retrieval preparation completed"
+            elif record.get("stop_requested"):
+                record["status"] = "stopped"
+                record["phase"] = "stopped"
+                record["message"] = "Retrieval preparation stopped"
+            else:
+                record["status"] = "interrupted"
+                record["phase"] = "interrupted"
+                record["message"] = (
+                    "Retrieval preparation is no longer running"
+                )
         elif self._record_judge_config(record) is not None:
             if self._judge_output_complete(record):
                 record["status"] = "completed"
@@ -2148,6 +2593,36 @@ class EvaluationJobManager:
             record["phase"] = "interrupted"
             record["message"] = "Evaluation process is no longer running"
         self._save_record(record)
+
+    def _retrieval_prep_output_complete(
+        self,
+        record: dict[str, Any],
+    ) -> bool:
+        """Return whether a QA-free run has complete memory and questions."""
+        run_dir = Path(record["run_dir"])
+        config = self._read_json(run_dir / "run_config.json") or {}
+        checkpoint = self._read_json(
+            run_dir / "checkpoints" / "checkpoint.json"
+        ) or {}
+        manifest = self._read_json(
+            run_dir / "results" / "retrieval_questions.json"
+        ) or {}
+        questions = manifest.get("questions")
+        if config.get("workflow") != "retrieval_prep":
+            return False
+        if checkpoint.get("status") != "completed":
+            return False
+        if (
+            manifest.get("workflow") != "retrieval_prep"
+            or manifest.get("run_id") != record.get("run_id")
+            or not isinstance(questions, list)
+            or not questions
+            or not all(isinstance(question, dict) for question in questions)
+            or manifest.get("question_count") != len(questions)
+        ):
+            return False
+        selected = list(config.get("selected_sample_ids") or [])
+        return list(manifest.get("sample_ids") or []) == selected
 
     def _retrieval_replay_output_complete(
         self,
@@ -2262,6 +2737,11 @@ class EvaluationJobManager:
         return generated >= started
 
     @staticmethod
+    def _record_workflow(record: dict[str, Any]) -> str:
+        request = record.get("request") or {}
+        return str(record.get("workflow") or request.get("workflow") or "full")
+
+    @staticmethod
     def _record_judge_config(
         record: dict[str, Any],
     ) -> Optional[dict[str, Any]]:
@@ -2291,6 +2771,44 @@ class EvaluationJobManager:
         )
         official = scores.get("official", {}) if isinstance(scores, dict) else {}
         raw_semantic = self._read_json(run_dir / "semantic_scores.json")
+        retrieval_replay = self._read_json(
+            run_dir / "retrieval_replay.json"
+        )
+        retrieval_replay_modes = (
+            [
+                mode
+                for mode in RETRIEVAL_REPLAY_MODES
+                if isinstance(retrieval_replay.get(mode), dict)
+            ]
+            if isinstance(retrieval_replay, dict)
+            and retrieval_replay.get("status") == "completed"
+            else []
+        )
+        retrieval_manifest = self._read_json(
+            run_dir / "results" / "retrieval_questions.json"
+        )
+        retrieval_questions = (
+            retrieval_manifest.get("questions")
+            if isinstance(retrieval_manifest, dict)
+            else None
+        )
+        retrieval_ready = (
+            config.get("workflow") == "retrieval_prep"
+            and checkpoint.get("status") == "completed"
+            and isinstance(retrieval_questions, list)
+            and bool(retrieval_questions)
+            and all(
+                isinstance(question, dict)
+                for question in retrieval_questions
+            )
+            and retrieval_manifest.get("workflow") == "retrieval_prep"
+            and retrieval_manifest.get("run_id")
+            == str(config.get("run_id") or run_dir.name)
+            and list(retrieval_manifest.get("sample_ids") or [])
+            == list(config.get("selected_sample_ids") or [])
+            and retrieval_manifest.get("question_count")
+            == len(retrieval_questions)
+        )
         semantic_questions: list[dict[str, Any]] = []
         if isinstance(scores, dict):
             from .semantic_judge_runner import (
@@ -2313,6 +2831,8 @@ class EvaluationJobManager:
         status = "created"
         if isinstance(scores, dict):
             status = "completed"
+        elif retrieval_ready:
+            status = "retrieval_ready"
         elif checkpoint.get("status") == "completed":
             status = "evaluation_completed"
         elif checkpoint:
@@ -2322,9 +2842,28 @@ class EvaluationJobManager:
             "run_dir": str(run_dir),
             "created_at": config.get("created_at"),
             "status": status,
-            "progress": 100.0 if status == "completed" else None,
+            "progress": (
+                100.0
+                if status in {"completed", "retrieval_ready"}
+                else None
+            ),
             "job_id": None,
             "has_scores": isinstance(scores, dict),
+            "workflow": config.get("workflow") or "full",
+            "selected_sample_ids": list(
+                config.get("selected_sample_ids") or []
+            ),
+            "has_retrieval_questions": retrieval_ready,
+            "has_retrieval_replay": bool(retrieval_replay_modes),
+            "retrieval_replay_modes": retrieval_replay_modes,
+            "retrieval_replay_generated_at": (
+                retrieval_replay.get("generated_at")
+                if retrieval_replay_modes
+                else None
+            ),
+            "retrieval_question_count": (
+                len(retrieval_questions) if retrieval_ready else None
+            ),
             "overall": official.get("overall"),
             "question_count": (
                 scores.get("question_count") if isinstance(scores, dict) else None
@@ -2372,6 +2911,21 @@ class EvaluationJobManager:
             ),
             "reranker_latency_ms_p95": butly_scores.get(
                 "reranker_latency_ms_p95"
+            ),
+            "evidence_fusion_completion_rate": butly_scores.get(
+                "evidence_fusion_completion_rate"
+            ),
+            "evidence_fusion_fallback_rate": butly_scores.get(
+                "evidence_fusion_fallback_rate"
+            ),
+            "evidence_fusion_rescue_rate_at_3": butly_scores.get(
+                "evidence_fusion_rescue_rate_at_3"
+            ),
+            "evidence_fusion_harm_rate_at_3": butly_scores.get(
+                "evidence_fusion_harm_rate_at_3"
+            ),
+            "evidence_fusion_latency_ms_p95": butly_scores.get(
+                "evidence_fusion_latency_ms_p95"
             ),
             # 分類器が空応答/パース失敗で倒れると need_intent が立たず RAG が
             # 丸ごと不発になる（Reasoning モデル + 小さい出力上限で起きる）。

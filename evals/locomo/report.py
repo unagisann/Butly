@@ -144,6 +144,16 @@ def _render(
         f"- Reranker latency ms p50 / p95: "
         f"{_fmt(butly.get('reranker_latency_ms_p50'), digits=0)} / "
         f"{_fmt(butly.get('reranker_latency_ms_p95'), digits=0)}",
+        f"- Evidence fusion completion / fallback rate: "
+        f"{_fmt(butly.get('evidence_fusion_completion_rate'))} / "
+        f"{_fmt(butly.get('evidence_fusion_fallback_rate'))}",
+        f"- Evidence fusion rescue / harm rate at top 3 vs hybrid: "
+        f"{_fmt(butly.get('evidence_fusion_rescue_rate_at_3'))} / "
+        f"{_fmt(butly.get('evidence_fusion_harm_rate_at_3'))}",
+        f"- Evidence fusion latency ms p50 / p95 (cache hit rate): "
+        f"{_fmt(butly.get('evidence_fusion_latency_ms_p50'), digits=0)} / "
+        f"{_fmt(butly.get('evidence_fusion_latency_ms_p95'), digits=0)} "
+        f"({_fmt(butly.get('evidence_fusion_cache_hit_rate'))})",
         f"- Evidence retrieval rate (provenance, source_files): "
         f"{_fmt(butly.get('evidence_retrieval_rate'))}",
         f"- Retrieved cards per question (mean): "

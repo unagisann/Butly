@@ -208,9 +208,37 @@ hybridの候補dictでは`score`が**RRFスコア**になり、cosineは`vector_
 検索方式を表し、どちらのqueryで見つかったかは`query_source`と両queryのrankへ
 分離して記録する。
 
+### QAなしの検索比較準備（`workflow=retrieval_prep`）
+
+検索方式を試すためだけに全QAを生成する必要はない。CLIの`run`へ
+`--workflow retrieval_prep`を渡すと、選択sampleのReplayとsessionごとの
+Sleeptimeを通常どおり完了した後、QA・公式採点・Semantic Judgeを省略する。
+
+```bash
+python -m evals.locomo.cli run \
+  --dataset /path/to/locomo10.json \
+  --output-dir ./eval_runs/runs \
+  --run-id retrieval_conv_30 \
+  --sample-ids conv-30 \
+  --all-sessions \
+  --all-questions \
+  --workflow retrieval_prep \
+  --profile ./eval_runs/profiles/search.yaml
+```
+
+選択質問は`results/retrieval_questions.json`へ、sample ID、instance名、category、
+evidenceとともにatomic保存する。checkpointは全Replay/Sleeptimeとmanifestが完成した
+時点だけ`completed`になる。`resume`は同じworkflowを復元し、完了済みsessionを
+再投入せずmanifestを再生成できる。sample IDを複数指定した場合は既定の
+`sample_limit=1`より明示IDが優先される。
+比較後に本QAへ進む場合は、このrunを`rerun-qa`のsource（Webでは
+`SOURCE_MEMORY_RUN_ID`）に指定する。QA先runのworkflowは自動的に`full`へ戻り、
+正本カードを変更せずQAだけを実行する。
+
 Run履歴の「検索だけ比較（offline retrieval replay）」から、回答生成なしで
 `bm25` / `vector` / `hybrid` / `dual_query` / `reranked` /
-`evidence_rerank` のRecall@1/3/20を比べられる
+`evidence_rerank` / `hybrid_evidence_rerank` /
+`hybrid_evidence_fusion`のRecall@1/3/20を比べられる
 （Web UIは`POST /evaluations/runs/retrieval-replay/jobs`で永続ジョブを開始する。
 従来の同期APIも互換用に残る）。進捗率・現在のモードと問題ID・直近ログは2秒ごとに
 更新され、画面を離れても継続する。停止／同条件での再実行、完了後の集計と問題別
@@ -221,10 +249,23 @@ rescue/harm/fallback・候補順位・raw scoreの確認も同じUIで行える�
 1回呼ぶ。`reranked`はvector embeddingに加えて
 選択したRerankerで候補を一括採点する。成果物の問題別`details`には質問、evidence、
 元のvector順位、実際に選択した0〜3件、全候補のraw score、エラーを残すため、
-救済・悪化した問題の確認とモデル別thresholdの校正に使える。
+救済・悪化した問題の確認とモデル別thresholdの校正に使える。通常runでは
+`qa_results.jsonl`を読み、`retrieval_prep` runでは上記manifestを読む。manifestには
+QA時のGatekeeper検索文がないため、`dual_query`だけはprofileのGatekeeperを問題ごとに
+呼ぶ。
 
-`evidence_rerank`は、既存のTitle / Tags / Summary embeddingでvector top N
-（既定20）を取り、候補カードのEpisodeと紐づくRAW会話を同じembedding空間へ追加し、
+保存済み検索比較が2件以上ある場合は、Webの「検索比較runの横断比較」で
+run×modeのRecallと先頭runからのdeltaを確認できる。問題別差分は先頭runをbaseline、
+末尾runをtargetとして共通質問だけを比較する。Sample ID、質問集合、候補数limitが
+一致しないrunには警告が出るため、異なるsampleの結果は汎化傾向の参考値として読み、
+同一条件の直接差分とは扱わない。
+
+`evidence_rerank`は既存のTitle / Tags / Summary embeddingによるvector top N、
+`hybrid_evidence_rerank`はBM25とvectorをRRF融合したhybrid top N（既定20）を取り、
+`hybrid_evidence_fusion`も同じ候補集合を取り、hybrid / Evidence順位の逆数を
+既定0.70 / 0.30で融合する。重みはWeb UIまたは
+`--evidence-fusion-base-weight`で変更できる。
+候補カードのEpisodeと紐づくRAW会話を同じembedding空間へ追加し、
 カードごとの最大cosine（MaxP）で並べ替えてtop 3を選ぶ評価専用モードである。
 RAWは既定1800文字・180文字overlapで分割し、EpisodeもRAWもない旧カードだけSummaryへ
 fallbackする。文書embeddingは初回にまとめて準備し、質問embeddingとともに
@@ -238,7 +279,7 @@ query/document prefix、本文hashを含むため、設定や本文変更後に�
 API keyはConnection認証にだけ使われ、cacheや成果物へ保存しない。一方、問題別レビューを
 可能にするため`retrieval_replay.json`には選択根拠のpreview（最大600文字）を保存する。
 集計とUIはembedding準備の進捗、cache hit/miss/write、完了／fallback、追加latency、
-vector top3からのrescue/harmを分けて表示する。
+各モードの一段目top3からのrescue/harmを分けて表示する。
 
 Webコンソールの「検索設定（Dual Query / Hybrid / Reranker）」から
 `search_mode` / `retrieval_execution` / `injection_policy` を選べる。
@@ -304,11 +345,21 @@ scorerが出す検索系の指標:
 | `reranker_completion_rate` / `reranker_fallback_rate` | Reranker実行問 | 構造化判定の完了率／元vector順位へ戻した割合 |
 | `reranker_rescue_rate_at_3` / `reranker_harm_rate_at_3` | oracleカードがあり判定完了した問 | リランク後top3が元vector top3より改善／悪化した割合 |
 | `reranker_latency_ms_p50/p95` | Reranker実行問 | Reranker呼び出しだけの追加レイテンシ |
+| `evidence_fusion_completion_rate` / `evidence_fusion_fallback_rate` | Fusion実行問 | Episode/RAW採点の完了率／通常hybrid順位へ戻した割合 |
+| `evidence_fusion_rescue_rate_at_3` / `evidence_fusion_harm_rate_at_3` | oracleカードがありFusion完了した問 | Fusion top3が元hybrid top3より改善／悪化した割合 |
+| `evidence_fusion_latency_ms_p50/p95` | Fusion実行問 | Evidence採点を含むFusion追加レイテンシ |
+| `evidence_fusion_cache_hit_rate` | Fusionのquery/document embedding参照 | run内永続cacheで再利用できた割合 |
 | `retrieval_latency_ms_p50/p95` | 実行した問 | 検索のみのレイテンシ（embedding呼び出しを含む） |
 | `bm25_short_term_hit_rate` | 実行した問 | 2文字CJK語のLIKE補助候補が入った割合 |
 
 `evidence_retrieval_rate`は**注入されたカード**で測るので注入policyの影響を受ける。
 ランキング自体の良し悪しは`retrieval_recall_at_k`で見る。
+
+`brain.search_mode: hybrid_evidence_fusion`は通常のhybrid top-N（既定20）だけを
+Episode/RAWのMaxP cosineで再評価し、hybrid 0.70 / Evidence 0.30の逆順位を融合して
+上位3件を注入する。質問vectorは一段目と共有し、文書vector/hashだけをrun単位の
+SQLite cacheへ保存する。RAW本文は保存しない。Evidence読込・embedding・cacheの
+いずれかが失敗した問は回答処理を止めず、元hybrid順位へfallbackする。
 
 評価profileの`context_levels.levels`では、`current_time`、`mid_term`、
 `session_digest`、`rag`をそれぞれ`high` / `'off'`にできる。RAGを完全に止める

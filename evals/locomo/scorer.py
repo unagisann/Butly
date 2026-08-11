@@ -197,6 +197,8 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
     rag_results = rag.get("results") or []
     retrieval = rag.get("retrieval") or {}
     raw_reference = rag.get("raw_reference") or {}
+    evidence_fusion = retrieval.get("evidence_fusion") or {}
+    evidence_cache = evidence_fusion.get("cache") or {}
     token_usage = diagnostics.get("token_usage") or {}
     token_usage_total = diagnostics.get("token_usage_total") or {}
     gatekeeper = diagnostics.get("gatekeeper") or {}
@@ -252,6 +254,12 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
         "reranker_selected_count": (retrieval.get("reranker") or {}).get(
             "selected_count"
         ),
+        "evidence_fusion_status": evidence_fusion.get("status"),
+        "evidence_fusion_fallback": evidence_fusion.get("fallback"),
+        "evidence_fusion_latency_ms": evidence_fusion.get("latency_ms"),
+        "evidence_fusion_scored_count": evidence_fusion.get("scored_count"),
+        "evidence_fusion_cache_hits": evidence_cache.get("hits"),
+        "evidence_fusion_cache_misses": evidence_cache.get("misses"),
     }
     entry["evidence_coverage"] = _evidence_provenance_coverage(row, provenance)
     entry.update(_retrieval_coverage(row, provenance, retrieval))
@@ -281,6 +289,7 @@ def _retrieval_coverage(
         "recall_at_3": None,
         "recall_at_20": None,
         "vector_recall_at_3": None,
+        "hybrid_recall_at_3": None,
         "original_recall_at_1": None,
         "original_recall_at_3": None,
         "original_recall_at_20": None,
@@ -301,6 +310,7 @@ def _retrieval_coverage(
         or []
     )
     vector_ids = retrieval.get("vector_candidate_ids") or []
+    hybrid_ids = retrieval.get("hybrid_candidate_ids") or []
     original_ids = retrieval.get("original_candidate_ids") or vector_ids
     retrieval_query_ids = retrieval.get("retrieval_query_candidate_ids") or []
     retrieval_query_executed = bool(retrieval.get("retrieval_query"))
@@ -316,6 +326,11 @@ def _retrieval_coverage(
         )
     out["vector_recall_at_3"] = _coverage_for_card_ids(
         row, provenance, vector_ids[:3]
+    )
+    out["hybrid_recall_at_3"] = (
+        _coverage_for_card_ids(row, provenance, hybrid_ids[:3])
+        if hybrid_ids
+        else None
     )
     return out
 
@@ -573,6 +588,30 @@ def _retrieval_aggregate(question_scores: list[dict]) -> dict:
         for e in reranked
         if e.get("reranker_latency_ms") is not None
     )
+    evidence_fusion_configured = [
+        e
+        for e in question_scores
+        if e.get("evidence_fusion_status") is not None
+    ]
+    evidence_fusion_rows = [
+        e
+        for e in evidence_fusion_configured
+        if e.get("evidence_fusion_status") != "skipped"
+    ]
+    evidence_fusion_latencies = sorted(
+        e["evidence_fusion_latency_ms"]
+        for e in evidence_fusion_rows
+        if e.get("evidence_fusion_latency_ms") is not None
+    )
+    evidence_cache_hits = sum(
+        int(e.get("evidence_fusion_cache_hits") or 0)
+        for e in evidence_fusion_rows
+    )
+    evidence_cache_misses = sum(
+        int(e.get("evidence_fusion_cache_misses") or 0)
+        for e in evidence_fusion_rows
+    )
+    evidence_cache_lookups = evidence_cache_hits + evidence_cache_misses
     return {
         "search_execution_rate": _mean(
             [float(bool(e.get("search_executed"))) for e in question_scores]
@@ -636,10 +675,26 @@ def _retrieval_aggregate(question_scores: list[dict]) -> dict:
         ),
         "bm25_rescue_rate": _mean(
             [
-                float((e["recall_at_3"] or 0) > (e["vector_recall_at_3"] or 0))
+                float(
+                    (
+                        (
+                            e["hybrid_recall_at_3"]
+                            if e.get("retrieval_mode")
+                            == "hybrid_evidence_fusion"
+                            else e["recall_at_3"]
+                        )
+                        or 0
+                    )
+                    > (e["vector_recall_at_3"] or 0)
+                )
                 for e in oracle
-                if e.get("retrieval_mode") == "hybrid"
-                and e["recall_at_3"] is not None
+                if e.get("retrieval_mode")
+                in {"hybrid", "hybrid_evidence_fusion"}
+                and (
+                    e.get("hybrid_recall_at_3") is not None
+                    if e.get("retrieval_mode") == "hybrid_evidence_fusion"
+                    else e.get("recall_at_3") is not None
+                )
                 and e["vector_recall_at_3"] is not None
             ]
         ),
@@ -686,6 +741,62 @@ def _retrieval_aggregate(question_scores: list[dict]) -> dict:
         ),
         "reranker_engine_distribution": _distribution(
             reranked, "reranker_engine"
+        ),
+        "evidence_fusion_execution_rate": _mean(
+            [
+                float(
+                    e.get("evidence_fusion_status") is not None
+                    and e.get("evidence_fusion_status") != "skipped"
+                )
+                for e in question_scores
+            ]
+        ),
+        "evidence_fusion_completion_rate": _mean(
+            [
+                float(e.get("evidence_fusion_status") in {"completed", "partial"})
+                for e in evidence_fusion_rows
+            ]
+        ),
+        "evidence_fusion_fallback_rate": _mean(
+            [
+                float(bool(e.get("evidence_fusion_fallback")))
+                for e in evidence_fusion_rows
+            ]
+        ),
+        "evidence_fusion_rescue_rate_at_3": _mean(
+            [
+                float((e["recall_at_3"] or 0) > (e["hybrid_recall_at_3"] or 0))
+                for e in oracle
+                if e.get("evidence_fusion_status") in {"completed", "partial"}
+                and e.get("recall_at_3") is not None
+                and e.get("hybrid_recall_at_3") is not None
+            ]
+        ),
+        "evidence_fusion_harm_rate_at_3": _mean(
+            [
+                float((e["recall_at_3"] or 0) < (e["hybrid_recall_at_3"] or 0))
+                for e in oracle
+                if e.get("evidence_fusion_status") in {"completed", "partial"}
+                and e.get("recall_at_3") is not None
+                and e.get("hybrid_recall_at_3") is not None
+            ]
+        ),
+        "evidence_fusion_latency_ms_p50": _percentile(
+            evidence_fusion_latencies, 50
+        ),
+        "evidence_fusion_latency_ms_p95": _percentile(
+            evidence_fusion_latencies, 95
+        ),
+        "evidence_fusion_cache_hit_rate": (
+            evidence_cache_hits / evidence_cache_lookups
+            if evidence_cache_lookups
+            else None
+        ),
+        "evidence_fusion_scored_candidates_mean": _mean(
+            _present(evidence_fusion_rows, "evidence_fusion_scored_count")
+        ),
+        "evidence_fusion_status_distribution": _distribution(
+            evidence_fusion_configured, "evidence_fusion_status"
         ),
         "retrieval_latency_ms_p50": _percentile(retrieval_latencies, 50),
         "retrieval_latency_ms_p95": _percentile(retrieval_latencies, 95),

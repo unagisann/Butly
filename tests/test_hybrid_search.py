@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from butly_core.core import hybrid_search as hs
+from butly_core.core import brain as brain_module
 from butly_core.core.brain import ButlyBrain
 from butly_core.core.database import ButlyDatabase
 
@@ -404,6 +405,99 @@ class TestBrainHybrid:
         assert by_id["v1"]["vector_score"] == pytest.approx(1.0)
         # score は RRF スコア。cosine を上書きしていない
         assert by_id["v1"]["score"] != by_id["v1"]["vector_score"]
+
+    def test_hybrid_evidence_fusion_reorders_top_n(
+        self, hybrid_brain, monkeypatch
+    ):
+        class FakeCache:
+            @staticmethod
+            def diagnostics():
+                return {
+                    "hits": 1,
+                    "misses": 2,
+                    "writes": 2,
+                    "errors": 0,
+                    "by_kind": {},
+                }
+
+        class FakeFusion:
+            def __init__(self, *_args, **_kwargs):
+                self.cache = FakeCache()
+
+            @staticmethod
+            def embed_query(_question):
+                return _unit(1.0, 0.0, 0.0)
+
+            @staticmethod
+            def rerank(_question, candidates, **_kwargs):
+                original = [str(row["id"]) for row in candidates]
+                selected = list(reversed(original))
+                return {
+                    "status": "completed",
+                    "fallback": False,
+                    "error": None,
+                    "candidate_ids": selected,
+                    "selected_candidate_ids": selected,
+                    "evidence_candidate_ids": selected,
+                    "scores": [],
+                    "fusion_scores": [
+                        {
+                            "card_id": card_id,
+                            "fusion_score": 1.0 / rank,
+                            "evidence_score": 0.9 / rank,
+                        }
+                        for rank, card_id in enumerate(selected, start=1)
+                    ],
+                    "candidate_count": len(candidates),
+                    "scored_count": len(candidates),
+                    "latency_ms": 3,
+                }
+
+            @staticmethod
+            def close():
+                return None
+
+        monkeypatch.setattr(brain_module, "RuntimeEvidenceFusion", FakeFusion)
+        out = hybrid_brain.quick_vector_search_diag(
+            "What pottery did they make?",
+            "00_master",
+            limit=2,
+            threshold=0.4,
+            override_config={
+                "brain": {"search_mode": "hybrid_evidence_fusion"}
+            },
+        )
+
+        assert [row["id"] for row in out["results"]] == ["k1", "v1"]
+        assert out["diagnostics"]["mode"] == "hybrid_evidence_fusion"
+        assert out["diagnostics"]["hybrid_candidate_ids"] == ["v1", "k1"]
+        assert out["diagnostics"]["effective_candidate_ids"] == ["k1", "v1"]
+        assert out["diagnostics"]["evidence_fusion"]["status"] == "completed"
+
+    def test_hybrid_evidence_fusion_failure_preserves_hybrid(
+        self, hybrid_brain, monkeypatch
+    ):
+        class BrokenFusion:
+            def __init__(self, *_args, **_kwargs):
+                raise RuntimeError("cache unavailable")
+
+        monkeypatch.setattr(brain_module, "RuntimeEvidenceFusion", BrokenFusion)
+        out = hybrid_brain.quick_vector_search_diag(
+            "What pottery did they make?",
+            "00_master",
+            limit=2,
+            threshold=0.4,
+            override_config={
+                "brain": {"search_mode": "hybrid_evidence_fusion"}
+            },
+        )
+
+        assert [row["id"] for row in out["results"]] == ["v1", "k1"]
+        diag = out["diagnostics"]
+        assert diag["mode"] == "hybrid_evidence_fusion"
+        assert diag["effective_candidate_ids"] == ["v1", "k1"]
+        assert diag["evidence_fusion"]["fallback"] is True
+        assert "cache unavailable" in diag["evidence_fusion"]["error"]
 
     def test_hybrid_survives_embedding_failure(self, hybrid_brain, monkeypatch):
         """embedding が落ちても BM25 側だけで候補を返せる"""
