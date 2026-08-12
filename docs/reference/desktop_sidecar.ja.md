@@ -83,11 +83,12 @@
 - Tauri を spawn なしで繋ぐ場合: `BUTLY_DEV_BACKEND_PORT=8000`（token を使うなら
   Tauri と backend の両方に同じ `BUTLY_DESKTOP_TOKEN` を設定）。
 - Tauri を使わず素の browser で開く場合: Vite 側に
-  `VITE_BUTLY_DEV_BACKEND_URL=http://localhost:8000`。React は Tauri command の
-  代わりに `DevBrowserBridge`（`frontend/src/lifecycle/bridge.ts`）を選び、
-  `GET /api/v1/health` で ready を判定する。**token は扱わない**（`VITE_*` は
-  bundle に inline されるため、token 未設定の loopback sidecar 専用）。process
-  管理と version 判定も行わないので、sidecar spawn / token / crash 復帰 /
+  `BUTLY_DEV_BACKEND_URL=http://127.0.0.1:8010`。dev server が `/api` をその
+  sidecar へ proxy し、React は同一 origin へつなぐ `DevBrowserBridge`
+  （`frontend/src/lifecycle/bridge.ts`）を使って `GET /api/v1/health` で ready を
+  判定する。同一 origin なので CORS 設定は不要（`--dev-cors` は debug summary を
+  出したいときだけ）。**token は扱わない**（token 未設定の loopback sidecar 専用）。
+  process 管理と version 判定も行わないので、sidecar spawn / token / crash 復帰 /
   `version_mismatch` の確認は Tauri 実行で行う。production build では
   この経路ごと dead code として削除される。
 - `main.py` は従来どおりの互換 entrypoint（legacy routers + wildcard CORS）。

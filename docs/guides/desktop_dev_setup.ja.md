@@ -64,49 +64,65 @@ sidecar を手動起動し、Vite dev server を素のブラウザで開きま�
 手元 PC のブラウザから開発できます。
 
 ```bash
-# ターミナル 1: sidecar（token 無し = 認証オフ、CORS は Vite origin のみ許可）
-venv/bin/python -m butly_api.server --dev-cors --port 8000
+# ターミナル 1: sidecar（token 無し = 認証オフ）
+venv/bin/python -m butly_api.server --port 8010
 
 # ターミナル 2: Vite dev server
 cd frontend
-VITE_BUTLY_DEV_BACKEND_URL=http://localhost:8000 pnpm dev
+BUTLY_DEV_BACKEND_URL=http://127.0.0.1:8010 pnpm dev
 ```
 
-ブラウザで `http://localhost:1420` を開きます。
+ブラウザで `http://127.0.0.1:1420` を開きます。
 
-`VITE_BUTLY_DEV_BACKEND_URL` を設定すると、React が Tauri command の代わりに
-このURLへ直接つなぐ dev 用 bridge（`frontend/src/lifecycle/bridge.ts` の
-`DevBrowserBridge`）を選びます。`GET /api/v1/health` が通れば `ready` になり、
-以降は通常どおり `/api/v1/ready` を polling します。
+`BUTLY_DEV_BACKEND_URL` は **Vite dev server が `/api` を proxy する先**です。
+browser から見ると backend は同一 origin になるので、React は Tauri command の
+代わりに同一 origin へつなぐ dev 用 bridge（`frontend/src/lifecycle/bridge.ts` の
+`DevBrowserBridge`）を使います。`GET /api/v1/health` が通れば `ready` になり、
+以降は通常どおり `/api/v1/ready` を polling します。SSE も proxy を素通しするので、
+stream / cancel / 再送はそのまま確認できます。
+
+同一 origin になることで、次が同時に不要になります。
+
+- **CORS 設定**（`--dev-cors`）。ただし `--dev-cors` は sanitized な Chat debug
+  summary も有効にするので、debug パネルを見たいときは付けるか
+  `BUTLY_DEVELOPER_MODE=1` を指定してください。
+- **backend port の port forward**。転送するのは 1420 の 1 本だけです。
+
+port 8000 は legacy Streamlit の backend が使うので、併用するなら例のように
+別 port（8010 など）にしてください。
 
 毎回指定するのが面倒なら `frontend/.env.development.local` に書けます（gitignore 済み）。
 
 ```
-VITE_BUTLY_DEV_BACKEND_URL=http://localhost:8000
+BUTLY_DEV_BACKEND_URL=http://127.0.0.1:8010
 ```
 
 Windows PowerShell では
-`$env:VITE_BUTLY_DEV_BACKEND_URL="http://localhost:8000"; pnpm dev` とします。
+`$env:BUTLY_DEV_BACKEND_URL="http://127.0.0.1:8010"; pnpm dev` とします。
+
+未設定のまま browser で開くと proxy が無いので、画面に
+`dev_backend_not_configured` が出ます（設定漏れとして区別できます）。
 
 #### 別マシンのブラウザから開く（Pi 開発）
 
-手元 PC から SSH port forward を張り、`localhost` として開きます。
+手元 PC から SSH port forward を張ります。転送するのは dev server だけです。
 
 ```bash
 # 手元 PC 側
-ssh -L 1420:localhost:1420 -L 8000:localhost:8000 <pi-host>
-# → ブラウザで http://localhost:1420
+ssh -L 1420:127.0.0.1:1420 <pi-host>
+# → ブラウザで http://127.0.0.1:1420
 ```
 
-`--dev-cors` の allowlist は `localhost` / `127.0.0.1` の 1420・5173 に限定されており、
-sidecar の bind も loopback 既定です。**`pnpm dev --host` で LAN に晒す運用は
-CORS からも bind からも外れる**ため、port forward を使ってください。
+dev server は IPv4 loopback（`127.0.0.1`）に bind します。既定の `localhost` は
+環境によって `::1` に解決され、`ssh -L` の転送先と食い違って繋がらないことが
+あるためです。**`pnpm dev --host` で LAN に晒す運用は bind の前提から外れる**ので、
+port forward を使ってください。
 
 #### 制約
 
-- **token は扱いません。**`VITE_*` は bundle に inline されるため、この経路は
-  `BUTLY_DESKTOP_TOKEN` を設定していない loopback sidecar だけを対象とします。
-  token 認証込みで確認したいときはモード B を使います。
+- **token は扱いません。**この経路は `BUTLY_DESKTOP_TOKEN` を設定していない
+  loopback sidecar だけを対象とします。token 認証込みで確認したいときはモード B
+  を使います。
 - backend の process 管理をしないため、UI の「再起動」ボタンは health 再確認に
   なります。sidecar 自体の再起動はターミナルで行ってください。
 - version 期待値の正本は Rust 側なので、`version_mismatch` の判定は行いません。
@@ -163,12 +179,14 @@ Windows で B**、という分担を推奨します。
 
 | 症状 | 原因 | 対処 |
 |---|---|---|
-| 画面が `not_running_in_tauri` のまま | browser 実行で `VITE_BUTLY_DEV_BACKEND_URL` 未設定 | env を付けて `pnpm dev` を再起動（dev server は env 変更を自動で拾いません） |
-| `dev_health_failed_TypeError` | sidecar 未起動 / port 違い / CORS 拒否 | sidecar のログと port、ブラウザの console を確認 |
+| `dev_backend_not_configured` | `BUTLY_DEV_BACKEND_URL` 未設定で proxy が無い | env を付けて `pnpm dev` を再起動（dev server は env 変更も vite.config も再起動時にしか読みません） |
+| `dev_health_failed_TypeError` | dev server 自体に届いていない（port forward 切れなど） | `curl http://127.0.0.1:1420/api/v1/health` を Pi 上と手元の両方で試す |
+| `dev_health_http_502` / `504` | proxy 先の sidecar が落ちている / port 違い | sidecar のログと `BUTLY_DEV_BACKEND_URL` の port を確認 |
 | `dev_health_http_401` | sidecar 側に `BUTLY_DESKTOP_TOKEN` が設定されている | browser dev では token 無しで起動する（またはモード B） |
-| CORS エラー | `localhost:1420` 以外の origin で開いた | port forward で `localhost:1420` として開く |
+| ブラウザからだけ繋がらない | `ssh -L` の転送先が `::1` に解決されている | `-L 1420:127.0.0.1:1420` と IPv4 で明示する |
 | `version_mismatch`（Tauri） | `butly_api/version.py` と `backend.rs` の期待値がずれた | 両方を合わせる |
 | debug panel が出ない | developer mode 無効 | `--dev-cors` で起動する、または `BUTLY_DEVELOPER_MODE=1` |
+| `port 8000 is already in use` | legacy Streamlit の backend と衝突 | sidecar を別 port（8010 など）で起動する |
 
 ## push 前チェック
 

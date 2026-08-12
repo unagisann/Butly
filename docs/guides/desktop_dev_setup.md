@@ -63,51 +63,67 @@ Because WebKitGTK is not involved, this works on a headless machine such as a
 Raspberry Pi: forward the ports over SSH and use the browser on your laptop.
 
 ```bash
-# Terminal 1: sidecar (no token = auth off, CORS limited to the Vite origins)
-venv/bin/python -m butly_api.server --dev-cors --port 8000
+# Terminal 1: sidecar (no token = auth off)
+venv/bin/python -m butly_api.server --port 8010
 
 # Terminal 2: Vite dev server
 cd frontend
-VITE_BUTLY_DEV_BACKEND_URL=http://localhost:8000 pnpm dev
+BUTLY_DEV_BACKEND_URL=http://127.0.0.1:8010 pnpm dev
 ```
 
-Open `http://localhost:1420`.
+Open `http://127.0.0.1:1420`.
 
-With `VITE_BUTLY_DEV_BACKEND_URL` set, React selects a development bridge
-(`DevBrowserBridge` in `frontend/src/lifecycle/bridge.ts`) that talks to that URL
-directly instead of going through Tauri commands. A successful
-`GET /api/v1/health` moves the app to `ready`, after which `/api/v1/ready`
-polling proceeds as usual.
+`BUTLY_DEV_BACKEND_URL` is **the target the Vite dev server proxies `/api` to**.
+The backend is therefore same-origin from the browser's point of view, so React
+uses a development bridge (`DevBrowserBridge` in
+`frontend/src/lifecycle/bridge.ts`) against the current origin instead of going
+through Tauri commands. A successful `GET /api/v1/health` moves the app to
+`ready`, after which `/api/v1/ready` polling proceeds as usual. SSE passes
+through the proxy unbuffered, so streaming, cancel, and retry all work.
+
+Being same-origin removes two things at once:
+
+- **CORS configuration** (`--dev-cors`). It still enables sanitized chat-debug
+  summaries, so pass it (or `BUTLY_DEVELOPER_MODE=1`) when you want the debug
+  panel.
+- **Forwarding the backend port.** Only 1420 needs a tunnel.
+
+Port 8000 belongs to the legacy Streamlit backend, so pick another port (8010 in
+the examples) when running both.
 
 To avoid repeating the variable, put it in `frontend/.env.development.local`
 (already gitignored):
 
 ```
-VITE_BUTLY_DEV_BACKEND_URL=http://localhost:8000
+BUTLY_DEV_BACKEND_URL=http://127.0.0.1:8010
 ```
 
 On Windows PowerShell:
-`$env:VITE_BUTLY_DEV_BACKEND_URL="http://localhost:8000"; pnpm dev`.
+`$env:BUTLY_DEV_BACKEND_URL="http://127.0.0.1:8010"; pnpm dev`.
+
+Opening the browser without the variable set leaves no proxy in place, and the
+app reports `dev_backend_not_configured` so the omission is distinguishable from
+a broken backend.
 
 #### Opening From Another Machine (Pi Development)
 
-Forward the ports and open them as `localhost`:
+Forward only the dev server:
 
 ```bash
 # On your laptop
-ssh -L 1420:localhost:1420 -L 8000:localhost:8000 <pi-host>
-# → open http://localhost:1420
+ssh -L 1420:127.0.0.1:1420 <pi-host>
+# → open http://127.0.0.1:1420
 ```
 
-The `--dev-cors` allowlist covers only `localhost` / `127.0.0.1` on ports 1420
-and 5173, and the sidecar binds loopback by default. **Exposing the dev server
-with `pnpm dev --host` falls outside both**, so use port forwarding instead.
+The dev server binds IPv4 loopback (`127.0.0.1`) because the default `localhost`
+can resolve to `::1`, which then mismatches the `ssh -L` destination. **Exposing
+it with `pnpm dev --host` falls outside that assumption**, so use port
+forwarding instead.
 
 #### Limitations
 
-- **No token support.** `VITE_*` values are inlined into the bundle, so this path
-  targets only a loopback sidecar started without `BUTLY_DESKTOP_TOKEN`. Use
-  mode B to exercise token authentication.
+- **No token support.** This path targets only a loopback sidecar started
+  without `BUTLY_DESKTOP_TOKEN`. Use mode B to exercise token authentication.
 - No process supervision, so the UI restart button re-probes health instead of
   restarting the sidecar. Restart it from its terminal.
 - Expected versions live on the Rust side, so `version_mismatch` is not detected.
@@ -165,12 +181,14 @@ GL. The rendering engine also differs from the shipped Windows WebView2. Prefer
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Stuck on `not_running_in_tauri` | Browser run without `VITE_BUTLY_DEV_BACKEND_URL` | Restart `pnpm dev` with the variable (the dev server does not pick up env changes) |
-| `dev_health_failed_TypeError` | Sidecar not running, wrong port, or CORS rejection | Check the sidecar log and port, and the browser console |
+| `dev_backend_not_configured` | `BUTLY_DEV_BACKEND_URL` unset, so no proxy exists | Restart `pnpm dev` with the variable (env changes and vite.config are only read at startup) |
+| `dev_health_failed_TypeError` | The dev server itself is unreachable (dropped tunnel) | Try `curl http://127.0.0.1:1420/api/v1/health` on the Pi and from your laptop |
+| `dev_health_http_502` / `504` | The proxy target is down or on another port | Check the sidecar log and the port in `BUTLY_DEV_BACKEND_URL` |
 | `dev_health_http_401` | The sidecar was started with `BUTLY_DESKTOP_TOKEN` | Start it without a token for browser dev, or use mode B |
-| CORS error | Opened from an origin other than `localhost:1420` | Use port forwarding so the origin is `localhost:1420` |
+| Reachable on the Pi but not from the browser | `ssh -L` resolved the destination to `::1` | Spell it out as `-L 1420:127.0.0.1:1420` |
 | `version_mismatch` (Tauri) | `butly_api/version.py` and `backend.rs` expectations drifted | Align both |
 | Debug panel missing | Developer mode disabled | Start with `--dev-cors`, or set `BUTLY_DEVELOPER_MODE=1` |
+| `port 8000 is already in use` | Collides with the legacy Streamlit backend | Start the sidecar on another port (8010) |
 
 ## Pre-Push Checks
 
