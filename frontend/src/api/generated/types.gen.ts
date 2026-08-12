@@ -318,6 +318,7 @@ export type InstanceSummary = {
     locale?: string | null;
     name: string;
     updated_at?: string | null;
+    user_display_name?: string | null;
 };
 
 /**

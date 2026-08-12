@@ -26,6 +26,10 @@ class InstanceSummary(BaseModel):
 
     name: str
     ai_name: Optional[str] = None
+    #: 会話 UI で送信者ラベルに使うユーザーの呼び名。
+    #: user_profile の preferred_call（「呼ばれたい名前」）→ user_name の順で解決した
+    #: 表示名だけを返す。誕生日・居住地・性別など他の user_profile 項目は返さない。
+    user_display_name: Optional[str] = None
     locale: Optional[str] = None
     updated_at: Optional[datetime] = None
     has_database: bool = False

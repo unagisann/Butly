@@ -16,6 +16,10 @@ interface MessageListProps {
   messages: ChatMessageView[];
   phase: ChatPhase;
   loading: boolean;
+  /** instance の ai_name。未設定なら既定ラベルへ落とす。 */
+  assistantName?: string | null;
+  /** user_profile の呼ばれたい名前 → 名前。未設定なら「あなた」。 */
+  userName?: string | null;
   /** 再送できるのは直近のリクエストだけなので、対象は末尾の失敗メッセージに限る。 */
   canRetry?: boolean;
   onRetry?: () => void;
@@ -47,6 +51,8 @@ export function MessageList({
   messages,
   phase,
   loading,
+  assistantName,
+  userName,
   canRetry = false,
   onRetry,
 }: MessageListProps) {
@@ -119,7 +125,11 @@ export function MessageList({
               </span>
               <div className="message-content">
                 <header>
-                  <strong>{assistant ? t("chat.assistant") : t("chat.you")}</strong>
+                  <strong>
+                    {assistant
+                      ? assistantName || t("chat.assistant")
+                      : userName || t("chat.you")}
+                  </strong>
                   <time dateTime={message.created_at ?? undefined}>
                     {formatTime(message.created_at, locale)}
                   </time>

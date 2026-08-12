@@ -198,6 +198,8 @@ export function ChatPage({
           messages={session.messages}
           phase={session.phase}
           loading={session.phase === "loading_history"}
+          assistantName={instance.ai_name || instance.name}
+          userName={instance.user_display_name}
           canRetry={session.canRetry}
           onRetry={() => void session.retry()}
         />

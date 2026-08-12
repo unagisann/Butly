@@ -116,9 +116,20 @@ def _summarize_instance(instance_dir: Path) -> InstanceSummary:
         profile = {}
     ai_name = profile.get("ai_name") or None
     locale = profile.get("locale") or None
+    # 呼ばれたい名前 → 名前 の順。routers/instances.py の RAW memory 表示と同じ優先順に
+    # 揃える（UI の送信者ラベルと記憶側の話者ラベルを食い違わせない）。
+    user_profile = config.get("user_profile") or {}
+    if not isinstance(user_profile, dict):
+        user_profile = {}
+    user_display_name = (
+        user_profile.get("preferred_call") or user_profile.get("user_name") or None
+    )
     return InstanceSummary(
         name=instance_dir.name,
         ai_name=ai_name if isinstance(ai_name, str) else None,
+        user_display_name=(
+            user_display_name if isinstance(user_display_name, str) else None
+        ),
         locale=locale if isinstance(locale, str) else None,
         updated_at=_latest_memory_timestamp(instance_dir),
         has_database=(instance_dir / DATABASE_FILENAME).is_file(),

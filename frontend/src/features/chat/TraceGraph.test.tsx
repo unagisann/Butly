@@ -120,4 +120,19 @@ describe("TraceGraph", () => {
 
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
+  it("expands the graph over the whole window and closes with Escape", async () => {
+    renderGraph({ getTrace: vi.fn(async () => TRACE) });
+
+    await userEvent.click(screen.getByRole("button", { name: /処理フロー/ }));
+    await waitFor(() => expect(screen.getByRole("img")).toBeInTheDocument());
+
+    // パネル内に収まらないグラフは、常設カラムではなく必要なときだけ広げる。
+    await userEvent.click(screen.getByRole("button", { name: /拡大/ }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+  });
 });

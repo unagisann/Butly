@@ -149,3 +149,48 @@ describe("MessageList retry affordance", () => {
     expect(screen.getByRole("button", { name: /再送/ })).toBeInTheDocument();
   });
 });
+
+describe("MessageList sender labels", () => {
+  const exchange: ChatMessageView[] = [
+    {
+      id: "u",
+      role: "user",
+      text: "やあ",
+      attachments: [],
+      sources: [],
+      delivery: "completed",
+    },
+    {
+      id: "a",
+      role: "assistant",
+      text: "やあ",
+      attachments: [],
+      sources: [],
+      delivery: "completed",
+    },
+  ];
+
+  it("uses the instance names instead of fixed labels", () => {
+    render(
+      <MessageList
+        loading={false}
+        phase="idle"
+        messages={exchange}
+        assistantName="ルナ"
+        userName="マスター"
+      />,
+    );
+
+    expect(screen.getByText("ルナ")).toBeInTheDocument();
+    expect(screen.getByText("マスター")).toBeInTheDocument();
+    expect(screen.queryByText("Butly")).not.toBeInTheDocument();
+    expect(screen.queryByText("あなた")).not.toBeInTheDocument();
+  });
+
+  it("falls back to the default labels when the instance has no names", () => {
+    render(<MessageList loading={false} phase="idle" messages={exchange} />);
+
+    expect(screen.getByText("Butly")).toBeInTheDocument();
+    expect(screen.getByText("あなた")).toBeInTheDocument();
+  });
+});

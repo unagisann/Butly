@@ -7,7 +7,7 @@
 // 落とす。閉じている間は読み込まない。
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Network, RefreshCw } from "lucide-react";
+import { Maximize2, Network, RefreshCw, X } from "lucide-react";
 
 import type { ApiTransport } from "../../api/transport";
 import type { TraceGraphResponse } from "../../api/generated";
@@ -46,6 +46,7 @@ export function TraceGraph({
 }) {
   const { t } = useI18n();
   const [state, setState] = useState<LoadState>({ phase: "idle" });
+  const [expanded, setExpanded] = useState(false);
   const disposedRef = useRef(false);
 
   useEffect(() => {
@@ -71,7 +72,18 @@ export function TraceGraph({
   // instance を切り替えたら前のグラフを残さない。
   useEffect(() => {
     setState({ phase: "idle" });
+    setExpanded(false);
   }, [instanceName]);
+
+  // 拡大中は Esc で閉じる。会話へすぐ戻れるようにする。
+  useEffect(() => {
+    if (!expanded) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setExpanded(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [expanded]);
 
   return (
     <section className="trace-graph">
@@ -83,6 +95,15 @@ export function TraceGraph({
           <RefreshCw size={13} aria-hidden="true" />{" "}
           {state.phase === "ready" ? t("debug.trace_reload") : t("debug.trace_load")}
         </button>
+        {state.phase === "ready" && (
+          <button
+            className="text-button compact"
+            type="button"
+            onClick={() => setExpanded(true)}
+          >
+            <Maximize2 size={13} aria-hidden="true" /> {t("debug.trace_expand")}
+          </button>
+        )}
         {state.phase === "ready" && (
           <span className="trace-meta">
             {state.trace.trace_id}
@@ -112,6 +133,39 @@ export function TraceGraph({
           // 元になる Mermaid 文字列も backend 側で sanitize 済み。
           dangerouslySetInnerHTML={{ __html: state.svg }}
         />
+      )}
+
+      {/* グラフはノードが増えるとパネル内に収まらない。常設の 3 カラムにすると
+          会話の幅を常に削るので、見たいときだけ画面いっぱいに開く。 */}
+      {expanded && state.phase === "ready" && (
+        <div
+          className="trace-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("debug.trace")}
+          onClick={() => setExpanded(false)}
+        >
+          <div className="trace-overlay-inner" onClick={(e) => e.stopPropagation()}>
+            <header>
+              <span>
+                {state.trace.trace_id}
+                {state.trace.created_at ? ` · ${state.trace.created_at}` : ""}
+              </span>
+              <button
+                className="icon-button"
+                type="button"
+                onClick={() => setExpanded(false)}
+                aria-label={t("common.close")}
+              >
+                <X size={17} aria-hidden="true" />
+              </button>
+            </header>
+            <div
+              className="trace-overlay-canvas"
+              dangerouslySetInnerHTML={{ __html: state.svg }}
+            />
+          </div>
+        </div>
       )}
     </section>
   );
