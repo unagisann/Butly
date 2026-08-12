@@ -1163,6 +1163,17 @@
               }
             ],
             "title": "Updated At"
+          },
+          "user_display_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User Display Name"
           }
         },
         "required": [
