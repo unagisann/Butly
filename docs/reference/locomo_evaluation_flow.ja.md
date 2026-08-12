@@ -574,6 +574,37 @@ RAG判断のドリフトなどを含む運用耐久評価に向く。
 | 主な用途 | モデル・バージョン比較 | 実運用・連続耐久試験 |
 | 主な追加コスト | 質問ごとのinstance copy | 質問ごとのrecovery copy |
 
+## evidence=0 の内訳（`analyze-evidence`）
+
+`evidence_coverage` は「注入されたカードが根拠ターンを含むか」なので、0 のときに
+検索経路のどこで落ちたかまでは分からない。`analyze-evidence` は scorer が
+`scores.json` に書いた `search_executed` / `oracle_available` / `recall_at_20` /
+`recall_at_3` を上流から順に見て、**最初に落ちた場所ひとつ**へ分類する。
+
+```bash
+venv/bin/python -m evals.locomo.cli analyze-evidence --run-dir eval_runs/runs/<run-id>
+venv/bin/python -m evals.locomo.cli analyze-evidence \
+  --run-dir eval_runs/runs/<run-id> --baseline eval_runs/runs/<比較対象>
+```
+
+| 分類 | 条件 | 効く打ち手 |
+|---|---|---|
+| `no_search` | `search_executed` が false | Gatekeeper / `need_intent` |
+| `no_card` | `oracle_available` が false（根拠ターンを含むカードが1枚も無い） | カード化（Sleeptime 抽出） |
+| `not_in_candidates` | `recall_at_20` が 0 | embedding / 検索クエリ |
+| `rank_below_injection` | `recall_at_20` > 0 かつ `recall_at_3` が 0 | ランキング / リランカー |
+| `dropped_after_ranking` | `recall_at_3` > 0 なのに `evidence_coverage` が 0 | 注入 policy / 注入枠 |
+| `unclassified` | 判定に要るキーが `scores.json` に無い | `score` を再実行する |
+
+- category 5（adversarial）は「No information」が正解なので、根拠を引けないこと
+  自体は失敗ではない。既定では分母から外し、件数だけ参考表示する
+  （`--include-adversarial` で含める）。
+- 分類は排他。1問が複数の原因を持っていても二重計上しない。
+- 検索指標が入る前の run は全問 `unclassified` になる。キーの欠損と `false` を
+  区別しているので、古い run が `no_search` に化けることはない。
+- `scores.json` しか読まないので run の再実行は不要。`--json` で機械可読出力、
+  `--list N` で bucket ごとの question_id 表示件数を変えられる。
+
 ## Run directoryと永続artifact
 
 ```text

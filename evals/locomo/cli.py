@@ -156,6 +156,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report_parser.add_argument("--run-dir", type=Path, required=True)
 
+    evidence_parser = subparsers.add_parser(
+        "analyze-evidence",
+        help="Classify evidence=0 questions by where retrieval broke down",
+    )
+    evidence_parser.add_argument("--run-dir", type=Path, required=True)
+    evidence_parser.add_argument(
+        "--baseline",
+        type=Path,
+        help="別 run の scores.json と件数を並べて差分を出す",
+    )
+    evidence_parser.add_argument(
+        "--include-adversarial",
+        action="store_true",
+        help="category 5 も分母に含める（既定は除外）",
+    )
+    evidence_parser.add_argument(
+        "--list",
+        type=int,
+        default=5,
+        dest="list_limit",
+        help="bucket ごとに表示する question_id 数（0 で非表示）",
+    )
+    evidence_parser.add_argument(
+        "--json",
+        type=Path,
+        dest="json_path",
+        help="解析結果を JSON で書き出す",
+    )
+
     judge_parser = subparsers.add_parser(
         "judge",
         help="Run or resume optional semantic judging for an official-scored run",
@@ -184,6 +213,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return _command_report(args)
     if args.command == "judge":
         return _command_judge(args)
+    if args.command == "analyze-evidence":
+        return _command_analyze_evidence(args)
     raise ValueError(f"Unsupported command: {args.command}")
 
 
@@ -311,6 +342,41 @@ def _command_report(args: argparse.Namespace) -> int:
     summary_path = write_report(args.run_dir)
     progress_reporter.emit(100.0, "report", f"completed; {summary_path}")
     print(json.dumps({"summary_path": str(summary_path)}, ensure_ascii=False))
+    return 0
+
+
+def _command_analyze_evidence(args: argparse.Namespace) -> int:
+    from .evidence_analysis import analyze_run, format_text
+
+    analysis = analyze_run(
+        args.run_dir,
+        include_adversarial=args.include_adversarial,
+    )
+    baseline = (
+        analyze_run(
+            args.baseline,
+            include_adversarial=args.include_adversarial,
+        )
+        if args.baseline
+        else None
+    )
+    print(
+        format_text(
+            analysis,
+            list_limit=args.list_limit,
+            baseline=baseline,
+        )
+    )
+    if args.json_path:
+        payload = (
+            {"run": analysis, "baseline": baseline}
+            if baseline is not None
+            else analysis
+        )
+        args.json_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     return 0
 
 

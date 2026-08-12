@@ -464,6 +464,36 @@ python -m evals.locomo.cli score --run-dir ./eval_runs/<run-id> --dataset /path/
 python -m evals.locomo.cli report --run-dir ./eval_runs/<run-id>
 ```
 
+## Where evidence=0 questions break down
+
+`analyze-evidence` re-classifies the questions that retrieved no evidence by the
+first stage that failed, so "improve retrieval" splits into separate, testable
+problems. It only reads `scores.json`, so it is safe to run on a finished run at
+any time and needs no re-execution.
+
+```bash
+python -m evals.locomo.cli analyze-evidence --run-dir ./eval_runs/<run-id>
+
+# compare two runs and see which bucket moved
+python -m evals.locomo.cli analyze-evidence \
+  --run-dir ./eval_runs/<run-id> --baseline ./eval_runs/<other-run-id>
+```
+
+| Bucket | Meaning | What fixes it |
+| --- | --- | --- |
+| `no_search` | Retrieval never ran | Gatekeeper / `need_intent` |
+| `no_card` | No card contains the evidence turn | Card extraction (Sleeptime) |
+| `not_in_candidates` | Missed the top-20 candidate pool | Embedding / search query |
+| `rank_below_injection` | In the pool but below the top-3 cut | Ranking / reranker |
+| `dropped_after_ranking` | In the top 3 yet never injected | Injection policy / slots |
+
+Category 5 (adversarial) is excluded from the denominator by default because
+"No information" is the correct answer there; pass `--include-adversarial` to
+count it. Runs scored before these retrieval metrics existed report an
+`unclassified` bucket — re-run `score` on them first. `--json <path>` writes the
+same breakdown as JSON, and `--list N` controls how many question IDs are shown
+per bucket.
+
 The checkpoint under `checkpoints/checkpoint.json` records replayed sessions,
 completed Sleeptime passes, and answered questions. A session interrupted
 mid-replay is discarded (its partly saved turns are removed by metadata match)

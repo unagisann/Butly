@@ -597,6 +597,41 @@ behavior across long operational question sequences.
 | Primary use | Model/version comparison | Operational endurance |
 | Main extra cost | Per-question instance copy | Per-question recovery copy |
 
+## Evidence=0 breakdown (`analyze-evidence`)
+
+`evidence_coverage` records whether the injected cards contain the evidence
+turn, so a value of 0 does not say where retrieval broke down.
+`analyze-evidence` reads the `search_executed` / `oracle_available` /
+`recall_at_20` / `recall_at_3` metrics the scorer already writes to
+`scores.json` and assigns each question to **the first stage that failed**.
+
+```bash
+venv/bin/python -m evals.locomo.cli analyze-evidence --run-dir eval_runs/runs/<run-id>
+venv/bin/python -m evals.locomo.cli analyze-evidence \
+  --run-dir eval_runs/runs/<run-id> --baseline eval_runs/runs/<other-run>
+```
+
+| Bucket | Condition | What fixes it |
+|---|---|---|
+| `no_search` | `search_executed` is false | Gatekeeper / `need_intent` |
+| `no_card` | `oracle_available` is false (no card holds the evidence turn) | Card extraction (Sleeptime) |
+| `not_in_candidates` | `recall_at_20` is 0 | Embedding / search query |
+| `rank_below_injection` | `recall_at_20` > 0 but `recall_at_3` is 0 | Ranking / reranker |
+| `dropped_after_ranking` | `recall_at_3` > 0 yet `evidence_coverage` is 0 | Injection policy / slots |
+| `unclassified` | The required keys are absent from `scores.json` | Re-run `score` |
+
+- Category 5 (adversarial) expects "No information", so missing evidence is not
+  a failure there. It is excluded from the denominator by default and only
+  counted for reference (`--include-adversarial` includes it).
+- Buckets are exclusive: a question with several contributing causes is counted
+  once, under the earliest stage.
+- Runs scored before these retrieval metrics existed fall entirely into
+  `unclassified`. Absent keys and `false` values are distinguished, so a legacy
+  run is never mislabeled as `no_search`.
+- Only `scores.json` is read, so no re-run is needed. `--json` writes the
+  machine-readable breakdown and `--list N` sets how many question IDs are shown
+  per bucket.
+
 ## Durable run artifacts
 
 ```text
