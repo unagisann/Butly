@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Butly shell の main window に与える最小権限。shell/fs 系は一切許可しない（sidecar 起動は Rust 側のみ）。",
+  "description": "Butly shell の main window に与える最小権限。sidecar 起動は Rust 側のみで、fs / process 系は許可しない。引用元と応答内リンクを OS 既定ブラウザへ渡すため shell:allow-open だけを追加で許可する（URL は frontend 側 safeExternalUrl で http/https に限定済み）。",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "shell:allow-open"]
 }

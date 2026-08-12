@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { ChangeEvent, KeyboardEvent } from "react";
+import type { ChangeEvent, ClipboardEvent, KeyboardEvent } from "react";
 import {
   Bug,
   ImagePlus,
@@ -85,9 +85,8 @@ export function ChatComposer({
     void onSend(input);
   };
 
-  const onFiles = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    event.target.value = "";
+  const addFiles = async (files: File[]) => {
+    if (files.length === 0) return;
     const prepared = await prepareAttachments(
       files,
       attachments.length,
@@ -95,6 +94,35 @@ export function ChatComposer({
     );
     setAttachments((current) => [...current, ...prepared.attachments]);
     setAttachmentError(prepared.errors[0] ? errorText(prepared.errors[0], t) : null);
+  };
+
+  const onFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    await addFiles(files);
+  };
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    // 添付ボタンと同じ条件。画像を見られない model に貼れても意味がない。
+    if (disabled || !capabilities.vision.available) return;
+    // スクリーンショットの貼り付けは file 名を持たないことがあるので補う。
+    const files = Array.from(event.clipboardData?.items ?? [])
+      .filter((item) => item.kind === "file")
+      .flatMap((item) => {
+        const file = item.getAsFile();
+        if (!file || !file.type.startsWith("image/")) return [];
+        return [
+          file.name
+            ? file
+            : new File([file], `pasted-image.${file.type.split("/")[1] || "png"}`, {
+                type: file.type,
+              }),
+        ];
+      });
+    if (files.length === 0) return;
+    // 画像を貼ったときだけ既定の貼り付け（テキスト化）を止める。
+    event.preventDefault();
+    void addFiles(files);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -206,6 +234,7 @@ export function ChatComposer({
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           placeholder={t("chat.placeholder")}
           aria-label={t("chat.placeholder")}
           disabled={disabled}

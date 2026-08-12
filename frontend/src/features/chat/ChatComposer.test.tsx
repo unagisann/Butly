@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import type { CapabilitiesResponse } from "../../api/generated";
@@ -47,5 +47,60 @@ describe("ChatComposer capability gates", () => {
     renderComposer({}, false);
 
     expect(screen.getByRole("button", { name: "保存しています…" })).toBeDisabled();
+  });
+});
+
+describe("ChatComposer paste-to-attach", () => {
+  function pasteImage(name = "shot.png", type = "image/png") {
+    const file = new File([new Uint8Array([1, 2, 3])], name, { type });
+    const event = {
+      clipboardData: {
+        items: [{ kind: "file", type, getAsFile: () => file }],
+      },
+    };
+    fireEvent.paste(screen.getByRole("textbox"), event);
+  }
+
+  it("attaches an image pasted into the composer", async () => {
+    renderComposer({ vision: { available: true } }, true);
+
+    pasteImage();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /shot\.png/ }),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("names clipboard screenshots that arrive without a file name", async () => {
+    renderComposer({ vision: { available: true } }, true);
+
+    pasteImage("");
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /pasted-image\.png/ }),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("ignores pasted images when the model cannot see them", async () => {
+    renderComposer({ vision: { available: false } }, true);
+
+    pasteImage();
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByRole("button", { name: /shot\.png/ })).toBeNull();
+  });
+
+  it("leaves plain text pastes to the browser", () => {
+    renderComposer({ vision: { available: true } }, true);
+
+    const event = {
+      clipboardData: { items: [{ kind: "string", type: "text/plain" }] },
+    };
+    // preventDefault されないこと = 通常の貼り付けが生きていること
+    expect(fireEvent.paste(screen.getByRole("textbox"), event)).toBe(true);
   });
 });

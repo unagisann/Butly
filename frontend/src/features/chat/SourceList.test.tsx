@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vitest";
 
 import { I18nProvider } from "../../i18n/strings";
 import { safeExternalUrl, SourceList } from "./SourceList";
@@ -17,7 +18,9 @@ describe("SourceList", () => {
     expect(safeExternalUrl("not a url")).toBeNull();
   });
 
-  it("renders safe sources as copy actions without external navigation", () => {
+  it("opens safe sources externally and keeps copy as a secondary action", async () => {
+    const openSpy = vi.fn();
+    vi.stubGlobal("open", openSpy);
     render(
       <I18nProvider>
         <SourceList
@@ -29,8 +32,21 @@ describe("SourceList", () => {
       </I18nProvider>,
     );
 
+    const link = screen.getByRole("link", { name: /Safe/ });
+    expect(link).toHaveAttribute("href", "https://example.com/");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
     expect(screen.getByRole("button", { name: /Safe/ })).toBeInTheDocument();
     expect(screen.queryByText("Unsafe")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+
+    // webview 内で遷移させず、必ず外部へ渡す。
+    await userEvent.click(link);
+    expect(openSpy).toHaveBeenCalledWith(
+      "https://example.com/",
+      "_blank",
+      "noopener,noreferrer",
+    );
+
+    vi.unstubAllGlobals();
   });
 });
