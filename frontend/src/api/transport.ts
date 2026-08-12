@@ -29,7 +29,11 @@ export interface ApiTransport {
   ping(signal?: AbortSignal): Promise<ReadinessResponse>;
   listInstances(signal?: AbortSignal): Promise<InstanceSummary[]>;
   getMessages(instanceName: string, signal?: AbortSignal): Promise<MessagePage>;
-  getTrace(instanceName: string, signal?: AbortSignal): Promise<TraceGraphResponse>;
+  getTrace(
+    instanceName: string,
+    direction?: "TD" | "LR",
+    signal?: AbortSignal,
+  ): Promise<TraceGraphResponse>;
   getCapabilities(signal?: AbortSignal): Promise<CapabilitiesResponse>;
   getPreflight(signal?: AbortSignal, refresh?: boolean): Promise<PreflightResponse>;
   getChatRequest(requestId: string, signal?: AbortSignal): Promise<ChatRequestStatus>;
@@ -118,11 +122,13 @@ class HttpApiTransport implements ApiTransport {
 
   async getTrace(
     instanceName: string,
+    direction: "TD" | "LR" = "TD",
     signal?: AbortSignal,
   ): Promise<TraceGraphResponse> {
     const result = await getInstanceTrace({
       client: this.client,
       path: { name: instanceName },
+      query: { direction },
       signal,
     });
     return unwrap(result, "Trace response was empty.");

@@ -722,7 +722,12 @@ export type GetInstanceTraceData = {
     path: {
         name: string;
     };
-    query?: never;
+    query?: {
+        /**
+         * flowchart の向き。TD は縦（既定）、LR は横。画面の縦横比に合わせて選べるようにするための表示オプション。
+         */
+        direction?: string;
+    };
     url: '/api/v1/instances/{name}/trace';
 };
 

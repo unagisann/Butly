@@ -2110,6 +2110,19 @@
               "title": "Name",
               "type": "string"
             }
+          },
+          {
+            "description": "flowchart の向き。TD は縦（既定）、LR は横。画面の縦横比に合わせて選べるようにするための表示オプション。",
+            "in": "query",
+            "name": "direction",
+            "required": false,
+            "schema": {
+              "default": "TD",
+              "description": "flowchart の向き。TD は縦（既定）、LR は横。画面の縦横比に合わせて選べるようにするための表示オプション。",
+              "pattern": "^(TD|LR)$",
+              "title": "Direction",
+              "type": "string"
+            }
           }
         ],
         "responses": {

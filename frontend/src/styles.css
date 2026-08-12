@@ -1693,7 +1693,7 @@ details[open] > summary .summary-chevron {
   overflow: auto;
 }
 
+/* 幅は fitSvgToContainer が SVG 属性側で 100% にする。縦は器を超えたらスクロール。 */
 .trace-overlay-canvas svg {
-  width: 100%;
-  height: auto;
+  display: block;
 }

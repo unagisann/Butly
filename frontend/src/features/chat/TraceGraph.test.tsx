@@ -61,7 +61,7 @@ describe("TraceGraph", () => {
     await userEvent.click(screen.getByRole("button"));
 
     await waitFor(() => expect(screen.getByRole("img")).toBeInTheDocument());
-    expect(getTrace).toHaveBeenCalledWith("Alpha");
+    expect(getTrace).toHaveBeenCalledWith("Alpha", "TD");
     // Mermaid 文字列は backend が正本。frontend では組み立て直さない。
     expect(renderMock).toHaveBeenCalledWith(expect.any(String), TRACE.mermaid);
     expect(screen.getByRole("img").innerHTML).toContain("<svg");
@@ -134,5 +134,17 @@ describe("TraceGraph", () => {
     await waitFor(() =>
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
     );
+  });
+  it("re-fetches the graph laid out horizontally when the screen is wide", async () => {
+    const getTrace = vi.fn(async () => TRACE);
+    renderGraph({ getTrace });
+
+    await userEvent.click(screen.getByRole("button", { name: /処理フロー/ }));
+    await waitFor(() => expect(screen.getByRole("img")).toBeInTheDocument());
+
+    // 向きは backend の render_mermaid に委ねる。frontend で SVG を組み替えない。
+    await userEvent.click(screen.getByRole("button", { name: /横向き/ }));
+    await waitFor(() => expect(getTrace).toHaveBeenCalledWith("Alpha", "LR"));
+    expect(screen.getByRole("button", { name: /縦向き/ })).toBeInTheDocument();
   });
 });

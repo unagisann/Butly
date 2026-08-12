@@ -20,6 +20,34 @@ type LoadState =
   | { phase: "ready"; trace: TraceGraphResponse; svg: string }
   | { phase: "failed"; error: ButlyApiError };
 
+/**
+ * 挿入済み SVG を器の幅に合わせる。
+ *
+ * mermaid は `useMaxWidth` でグラフの自然幅を `max-width` として焼き込むため、
+ * 広い器に置いても伸びず、縦だけ長い状態になる。あわせて viewBox を実測
+ * bounding box から作り直す。`htmlLabels: false` では文字幅の見積もりがずれる
+ * ことがあり、mermaid が算出した viewBox の外にラベルがはみ出すと切れるため。
+ */
+function fitSvgToContainer(container: HTMLElement | null): void {
+  const svg = container?.querySelector("svg");
+  if (!svg) return;
+  try {
+    const box = svg.getBBox();
+    const pad = 12;
+    svg.setAttribute(
+      "viewBox",
+      `${box.x - pad} ${box.y - pad} ${box.width + pad * 2} ${box.height + pad * 2}`,
+    );
+    svg.setAttribute("preserveAspectRatio", "xMidYMin meet");
+  } catch {
+    // getBBox は描画前だと落ちうる。viewBox は mermaid の値のまま使う。
+  }
+  svg.removeAttribute("height");
+  svg.setAttribute("width", "100%");
+  svg.style.maxWidth = "none";
+  svg.style.height = "auto";
+}
+
 let renderSeq = 0;
 
 async function renderMermaid(source: string): Promise<string> {
@@ -47,6 +75,8 @@ export function TraceGraph({
   const { t } = useI18n();
   const [state, setState] = useState<LoadState>({ phase: "idle" });
   const [expanded, setExpanded] = useState(false);
+  const [direction, setDirection] = useState<"TD" | "LR">("TD");
+  const overlayRef = useRef<HTMLDivElement>(null);
   const disposedRef = useRef(false);
 
   useEffect(() => {
@@ -56,10 +86,11 @@ export function TraceGraph({
     };
   }, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(
+    async (nextDirection: "TD" | "LR" = direction) => {
     setState({ phase: "loading" });
     try {
-      const trace = await transport.getTrace(instanceName);
+      const trace = await transport.getTrace(instanceName, nextDirection);
       const svg = await renderMermaid(trace.mermaid);
       if (!disposedRef.current) setState({ phase: "ready", trace, svg });
     } catch (error) {
@@ -67,13 +98,20 @@ export function TraceGraph({
         setState({ phase: "failed", error: normalizeApiError(error) });
       }
     }
-  }, [instanceName, transport]);
+    },
+    [direction, instanceName, transport],
+  );
 
   // instance を切り替えたら前のグラフを残さない。
   useEffect(() => {
     setState({ phase: "idle" });
     setExpanded(false);
   }, [instanceName]);
+
+  // 拡大したら器の幅いっぱいに広げ直す。
+  useEffect(() => {
+    if (expanded) fitSvgToContainer(overlayRef.current);
+  }, [expanded, state]);
 
   // 拡大中は Esc で閉じる。会話へすぐ戻れるようにする。
   useEffect(() => {
@@ -95,6 +133,19 @@ export function TraceGraph({
           <RefreshCw size={13} aria-hidden="true" />{" "}
           {state.phase === "ready" ? t("debug.trace_reload") : t("debug.trace_load")}
         </button>
+        {state.phase === "ready" && (
+          <button
+            className="text-button compact"
+            type="button"
+            onClick={() => {
+              const next = direction === "TD" ? "LR" : "TD";
+              setDirection(next);
+              void load(next);
+            }}
+          >
+            {direction === "TD" ? t("debug.trace_horizontal") : t("debug.trace_vertical")}
+          </button>
+        )}
         {state.phase === "ready" && (
           <button
             className="text-button compact"
@@ -162,6 +213,7 @@ export function TraceGraph({
             </header>
             <div
               className="trace-overlay-canvas"
+              ref={overlayRef}
               dangerouslySetInnerHTML={{ __html: state.svg }}
             />
           </div>
