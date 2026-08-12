@@ -223,6 +223,7 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 | `schemas/chat.py` | chat / message history / SSE event（discriminated union）/ debug summary / request status の contract schema |
 | `schemas/instances.py` | `InstanceSummary` / `InstanceListResponse` |
 | `schemas/preflight.py` | Connection / embedding preflight の公開 DTO |
+| `schemas/trace.py` | Trace Graph の公開 DTO。Mermaid 文字列と status 別ノード数だけを返し、TraceNode の metadata は載せない（issue #51） |
 
 契約 artifact は `scripts/generate_openapi.sh` で再生成する: OpenAPI snapshot
 （`openapi/butly.openapi.json`、`tests/test_openapi_snapshot.py` が差分検出）と
@@ -247,7 +248,7 @@ JSON endpoint は OpenAPI 生成 client を使い、SSE framing だけを手書�
 | `src/api/transport.ts` | 生成 client と POST-SSE parser を UI から隠す transport adapter |
 | `src/app/` | top-level app shell と ready 後も継続する HTTP reachability state |
 | `src/features/instances/` | instance list / select と履歴切替 |
-| `src/features/chat/` | message、composer、画像、引用、stream、cancel / retry、debug panel |
+| `src/features/chat/` | message、Markdown 描画、composer、画像、引用、stream、cancel / retry、debug panel、Trace Graph |
 | `src/features/preflight/` | Connection / embedding の部分的 availability 表示と再検査 |
 | `src/i18n/` | 日本語 / 英語の typed UI 辞書と locale provider |
 | `src/styles.css` | responsive 2-pane layout、focus 表示 / reduced-motion を含む UI token |

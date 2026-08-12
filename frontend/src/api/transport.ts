@@ -2,6 +2,7 @@ import {
   cancelChatRequest,
   getCapabilities,
   getChatRequestStatus,
+  getInstanceTrace,
   getPreflight,
   getReadiness,
   listInstanceMessages,
@@ -13,6 +14,7 @@ import type {
   ChatRequest,
   ChatRequestStatus,
   InstanceSummary,
+  TraceGraphResponse,
   MessagePage,
   PreflightResponse,
   ReadinessResponse,
@@ -27,6 +29,7 @@ export interface ApiTransport {
   ping(signal?: AbortSignal): Promise<ReadinessResponse>;
   listInstances(signal?: AbortSignal): Promise<InstanceSummary[]>;
   getMessages(instanceName: string, signal?: AbortSignal): Promise<MessagePage>;
+  getTrace(instanceName: string, signal?: AbortSignal): Promise<TraceGraphResponse>;
   getCapabilities(signal?: AbortSignal): Promise<CapabilitiesResponse>;
   getPreflight(signal?: AbortSignal, refresh?: boolean): Promise<PreflightResponse>;
   getChatRequest(requestId: string, signal?: AbortSignal): Promise<ChatRequestStatus>;
@@ -111,6 +114,18 @@ class HttpApiTransport implements ApiTransport {
       signal,
     });
     return unwrap(result, "Message history response was empty.");
+  }
+
+  async getTrace(
+    instanceName: string,
+    signal?: AbortSignal,
+  ): Promise<TraceGraphResponse> {
+    const result = await getInstanceTrace({
+      client: this.client,
+      path: { name: instanceName },
+      signal,
+    });
+    return unwrap(result, "Trace response was empty.");
   }
 
   async getCapabilities(signal?: AbortSignal): Promise<CapabilitiesResponse> {

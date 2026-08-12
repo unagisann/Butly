@@ -951,16 +951,44 @@ details[open] > summary .summary-chevron {
 .source-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.28rem;
   max-width: min(100%, 300px);
-  padding: 0.3rem 0.48rem;
   color: #4a438f;
   border: 1px solid #dcd8f8;
   border-radius: 7px;
   background: #f8f7ff;
   font-size: 0.65rem;
+}
+
+/* 既定の操作は「開く」。コピーは副操作として右側に分ける。 */
+.source-open,
+.source-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  min-width: 0;
+  padding: 0.3rem 0.48rem;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: inherit;
   text-decoration: none;
   cursor: pointer;
+}
+
+.source-open > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-copy {
+  padding-left: 0.25rem;
+  border-left: 1px solid #dcd8f8;
+  color: var(--muted);
+}
+
+.source-copy:hover {
+  color: #4a438f;
 }
 
 .source-chip:hover {
@@ -1473,4 +1501,153 @@ details[open] > summary .summary-chevron {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* ---------------------------------------------------------------
+   Markdown（assistant 応答のみ）
+   raw HTML は描画しないので、要素は Markdown が生成しうる範囲に限られる。
+   --------------------------------------------------------------- */
+.markdown {
+  color: #273149;
+  font-size: 0.87rem;
+  line-height: 1.67;
+  overflow-wrap: anywhere;
+}
+
+.markdown > *:first-child {
+  margin-top: 0;
+}
+
+.markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol,
+.markdown blockquote,
+.markdown pre {
+  margin: 0.5rem 0;
+}
+
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4 {
+  margin: 0.9rem 0 0.4rem;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.markdown h1 { font-size: 1.12rem; }
+.markdown h2 { font-size: 1.03rem; }
+.markdown h3 { font-size: 0.95rem; }
+.markdown h4 { font-size: 0.9rem; }
+
+.markdown ul,
+.markdown ol {
+  padding-left: 1.35rem;
+}
+
+.markdown li + li {
+  margin-top: 0.15rem;
+}
+
+.markdown a {
+  color: var(--accent-dark);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown code {
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82em;
+}
+
+.markdown pre {
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  overflow-x: auto;
+}
+
+.markdown pre code {
+  padding: 0;
+  background: none;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.markdown blockquote {
+  padding-left: 0.7rem;
+  border-left: 3px solid var(--line-strong);
+  color: var(--muted);
+}
+
+/* 表は本文を横に広げず、自分の中でスクロールさせる。 */
+.markdown-table-scroll {
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+
+.markdown table {
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.markdown th,
+.markdown td {
+  padding: 0.3rem 0.55rem;
+  border: 1px solid var(--line);
+  text-align: left;
+}
+
+.markdown th {
+  background: var(--surface-muted);
+  font-weight: 600;
+}
+
+.markdown hr {
+  margin: 0.9rem 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+/* Trace Graph（issue #51）。debug panel 内で開いたときだけ描画される。 */
+.trace-graph {
+  margin-top: 0.8rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+}
+
+.trace-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.trace-meta {
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+/* 大きなグラフは panel を押し広げず、自分の中でスクロールさせる。 */
+.trace-canvas {
+  max-height: 420px;
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: auto;
+}
+
+.trace-canvas svg {
+  max-width: 100%;
+  height: auto;
 }

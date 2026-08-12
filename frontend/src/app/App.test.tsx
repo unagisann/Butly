@@ -31,6 +31,12 @@ function fakeTransport(): ApiTransport {
     ping: vi.fn(async () => ({ ready: true, checks: [] })),
     listInstances: vi.fn(async () => []),
     getMessages: vi.fn(async () => ({ items: [] })),
+  getTrace: vi.fn(async () => ({
+    trace_id: "turn_1",
+    mermaid: "flowchart TD",
+    source: "web",
+    node_counts: {},
+  })),
     getCapabilities: vi.fn(async () => ({
       attachments: {
         max_count: 3,

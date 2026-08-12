@@ -75,12 +75,35 @@ developer debug は sidecar の developer mode でだけ利用できる。無効
 Gatekeeper の tier / need / score / fallback と、RAG の候補数 / 注入数 / active
 node 識別子などの要約に限る。
 
+### Trace Graph（issue #51）
+
+debug パネルからは、直近 1 ターンの回答生成フローを Mermaid flowchart として
+表示できる。`GET /api/v1/instances/{name}/trace` が Gatekeeper / RAG /
+Context Assembly / Provider / LLM / Memory Write を active・skipped・fallback・
+error で塗り分けた Mermaid 文字列を返し、frontend は描画だけを行う。
+
+- **Mermaid の生成は backend が正本**（`butly_core/trace/mermaid.py`）。frontend で
+  組み立て直さない。保存済み `traces/latest.json` から生成する。
+- **TraceNode の `metadata` は返さない。**原文クエリや検索候補が入るため、公開
+  するのは label / summary から作った Mermaid 文字列と status 別ノード数だけ。
+  ノード summary は表示用に 80 文字で切る（応答本文がそのまま載らないように）。
+- chat debug と同じ developer mode gate。無効時は `403 debug_not_available`。
+  trace 未記録の instance は `404 trace_not_found`。
+- 描画側は Mermaid を `securityLevel: "strict"` / `htmlLabels: false` で扱い、
+  ラベルを HTML として解釈させない。mermaid 本体は panel を開いたときだけ
+  動的 import する（bundle を初期表示に載せない）。
+
 ## 添付、引用、安全性
 
 - 画像は JPEG / PNG / WebP、最大 3 枚、1 枚あたり decoded 20 MB。data URL header を
-  除いた base64 を送る。
-- 引用 URL は `http:` / `https:` だけを表示対象にし、Phase 2 では clipboard への
-  copy-only とする。外部で直接開く操作は Tauri opener の domain allowlist と組で後続実装する。
+  除いた base64 を送る。ファイル選択のほか **composer への貼り付け**でも添付でき、
+  枚数・サイズ・MIME の上限は同じ経路で検証する。クリップボード画像は名前を持たない
+  ことがあるため、その場合は `pasted-image.<ext>` を補う。
+- 引用 URL は `http:` / `https:` だけを表示対象にする。既定の操作は **OS 既定ブラウザで
+  開く**（Tauri では `shell:allow-open`、browser dev では別タブ）で、clipboard への
+  copy は副操作として残す。webview 内では遷移させない。
+- assistant の応答は Markdown として描画する。**raw HTML は描画せず**、リモート画像も
+  読み込まない（リンクに落とす）。ユーザーの発言は Markdown 解釈せず、入力どおりに出す。
 - backend からの文字列は React text node として描画し、HTML として挿入しない。
 - token は Tauri lifecycle から memory 上で渡し、log、URL、永続ストレージへ保存しない。
 - UI には公開 error code と request ID を表示し、provider の raw error は返さない。

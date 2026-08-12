@@ -8,6 +8,7 @@ import { useI18n } from "../../i18n/strings";
 import { localizeReason } from "../../i18n/reasons";
 import { ChatComposer } from "./ChatComposer";
 import { DebugPanel } from "./DebugPanel";
+import { TraceGraph } from "./TraceGraph";
 import { MessageList } from "./MessageList";
 import { useCapabilities } from "./useCapabilities";
 import { useChatSession } from "./useChatSession";
@@ -202,7 +203,14 @@ export function ChatPage({
         />
       </div>
 
-      {debugEnabled && <DebugPanel debug={session.debug} />}
+      {debugEnabled && (
+        <DebugPanel
+          debug={session.debug}
+          trace={
+            <TraceGraph transport={transport} instanceName={instance.name} />
+          }
+        />
+      )}
       {capabilities ? (
         <ChatComposer
           capabilities={capabilities}

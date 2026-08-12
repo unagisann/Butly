@@ -407,6 +407,38 @@ export type StreamingCapability = {
     reason?: string | null;
 };
 
+/**
+ * 1 ターン分の回答生成フローを Mermaid flowchart として返す。
+ */
+export type TraceGraphResponse = {
+    /**
+     * trace 生成時刻（保存時の ISO 8601 文字列）
+     */
+    created_at?: string | null;
+    /**
+     * Mermaid flowchart 文字列
+     */
+    mermaid: string;
+    /**
+     * status（active / skipped / fallback / error / warning）ごとのノード数
+     */
+    node_counts?: {
+        [key: string]: number;
+    };
+    /**
+     * 発生元（web / discord / line 等）
+     */
+    source?: string;
+    /**
+     * trace の識別子（例: `turn_13`）
+     */
+    trace_id: string;
+    /**
+     * session 内の turn 番号。未記録なら null
+     */
+    turn_id?: number | null;
+};
+
 export type ValidationError = {
     ctx?: {
         [key: string]: unknown;
@@ -683,6 +715,45 @@ export type ListInstanceMessagesResponses = {
 };
 
 export type ListInstanceMessagesResponse = ListInstanceMessagesResponses[keyof ListInstanceMessagesResponses];
+
+export type GetInstanceTraceData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/instances/{name}/trace';
+};
+
+export type GetInstanceTraceErrors = {
+    /**
+     * Developer mode is disabled
+     */
+    403: ApiError;
+    /**
+     * Instance or trace not found
+     */
+    404: ApiError;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+    /**
+     * Backend is not ready
+     */
+    503: ApiError;
+};
+
+export type GetInstanceTraceError = GetInstanceTraceErrors[keyof GetInstanceTraceErrors];
+
+export type GetInstanceTraceResponses = {
+    /**
+     * Successful Response
+     */
+    200: TraceGraphResponse;
+};
+
+export type GetInstanceTraceResponse = GetInstanceTraceResponses[keyof GetInstanceTraceResponses];
 
 export type GetPreflightData = {
     body?: never;
