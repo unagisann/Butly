@@ -187,3 +187,24 @@ class TestTracePayload:
 
         assert "…" in payload["mermaid"]
         assert "あ" * 200 not in payload["mermaid"]
+
+    def test_direction_switches_the_flowchart_orientation(self, tmp_path):
+        """縦長のグラフは横長の画面に収まらない。向きは表示側の選択肢にする。"""
+        client = _client(_write_instance(tmp_path, name="Epsilon"))
+
+        vertical = client.get("/api/v1/instances/Epsilon/trace").json()
+        horizontal = client.get(
+            "/api/v1/instances/Epsilon/trace", params={"direction": "LR"}
+        ).json()
+
+        assert vertical["mermaid"].startswith("flowchart TD")
+        assert horizontal["mermaid"].startswith("flowchart LR")
+
+    def test_unknown_direction_is_rejected(self, tmp_path):
+        client = _client(_write_instance(tmp_path, name="Zeta"))
+
+        response = client.get(
+            "/api/v1/instances/Zeta/trace", params={"direction": "diagonal"}
+        )
+
+        assert response.status_code == 422

@@ -108,6 +108,16 @@ colored by active / skipped / fallback / error; the frontend only renders it.
   `htmlLabels: false` so labels are never interpreted as HTML, and imports
   Mermaid dynamically when the panel is opened to keep it out of the initial
   bundle.
+- Graphs outgrow the panel, so "expand" opens a full-window overlay (closed with
+  Escape or a backdrop click). A permanent third column is deliberately avoided:
+  it would take chat width forever and still leave the graph narrow.
+- `direction` (`TD` / `LR`) switches the layout, because a tall graph never fits
+  a wide window. Generation stays with `render_mermaid(direction=...)`; the
+  frontend never rearranges the SVG.
+- After insertion the viewBox is rebuilt from the measured bounding box and
+  Mermaid's baked-in `max-width` is removed. With `htmlLabels: false` the text
+  metrics can be off, and labels falling outside the computed viewBox would be
+  clipped.
 
 ## Attachments, citations, and safety
 

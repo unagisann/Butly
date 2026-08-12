@@ -399,7 +399,18 @@ def _trim_trace_summaries(trace: Any) -> Any:
         **_NOT_READY,
     },
 )
-def get_instance_trace(name: str, request: Request) -> TraceGraphResponse:
+def get_instance_trace(
+    name: str,
+    request: Request,
+    direction: str = Query(
+        "TD",
+        pattern="^(TD|LR)$",
+        description=(
+            "flowchart の向き。TD は縦（既定）、LR は横。画面の縦横比に合わせて"
+            "選べるようにするための表示オプション。"
+        ),
+    ),
+) -> TraceGraphResponse:
     _require_developer_mode(request)
     instances_dir = _require_instances_dir(request)
     instance_dir = _resolve_instance_dir(instances_dir, name)
@@ -443,6 +454,6 @@ def get_instance_trace(name: str, request: Request) -> TraceGraphResponse:
         turn_id=trace.turn_id,
         source=trace.source,
         created_at=trace.created_at,
-        mermaid=render_mermaid(_trim_trace_summaries(trace)),
+        mermaid=render_mermaid(_trim_trace_summaries(trace), direction=direction),
         node_counts=node_counts,
     )

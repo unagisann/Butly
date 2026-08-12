@@ -92,6 +92,15 @@ error で塗り分けた Mermaid 文字列を返し、frontend は描画だけ�
 - 描画側は Mermaid を `securityLevel: "strict"` / `htmlLabels: false` で扱い、
   ラベルを HTML として解釈させない。mermaid 本体は panel を開いたときだけ
   動的 import する（bundle を初期表示に載せない）。
+- パネル内に収まらないので「拡大」で全画面オーバーレイへ開ける（Esc / 背景
+  クリックで閉じる）。常設カラムにはしない。会話の幅を恒久的に削るうえ、
+  列幅ではグラフが結局狭いため。
+- `direction`（`TD` / `LR`）で向きを切り替えられる。縦長のグラフは横長の画面に
+  収まらないため、生成は `render_mermaid(direction=...)` に委ね、frontend では
+  SVG を組み替えない。
+- 挿入後に viewBox を実測 bounding box から作り直し、mermaid が焼き込む
+  `max-width` を外す。`htmlLabels: false` では文字幅の見積もりがずれることが
+  あり、算出された viewBox の外にラベルが出ると切れるため。
 
 ## 添付、引用、安全性
 
