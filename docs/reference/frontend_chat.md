@@ -89,13 +89,40 @@ Sending `include_debug=true` otherwise returns `403 debug_not_available`.
 The UI displays only summaries such as Gatekeeper tier, need, scores, and
 fallback, plus RAG candidate/injection counts and active-node identifiers.
 
+### Trace graph (issue #51)
+
+The debug panel can show the response-generation flow of the latest turn as a
+Mermaid flowchart. `GET /api/v1/instances/{name}/trace` returns a Mermaid string
+where Gatekeeper, RAG, Context Assembly, Provider, LLM, and Memory Write are
+colored by active / skipped / fallback / error; the frontend only renders it.
+
+- **The backend owns Mermaid generation** (`butly_core/trace/mermaid.py`); the
+  frontend never rebuilds it. The source is the stored `traces/latest.json`.
+- **TraceNode `metadata` is never returned.** It holds original queries and
+  retrieval candidates, so the response exposes only the Mermaid string built
+  from labels/summaries plus per-status node counts. Summaries are trimmed to 80
+  characters so a full response body never lands in the graph.
+- Same developer-mode gate as chat debug: `403 debug_not_available` when
+  disabled, `404 trace_not_found` when the instance has no recorded trace.
+- The renderer runs Mermaid with `securityLevel: "strict"` and
+  `htmlLabels: false` so labels are never interpreted as HTML, and imports
+  Mermaid dynamically when the panel is opened to keep it out of the initial
+  bundle.
+
 ## Attachments, citations, and safety
 
 - Images may be JPEG, PNG, or WebP: at most three and 20 MB decoded per image.
-  Requests contain base64 without a data-URL header.
-- Only `http:` and `https:` citation URLs are displayed, and Phase 2 offers a
-  copy-only action. Direct opening is deferred until it can be paired with a
-  domain-scoped Tauri opener allowlist.
+  Requests contain base64 without a data-URL header. Images can be attached by
+  **pasting into the composer** as well as by file selection; both go through the
+  same count/size/MIME validation. Clipboard images sometimes have no file name,
+  in which case `pasted-image.<ext>` is supplied.
+- Only `http:` and `https:` citation URLs are displayed. The default action
+  **opens them in the OS browser** (`shell:allow-open` under Tauri, a new tab in
+  browser dev) and copying stays as a secondary action; the webview never
+  navigates to them.
+- Assistant responses render as Markdown. **Raw HTML is never rendered** and
+  remote images are not loaded (they degrade to links). User messages are shown
+  verbatim, without Markdown interpretation.
 - Backend strings render as React text nodes and are never inserted as HTML.
 - The desktop token stays in lifecycle memory and is never logged or persisted.
 - The UI exposes public error codes and request IDs, not raw provider errors.

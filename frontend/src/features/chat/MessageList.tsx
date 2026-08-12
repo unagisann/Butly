@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 
 import { useI18n } from "../../i18n/strings";
+import { Markdown } from "./Markdown";
 import { SourceList } from "./SourceList";
 import type { ChatMessageView, ChatPhase } from "./types";
 
@@ -157,6 +158,9 @@ export function MessageList({
                   <span className="typing-dots" aria-label={t("chat.waiting")}>
                     <i /> <i /> <i />
                   </span>
+                ) : assistant ? (
+                  // 送信者の発言は打った通りに見せる。Markdown 解釈は応答側だけ。
+                  <Markdown text={message.text} />
                 ) : (
                   <p className="message-text">{message.text}</p>
                 )}

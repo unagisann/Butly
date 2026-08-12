@@ -189,7 +189,7 @@ framing has a handwritten parser. See [Official Desktop Chat UI](frontend_chat.m
 | `src/api/transport.ts` | Adapter hiding the generated client and POST-SSE parser from feature code. |
 | `src/app/` | Top-level shell plus continued HTTP reachability after lifecycle readiness. |
 | `src/features/instances/` | Instance list/selection and history switching. |
-| `src/features/chat/` | Messages, composer, images, citations, streaming, cancel/retry, and debug panel. |
+| `src/features/chat/` | Messages, Markdown rendering, composer, images, citations, streaming, cancel/retry, debug panel, and the trace graph. |
 | `src/features/preflight/` | Partial Connection/embedding availability and manual refresh. |
 | `src/i18n/` | Typed Japanese/English dictionary and locale provider. |
 | `src/styles.css` | Responsive two-pane layout plus focus and reduced-motion tokens. |

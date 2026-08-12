@@ -3,7 +3,14 @@ import { BrainCircuit, ChevronDown, DatabaseZap, Route } from "lucide-react";
 import { useI18n } from "../../i18n/strings";
 import type { ChatDebugView } from "./types";
 
-export function DebugPanel({ debug }: { debug: ChatDebugView | null }) {
+export function DebugPanel({
+  debug,
+  trace,
+}: {
+  debug: ChatDebugView | null;
+  /** Trace Graph（issue #51）。開いたときだけ描画するので子として受け取る。 */
+  trace?: React.ReactNode;
+}) {
   const { t } = useI18n();
   return (
     <details className="debug-panel">
@@ -69,6 +76,8 @@ export function DebugPanel({ debug }: { debug: ChatDebugView | null }) {
           </section>
         </div>
       )}
+      {/* trace は debug summary が無いターンでも見たい（どこで止まったかの確認） */}
+      {trace}
     </details>
   );
 }

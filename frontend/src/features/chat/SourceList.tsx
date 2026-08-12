@@ -1,7 +1,8 @@
-import { Copy, Link2 } from "lucide-react";
+import { Copy, ExternalLink as ExternalLinkIcon, Link2 } from "lucide-react";
 
 import type { CitationSource } from "../../api/generated";
 import { useI18n } from "../../i18n/strings";
+import { openExternal } from "./external";
 
 export function safeExternalUrl(value: string | undefined): string | null {
   if (!value || value.length > 2_048) return null;
@@ -32,21 +33,37 @@ export function SourceList({ sources }: { sources: CitationSource[] }) {
       </div>
       <div className="source-chips">
         {safe.map(({ source, url }, index) => (
-          <button
-            key={`${url}-${index}`}
-            className="source-chip"
-            type="button"
-            title={url}
-            aria-label={`${t("chat.copy_source")}: ${source.title || new URL(url).hostname}`}
-            onClick={() => {
-              void navigator.clipboard?.writeText(url).catch((error: unknown) => {
-                console.warn("[frontend] failed to copy source URL", error);
-              });
-            }}
-          >
-            <span>{source.title || new URL(url).hostname}</span>
-            <Copy size={12} aria-hidden="true" />
-          </button>
+          <span className="source-chip" key={`${url}-${index}`}>
+            {/* 既定の操作は「開く」。href を持たせて中クリックや右クリックの
+                ブラウザ標準操作も使えるようにし、遷移自体は外部へ委ねる。 */}
+            <a
+              className="source-open"
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={url}
+              onClick={(event) => {
+                event.preventDefault();
+                void openExternal(url);
+              }}
+            >
+              <span>{source.title || new URL(url).hostname}</span>
+              <ExternalLinkIcon size={12} aria-hidden="true" />
+            </a>
+            <button
+              className="source-copy"
+              type="button"
+              aria-label={`${t("chat.copy_source")}: ${source.title || new URL(url).hostname}`}
+              title={t("chat.copy_source")}
+              onClick={() => {
+                void navigator.clipboard?.writeText(url).catch((error: unknown) => {
+                  console.warn("[frontend] failed to copy source URL", error);
+                });
+              }}
+            >
+              <Copy size={12} aria-hidden="true" />
+            </button>
+          </span>
         ))}
       </div>
     </div>

@@ -1445,6 +1445,65 @@
         "title": "StreamingCapability",
         "type": "object"
       },
+      "TraceGraphResponse": {
+        "description": "1 ターン分の回答生成フローを Mermaid flowchart として返す。",
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "trace 生成時刻（保存時の ISO 8601 文字列）",
+            "title": "Created At"
+          },
+          "mermaid": {
+            "description": "Mermaid flowchart 文字列",
+            "title": "Mermaid",
+            "type": "string"
+          },
+          "node_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "status（active / skipped / fallback / error / warning）ごとのノード数",
+            "title": "Node Counts",
+            "type": "object"
+          },
+          "source": {
+            "default": "web",
+            "description": "発生元（web / discord / line 等）",
+            "title": "Source",
+            "type": "string"
+          },
+          "trace_id": {
+            "description": "trace の識別子（例: `turn_13`）",
+            "title": "Trace Id",
+            "type": "string"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "session 内の turn 番号。未記録なら null",
+            "title": "Turn Id"
+          }
+        },
+        "required": [
+          "trace_id",
+          "mermaid"
+        ],
+        "title": "TraceGraphResponse",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -2022,6 +2081,84 @@
           }
         ],
         "summary": "Get chat message history",
+        "tags": [
+          "instances"
+        ]
+      }
+    },
+    "/api/v1/instances/{name}/trace": {
+      "get": {
+        "description": "直近 1 ターンの回答生成フローを Mermaid flowchart として返す（issue #51）。Gatekeeper / RAG / Context Assembly / Provider / LLM / Memory Write を active・skipped・fallback・error で塗り分ける。developer mode 専用で、TraceNode の metadata（原文クエリ・検索候補など）は返さない。",
+        "operationId": "get_instance_trace",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceGraphResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Developer mode is disabled"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Instance or trace not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Backend is not ready"
+          }
+        },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
+        "summary": "Get the latest trace graph",
         "tags": [
           "instances"
         ]

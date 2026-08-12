@@ -36,6 +36,7 @@ from butly_api.errors import ApiException
 from butly_api.schemas.chat import Message, MessagePage
 from butly_api.schemas.common import ApiError
 from butly_api.schemas.instances import InstanceListResponse, InstanceSummary
+from butly_api.schemas.trace import TraceGraphResponse
 from butly_api.version import API_V1_PREFIX
 
 logger = logging.getLogger(__name__)
@@ -336,4 +337,101 @@ def list_instance_messages(
         items=items,
         next_cursor=None,
         last_interaction_at=_to_aware_datetime(memory.get_last_interaction_time()),
+    )
+
+
+# =====================================================================
+# Trace Graph（issue #51）
+# =====================================================================
+
+# Mermaid のノードラベルに載せる summary の上限。応答本文がそのまま入ると
+# グラフが読めなくなるうえ、UI へ raw な生成文を流すことにもなる。
+TRACE_SUMMARY_MAX_CHARS = 80
+
+TRACE_LATEST_FILENAME = "latest.json"
+
+
+def _require_developer_mode(request: Request) -> None:
+    """trace は debug 系の情報なので、chat debug と同じ gate を通す。"""
+    ctx: Optional[ApiContext] = getattr(request.app.state, "api_context", None)
+    if ctx is None or not ctx.developer_mode:
+        raise ApiException(
+            403,
+            "debug_not_available",
+            "Trace graphs are available only in developer mode.",
+        )
+
+
+def _trim_trace_summaries(trace: Any) -> Any:
+    """表示用に summary を丸める。metadata は Mermaid へ出ないため触らない。"""
+    for node in trace.nodes:
+        summary = node.summary or ""
+        if len(summary) > TRACE_SUMMARY_MAX_CHARS:
+            node.summary = summary[:TRACE_SUMMARY_MAX_CHARS].rstrip() + "…"
+    return trace
+
+
+@router.get(
+    "/instances/{name}/trace",
+    operation_id="get_instance_trace",
+    response_model=TraceGraphResponse,
+    summary="Get the latest trace graph",
+    description=(
+        "直近 1 ターンの回答生成フローを Mermaid flowchart として返す（issue #51）。"
+        "Gatekeeper / RAG / Context Assembly / Provider / LLM / Memory Write を "
+        "active・skipped・fallback・error で塗り分ける。developer mode 専用で、"
+        "TraceNode の metadata（原文クエリ・検索候補など）は返さない。"
+    ),
+    responses={
+        403: {"model": ApiError, "description": "Developer mode is disabled"},
+        404: {"model": ApiError, "description": "Instance or trace not found"},
+        **_NOT_READY,
+    },
+)
+def get_instance_trace(name: str, request: Request) -> TraceGraphResponse:
+    _require_developer_mode(request)
+    instances_dir = _require_instances_dir(request)
+    instance_dir = _resolve_instance_dir(instances_dir, name)
+
+    trace_path = instance_dir / "traces" / TRACE_LATEST_FILENAME
+    if not trace_path.is_file():
+        raise ApiException(
+            404,
+            "trace_not_found",
+            f"No trace has been recorded for instance '{name}' yet.",
+        )
+    try:
+        raw = json.loads(trace_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("failed to read trace for %s: %s", name, exc)
+        raise ApiException(
+            404,
+            "trace_not_found",
+            f"The stored trace for instance '{name}' could not be read.",
+        ) from exc
+
+    from butly_core.trace.mermaid import render_mermaid
+    from butly_core.trace.types import TraceGraph
+
+    try:
+        trace = TraceGraph.model_validate(raw)
+    except Exception as exc:  # schema drift は 404 として扱い、詳細は出さない
+        logger.warning("stored trace for %s did not validate: %s", name, exc)
+        raise ApiException(
+            404,
+            "trace_not_found",
+            f"The stored trace for instance '{name}' is not readable.",
+        ) from exc
+
+    node_counts: Dict[str, int] = {}
+    for node in trace.nodes:
+        node_counts[node.status] = node_counts.get(node.status, 0) + 1
+
+    return TraceGraphResponse(
+        trace_id=trace.trace_id,
+        turn_id=trace.turn_id,
+        source=trace.source,
+        created_at=trace.created_at,
+        mermaid=render_mermaid(_trim_trace_summaries(trace)),
+        node_counts=node_counts,
     )
