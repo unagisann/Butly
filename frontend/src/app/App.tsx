@@ -1,62 +1,26 @@
-// Phase 1 の app shell。最初の画面 = backend lifecycle の状態表示そのもの。
-// Chat / 設定 / サイドバーはまだ作らない（Phase 2 以降）。
+import { Languages, Power, RefreshCw, RotateCcw, Wifi, WifiOff } from "lucide-react";
 
-import { useEffect, useMemo, useState } from "react";
-
-import { getHealth, getReadiness } from "../api/generated";
-import { createApiClient } from "../api/client";
+import { createApiTransport } from "../api/transport";
+import type { ApiTransportFactory } from "../api/transport";
 import type { LifecycleBridge } from "../lifecycle/bridge";
 import { useBackendState } from "../lifecycle/useBackendState";
-import { t } from "../i18n/strings";
+import { I18nProvider, useI18n } from "../i18n/strings";
+import { Workspace } from "./Workspace";
+import { useApiConnection } from "./useApiConnection";
 
 interface AppProps {
   bridge: LifecycleBridge;
+  transportFactory?: ApiTransportFactory;
 }
 
-interface VerifiedHealth {
-  backendVersion: string;
-  apiVersion: string;
-}
+const DEFAULT_TRANSPORT_FACTORY: ApiTransportFactory = (info) => createApiTransport(info);
 
-export function App({ bridge }: AppProps) {
+function AppContent({ bridge, transportFactory = DEFAULT_TRANSPORT_FACTORY }: AppProps) {
+  const { locale, setLocale, t } = useI18n();
   const { state, restart } = useBackendState(bridge);
-  const [health, setHealth] = useState<VerifiedHealth | null>(null);
+  const api = useApiConnection(state, bridge, transportFactory);
 
-  // ready になったら webview からも health を 1 回叩き、
-  // WebView → loopback → token の経路が実際に通ることを確認する。
-  useEffect(() => {
-    if (state.phase !== "ready") {
-      setHealth(null);
-      return;
-    }
-    let disposed = false;
-    (async () => {
-      const info = await bridge.getConnectionInfo();
-      if (!info) return;
-      const client = createApiClient(info);
-      const [healthResult, readinessResult] = await Promise.all([
-        getHealth({ client }),
-        getReadiness({ client }),
-      ]);
-      if (
-        !disposed &&
-        healthResult.data &&
-        readinessResult.data?.ready
-      ) {
-        setHealth({
-          backendVersion: healthResult.data.backend_version,
-          apiVersion: healthResult.data.api_version,
-        });
-      }
-    })().catch(() => {
-      // health 疎通失敗は Rust 側の監視が unavailable / crashed を emit する
-    });
-    return () => {
-      disposed = true;
-    };
-  }, [state.phase, bridge]);
-
-  const statusLabel = useMemo(() => {
+  const lifecycleLabel = (() => {
     switch (state.phase) {
       case "starting":
         return t("backend.starting");
@@ -69,46 +33,126 @@ export function App({ bridge }: AppProps) {
       case "version_mismatch":
         return t("backend.version_mismatch");
     }
-  }, [state.phase]);
+  })();
+
+  const apiLabel = (() => {
+    switch (api.phase) {
+      case "connecting":
+        return t("backend.connecting");
+      case "reconnecting":
+        return t("backend.reconnecting");
+      case "disconnected":
+        return t("backend.disconnected");
+      case "connected":
+        return t("backend.ready");
+      case "idle":
+        return lifecycleLabel;
+    }
+  })();
 
   const showRestart =
     state.phase === "crashed" ||
     state.phase === "unavailable" ||
     state.phase === "version_mismatch";
-
-  const backendVersion = health?.backendVersion ?? state.backendVersion;
-  const apiVersion = health?.apiVersion ?? state.apiVersion;
+  const lifecycleReady = state.phase === "ready";
+  const showInitialGate = !lifecycleReady || api.connectionRevision === 0;
 
   return (
-    <main className="shell">
-      <h1>{t("app.title")}</h1>
-      <section aria-live="polite">
-        <p data-testid="backend-status" data-phase={state.phase}>
-          {statusLabel}
-        </p>
-        {state.phase === "ready" && (
-          <dl data-testid="backend-versions">
-            <dt>{t("backend.backend_version")}</dt>
-            <dd>{backendVersion ?? "-"}</dd>
-            <dt>{t("backend.api_version")}</dt>
-            <dd>{apiVersion ?? "-"}</dd>
-          </dl>
-        )}
-        {state.detail && state.phase !== "ready" && (
-          <p data-testid="backend-detail">{state.detail}</p>
-        )}
-        {showRestart && (
-          <button
-            type="button"
-            data-testid="restart-button"
-            onClick={() => {
-              void restart();
-            }}
+    <main className="app-shell">
+      <header className="app-bar">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">B</span>
+          <div>
+            <strong>{t("app.title")}</strong>
+            <small>{t("app.subtitle")}</small>
+          </div>
+        </div>
+        <div className="app-actions">
+          <span
+            className={`global-status ${lifecycleReady && api.phase === "connected" ? "connected" : "offline"}`}
+            data-testid="backend-status"
+            data-phase={state.phase}
+            data-api-phase={api.phase}
           >
-            {t("backend.restart")}
+            {lifecycleReady && api.phase === "connected" ? (
+              <Wifi size={14} aria-hidden="true" />
+            ) : (
+              <WifiOff size={14} aria-hidden="true" />
+            )}
+            {lifecycleReady ? apiLabel : lifecycleLabel}
+          </span>
+          <button
+            className="language-button"
+            type="button"
+            onClick={() => setLocale(locale === "ja" ? "en" : "ja")}
+            aria-label={t("app.language_label")}
+          >
+            <Languages size={16} aria-hidden="true" /> {t("app.language")}
           </button>
-        )}
-      </section>
+        </div>
+      </header>
+
+      {lifecycleReady && (api.phase === "reconnecting" || api.phase === "disconnected") && (
+        <div className="connection-banner" role="status">
+          <WifiOff size={16} aria-hidden="true" />
+          <span>{apiLabel}</span>
+          <button className="text-button" type="button" onClick={api.retryNow}>
+            <RefreshCw size={14} aria-hidden="true" /> {t("backend.retry")}
+          </button>
+          <button className="text-button" type="button" onClick={() => void restart()}>
+            <Power size={14} aria-hidden="true" /> {t("backend.restart")}
+          </button>
+        </div>
+      )}
+
+      {showInitialGate ? (
+        <section className="lifecycle-gate" aria-live="polite">
+          <span className="lifecycle-icon" data-state={state.phase} aria-hidden="true">
+            {showRestart ? <WifiOff size={27} /> : <RefreshCw size={27} className="spin" />}
+          </span>
+          <h1>{lifecycleReady ? apiLabel : lifecycleLabel}</h1>
+          {(state.detail || api.detail) && (
+            <p data-testid="backend-detail">{state.detail || api.detail}</p>
+          )}
+          {state.phase === "ready" && (
+            <dl data-testid="backend-versions">
+              <dt>{t("backend.backend_version")}</dt>
+              <dd>{state.backendVersion ?? "-"}</dd>
+              <dt>{t("backend.api_version")}</dt>
+              <dd>{state.apiVersion ?? "-"}</dd>
+            </dl>
+          )}
+          {showRestart && (
+            <button
+              className="primary-button"
+              type="button"
+              data-testid="restart-button"
+              onClick={() => void restart()}
+            >
+              <RotateCcw size={16} aria-hidden="true" /> {t("backend.restart")}
+            </button>
+          )}
+          {lifecycleReady && api.phase === "disconnected" && (
+            <button className="primary-button" type="button" onClick={api.retryNow}>
+              <RefreshCw size={16} aria-hidden="true" /> {t("backend.retry")}
+            </button>
+          )}
+        </section>
+      ) : api.transport ? (
+        <Workspace
+          transport={api.transport}
+          connectionPhase={api.phase}
+          connectionRevision={api.connectionRevision}
+        />
+      ) : null}
     </main>
+  );
+}
+
+export function App(props: AppProps) {
+  return (
+    <I18nProvider>
+      <AppContent {...props} />
+    </I18nProvider>
   );
 }

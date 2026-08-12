@@ -20,6 +20,7 @@ Documents are grouped by purpose:
 - [File Structure](reference/FILE_STRUCTURE.md)
 - [Coding Conventions](reference/coding_conventions.md)
 - [Desktop sidecar specification](reference/desktop_sidecar.md)
+- [Official Desktop Chat UI](reference/frontend_chat.md)
 - [Context Levels](reference/context_levels.md)
 - [Gatekeeper I/O Specification](reference/gatekeeper_io_summary.md)
 - [LoCoMo Evaluation Web Console](reference/evaluation_web_console.md)

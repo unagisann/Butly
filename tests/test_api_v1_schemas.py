@@ -7,7 +7,17 @@ validation 挙動テスト（endpoint 実装前の contract 固定）。
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
+from starlette.requests import Request
+from types import SimpleNamespace
 
+from butly_api.context import ApiContext
+from butly_api.errors import ApiException
+from butly_api.routers.chat import (
+    _debug_from_done,
+    _normalize_sources,
+    _safe_scores,
+    _validate_debug_access,
+)
 from butly_api.schemas.chat import (
     AttachmentInput,
     ChatChunkEvent,
@@ -63,8 +73,24 @@ def test_search_flags_are_mutually_exclusive():
             instance_name="a", text="hi", use_google_search=True, use_web_search=True
         )
     # 片方だけなら valid
-    assert ChatRequest(instance_name="a", use_google_search=True).use_web_search is False
-    assert ChatRequest(instance_name="a", use_web_search=True).use_google_search is False
+    assert ChatRequest(
+        instance_name="a", text="hi", use_google_search=True
+    ).use_web_search is False
+    assert ChatRequest(
+        instance_name="a", text="hi", use_web_search=True
+    ).use_google_search is False
+
+
+def test_chat_request_requires_text_or_attachment():
+    with pytest.raises(ValidationError):
+        ChatRequest(instance_name="a", text=" \n ")
+
+    image_only = ChatRequest(
+        instance_name="a",
+        attachments=[{"mime_type": "image/png", "data_base64": "aGk="}],
+    )
+    assert image_only.text == ""
+    assert len(image_only.attachments) == 1
 
 
 def test_attachment_base64_length_limit_matches_core_constant():
@@ -80,6 +106,82 @@ def test_attachment_base64_length_limit_matches_core_constant():
             mime_type="image/png",
             data_base64="a" * (MAX_DATA_BASE64_LENGTH + 4),
         )
+
+
+def test_debug_summary_drops_nonfinite_scores_and_raw_payloads():
+    assert _safe_scores(
+        {"ok": 0.5, "nan": float("nan"), "inf": float("inf")}
+    ) == {"ok": 0.5}
+    summary = _debug_from_done(
+        {
+            "debug_info": {
+                "prompt_full": "secret prompt",
+                "raw_response": "secret provider response",
+                "gatekeeper": {
+                    "tier": "mid",
+                    "need": "past_fact",
+                    "llm_scoring": {"continuity": 0.8},
+                },
+                "rag": {
+                    "results": [{"raw": "secret memory"}],
+                    "active_nodes": {
+                        "prompt_included_count": 1,
+                        "nodes": [{"id": "card-1", "content": "secret"}],
+                    },
+                },
+            }
+        }
+    )
+    rendered = summary.model_dump_json()
+    assert summary.gatekeeper.tier == "mid"
+    assert summary.rag.candidate_count == 1
+    assert summary.rag.active_nodes == ["card-1"]
+    assert "secret" not in rendered
+    assert "prompt_full" not in rendered
+    bounded = _safe_scores(
+        {f"{index}-" + "k" * 1000: 1.0 for index in range(100)}
+    )
+    assert len(bounded) <= 50
+    assert all(len(key) <= 100 for key in bounded)
+
+
+def test_debug_access_uses_developer_mode_gate():
+    body = ChatRequest(instance_name="a", text="hi", include_debug=True)
+
+    def request(developer_mode):
+        return Request(
+            {
+                "type": "http",
+                "app": SimpleNamespace(
+                    state=SimpleNamespace(
+                        api_context=ApiContext(
+                            developer_mode=developer_mode,
+                            auth_token=None,
+                        )
+                    )
+                ),
+            }
+        )
+
+    with pytest.raises(ApiException) as caught:
+        _validate_debug_access(request(False), body)
+    assert caught.value.status_code == 403
+    _validate_debug_access(request(True), body)
+
+
+def test_public_sources_are_count_and_length_bounded():
+    sources = _normalize_sources(
+        [
+            {
+                "title": "t" * 1000,
+                "url": "https://example.com/" + "x" * 5000,
+            }
+            for _ in range(100)
+        ]
+    )
+    assert len(sources) == 50
+    assert len(sources[0].title) == 500
+    assert len(sources[0].url) == 4096
 
 
 # ===================================================================

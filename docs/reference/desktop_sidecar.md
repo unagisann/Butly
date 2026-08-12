@@ -72,6 +72,10 @@
 - The restart command gracefully stops a running child first, then spawns
   exactly one new process; double-launch is prevented by the `starting` /
   child-presence checks.
+- After lifecycle readiness, React continues to probe authenticated
+  `/api/v1/ready` with a timeout. If HTTP becomes unreachable while the process
+  remains alive, chat enters `disconnected` and offers reconnect or sidecar
+  restart.
 - On window close: `POST /api/v1/shutdown` → wait up to 5s → kill if still
   alive → the sidecar's own `--parent-pid` watch remains as the final
   fallback.
@@ -81,6 +85,9 @@
 ## Development mode
 
 - Manual backend: `venv/bin/python -m butly_api.server --dev-cors --port 8000`
+- `--dev-cors` also enables sanitized chat-debug summaries. Set
+  `BUTLY_DEVELOPER_MODE=1` to enable debug without expanding CORS. Production
+  bundles keep it disabled by default.
 - Attach Tauri without spawning: set `BUTLY_DEV_BACKEND_PORT=8000` (when using
   a token, set the same `BUTLY_DESKTOP_TOKEN` for both Tauri and the backend).
 - `main.py` remains the compatibility entrypoint (legacy routers + wildcard

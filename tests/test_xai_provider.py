@@ -114,8 +114,14 @@ class TestXaiGenerate:
 
         provider = XaiProvider()
         with patch("butly_core.config.AI_CONFIG", {"chat": {"model_name": "grok-4.20-reasoning", "generation_config": {"temperature": 0.7}}}):
-            result = provider.generate("test", [], {"history": [], "rag_results": []})
-        assert "Error" in result.text
+            with pytest.raises(
+                RuntimeError, match="Provider generation failed"
+            ) as caught:
+                provider.generate(
+                    "test", [], {"history": [], "rag_results": []}
+                )
+        # Provider の raw error を成功 response として保存・表示しない。
+        assert "Timeout" not in str(caught.value)
 
 
 # ===================================================================

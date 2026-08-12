@@ -5,10 +5,13 @@ test_api_v1_system.py
 request ID middleware のテスト。
 """
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from butly_api import create_app
 from butly_api.context import ApiContext
@@ -130,7 +133,7 @@ def test_capabilities_without_keys(bare_client, monkeypatch):
     assert body["chat"]["available"] is False
     assert body["chat"]["reason"] == "runtime_not_initialized"
     assert body["native_google_search"]["available"] is False
-    assert body["native_google_search"]["reason"] == "gemini_api_key_not_configured"
+    assert body["native_google_search"]["reason"] == "runtime_not_initialized"
     assert body["generic_web_search"]["available"] is False
     assert body["vision"]["available"] is False
 
@@ -161,6 +164,80 @@ def test_capabilities_with_gemini_key(ready_client, monkeypatch):
     import json
 
     assert "dummy-for-test" not in json.dumps(body, ensure_ascii=False)
+
+
+def test_capabilities_follow_active_ollama_model(tmp_path, monkeypatch):
+    from butly_api.routers.system import get_capabilities
+    from butly_core.settings import clear_settings_cache
+
+    _clear_provider_env(monkeypatch)
+    (tmp_path / "user_config.json").write_text(
+        json.dumps(
+            {
+                "AI_CONFIG": {
+                    "chat": {
+                        "connection": "ollama",
+                        "model_name": "ollama/llama3.2",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    clear_settings_cache()
+    try:
+        context = ApiContext(
+            data_dir=tmp_path,
+            runtime_supplier=lambda: object(),
+        )
+        request = Request(
+            {
+                "type": "http",
+                "app": SimpleNamespace(
+                    state=SimpleNamespace(api_context=context)
+                ),
+            }
+        )
+        body = get_capabilities(request)
+        assert body.active_connection == "ollama"
+        assert body.active_model == "ollama/llama3.2"
+        assert body.chat.available is True
+        assert body.native_google_search.available is False
+        assert body.native_google_search.reason == (
+            "active_connection_does_not_support_google_search"
+        )
+        assert body.vision.available is False
+        assert body.vision.reason == "active_model_does_not_support_vision"
+    finally:
+        clear_settings_cache()
+
+
+def test_chat_debug_capability_matches_developer_mode(tmp_path):
+    from butly_api.routers.system import get_capabilities
+
+    def capability(token):
+        context = ApiContext(
+            data_dir=tmp_path,
+            runtime_supplier=lambda: object(),
+            developer_mode=True,
+            auth_token=token,
+        )
+        request = Request(
+            {
+                "type": "http",
+                "app": SimpleNamespace(
+                    state=SimpleNamespace(api_context=context)
+                ),
+            }
+        )
+        return get_capabilities(request).chat_debug
+
+    without_token = capability(None)
+    assert without_token.available is True
+    assert without_token.reason is None
+    with_token = capability("desktop-test-token")
+    assert with_token.available is True
+    assert with_token.reason is None
 
 
 # ===================================================================

@@ -13,6 +13,7 @@ side effect の少ない FastAPI app factory。
   生成対象にする。
 """
 
+from contextlib import asynccontextmanager
 from typing import Any, Dict, Iterable, Optional
 
 from fastapi import FastAPI
@@ -22,13 +23,15 @@ from pydantic import TypeAdapter
 from pydantic.json_schema import models_json_schema
 
 from butly_api.auth import DesktopTokenAuthMiddleware, requires_desktop_token
+from butly_api.chat_requests import ChatRequestRegistry
 from butly_api.context import ApiContext
 from butly_api.errors import register_error_handlers
 from butly_api.middleware import RequestIDMiddleware
 from butly_api.routers import chat as chat_router
-from butly_api.routers import instances, system
+from butly_api.routers import instances, preflight, system
 from butly_api.schemas import chat as chat_schemas
 from butly_api.schemas import instances as instance_schemas
+from butly_api.schemas import preflight as preflight_schemas
 from butly_api.version import BACKEND_VERSION, is_api_v1_path
 
 _REF_TEMPLATE = "#/components/schemas/{model}"
@@ -39,8 +42,10 @@ _CONTRACT_MODELS = [
     chat_schemas.ChatResult,
     chat_schemas.Message,
     chat_schemas.MessagePage,
+    chat_schemas.ChatRequestStatus,
     instance_schemas.InstanceSummary,
     instance_schemas.InstanceListResponse,
+    preflight_schemas.PreflightResponse,
 ]
 
 
@@ -95,13 +100,29 @@ def create_app(
         extra_routers: legacy（Streamlit 互換）routers。butly_api からは
             import せず、entrypoint が注入する。
     """
+    @asynccontextmanager
+    async def managed_lifespan(app_instance: FastAPI):
+        try:
+            if lifespan is None:
+                yield
+            else:
+                async with lifespan(app_instance):
+                    yield
+        finally:
+            registry = getattr(
+                app_instance.state, "chat_request_registry", None
+            )
+            if registry is not None:
+                await registry.cancel_all()
+
     app = FastAPI(
         title="Butly API",
         version=BACKEND_VERSION,
         description="Butly backend API. Frontend-facing contract is under /api/v1.",
-        lifespan=lifespan,
+        lifespan=managed_lifespan,
     )
     app.state.api_context = context
+    app.state.chat_request_registry = ChatRequestRegistry()
 
     # middleware は後に add したものが外側になる。RequestIDMiddleware を
     # 最後に add し、auth の 401 応答にも request ID が付くようにする。
@@ -113,6 +134,7 @@ def create_app(
     app.include_router(system.router)
     app.include_router(instances.router)
     app.include_router(chat_router.router)
+    app.include_router(preflight.router)
     for router in extra_routers:
         app.include_router(router)
 

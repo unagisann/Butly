@@ -41,11 +41,20 @@ echo "5/5 frontend checks (lint / typecheck / test / build)"
 if command -v pnpm >/dev/null 2>&1; then
   pushd "$ROOT_DIR/frontend" >/dev/null
   pnpm install --frozen-lockfile
+  GENERATED_SNAPSHOT="$(mktemp -d)"
+  cleanup_generated_snapshot() {
+    rm -rf -- "$GENERATED_SNAPSHOT"
+  }
+  trap cleanup_generated_snapshot EXIT
+  cp -a src/api/generated/. "$GENERATED_SNAPSHOT/"
   pnpm generate:api
-  if ! git diff --quiet -- src/api/generated; then
+  if ! diff -qr "$GENERATED_SNAPSHOT" src/api/generated >/dev/null; then
     echo "ERROR: generated API client is out of date."
+    diff -qr "$GENERATED_SNAPSHOT" src/api/generated || true
     exit 1
   fi
+  cleanup_generated_snapshot
+  trap - EXIT
   pnpm lint
   pnpm typecheck
   pnpm test

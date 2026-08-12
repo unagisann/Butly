@@ -84,7 +84,10 @@ class AttachmentLimits(BaseModel):
 class CapabilitiesResponse(BaseModel):
     """`GET /api/v1/capabilities` の応答。"""
 
+    active_connection: Optional[str] = None
+    active_model: Optional[str] = None
     chat: Capability
+    chat_debug: Capability
     streaming: StreamingCapability
     vision: Capability
     native_google_search: Capability

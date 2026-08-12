@@ -41,7 +41,14 @@ export function useBackendState(bridge: LifecycleBridge): BackendStateHook {
 
   const restart = useCallback(async () => {
     setState({ phase: "starting" });
-    await bridge.restartBackend();
+    try {
+      await bridge.restartBackend();
+    } catch (error) {
+      setState({
+        phase: "unavailable",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
   }, [bridge]);
 
   return { state, restart };

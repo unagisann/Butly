@@ -76,6 +76,98 @@ def _write_turn(
     return f
 
 
+def test_history_reload_preserves_safe_attachment_and_citation_metadata(
+    tmp_path, instances_dir
+):
+    from butly_api.routers.instances import _normalize_messages
+    from butly_core.chat.service import (
+        _assistant_turn_meta,
+        _build_turn_meta,
+    )
+    from butly_core.chat.types import Attachment, ChatRequest
+    from butly_core.core.memory import ButlyMemory
+
+    _make_instance(instances_dir, "phase2")
+    memory = ButlyMemory(tmp_path, instance_name="phase2")
+    request = ChatRequest(
+        instance_name="phase2",
+        text="この画像は？",
+        source="api",
+        attachments=[
+            Attachment(
+                mime_type="image/png",
+                data_base64="aGk=",
+                name="tiny.png",
+            )
+        ],
+    )
+    user_meta = _build_turn_meta(request)
+    assistant_meta = _assistant_turn_meta(
+        [{"title": "Reference", "uri": "https://example.com/source"}]
+    )
+    filename = memory.save_single_turn(
+        request.text,
+        "小さな画像です。",
+        meta=user_meta,
+        assistant_meta=assistant_meta,
+    )
+
+    saved = (memory.short_term_json_dir / filename).read_text(encoding="utf-8")
+    assert "data_base64" not in saved
+    assert "aGk=" not in saved
+    raw, _timestamp = memory.load_recent_sessions(limit=10)
+    messages = _normalize_messages(raw)
+    assert messages[0].attachments[0].mime_type == "image/png"
+    assert messages[0].attachments[0].name == "tiny.png"
+    assert messages[0].attachments[0].size_bytes == 2
+    assert messages[1].sources[0].title == "Reference"
+    assert messages[1].sources[0].url == "https://example.com/source"
+
+
+def test_history_meta_is_bounded_and_invalid_attachments_are_skipped():
+    from butly_api.routers.instances import _normalize_messages
+
+    raw = [
+        {
+            "role": "user",
+            "parts": ["image"],
+            "meta": {
+                "attachments": [
+                    {"kind": "file", "mime_type": "application/pdf"},
+                    *(
+                        {
+                            "kind": "image",
+                            "mime_type": "image/png",
+                            "name": "n" * 1000,
+                            "size_bytes": 1,
+                        }
+                        for _ in range(10)
+                    ),
+                ]
+            },
+        },
+        {
+            "role": "model",
+            "parts": ["answer"],
+            "meta": {
+                "sources": [
+                    {"title": "t" * 1000, "url": "u" * 5000}
+                    for _ in range(100)
+                ]
+            },
+        },
+    ]
+    messages = _normalize_messages(raw)
+    # First three entries include the invalid leading entry, so only two valid
+    # attachment summaries survive the global MAX_ATTACHMENTS bound.
+    assert len(messages[0].attachments) == 2
+    assert all(item.kind == "image" for item in messages[0].attachments)
+    assert all(len(item.name) == 255 for item in messages[0].attachments)
+    assert len(messages[1].sources) == 50
+    assert len(messages[1].sources[0].title) == 500
+    assert len(messages[1].sources[0].url) == 4096
+
+
 # ===================================================================
 # GET /api/v1/instances
 # ===================================================================

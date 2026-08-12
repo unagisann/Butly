@@ -67,6 +67,9 @@
 
 - restart command は「稼働中 child を graceful 停止 → 1 process だけ再 spawn」。
   二重起動は `starting` / `child` 存在チェックで防ぐ。
+- React は lifecycle の `ready` 後も認証付き `/api/v1/ready` を timeout 付きで
+  定期確認する。process が生存していても HTTP が到達不能なら `disconnected` として
+  chat を止め、手動再接続または sidecar restart を案内する。
 - window 終了時: `POST /api/v1/shutdown` → 5 秒待って残っていれば kill →
   それでも残る場合は sidecar 側の `--parent-pid` 監視が最終 fallback。
 - sidecar の stdout/stderr は `%LOCALAPPDATA%\Butly\logs\backend.log` に保存
@@ -75,6 +78,8 @@
 ## 開発モード
 
 - backend 手動起動: `venv/bin/python -m butly_api.server --dev-cors --port 8000`
+- `--dev-cors` は sanitized Chat debug summary も有効にする。CORS を広げず debug だけ
+  有効にする場合は `BUTLY_DEVELOPER_MODE=1` を指定する。production bundle は既定で無効。
 - Tauri を spawn なしで繋ぐ場合: `BUTLY_DEV_BACKEND_PORT=8000`（token を使うなら
   Tauri と backend の両方に同じ `BUTLY_DESKTOP_TOKEN` を設定）。
 - `main.py` は従来どおりの互換 entrypoint（legacy routers + wildcard CORS）。

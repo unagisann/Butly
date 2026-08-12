@@ -36,3 +36,4 @@ class ApiContext:
     runtime_supplier: Callable[[], Optional[Any]] = field(default=_no_runtime)
     settings_loaded: bool = False
     auth_token: Optional[str] = None
+    developer_mode: bool = False

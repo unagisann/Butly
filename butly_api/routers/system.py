@@ -8,6 +8,7 @@ user data・外部 API へアクセスせず、ApiContext と環境変数だけ�
 """
 
 import os
+import logging
 import sys
 from typing import Optional
 
@@ -27,6 +28,7 @@ from butly_api.schemas.system import (
 from butly_api.version import API_V1_PREFIX, API_VERSION, BACKEND_VERSION
 
 router = APIRouter(prefix=API_V1_PREFIX, tags=["system"])
+logger = logging.getLogger(__name__)
 
 
 def _context(request: Request) -> Optional[ApiContext]:
@@ -101,14 +103,29 @@ def get_app_info() -> AppInfoResponse:
     )
 
 
-def _has_gemini_key() -> bool:
-    return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
-
-
 def _has_web_search_key() -> bool:
     return bool(
         os.getenv("OLLAMA_WEB_SEARCH_API_KEY") or os.getenv("TAVILY_API_KEY")
     )
+
+
+def _active_chat(request: Request):
+    from butly_core.llm.connections import try_get_connection
+    from butly_core.llm.model_registry import resolve_role_model_ref
+    from butly_core.settings import get_settings
+
+    ctx = _context(request)
+    config_path = (
+        ctx.data_dir / "user_config.json"
+        if ctx is not None and ctx.data_dir is not None
+        else None
+    )
+    settings = get_settings(config_path)
+    role_config = settings.ai.chat
+    if hasattr(role_config, "model_dump"):
+        role_config = role_config.model_dump(mode="python")
+    ref = resolve_role_model_ref(role_config)
+    return ref, try_get_connection(ref.connection_id)
 
 
 @router.get(
@@ -130,33 +147,113 @@ def get_capabilities(request: Request) -> CapabilitiesResponse:
 
     ctx = _context(request)
     runtime_ready = ctx is not None and ctx.runtime_supplier() is not None
+    try:
+        active_ref, active_connection = _active_chat(request)
+    except Exception as exc:
+        logger.warning(
+            "[api] active chat configuration resolution failed (%s)",
+            type(exc).__name__,
+        )
+        active_ref, active_connection = None, None
+    connection_configured = bool(
+        active_connection
+        and (
+            not active_connection.api_key_env
+            or active_connection.resolve_api_key()
+        )
+    )
     chat = Capability(
-        available=runtime_ready,
-        reason=None if runtime_ready else "runtime_not_initialized",
+        available=runtime_ready and connection_configured,
+        reason=(
+            None
+            if runtime_ready and connection_configured
+            else (
+                "runtime_not_initialized"
+                if not runtime_ready
+                else "active_connection_not_configured"
+            )
+        ),
     )
 
-    gemini_key = _has_gemini_key()
     web_search_key = _has_web_search_key()
-    vision_key = gemini_key or bool(os.getenv("OPENAI_API_KEY"))
+    native_google_available = bool(
+        chat.available
+        and active_connection
+        and active_connection.protocol == "gemini_native"
+        and connection_configured
+    )
+    vision_supported = False
+    if (
+        connection_configured
+        and active_ref is not None
+        and active_connection is not None
+    ):
+        try:
+            from butly_core.llm.factory import ProviderFactory
+
+            provider = ProviderFactory.create(active_ref)
+            vision_supported = provider.supports_vision(active_ref.model_name)
+        except Exception as exc:
+            logger.warning(
+                "[api] active model capability resolution failed (%s)",
+                type(exc).__name__,
+            )
+            vision_supported = False
 
     return CapabilitiesResponse(
+        active_connection=(
+            active_ref.connection_id if active_ref is not None else None
+        ),
+        active_model=active_ref.model_name if active_ref is not None else None,
         chat=chat,
+        chat_debug=Capability(
+            available=bool(ctx and ctx.developer_mode),
+            reason=(
+                None
+                if ctx and ctx.developer_mode
+                else "developer_mode_disabled"
+            ),
+        ),
         streaming=StreamingCapability(
             available=chat.available,
             reason=chat.reason,
             mode="incremental",
         ),
         vision=Capability(
-            available=vision_key,
-            reason=None if vision_key else "vision_api_key_not_configured",
+            available=chat.available and vision_supported,
+            reason=(
+                None
+                if chat.available and vision_supported
+                else (
+                    chat.reason
+                    if not chat.available
+                    else "active_model_does_not_support_vision"
+                )
+            ),
         ),
         native_google_search=Capability(
-            available=gemini_key,
-            reason=None if gemini_key else "gemini_api_key_not_configured",
+            available=native_google_available,
+            reason=(
+                None
+                if native_google_available
+                else (
+                    chat.reason
+                    if not chat.available
+                    else "active_connection_does_not_support_google_search"
+                )
+            ),
         ),
         generic_web_search=Capability(
-            available=web_search_key,
-            reason=None if web_search_key else "web_search_api_key_not_configured",
+            available=chat.available and web_search_key,
+            reason=(
+                None
+                if chat.available and web_search_key
+                else (
+                    chat.reason
+                    if not chat.available
+                    else "web_search_api_key_not_configured"
+                )
+            ),
         ),
         attachments=AttachmentLimits(
             max_count=MAX_ATTACHMENTS,

@@ -259,6 +259,28 @@ class TestFactoryRouting:
 # ===================================================================
 
 class TestGenerateTokenUsage:
+    @patch(
+        "butly_core.core.gatekeeper.build_system_instruction_from_blocks",
+        return_value="sys",
+    )
+    @patch(
+        "butly_core.core.gatekeeper.build_context_prefix",
+        return_value="",
+    )
+    def test_generate_raises_sanitized_provider_error(
+        self, _mock_prefix, _mock_sys, mock_openai_client
+    ):
+        adapter = OpenAICompatAdapter(connection=get_connection("openai"))
+        _attach_client(adapter, mock_openai_client)
+        raw = "secret-token at /private/provider/path"
+        mock_openai_client.chat.completions.create.side_effect = RuntimeError(raw)
+
+        with pytest.raises(RuntimeError) as caught:
+            adapter.generate("question", [], {"history": []})
+
+        assert str(caught.value) == "Provider generation failed"
+        assert raw not in str(caught.value)
+
     @patch("butly_core.core.gatekeeper.build_system_instruction_from_blocks", return_value="sys")
     @patch("butly_core.core.gatekeeper.build_context_prefix", return_value="長いコンテキスト" * 100)
     def test_generate_captures_api_usage_and_full_messages(
