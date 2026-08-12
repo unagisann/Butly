@@ -3,7 +3,6 @@ import type { ChangeEvent, KeyboardEvent } from "react";
 import {
   Bug,
   ImagePlus,
-  RotateCcw,
   Search,
   Send,
   Square,
@@ -21,13 +20,11 @@ interface ChatComposerProps {
   disabled: boolean;
   busy: boolean;
   canCancel: boolean;
-  canRetry: boolean;
   debugEnabled: boolean;
   debugAvailable: boolean;
   onDebugEnabledChange: (enabled: boolean) => void;
   onSend: (input: SendChatInput) => Promise<void>;
   onCancel: () => void;
-  onRetry: () => Promise<void>;
 }
 
 function errorText(
@@ -54,13 +51,11 @@ export function ChatComposer({
   disabled,
   busy,
   canCancel,
-  canRetry,
   debugEnabled,
   debugAvailable,
   onDebugEnabledChange,
   onSend,
   onCancel,
-  onRetry,
 }: ChatComposerProps) {
   const { t } = useI18n();
   const [text, setText] = useState("");
@@ -235,11 +230,6 @@ export function ChatComposer({
       </div>
       <div className="composer-footer">
         <span>{t("chat.keyboard_hint")}</span>
-        {canRetry && (
-          <button className="text-button compact" type="button" onClick={() => void onRetry()}>
-            <RotateCcw size={14} aria-hidden="true" /> {t("chat.retry")}
-          </button>
-        )}
       </div>
     </div>
   );

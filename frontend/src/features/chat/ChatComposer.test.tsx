@@ -25,13 +25,11 @@ function renderComposer(overrides: Partial<CapabilitiesResponse> = {}, canCancel
       disabled={false}
       busy
       canCancel={canCancel}
-      canRetry={false}
       debugEnabled={false}
       debugAvailable={overrides.chat_debug?.available ?? false}
       onDebugEnabledChange={vi.fn()}
       onSend={vi.fn()}
       onCancel={vi.fn()}
-      onRetry={vi.fn()}
     />,
   );
 }

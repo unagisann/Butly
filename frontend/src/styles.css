@@ -896,6 +896,14 @@ details[open] > summary .summary-chevron {
   color: var(--danger);
 }
 
+/* 失敗した発言のすぐ下に置く再送導線。文面との対応が見えるよう、行を分けて
+   左端を吹き出し本文に揃える。 */
+.message-retry {
+  margin-top: 0.15rem;
+  padding-left: 0;
+  color: var(--accent);
+}
+
 .typing-dots {
   display: inline-flex;
   gap: 0.23rem;
