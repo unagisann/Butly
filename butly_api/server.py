@@ -201,9 +201,12 @@ def build_app(data_dir: Path, *, dev_cors: bool = False) -> Any:
     from butly_api import create_app
     from butly_api.context import ApiContext
     from butly_core.runtime import ButlyRuntime
+    from butly_core.settings import apply_runtime_settings
 
     instances_dir = data_dir / "butly_core" / "instances"
     instances_dir.mkdir(parents=True, exist_ok=True)
+
+    apply_runtime_settings(data_dir)
 
     runtime = ButlyRuntime(
         data_dir=data_dir,
@@ -216,6 +219,11 @@ def build_app(data_dir: Path, *, dev_cors: bool = False) -> Any:
         instances_dir=instances_dir,
         runtime_supplier=lambda: runtime,
         auth_token=os.environ.get(DESKTOP_TOKEN_ENV) or None,
+        developer_mode=(
+            dev_cors
+            or os.environ.get("BUTLY_DEVELOPER_MODE", "").lower()
+            in {"1", "true", "yes", "on"}
+        ),
     )
 
     @contextlib.asynccontextmanager
@@ -239,6 +247,9 @@ def build_app(data_dir: Path, *, dev_cors: bool = False) -> Any:
         allow_credentials=False,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
+        # The chat stream's transport request id is available before the first
+        # SSE metadata frame and is therefore required for an early cancel.
+        expose_headers=["X-Request-ID"],
     )
 
     # 起動時設定の適用は現状 no-op（routers.settings.apply_startup_settings）。

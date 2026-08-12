@@ -9,13 +9,17 @@ Phase 5 (#43): async_chat_completion_stream 追加（SSE 用 stream 共通実装
 """
 
 import asyncio
+import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from dotenv import load_dotenv
 
 from butly_core.chat.types import Attachment, ChatResponse
+
+logger = logging.getLogger(__name__)
 
 # =====================================================================
 # 環境変数ロード (M4 対応: Provider 間共通)
@@ -407,13 +411,24 @@ async def async_chat_completion_stream(
 
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
+    stop_event = threading.Event()
+    stream_holder: Dict[str, Any] = {}
+
+    def _enqueue(event: Dict[str, Any]) -> None:
+        if stop_event.is_set() or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(queue.put_nowait, event)
 
     def _producer():
         full_text = ""
+        stream = None
         try:
             print(f"[{log_tag}] Streaming start")
             stream = client.chat.completions.create(**kwargs)
+            stream_holder["stream"] = stream
             for chunk in stream:
+                if stop_event.is_set():
+                    break
                 if not getattr(chunk, "choices", None):
                     continue
                 choice = chunk.choices[0]
@@ -423,30 +438,38 @@ async def async_chat_completion_stream(
                 text_chunk = getattr(delta, "content", None) or ""
                 if text_chunk:
                     full_text += text_chunk
-                    loop.call_soon_threadsafe(
-                        queue.put_nowait, {"type": "chunk", "text": text_chunk}
-                    )
+                    _enqueue({"type": "chunk", "text": text_chunk})
+            if stop_event.is_set():
+                return
             print(f"[{log_tag}] Streaming done")
-            loop.call_soon_threadsafe(
-                queue.put_nowait,
+            _enqueue(
                 {
                     "type": "done",
                     "full_text": full_text,
                     "sources": list(web_sources or []),
                     "debug": debug_data or {},
-                },
+                }
             )
         except Exception as e:
+            if stop_event.is_set():
+                return
             import traceback
 
             traceback.print_exc()
-            loop.call_soon_threadsafe(
-                queue.put_nowait,
+            _enqueue(
                 {
                     "type": "error",
                     "message": str(e),
-                },
+                }
             )
+        finally:
+            stream_holder.pop("stream", None)
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.debug("provider stream close failed", exc_info=True)
 
     producer_future = loop.run_in_executor(None, _producer)
 
@@ -457,7 +480,18 @@ async def async_chat_completion_stream(
             if event["type"] in ("done", "error"):
                 break
     finally:
-        try:
-            await producer_future
-        except Exception:
-            pass
+        stop_event.set()
+        stream = stream_holder.get("stream")
+        close = getattr(stream, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.debug("provider stream cancellation failed", exc_info=True)
+        if producer_future.done():
+            try:
+                await producer_future
+            except Exception:
+                logger.debug("provider stream producer failed", exc_info=True)
+        else:
+            producer_future.cancel()

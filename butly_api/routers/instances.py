@@ -15,6 +15,8 @@ transport adapter と正規化だけを行い、保存形式の変更はしな�
 - `GET /instances/{name}/messages` は既存の
   ButlyMemory.load_recent_sessions() / get_last_interaction_time() に委譲する
   （legacy `/history/{name}` と同じ読み出し経路）。
+- Phase 2 以降の turn meta にある添付要約と引用元は履歴 DTO へ復元する。
+  base64 や provider raw object は保存・返却しない。旧 turn は空配列のまま。
 - 保存 timestamp は naive local time（datetime.now().isoformat()）なので、
   `.astimezone()` で local tz を付与して tz-aware ISO 8601 として返す。
 """
@@ -213,15 +215,74 @@ def _normalize_messages(raw_messages: List[Dict[str, Any]]) -> List[Message]:
         seen[key] = occurrence + 1
         digest = hashlib.sha1(f"{key}|{occurrence}".encode("utf-8")).hexdigest()[:16]
 
+        meta = raw.get("meta")
+        meta = meta if isinstance(meta, dict) else {}
+        raw_attachments = meta.get("attachments")
+        attachments = []
+        if role == "user" and isinstance(raw_attachments, list):
+            from butly_core.chat.types import ALLOWED_IMAGE_MIMES, MAX_ATTACHMENTS
+
+            for attachment in raw_attachments[:MAX_ATTACHMENTS]:
+                if not isinstance(attachment, dict):
+                    continue
+                if attachment.get("kind", "image") != "image":
+                    continue
+                mime_type = attachment.get("mime_type")
+                if mime_type not in ALLOWED_IMAGE_MIMES:
+                    continue
+                try:
+                    attachments.append(
+                        {
+                            "kind": "image",
+                            "mime_type": mime_type,
+                            "name": (
+                                attachment.get("name")[:255]
+                                if isinstance(attachment.get("name"), str)
+                                else None
+                            ),
+                            "size_bytes": (
+                                attachment.get("size_bytes")
+                                if isinstance(attachment.get("size_bytes"), int)
+                                and not isinstance(
+                                    attachment.get("size_bytes"), bool
+                                )
+                                and attachment.get("size_bytes") >= 0
+                                else None
+                            ),
+                        }
+                    )
+                except (TypeError, ValueError):
+                    continue
+        raw_sources = meta.get("sources")
+        sources = []
+        if role == "assistant" and isinstance(raw_sources, list):
+            for source in raw_sources[:50]:
+                if not isinstance(source, dict):
+                    continue
+                sources.append(
+                    {
+                        "title": (
+                            source.get("title")[:500]
+                            if isinstance(source.get("title"), str)
+                            else ""
+                        ),
+                        "url": (
+                            source.get("url")[:4096]
+                            if isinstance(source.get("url"), str)
+                            else ""
+                        ),
+                    }
+                )
+
         items.append(
             Message(
                 id=f"msg_{digest}",
                 role=role,
                 text=text,
                 created_at=_to_aware_datetime(ts),
-                # 過去 turn は text しか保存していないため空で表現（後方互換）
-                attachments=[],
-                sources=[],
+                # 旧 turn の meta 欠落は空配列として後方互換に倒す。
+                attachments=attachments,
+                sources=sources,
                 status="completed",
             )
         )

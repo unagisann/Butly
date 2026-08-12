@@ -9,6 +9,7 @@ main.py と brain.py / provider の橋渡しを行う。
 import asyncio
 import datetime
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -22,6 +23,8 @@ from butly_core.chat.types import (
 )
 from butly_core.llm.factory import ProviderFactory
 from starlette.concurrency import run_in_threadpool
+
+logger = logging.getLogger(__name__)
 
 
 def _is_gemini_model(model_name: str) -> bool:
@@ -521,13 +524,48 @@ def _build_and_save_trace(
         print(f"[ChatService] trace 構築/保存エラー (応答には影響なし): {e}")
 
 
+def _attachment_summaries(request: ChatRequest) -> List[Dict[str, Any]]:
+    """Persist display metadata only; never retain attachment base64 data."""
+    summaries: List[Dict[str, Any]] = []
+    for attachment in request.attachments:
+        encoded = attachment.data_base64 or ""
+        padding = len(encoded) - len(encoded.rstrip("="))
+        size_bytes = max(0, (len(encoded) * 3) // 4 - padding)
+        summaries.append(
+            {
+                "kind": attachment.kind,
+                "mime_type": attachment.mime_type,
+                "name": attachment.name[:255] if attachment.name else None,
+                "size_bytes": size_bytes,
+            }
+        )
+    return summaries
+
+
+def _assistant_turn_meta(sources: Any) -> Optional[Dict[str, Any]]:
+    """Normalize public citation fields for history reload."""
+    normalized = []
+    if isinstance(sources, list):
+        for source in sources[:50]:
+            if not isinstance(source, dict):
+                continue
+            title = source.get("title")
+            url = source.get("url") or source.get("uri")
+            normalized.append(
+                {
+                    "title": title[:500] if isinstance(title, str) else "",
+                    "url": url[:4096] if isinstance(url, str) else "",
+                }
+            )
+    return {"sources": normalized} if normalized else None
+
+
 def _build_turn_meta(request: ChatRequest) -> Optional[Dict[str, Any]]:
     """書き込み時の話者帰属メタを組み立てる (group_context_lanes_plan §2.5)。
 
-    person_id / lane / source / channel_key を構造化メタデータとして
-    ``save_single_turn`` まで貫通させる。外部帰属を持たないリクエスト
-    (Web UI 等) は None を返し、従来どおり meta なしで保存する
-    (meta 欠落 = owner / direct / web の後方互換規則)。
+    person_id / lane / source / channel_key と、base64 を含まない添付要約を
+    ``save_single_turn`` まで貫通させる。外部帰属も添付もないリクエスト
+    (従来 Web UI 等) は None を返し、従来形式を保つ。
     """
     person_id = getattr(request, "person_id", None)
     if not person_id and getattr(request, "external_user_id", None):
@@ -542,22 +580,28 @@ def _build_turn_meta(request: ChatRequest) -> Optional[Dict[str, Any]]:
             from butly_core.external.person_registry import provisional_person_id
 
             person_id = provisional_person_id(request.source, request.external_user_id)
-    if not person_id:
-        return None
-
-    meta: Dict[str, Any] = {
-        "person_id": person_id,
-        "lane": getattr(request, "lane", None) or "direct",
-        "source": request.source,
-    }
-    display_name = getattr(request, "external_display_name", None)
-    if display_name:
-        meta["display_name"] = display_name
-    channel_id = getattr(request, "external_channel_id", None)
-    if channel_id:
-        guild_id = getattr(request, "external_guild_id", None)
-        meta["channel_key"] = f"{guild_id}:{channel_id}" if guild_id else channel_id
-    return meta
+    meta: Dict[str, Any] = {}
+    if person_id:
+        meta.update(
+            {
+                "person_id": person_id,
+                "lane": getattr(request, "lane", None) or "direct",
+                "source": request.source,
+            }
+        )
+        display_name = getattr(request, "external_display_name", None)
+        if display_name:
+            meta["display_name"] = display_name
+        channel_id = getattr(request, "external_channel_id", None)
+        if channel_id:
+            guild_id = getattr(request, "external_guild_id", None)
+            meta["channel_key"] = (
+                f"{guild_id}:{channel_id}" if guild_id else channel_id
+            )
+    attachments = _attachment_summaries(request)
+    if attachments:
+        meta["attachments"] = attachments
+    return meta or None
 
 
 def _build_history_fmt(history: list) -> list:
@@ -1208,10 +1252,18 @@ class ChatService:
             )
 
         # --- 7. 会話保存 (debug log 保存より先に行い、session_digest の最新状態を反映) ---
-        memory.save_single_turn(
-            request.text, result.text, meta=_build_turn_meta(request)
-        )
-        memory.maintain_memory(brain)
+        save_kwargs: Dict[str, Any] = {"meta": _build_turn_meta(request)}
+        assistant_meta = _assistant_turn_meta(result.sources)
+        if assistant_meta:
+            save_kwargs["assistant_meta"] = assistant_meta
+        memory.save_single_turn(request.text, result.text, **save_kwargs)
+        try:
+            await run_in_threadpool(memory.maintain_memory, brain)
+        except Exception:
+            logger.exception(
+                "post-commit memory maintenance failed for instance=%s",
+                instance_name,
+            )
 
         # --- 8. Debug log の自動保存 ---
         debug_log_payload = {
@@ -1222,23 +1274,33 @@ class ChatService:
             "assistant_response": result.text,
             "debug_info": result.debug_info,
         }
-        _save_debug_log(instance_dir, debug_log_payload)
+        try:
+            _save_debug_log(instance_dir, debug_log_payload)
+        except Exception:
+            logger.exception(
+                "post-commit debug log failed for instance=%s", instance_name
+            )
 
         # --- 9. Trace Graph 保存 (issue #51) ---
-        _build_and_save_trace(
-            instance_dir=instance_dir,
-            instance_name=instance_name,
-            request=request,
-            prepared=prepared,
-            tier=tier,
-            gk_result=gk_result,
-            assistant_response=result.text,
-            debug_info=result.debug_info,
-            session_state=session_state,
-            provider=provider,
-            connection_id=connection_id,
-            model_name=model_name,
-        )
+        try:
+            _build_and_save_trace(
+                instance_dir=instance_dir,
+                instance_name=instance_name,
+                request=request,
+                prepared=prepared,
+                tier=tier,
+                gk_result=gk_result,
+                assistant_response=result.text,
+                debug_info=result.debug_info,
+                session_state=session_state,
+                provider=provider,
+                connection_id=connection_id,
+                model_name=model_name,
+            )
+        except Exception:
+            logger.exception(
+                "post-commit trace save failed for instance=%s", instance_name
+            )
 
         return result
 
@@ -1385,28 +1447,51 @@ class ChatService:
         provider_debug = {}
         sources = list(web_sources)
         stream_err = None
+        stream_recoverable = True
 
-        try:
-            async for event in provider.async_generate_stream(
+        provider_stream = provider.async_generate_stream(
                 text=full_prompt,
                 attachments=request.attachments if has_attachments else [],
                 context=context,
-            ):
-                if event["type"] == "chunk":
-                    if ttfb_ms["value"] is None:
-                        ttfb_ms["value"] = int((time.time() - _t_gen_start) * 1000)
-                    full_text += event["text"]
-                    yield {"type": "chunk", "text": event["text"]}
-                elif event["type"] == "done":
-                    full_text = event.get("full_text", full_text)
-                    provider_debug = event.get("debug", {})
-                    sources.extend(event.get("sources", []) or [])
-                    break
-                elif event["type"] == "error":
-                    stream_err = event.get("message", "stream failed")
-                    break
-        except Exception as e:
-            stream_err = str(e)
+        )
+        try:
+            try:
+                async for event in provider_stream:
+                    if event["type"] == "chunk":
+                        if ttfb_ms["value"] is None:
+                            ttfb_ms["value"] = int(
+                                (time.time() - _t_gen_start) * 1000
+                            )
+                        full_text += event["text"]
+                        yield {"type": "chunk", "text": event["text"]}
+                    elif event["type"] == "done":
+                        full_text = event.get("full_text", full_text)
+                        provider_debug = event.get("debug", {})
+                        sources.extend(event.get("sources", []) or [])
+                        break
+                    elif event["type"] == "error":
+                        stream_err = event.get("message", "stream failed")
+                        stream_recoverable = bool(
+                            event.get("recoverable", True)
+                        )
+                        break
+            except Exception as e:
+                stream_err = str(e)
+                stream_recoverable = True
+            finally:
+                try:
+                    await provider_stream.aclose()
+                except Exception:
+                    logger.debug("provider stream cleanup failed", exc_info=True)
+        except asyncio.CancelledError:
+            state_task.cancel()
+            try:
+                await state_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("state task cancellation failed", exc_info=True)
+            raise
 
         _t_gen_end = time.time()
         gen_elapsed_ms = int((_t_gen_end - _t_gen_start) * 1000)
@@ -1428,8 +1513,10 @@ class ChatService:
             state_task.cancel()
             try:
                 await state_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception:
+                logger.debug("state task cancellation failed", exc_info=True)
             # error trace を残す (issue #51: どこで失敗したか追えるように)
             _build_and_save_trace(
                 instance_dir=instance_dir,
@@ -1459,14 +1546,29 @@ class ChatService:
                 model_name=model_name,
                 generation_error=stream_err,
             )
-            yield {"type": "error", "message": stream_err, "recoverable": False}
+            yield {
+                "type": "error",
+                "message": stream_err,
+                "recoverable": stream_recoverable,
+            }
             return
 
         # state_update 完了待ち + 反映
         try:
             state_delta = await state_task
+        except asyncio.CancelledError:
+            state_task.cancel()
+            raise
         except Exception:
+            logger.debug("state task failed", exc_info=True)
             state_delta = {}
+
+        # Provider/state generation is complete. From this point onward
+        # session/history/usage persistence is one non-cancellable finalization
+        # phase. The API registry observes this barrier before resuming the
+        # generator, so no durable side effect can be exposed as retryable.
+        yield {"type": "finalizing"}
+
         session_state.increment_turn(tier, history_msgs=history_fmt)
         if state_delta:
             session_state.apply_delta(state_delta)
@@ -1560,10 +1662,21 @@ class ChatService:
             )
 
         # 会話保存 (debug log より先に行い、session_digest の最新状態を反映)
-        memory.save_single_turn(
-            request.text, full_text, meta=_build_turn_meta(request)
-        )
-        memory.maintain_memory(brain)
+        save_kwargs: Dict[str, Any] = {"meta": _build_turn_meta(request)}
+        assistant_meta = _assistant_turn_meta(sources)
+        if assistant_meta:
+            save_kwargs["assistant_meta"] = assistant_meta
+        memory.save_single_turn(request.text, full_text, **save_kwargs)
+        try:
+            # Consolidation can perform slow synchronous I/O/LLM work. Keep the
+            # API event loop responsive while this non-cancellable post-commit
+            # finalization finishes.
+            await run_in_threadpool(memory.maintain_memory, brain)
+        except Exception:
+            logger.exception(
+                "post-commit memory maintenance failed for instance=%s",
+                instance_name,
+            )
 
         # debug log 保存
         debug_log_payload = {
@@ -1575,23 +1688,33 @@ class ChatService:
             "debug_info": debug_info,
             "streaming": True,
         }
-        _save_debug_log(instance_dir, debug_log_payload)
+        try:
+            _save_debug_log(instance_dir, debug_log_payload)
+        except Exception:
+            logger.exception(
+                "post-commit debug log failed for instance=%s", instance_name
+            )
 
         # Trace Graph 保存 (issue #51)
-        _build_and_save_trace(
-            instance_dir=instance_dir,
-            instance_name=instance_name,
-            request=request,
-            prepared=prepared,
-            tier=tier,
-            gk_result=gk_result,
-            assistant_response=full_text,
-            debug_info=debug_info,
-            session_state=session_state,
-            provider=provider,
-            connection_id=connection_id,
-            model_name=model_name,
-        )
+        try:
+            _build_and_save_trace(
+                instance_dir=instance_dir,
+                instance_name=instance_name,
+                request=request,
+                prepared=prepared,
+                tier=tier,
+                gk_result=gk_result,
+                assistant_response=full_text,
+                debug_info=debug_info,
+                session_state=session_state,
+                provider=provider,
+                connection_id=connection_id,
+                model_name=model_name,
+            )
+        except Exception:
+            logger.exception(
+                "post-commit trace save failed for instance=%s", instance_name
+            )
 
         # done イベント
         yield {

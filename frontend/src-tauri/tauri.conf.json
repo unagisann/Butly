@@ -14,8 +14,10 @@
       {
         "title": "Butly",
         "label": "main",
-        "width": 520,
-        "height": 400,
+        "width": 1180,
+        "height": 780,
+        "minWidth": 820,
+        "minHeight": 600,
         "resizable": true
       }
     ],

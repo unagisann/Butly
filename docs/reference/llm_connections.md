@@ -142,6 +142,24 @@ roles first.
 but it does not rewrite references. This leaves invalid `ModelRef` settings and
 should be reserved for controlled migrations.
 
+## Official desktop preflight
+
+The official UI uses read-only `GET /api/v1/preflight` to determine whether the
+active chat and embedding roles are actually usable. This startup diagnostic is
+separate from the legacy Connection-management API that mutates settings.
+
+- Connections required by active roles are checked concurrently with timeouts.
+- Ollama (`openai_compat`) uses native `/api/tags` against its configured root.
+- Other Connections use a safe protocol-specific model-list probe.
+- Embedding preflight performs a real fixed-text embedding, requiring a non-empty,
+  finite vector and reporting its dimension instead of relying only on a model name.
+- Results expose `ready`, `degraded`, or `unavailable` plus stable reason codes,
+  but never API keys, base URLs, headers, or raw provider errors.
+
+Preflight neither saves nor changes a Connection and is not a credential source
+of truth. Settings remain in the Streamlit legacy API until the versioned
+settings UI is implemented.
+
 ## Legacy Settings API
 
 These unversioned compatibility routes are currently used by the Streamlit Web

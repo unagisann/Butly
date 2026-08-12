@@ -2,7 +2,7 @@
 
 🌐 **日本語** | [English](FILE_STRUCTURE.md)
 
-> 最終更新: 2026-08-10
+> 最終更新: 2026-08-12
 
 ---
 
@@ -20,7 +20,7 @@
 | `openapi/butly.openapi.json` | `/api/v1` の OpenAPI 3.1 snapshot（`scripts/generate_openapi.py` で生成） |
 | `evals/locomo/` | LoCoMo長期記憶評価CLI。checkpoint付き隔離Workspace上でReplay → Sleeptime → QA → 採点を実行。`retrieval_prep`ではQAを省略して検索比較用manifestを作る |
 | `evals/semantic_judge.py` | 日本語対話A/BとLoCoMoが共有する評価専用LLM Judge。厳格JSON、prompt injection耐性、fingerprint、意味判定集計を担当 |
-| `frontend/` | 正式デスクトップ frontend（pnpm + Tauri v2 + React + TypeScript + Vite）。Phase 1 は app shell + sidecar lifecycle のみ |
+| `frontend/` | 正式デスクトップ frontend（pnpm + Tauri v2 + React + TypeScript + Vite）。Phase 2 の instance / 履歴 / SSE chat / cancel・retry / preflight / 日英 UI を提供 |
 | `packaging/pyinstaller/` | FastAPI sidecar の PyInstaller spec（`butly-backend.spec`）と entry script |
 
 ---
@@ -208,24 +208,51 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 |---|---|
 | `app.py` | `create_app(context, lifespan, extra_routers)` — side effect の少ない app factory。OpenAPI 生成は context なしで行う。OpenAPI に `DesktopToken`（HTTP Bearer）security scheme を付与 |
 | `auth.py` | `DesktopTokenAuthMiddleware` — `/api/v1/*`（health 除く）への Bearer token 認証（pure ASGI）。`BUTLY_DESKTOP_TOKEN` 未設定なら無効（開発 / Streamlit 併用モード） |
-| `context.py` | `ApiContext` — readiness 判定に使う実行時状態（data_dir / runtime supplier / auth_token 等） |
+| `context.py` | `ApiContext` — readiness 判定に使う実行時状態（data_dir / runtime supplier / auth_token / developer mode 等） |
+| `chat_requests.py` | bounded process-local request registry。SSE subscriber、event replay、client request idempotency、status / cancel、永続化 finalizing barrier を管理 |
 | `errors.py` | `ApiException` と `/api/v1` 共通 error envelope（`ApiError`）への正規化 handler。legacy route は FastAPI default（`{"detail": ...}`）を維持 |
 | `middleware.py` | `RequestIDMiddleware` — `X-Request-ID` の採番・伝播（pure ASGI） |
 | `version.py` | `BACKEND_VERSION` / `API_VERSION` / `API_V1_PREFIX` |
 | `server.py` | desktop sidecar 用 CLI entrypoint（`--host/--port/--parent-pid/--data-dir/--dev-cors`）。port 0 → 実 port を 1 行 JSON で stdout 通知、production CORS は `http://tauri.localhost` のみ、graceful shutdown 用 `POST /api/v1/shutdown`（token 必須・OpenAPI 非公開）。詳細は [desktop_sidecar.ja.md](desktop_sidecar.ja.md) |
-| `routers/system.py` | `GET /api/v1/health` / `/ready` / `/app-info` / `/capabilities` |
+| `routers/system.py` | `GET /api/v1/health` / `/ready` / `/app-info` / `/capabilities`。active chat model / Connection から画像・検索・debug capability を判定 |
 | `routers/instances.py` | `GET /api/v1/instances`（typed 一覧） / `GET /api/v1/instances/{name}/messages`（typed 履歴 + `last_interaction_at`。cursor pagination は記憶ストア正規化後） |
-| `routers/chat.py` | `POST /api/v1/chat`（non-stream fallback） / `POST /api/v1/chat/stream`（typed SSE: metadata → chunk* → done、失敗時 error 終端）。`ButlyRuntime` へ委譲する transport adapter |
+| `routers/chat.py` | `POST /api/v1/chat`（non-stream fallback） / `POST /api/v1/chat/stream`（typed SSE: metadata → chunk* → done、失敗時 error 終端）/ request status・cancel。`ButlyRuntime` へ委譲する transport adapter |
+| `routers/preflight.py` | `GET /api/v1/preflight`。active chat / embedding role の Connection、Ollama model list、実 embedding を timeout 付きで検査し、秘密値を除いた結果を返す |
 | `schemas/common.py` | `ApiError` envelope |
 | `schemas/system.py` | health / readiness / app-info / capabilities の DTO |
-| `schemas/chat.py` | chat / message history / SSE event（discriminated union）の contract schema |
+| `schemas/chat.py` | chat / message history / SSE event（discriminated union）/ debug summary / request status の contract schema |
 | `schemas/instances.py` | `InstanceSummary` / `InstanceListResponse` |
+| `schemas/preflight.py` | Connection / embedding preflight の公開 DTO |
 
 契約 artifact は `scripts/generate_openapi.sh` で再生成する: OpenAPI snapshot
 （`openapi/butly.openapi.json`、`tests/test_openapi_snapshot.py` が差分検出）と
 SSE parser contract fixture（`openapi/sse_fixtures/*.sse`、
 `scripts/generate_sse_fixture.py` で生成、`tests/test_sse_fixture.py` が差分検出。
 frontend の手書き SSE parser と契約を共有するための正本）。
+
+---
+
+## frontend/
+
+Tauri lifecycle と React Chat UI を分離した正式デスクトップ frontend。
+JSON endpoint は OpenAPI 生成 client を使い、SSE framing だけを手書き parser で扱う。
+詳細契約は [正式デスクトップ Chat UI](frontend_chat.ja.md) を参照。
+
+| パス | 役割 |
+|---|---|
+| `src-tauri/src/` | sidecar spawn、dynamic port / token handshake、crash 監視、restart、graceful shutdown |
+| `src/api/generated/` | `openapi/butly.openapi.json` から生成する API client / DTO。手編集禁止 |
+| `src/api/sse.ts` | split frame、LF / CRLF、UTF-8 境界と typed terminal event を検証する SSE parser |
+| `src/api/transport.ts` | 生成 client と POST-SSE parser を UI から隠す transport adapter |
+| `src/app/` | top-level app shell と ready 後も継続する HTTP reachability state |
+| `src/features/instances/` | instance list / select と履歴切替 |
+| `src/features/chat/` | message、composer、画像、引用、stream、cancel / retry、debug panel |
+| `src/features/preflight/` | Connection / embedding の部分的 availability 表示と再検査 |
+| `src/i18n/` | 日本語 / 英語の typed UI 辞書と locale provider |
+| `src/styles.css` | responsive 2-pane layout、focus 表示 / reduced-motion を含む UI token |
+
+LoCoMo、日本語対話 A/B、検索比較などの評価画面は `app.py` / `routers/evaluations.py`
+側に残し、この frontend からは呼ばない。
 
 ---
 

@@ -114,10 +114,13 @@ sys.path.append(str(Path(__file__).resolve().parent))
 # =====================================================================
 import dependencies as deps
 from butly_core.runtime import ButlyRuntime
+from butly_core.settings import apply_runtime_settings
 
 deps.DATA_DIR = DATA_DIR
 deps.BASE_DIR = DATA_DIR
 deps.INSTANCES_DIR = DATA_DIR / "butly_core" / "instances"
+
+apply_runtime_settings(DATA_DIR)
 
 # 中核 Runtime を生成。FastAPI ルータ以外（Discord / LINE 等）からも
 # runtime.chat() を呼べる。deps の別名は Runtime と同一オブジェクトを指す。
@@ -197,6 +200,10 @@ _api_context = ApiContext(
     # （従来の開発 / Streamlit 併用モード）。Tauri shell が sidecar 起動時に
     # per-launch token を BUTLY_DESKTOP_TOKEN で渡す（移行計画 §6.1）。
     auth_token=os.environ.get("BUTLY_DESKTOP_TOKEN") or None,
+    developer_mode=(
+        os.environ.get("BUTLY_DEVELOPER_MODE", "").lower()
+        in {"1", "true", "yes", "on"}
+    ),
 )
 
 app = create_app(
@@ -225,6 +232,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 # 起動時に永続化設定を適用

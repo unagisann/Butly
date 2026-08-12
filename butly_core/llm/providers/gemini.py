@@ -8,9 +8,11 @@ attachments → Gemini parts への変換もここで完結。
 
 import asyncio
 import base64
+import logging
 import os
 import re
 import tempfile
+import threading
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from google import genai
@@ -24,6 +26,8 @@ from butly_core.chat.types import (
     INLINE_SIZE_TOTAL,
 )
 from butly_core.llm.base import BaseProvider
+
+logger = logging.getLogger(__name__)
 
 # 明示的な非対応リスト（vision 非対応が判明したモデルのみ追加）
 VISION_UNSUPPORTED_MODELS = {
@@ -353,15 +357,7 @@ class GeminiProvider(BaseProvider):
                 result.debug_info["token_usage"] = token_usage
             return result
         except Exception as e:
-            import traceback
-
-            traceback.print_exc()
-            return ChatResponse(
-                text=f"Error: {e}",
-                keywords=keywords,
-                refs=[dict(k) for k in rag_results] if rag_results else [],
-                sources=[],
-            )
+            raise RuntimeError("Gemini generation failed") from e
 
     # ==================================================================
     # ストリーミング
@@ -427,9 +423,17 @@ class GeminiProvider(BaseProvider):
 
         loop = asyncio.get_event_loop()
         queue: asyncio.Queue = asyncio.Queue()
+        stop_event = threading.Event()
+        stream_holder: Dict[str, Any] = {}
+
+        def _enqueue(event: Dict[str, Any]) -> None:
+            if stop_event.is_set() or loop.is_closed():
+                return
+            loop.call_soon_threadsafe(queue.put_nowait, event)
 
         def _producer():
             full_text = ""
+            stream = None
             try:
                 chat_session = self._start_chat(
                     history=history,
@@ -442,7 +446,11 @@ class GeminiProvider(BaseProvider):
                 )
                 prompt_parts = [text] + image_parts
                 print("[GeminiProvider] Streaming start")
-                for chunk in chat_session.send_message_stream(prompt_parts):
+                stream = chat_session.send_message_stream(prompt_parts)
+                stream_holder["stream"] = stream
+                for chunk in stream:
+                    if stop_event.is_set():
+                        break
                     chunk_text = ""
                     try:
                         if chunk.text:
@@ -457,12 +465,11 @@ class GeminiProvider(BaseProvider):
                                 pass
                     if chunk_text:
                         full_text += chunk_text
-                        loop.call_soon_threadsafe(
-                            queue.put_nowait, {"type": "chunk", "text": chunk_text}
-                        )
+                        _enqueue({"type": "chunk", "text": chunk_text})
+                if stop_event.is_set():
+                    return
                 print("[GeminiProvider] Streaming done")
-                loop.call_soon_threadsafe(
-                    queue.put_nowait,
+                _enqueue(
                     {
                         "type": "done",
                         "full_text": full_text,
@@ -484,19 +491,28 @@ class GeminiProvider(BaseProvider):
                             "user_input": text,
                             "raw_response": full_text,
                         },
-                    },
+                    }
                 )
             except Exception as e:
+                if stop_event.is_set():
+                    return
                 import traceback
 
                 traceback.print_exc()
-                loop.call_soon_threadsafe(
-                    queue.put_nowait,
+                _enqueue(
                     {
                         "type": "error",
                         "message": str(e),
-                    },
+                    }
                 )
+            finally:
+                stream_holder.pop("stream", None)
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logger.debug("Gemini stream close failed", exc_info=True)
 
         producer_future = loop.run_in_executor(None, _producer)
 
@@ -507,10 +523,23 @@ class GeminiProvider(BaseProvider):
                 if event["type"] in ("done", "error"):
                     break
         finally:
-            try:
-                await producer_future
-            except Exception:
-                pass
+            stop_event.set()
+            stream = stream_holder.get("stream")
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    logger.debug(
+                        "Gemini stream cancellation failed", exc_info=True
+                    )
+            if producer_future.done():
+                try:
+                    await producer_future
+                except Exception:
+                    logger.debug("Gemini stream producer failed", exc_info=True)
+            else:
+                producer_future.cancel()
 
     # ==================================================================
     # Gemini 固有ユーティリティ

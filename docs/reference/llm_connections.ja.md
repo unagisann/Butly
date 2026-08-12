@@ -139,6 +139,23 @@ Connection の削除とAPIキーの解除は別操作である。不要な秘密
 参照元の設定は自動修正されない。壊れた `ModelRef` が残るため、参照箇所を
 把握した移行時以外は使用しない。
 
+## 正式デスクトップ UI の preflight
+
+正式 UI は read-only の `GET /api/v1/preflight` を使い、active chat role と
+embedding role が実際に利用可能かを確認する。これは設定を変更する legacy の
+Connection 管理 API とは別の起動前診断である。
+
+- 必須 role が参照する Connection を並列・timeout 付きで検査する。
+- Ollama (`openai_compat`) は設定した root URL の native `/api/tags` を使う。
+- それ以外は protocol に応じた安全な model-list probe を使う。
+- embedding は model list の名前一致だけでなく、固定短文を実際に embed し、
+  vector が非空かつ有限であることと dimension を確認する。
+- 応答は `ready` / `degraded` / `unavailable` と個別 reason code を返すが、API key、
+  base URL、header、provider の raw error は返さない。
+
+preflight は connection を保存・修正せず、結果も credential の正本にしない。
+設定変更は当面 Streamlit の legacy Settings API、将来は versioned settings API が担う。
+
 ## Legacy Settings API
 
 以下は Streamlit Web Console が利用する未versionedの互換routeである。

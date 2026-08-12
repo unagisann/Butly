@@ -14,7 +14,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import pytest
 
 from butly_core.chat.service import ChatService
-from butly_core.chat.types import ChatRequest, ChatResponse
+from butly_core.chat.types import Attachment, ChatRequest, ChatResponse
 
 
 def _run_async(coro):
@@ -33,6 +33,15 @@ def tmp_instance_dir(tmp_path):
     d = tmp_path / "TestInstance"
     d.mkdir()
     return d
+
+
+@pytest.fixture(autouse=True)
+def direct_threadpool_for_unit_tests(monkeypatch):
+    """Avoid this sandbox's Python 3.13 worker-thread shutdown deadlock."""
+    async def direct(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr("butly_core.chat.service.run_in_threadpool", direct)
 
 
 @pytest.fixture
@@ -99,6 +108,338 @@ def mock_mem_builder():
 
 
 class TestExecuteStream:
+    def test_attachment_and_sources_are_wired_to_safe_turn_metadata(
+        self, tmp_instance_dir, request_obj, mock_components,
+        mock_instance_manager, mock_gatekeeper, mock_mem_builder,
+    ):
+        request_obj.attachments = [
+            Attachment(
+                mime_type="image/png",
+                data_base64="aGk=",
+                name="tiny.png",
+            )
+        ]
+
+        async def fake_stream(*args, **kwargs):
+            yield {"type": "chunk", "text": "answer"}
+            yield {
+                "type": "done",
+                "full_text": "answer",
+                "sources": [
+                    {"title": "Reference", "uri": "https://example.com"}
+                ],
+                "debug": {},
+            }
+
+        provider = MagicMock()
+        provider.async_generate_stream = fake_stream
+        provider.supports_vision.return_value = True
+        session_state = MagicMock()
+        session_state.to_dict.return_value = {
+            "topic": "",
+            "mood": "neutral",
+            "turn_count": 0,
+        }
+        with patch("butly_core.chat.service.ProviderFactory") as factory, patch(
+            "butly_core.core.gatekeeper.SessionState",
+            return_value=session_state,
+        ):
+            factory.create.return_value = provider
+            events = _run_async(
+                _collect(
+                    ChatService.execute_stream(
+                        request=request_obj,
+                        get_instance_components=lambda _: mock_components,
+                        instance_manager=mock_instance_manager,
+                        instances_dir=tmp_instance_dir.parent,
+                        gatekeeper=mock_gatekeeper,
+                        mem_block_builder=mock_mem_builder,
+                    )
+                )
+            )
+
+        assert events[-1]["type"] == "done"
+        _args, kwargs = mock_components["memory"].save_single_turn.call_args
+        assert kwargs["meta"]["attachments"] == [
+            {
+                "kind": "image",
+                "mime_type": "image/png",
+                "name": "tiny.png",
+                "size_bytes": 2,
+            }
+        ]
+        assert kwargs["assistant_meta"]["sources"] == [
+            {"title": "Reference", "url": "https://example.com"}
+        ]
+        assert "aGk=" not in json.dumps(kwargs)
+
+    def test_finalizing_precedes_state_and_history_persistence(
+        self, tmp_instance_dir, request_obj, mock_components,
+        mock_instance_manager, mock_gatekeeper, mock_mem_builder,
+    ):
+        """API cancellation barrier is visible before any durable commit."""
+        mock_instance_manager.get_instance_config.return_value["gatekeeper"] = {
+            "enabled": True
+        }
+        state_started = asyncio.Event()
+        release_state = asyncio.Event()
+
+        async def delayed_state_update(_func, *args, **kwargs):
+            state_started.set()
+            await release_state.wait()
+            return {"topic": "after barrier"}
+
+        async def fake_stream(*args, **kwargs):
+            yield {"type": "chunk", "text": "answer"}
+            yield {
+                "type": "done",
+                "full_text": "answer",
+                "sources": [],
+                "debug": {},
+            }
+
+        provider = MagicMock()
+        provider.async_generate_stream = fake_stream
+        provider.supports_vision.return_value = True
+        session_state = MagicMock()
+        session_state.to_dict.return_value = {
+            "topic": "",
+            "mood": "neutral",
+            "turn_count": 0,
+        }
+
+        async def scenario():
+            stream = ChatService.execute_stream(
+                request=request_obj,
+                get_instance_components=lambda _: mock_components,
+                instance_manager=mock_instance_manager,
+                instances_dir=tmp_instance_dir.parent,
+                gatekeeper=mock_gatekeeper,
+                mem_block_builder=mock_mem_builder,
+            )
+            assert (await anext(stream))["type"] == "metadata"
+            assert (await anext(stream))["type"] == "chunk"
+            pending = asyncio.create_task(anext(stream))
+            await state_started.wait()
+            await asyncio.sleep(0)
+            assert pending.done() is False
+            mock_components["memory"].save_single_turn.assert_not_called()
+            session_state.increment_turn.assert_not_called()
+
+            release_state.set()
+            barrier = await asyncio.wait_for(pending, timeout=0.2)
+            assert barrier == {"type": "finalizing"}
+            mock_components["memory"].save_single_turn.assert_not_called()
+            session_state.increment_turn.assert_not_called()
+            remaining = [event async for event in stream]
+            assert remaining[-1]["type"] == "done"
+
+        with patch("butly_core.chat.service.ProviderFactory") as factory, patch(
+            "butly_core.core.gatekeeper.SessionState",
+            return_value=session_state,
+        ), patch(
+            "butly_core.chat.service.run_in_threadpool",
+            new=delayed_state_update,
+        ):
+            factory.create.return_value = provider
+            _run_async(scenario())
+
+        session_state.increment_turn.assert_called_once()
+        session_state.apply_delta.assert_called_once_with(
+            {"topic": "after barrier"}
+        )
+        mock_components["memory"].save_single_turn.assert_called_once_with(
+            "hello", "answer", meta=None
+        )
+
+    def test_pending_state_update_cancels_without_any_persistence(
+        self, tmp_instance_dir, request_obj, mock_components,
+        mock_instance_manager, mock_gatekeeper, mock_mem_builder,
+    ):
+        mock_instance_manager.get_instance_config.return_value["gatekeeper"] = {
+            "enabled": True
+        }
+        state_started = asyncio.Event()
+
+        async def blocked_state_update(_func, *args, **kwargs):
+            state_started.set()
+            await asyncio.Event().wait()
+
+        async def fake_stream(*args, **kwargs):
+            yield {"type": "chunk", "text": "not committed"}
+            yield {
+                "type": "done",
+                "full_text": "not committed",
+                "sources": [],
+                "debug": {},
+            }
+
+        provider = MagicMock()
+        provider.async_generate_stream = fake_stream
+        provider.supports_vision.return_value = True
+        session_state = MagicMock()
+        session_state.to_dict.return_value = {
+            "topic": "",
+            "mood": "neutral",
+            "turn_count": 0,
+        }
+
+        async def scenario():
+            stream = ChatService.execute_stream(
+                request=request_obj,
+                get_instance_components=lambda _: mock_components,
+                instance_manager=mock_instance_manager,
+                instances_dir=tmp_instance_dir.parent,
+                gatekeeper=mock_gatekeeper,
+                mem_block_builder=mock_mem_builder,
+            )
+            assert (await anext(stream))["type"] == "metadata"
+            assert (await anext(stream))["type"] == "chunk"
+            pending = asyncio.create_task(anext(stream))
+            await state_started.wait()
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+
+        with patch("butly_core.chat.service.ProviderFactory") as factory, patch(
+            "butly_core.core.gatekeeper.SessionState",
+            return_value=session_state,
+        ), patch(
+            "butly_core.chat.service.run_in_threadpool",
+            new=blocked_state_update,
+        ):
+            factory.create.return_value = provider
+            _run_async(scenario())
+
+        mock_components["memory"].save_single_turn.assert_not_called()
+        mock_components["memory"].maintain_memory.assert_not_called()
+        session_state.increment_turn.assert_not_called()
+        session_state.apply_delta.assert_not_called()
+
+    def test_post_commit_auxiliary_failures_still_complete(
+        self, tmp_instance_dir, request_obj, mock_components,
+        mock_instance_manager, mock_gatekeeper, mock_mem_builder,
+    ):
+        async def fake_stream(*args, **kwargs):
+            yield {"type": "chunk", "text": "committed"}
+            yield {
+                "type": "done",
+                "full_text": "committed",
+                "sources": [],
+                "debug": {},
+            }
+
+        provider = MagicMock()
+        provider.async_generate_stream = fake_stream
+        provider.supports_vision.return_value = True
+        mock_components["memory"].maintain_memory.side_effect = RuntimeError(
+            "maintenance failed"
+        )
+        session_state = MagicMock()
+        session_state.to_dict.return_value = {
+            "topic": "",
+            "mood": "neutral",
+            "turn_count": 0,
+        }
+
+        with patch("butly_core.chat.service.ProviderFactory") as factory, patch(
+            "butly_core.core.gatekeeper.SessionState",
+            return_value=session_state,
+        ), patch(
+            "butly_core.chat.service._save_debug_log",
+            side_effect=RuntimeError("debug failed"),
+        ), patch(
+            "butly_core.chat.service._build_and_save_trace",
+            side_effect=RuntimeError("trace failed"),
+        ):
+            factory.create.return_value = provider
+            events = _run_async(
+                _collect(
+                    ChatService.execute_stream(
+                        request=request_obj,
+                        get_instance_components=lambda _: mock_components,
+                        instance_manager=mock_instance_manager,
+                        instances_dir=tmp_instance_dir.parent,
+                        gatekeeper=mock_gatekeeper,
+                        mem_block_builder=mock_mem_builder,
+                    )
+                )
+            )
+
+        assert events[-1]["type"] == "done"
+        assert events[-1]["data"]["full_text"] == "committed"
+        mock_components["memory"].save_single_turn.assert_called_once_with(
+            "hello", "committed", meta=None
+        )
+
+    def test_slow_post_commit_maintenance_keeps_event_loop_responsive(
+        self, tmp_instance_dir, request_obj, mock_components,
+        mock_instance_manager, mock_gatekeeper, mock_mem_builder,
+    ):
+        maintenance_started = asyncio.Event()
+        release_maintenance = asyncio.Event()
+
+        async def delayed_threadpool(func, *args, **kwargs):
+            assert func is mock_components["memory"].maintain_memory
+            maintenance_started.set()
+            await release_maintenance.wait()
+            return None
+
+        async def fake_stream(*args, **kwargs):
+            yield {"type": "chunk", "text": "answer"}
+            yield {
+                "type": "done",
+                "full_text": "answer",
+                "sources": [],
+                "debug": {},
+            }
+
+        provider = MagicMock()
+        provider.async_generate_stream = fake_stream
+        provider.supports_vision.return_value = True
+        session_state = MagicMock()
+        session_state.to_dict.return_value = {
+            "topic": "",
+            "mood": "neutral",
+            "turn_count": 0,
+        }
+
+        async def scenario():
+            stream = ChatService.execute_stream(
+                request=request_obj,
+                get_instance_components=lambda _: mock_components,
+                instance_manager=mock_instance_manager,
+                instances_dir=tmp_instance_dir.parent,
+                gatekeeper=mock_gatekeeper,
+                mem_block_builder=mock_mem_builder,
+            )
+            assert (await anext(stream))["type"] == "metadata"
+            assert (await anext(stream))["type"] == "chunk"
+            assert (await anext(stream))["type"] == "finalizing"
+            pending_done = asyncio.create_task(anext(stream))
+            await maintenance_started.wait()
+            assert pending_done.done() is False
+
+            # A separate event-loop task still runs while maintenance blocks.
+            heartbeat = asyncio.Event()
+            asyncio.get_running_loop().call_soon(heartbeat.set)
+            await asyncio.wait_for(heartbeat.wait(), timeout=0.1)
+
+            release_maintenance.set()
+            assert (await pending_done)["type"] == "done"
+
+        with patch("butly_core.chat.service.ProviderFactory") as factory, patch(
+            "butly_core.core.gatekeeper.SessionState",
+            return_value=session_state,
+        ), patch(
+            "butly_core.chat.service.run_in_threadpool",
+            new=delayed_threadpool,
+        ):
+            factory.create.return_value = provider
+            _run_async(scenario())
+
+        mock_components["memory"].save_single_turn.assert_called_once()
+
     def test_chunks_then_metadata_then_done(
         self, tmp_instance_dir, request_obj, mock_components,
         mock_instance_manager, mock_gatekeeper, mock_mem_builder,
@@ -190,6 +531,7 @@ class TestExecuteStream:
 
         assert events[-1]["type"] == "error"
         assert "boom" in events[-1]["message"]
+        assert events[-1]["recoverable"] is True
         # save_single_turn は呼ばれない (途中失敗のため)
         mock_components["memory"].save_single_turn.assert_not_called()
         session_state_mock.increment_turn.assert_not_called()
@@ -202,6 +544,52 @@ class TestExecuteStream:
         assert statuses["llm_call"] == "error"
         assert statuses["memory_write"] == "skipped"
         assert statuses["response"] == "skipped"
+
+    def test_buffered_provider_exception_never_saves_success_turn(
+        self, tmp_instance_dir, request_obj, mock_components,
+        mock_instance_manager, mock_gatekeeper, mock_mem_builder,
+    ):
+        """Gemini Google Search fallback failures are terminal errors."""
+        request_obj.use_google_search = True
+
+        async def failed_buffered_stream(*args, **kwargs):
+            if False:
+                yield None
+            raise RuntimeError("secret-token at /private/provider/path")
+
+        provider = MagicMock()
+        provider.async_generate_stream = failed_buffered_stream
+        provider.supports_vision.return_value = True
+        session_state = MagicMock()
+        session_state.to_dict.return_value = {
+            "topic": "",
+            "mood": "neutral",
+            "turn_count": 0,
+        }
+
+        with patch("butly_core.chat.service.ProviderFactory") as factory, patch(
+            "butly_core.core.gatekeeper.SessionState",
+            return_value=session_state,
+        ):
+            factory.create.return_value = provider
+            events = _run_async(
+                _collect(
+                    ChatService.execute_stream(
+                        request=request_obj,
+                        get_instance_components=lambda _: mock_components,
+                        instance_manager=mock_instance_manager,
+                        instances_dir=tmp_instance_dir.parent,
+                        gatekeeper=mock_gatekeeper,
+                        mem_block_builder=mock_mem_builder,
+                    )
+                )
+            )
+
+        assert [event["type"] for event in events] == ["metadata", "error"]
+        assert events[-1]["recoverable"] is True
+        assert "done" not in [event["type"] for event in events]
+        mock_components["memory"].save_single_turn.assert_not_called()
+        session_state.increment_turn.assert_not_called()
 
     def test_attachment_vision_error(
         self, tmp_instance_dir, request_obj, mock_components,

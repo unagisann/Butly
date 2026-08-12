@@ -28,7 +28,8 @@ chat.py
     ButlyMemory.load_recent_sessions() の `{"role", "parts"}` 形式を
     正規化し、`last_interaction_at` は ButlyMemory.get_last_interaction_time()
     から返す。過去 turn は text しか保存していないため、当面
-    attachments=[] / sources=[] で表現する（後方互換）。
+    attachments=[] / sources=[] で表現し、Phase 2 以降の安全な turn meta が
+    あれば添付要約・引用を復元する（後方互換）。
 
 SSE contract（frontend_migration_plan.ja.md §8.5 / §9.6）
 ────────────────────────────────────────────────────────
@@ -45,7 +46,7 @@ SSE contract（frontend_migration_plan.ja.md §8.5 / §9.6）
 """
 
 from datetime import datetime
-from typing import Annotated, List, Literal, Optional, Union
+from typing import Annotated, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -127,7 +128,16 @@ class ChatRequest(BaseModel):
     connection: Optional[str] = None
     client_request_id: Optional[str] = Field(
         default=None,
-        description="double submit 識別用に client が採番する ID",
+        min_length=1,
+        max_length=128,
+        description=(
+            "SSE の double submit/replay 識別用に client が採番する ID。"
+            "non-stream fallback は idempotency 対象外"
+        ),
+    )
+    include_debug: bool = Field(
+        default=False,
+        description="developer mode で安全な Gatekeeper/RAG 要約を含める",
     )
 
     @model_validator(mode="after")
@@ -136,6 +146,8 @@ class ChatRequest(BaseModel):
             raise ValueError(
                 "use_google_search and use_web_search are mutually exclusive."
             )
+        if not self.text.strip() and not self.attachments:
+            raise ValueError("text or at least one attachment is required.")
         return self
 
 
@@ -147,6 +159,7 @@ class ChatResult(BaseModel):
     sources: List[CitationSource] = Field(default_factory=list)
     keywords: List[str] = Field(default_factory=list)
     status: Literal["completed"] = "completed"
+    debug: Optional["ChatDebugSummary"] = None
 
 
 # ===================================================================
@@ -191,6 +204,33 @@ class ChatMetadata(BaseModel):
     need: Optional[str] = None
     keywords: List[str] = Field(default_factory=list)
     search_targets: Optional[List[str]] = None
+    debug: Optional["ChatDebugSummary"] = None
+
+
+class GatekeeperDebugSummary(BaseModel):
+    """prompt や検索本文を含めない Gatekeeper の診断要約。"""
+
+    tier: Optional[str] = None
+    need: Optional[str] = None
+    scores: Optional[Dict[str, float]] = None
+    search_targets: Optional[List[str]] = None
+    fallback_reason: Optional[str] = None
+    memory_probe_status: Optional[str] = None
+
+
+class RagDebugSummary(BaseModel):
+    """RAG の件数と注入状態だけを返す安全な診断要約。"""
+
+    enabled: bool = False
+    candidate_count: int = Field(default=0, ge=0)
+    injected_count: int = Field(default=0, ge=0)
+    injection_status: Optional[str] = None
+    active_nodes: List[str] = Field(default_factory=list)
+
+
+class ChatDebugSummary(BaseModel):
+    gatekeeper: GatekeeperDebugSummary
+    rag: RagDebugSummary = Field(default_factory=RagDebugSummary)
 
 
 class ChatChunkData(BaseModel):
@@ -202,6 +242,7 @@ class ChatDone(BaseModel):
 
     full_text: str
     sources: List[CitationSource] = Field(default_factory=list)
+    debug: Optional[ChatDebugSummary] = None
 
 
 class ChatMetadataEvent(BaseModel):
@@ -230,7 +271,27 @@ class ChatErrorEvent(BaseModel):
     recoverable: bool = False
 
 
+class ChatRequestStatus(BaseModel):
+    """process-local generation request の状態。"""
+
+    request_id: str
+    client_request_id: Optional[str] = None
+    attempt: int = Field(default=1, ge=1)
+    state: Literal["running", "finalizing", "completed", "failed", "cancelled"]
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    retryable: bool = False
+    cancellable: bool = False
+    error: Optional[ApiError] = None
+
+
 ChatStreamEvent = Annotated[
     Union[ChatMetadataEvent, ChatChunkEvent, ChatDoneEvent, ChatErrorEvent],
     Field(discriminator="event"),
 ]
+
+# Debug DTO は request/result の後方に置いて読みやすさを保っているため、
+# forward reference を module import 時に確定する。
+ChatResult.model_rebuild()
+ChatMetadata.model_rebuild()

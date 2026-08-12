@@ -1,20 +1,333 @@
-// UI 文字列は最初から key 管理する（§11.3）。Phase 1 は ja のみ実装し、
-// en は locale 対応を入れる Phase で埋める。ライブラリ導入もその時に判断する。
+import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
+
+export type Locale = "ja" | "en";
 
 const ja = {
   "app.title": "Butly",
+  "app.subtitle": "あなたの記憶とつながる会話",
+  "app.language": "English",
+  "app.language_label": "表示言語を英語に切り替える",
   "backend.starting": "バックエンドを起動しています…",
   "backend.ready": "接続済み",
-  "backend.unavailable": "バックエンドに接続できません",
+  "backend.connecting": "API に接続しています…",
+  "backend.reconnecting": "接続が切れました。再接続しています…",
+  "backend.disconnected": "バックエンド API に接続できません",
+  "backend.unavailable": "バックエンドを起動できません",
   "backend.crashed": "バックエンドが停止しました",
   "backend.version_mismatch": "バックエンドのバージョンが一致しません",
-  "backend.restart": "再起動",
+  "backend.restart": "バックエンドを再起動",
+  "backend.retry": "今すぐ再接続",
   "backend.backend_version": "Backend",
   "backend.api_version": "API",
+  "backend.detail": "接続の詳細",
+  "instances.title": "インスタンス",
+  "instances.loading": "インスタンスを読み込んでいます…",
+  "instances.empty": "インスタンスがありません",
+  "instances.empty_hint": "作成はまだ Streamlit または次の Phase で行えます。",
+  "instances.refresh": "一覧を更新",
+  "instances.updated": "更新 {value}",
+  "instances.select": "{name} を選択",
+  "chat.title": "チャット",
+  "chat.history_loading": "会話履歴を読み込んでいます…",
+  "chat.history_empty": "まだ会話はありません",
+  "chat.history_empty_hint": "メッセージを送って会話を始めましょう。",
+  "chat.history_error": "会話履歴を読み込めませんでした",
+  "chat.reload": "履歴を再読み込み",
+  "chat.placeholder": "メッセージを入力…",
+  "chat.send": "送信",
+  "chat.stop": "生成を停止",
+  "chat.finishing": "保存しています…",
+  "chat.retry": "再送",
+  "chat.cancelled": "生成を停止しました",
+  "chat.failed": "応答を生成できませんでした",
+  "chat.disconnected": "接続が切れました。再接続後に再送できます。",
+  "chat.waiting": "応答を準備しています…",
+  "chat.streaming": "生成中",
+  "chat.attach": "画像を添付",
+  "chat.remove_attachment": "{name} を削除",
+  "chat.attachment_limit": "画像は最大 {count} 枚です。",
+  "chat.attachment_size": "{name} は {size} MB 以下にしてください。",
+  "chat.attachment_type": "{name} は対応していない画像形式です。",
+  "chat.attachment_read": "画像を読み込めませんでした。",
+  "chat.image_attachment": "添付画像",
+  "chat.you": "あなた",
+  "chat.assistant": "Butly",
+  "chat.last_interaction": "最終対話 {value}",
+  "chat.sources": "参照元",
+  "chat.copy_source": "参照元URLをコピー",
+  "chat.search_google": "Google 検索",
+  "chat.search_web": "Web 検索",
+  "chat.use_rag": "記憶検索",
+  "chat.buffered": "検索中は完成後にまとめて表示される場合があります",
+  "chat.vision_unavailable": "現在の接続では画像を利用できません",
+  "chat.keyboard_hint": "Enter で送信 · Shift+Enter で改行",
+  "debug.title": "Gatekeeper / RAG",
+  "debug.enable": "デバッグを表示",
+  "debug.empty": "この応答の診断情報はありません。",
+  "debug.tier": "Tier",
+  "debug.need": "Need",
+  "debug.probe": "Memory probe",
+  "debug.rag": "RAG",
+  "debug.candidates": "候補 {count}",
+  "debug.injected": "注入 {count}",
+  "debug.search_targets": "検索対象",
+  "debug.fallback": "Fallback",
+  "debug.scores": "Scores",
+  "debug.active_nodes": "Active nodes",
+  "preflight.title": "接続チェック",
+  "preflight.refresh": "接続チェックを更新",
+  "preflight.loading": "接続を確認しています…",
+  "preflight.unavailable": "このバックエンドは接続チェックに未対応です",
+  "preflight.error": "接続チェックを実行できませんでした",
+  "preflight.ready": "準備完了",
+  "preflight.degraded": "一部に問題があります",
+  "preflight.offline": "利用できません",
+  "preflight.connections": "Connection",
+  "preflight.embedding": "Embedding",
+  "preflight.configured": "設定済み",
+  "preflight.not_configured": "未設定",
+  "preflight.reachable": "接続可能",
+  "preflight.unreachable": "接続不可",
+  "preflight.latency": "{value} ms",
+  "preflight.models": "モデル {count}",
+  "preflight.dimension": "{value} 次元",
+  "capability.unavailable": "利用不可: {reason}",
+  "capability.retry": "機能情報を再取得",
+  "capability.streaming_unavailable": "ストリーミングを利用できません: {reason}",
+  "reason.api_key_not_configured": "APIキーが設定されていません",
+  "reason.base_url_not_configured": "接続先URLが設定されていません",
+  "reason.authentication_failed": "認証に失敗しました",
+  "reason.models_endpoint_not_found": "モデル一覧APIが見つかりません",
+  "reason.provider_http_error": "プロバイダーがエラーを返しました",
+  "reason.connection_timeout": "接続がタイムアウトしました",
+  "reason.connection_unreachable": "接続先に到達できません",
+  "reason.invalid_provider_response": "接続先の応答を解釈できません",
+  "reason.unsupported_protocol": "未対応の接続方式です",
+  "reason.embedding_connection_not_found": "Embedding接続が見つかりません",
+  "reason.embedding_model_not_configured": "Embeddingモデルが設定されていません",
+  "reason.embedding_not_supported": "この接続はEmbeddingに対応していません",
+  "reason.invalid_embedding_response": "Embedding応答を検証できません",
+  "reason.developer_mode_disabled": "開発者モードが無効です",
+  "reason.runtime_not_initialized": "バックエンドの準備中です",
+  "reason.active_connection_not_configured": "チャット用Connectionが設定されていません",
+  "reason.desktop_token_required": "デスクトップ認証トークンが必要です",
+  "reason.active_model_does_not_support_vision": "選択中のモデルは画像入力に対応していません",
+  "reason.active_connection_does_not_support_google_search": "選択中のConnectionはGoogle検索に対応していません",
+  "reason.web_search_api_key_not_configured": "Web検索のAPIキーが設定されていません",
+  "reason.embedding_model_not_available": "Embeddingモデルを接続先で確認できません",
+  "reason.embedding_model_not_confirmed": "Embeddingモデルの利用可否を確認できません",
+  "reason.chat_model_not_available": "選択中のチャットモデルを接続先で確認できません",
+  "reason.chat_model_not_confirmed": "チャットモデルの利用可否を確認できません",
+  "reason.unknown": "詳細を確認できません",
+  "error.unknown": "予期しないエラーが発生しました。",
+  "error.backend_not_ready": "バックエンドの準備が完了していません。",
+  "error.instance_not_found": "選択したインスタンスが見つかりません。",
+  "error.generation_failed": "応答の生成に失敗しました。",
+  "error.protocol": "バックエンドから不正なストリームを受信しました。",
+  "error.network": "バックエンドとの接続が切れました。再接続後に再送できます。",
+  "error.request_status_timeout": "生成状態を確認できませんでした。接続を確認して再送してください。",
+  "error.debug_not_available": "このバックエンドではデバッグ表示を利用できません。",
+  "error.code": "コード",
+  "error.request_id": "Request ID",
+  "common.close": "閉じる",
+  "common.none": "なし",
+  "common.unknown": "不明",
 } as const;
 
 export type StringKey = keyof typeof ja;
 
-export function t(key: StringKey): string {
-  return ja[key];
+const en: Record<StringKey, string> = {
+  "app.title": "Butly",
+  "app.subtitle": "Conversations connected to your memories",
+  "app.language": "日本語",
+  "app.language_label": "Switch the interface language to Japanese",
+  "backend.starting": "Starting the backend…",
+  "backend.ready": "Connected",
+  "backend.connecting": "Connecting to the API…",
+  "backend.reconnecting": "Connection lost. Reconnecting…",
+  "backend.disconnected": "Cannot reach the backend API",
+  "backend.unavailable": "The backend could not be started",
+  "backend.crashed": "The backend stopped",
+  "backend.version_mismatch": "Backend version mismatch",
+  "backend.restart": "Restart backend",
+  "backend.retry": "Reconnect now",
+  "backend.backend_version": "Backend",
+  "backend.api_version": "API",
+  "backend.detail": "Connection details",
+  "instances.title": "Instances",
+  "instances.loading": "Loading instances…",
+  "instances.empty": "No instances yet",
+  "instances.empty_hint": "Create one in Streamlit for now, or in the next phase.",
+  "instances.refresh": "Refresh instances",
+  "instances.updated": "Updated {value}",
+  "instances.select": "Select {name}",
+  "chat.title": "Chat",
+  "chat.history_loading": "Loading conversation history…",
+  "chat.history_empty": "No conversation yet",
+  "chat.history_empty_hint": "Send a message to get started.",
+  "chat.history_error": "Conversation history could not be loaded",
+  "chat.reload": "Reload history",
+  "chat.placeholder": "Write a message…",
+  "chat.send": "Send",
+  "chat.stop": "Stop generating",
+  "chat.finishing": "Finishing…",
+  "chat.retry": "Send again",
+  "chat.cancelled": "Generation stopped",
+  "chat.failed": "The response could not be generated",
+  "chat.disconnected": "Connection lost. You can retry after reconnecting.",
+  "chat.waiting": "Preparing a response…",
+  "chat.streaming": "Generating",
+  "chat.attach": "Attach images",
+  "chat.remove_attachment": "Remove {name}",
+  "chat.attachment_limit": "You can attach up to {count} images.",
+  "chat.attachment_size": "Keep {name} under {size} MB.",
+  "chat.attachment_type": "{name} is not a supported image type.",
+  "chat.attachment_read": "The image could not be read.",
+  "chat.image_attachment": "Attached image",
+  "chat.you": "You",
+  "chat.assistant": "Butly",
+  "chat.last_interaction": "Last conversation {value}",
+  "chat.sources": "Sources",
+  "chat.copy_source": "Copy source URL",
+  "chat.search_google": "Google Search",
+  "chat.search_web": "Web search",
+  "chat.use_rag": "Memory search",
+  "chat.buffered": "Search responses may appear all at once when complete",
+  "chat.vision_unavailable": "Images are unavailable with the current connection",
+  "chat.keyboard_hint": "Enter to send · Shift+Enter for a new line",
+  "debug.title": "Gatekeeper / RAG",
+  "debug.enable": "Show debug details",
+  "debug.empty": "No diagnostics were returned for this response.",
+  "debug.tier": "Tier",
+  "debug.need": "Need",
+  "debug.probe": "Memory probe",
+  "debug.rag": "RAG",
+  "debug.candidates": "{count} candidates",
+  "debug.injected": "{count} injected",
+  "debug.search_targets": "Search targets",
+  "debug.fallback": "Fallback",
+  "debug.scores": "Scores",
+  "debug.active_nodes": "Active nodes",
+  "preflight.title": "Connection check",
+  "preflight.refresh": "Refresh connection check",
+  "preflight.loading": "Checking connections…",
+  "preflight.unavailable": "This backend does not support connection checks",
+  "preflight.error": "Connection checks could not be completed",
+  "preflight.ready": "Ready",
+  "preflight.degraded": "Some checks need attention",
+  "preflight.offline": "Unavailable",
+  "preflight.connections": "Connections",
+  "preflight.embedding": "Embedding",
+  "preflight.configured": "Configured",
+  "preflight.not_configured": "Not configured",
+  "preflight.reachable": "Reachable",
+  "preflight.unreachable": "Unreachable",
+  "preflight.latency": "{value} ms",
+  "preflight.models": "{count} models",
+  "preflight.dimension": "{value} dimensions",
+  "capability.unavailable": "Unavailable: {reason}",
+  "capability.retry": "Reload capabilities",
+  "capability.streaming_unavailable": "Streaming is unavailable: {reason}",
+  "reason.api_key_not_configured": "API key is not configured",
+  "reason.base_url_not_configured": "Base URL is not configured",
+  "reason.authentication_failed": "Authentication failed",
+  "reason.models_endpoint_not_found": "The models endpoint was not found",
+  "reason.provider_http_error": "The provider returned an error",
+  "reason.connection_timeout": "Connection timed out",
+  "reason.connection_unreachable": "The service could not be reached",
+  "reason.invalid_provider_response": "The provider response was invalid",
+  "reason.unsupported_protocol": "This connection protocol is unsupported",
+  "reason.embedding_connection_not_found": "Embedding connection was not found",
+  "reason.embedding_model_not_configured": "Embedding model is not configured",
+  "reason.embedding_not_supported": "This connection does not support embeddings",
+  "reason.invalid_embedding_response": "The embedding response was invalid",
+  "reason.developer_mode_disabled": "Developer mode is disabled",
+  "reason.runtime_not_initialized": "The backend is still starting",
+  "reason.active_connection_not_configured": "The active chat connection is not configured",
+  "reason.desktop_token_required": "A desktop authentication token is required",
+  "reason.active_model_does_not_support_vision": "The active model does not support image input",
+  "reason.active_connection_does_not_support_google_search": "The active connection does not support Google Search",
+  "reason.web_search_api_key_not_configured": "The web-search API key is not configured",
+  "reason.embedding_model_not_available": "The embedding model is unavailable on the connection",
+  "reason.embedding_model_not_confirmed": "The embedding model availability could not be confirmed",
+  "reason.chat_model_not_available": "The active chat model is unavailable on the connection",
+  "reason.chat_model_not_confirmed": "The active chat model availability could not be confirmed",
+  "reason.unknown": "No additional details are available",
+  "error.unknown": "An unexpected error occurred.",
+  "error.backend_not_ready": "The backend is not ready yet.",
+  "error.instance_not_found": "The selected instance was not found.",
+  "error.generation_failed": "Response generation failed.",
+  "error.protocol": "The backend returned an invalid stream.",
+  "error.network": "The backend connection was lost. Retry after reconnecting.",
+  "error.request_status_timeout": "The generation status could not be confirmed. Check the connection and retry.",
+  "error.debug_not_available": "Debug details are unavailable on this backend.",
+  "error.code": "Code",
+  "error.request_id": "Request ID",
+  "common.close": "Close",
+  "common.none": "None",
+  "common.unknown": "Unknown",
+};
+
+type Params = Record<string, string | number>;
+
+function interpolate(value: string, params?: Params): string {
+  if (!params) return value;
+  return value.replace(/\{(\w+)\}/g, (match, name: string) =>
+    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : match,
+  );
+}
+
+export function translate(locale: Locale, key: StringKey, params?: Params): string {
+  return interpolate(locale === "ja" ? ja[key] : en[key], params);
+}
+
+interface I18nValue {
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+  t: (key: StringKey, params?: Params) => string;
+}
+
+const I18nContext = createContext<I18nValue>({
+  locale: "ja",
+  setLocale: () => {},
+  t: (key, params) => translate("ja", key, params),
+});
+
+interface I18nProviderProps {
+  children: ReactNode;
+  initialLocale?: Locale;
+}
+
+export function I18nProvider({ children, initialLocale = "ja" }: I18nProviderProps) {
+  const [locale, setLocaleState] = useState<Locale>(() => {
+    const saved = globalThis.localStorage?.getItem("butly-ui-locale");
+    return saved === "ja" || saved === "en" ? saved : initialLocale;
+  });
+
+  const setLocale = useCallback((next: Locale) => {
+    setLocaleState(next);
+    globalThis.localStorage?.setItem("butly-ui-locale", next);
+    document.documentElement.lang = next;
+  }, []);
+
+  const value = useMemo<I18nValue>(
+    () => ({ locale, setLocale, t: (key, params) => translate(locale, key, params) }),
+    [locale, setLocale],
+  );
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
+
+  return createElement(I18nContext.Provider, { value }, children);
+}
+
+export function useI18n(): I18nValue {
+  return useContext(I18nContext);
+}
+
+/** Phase 1 imports and small non-React utilities keep using the Japanese catalog. */
+export function t(key: StringKey, params?: Params): string {
+  return translate("ja", key, params);
 }

@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 from butly_api import create_app
 from butly_api.context import ApiContext
 from butly_core.chat.types import ChatResponse
+from butly_core.core.memory import ButlyMemory
 
 
 # ===================================================================
@@ -48,6 +49,28 @@ class FakeRuntime:
             raise self.stream_exception
         for event in self.stream_events:
             yield event
+
+
+class PersistingRuntime:
+    """Provider の chunk 形態だけを差し替えられる最小 runtime fake。"""
+
+    def __init__(self, base_dir: Path, chunks: List[str]):
+        self.base_dir = base_dir
+        self.chunks = chunks
+        self.calls = 0
+
+    async def chat_stream(self, request):
+        self.calls += 1
+        yield {"type": "metadata", "data": {"tier": "mid"}}
+        for chunk in self.chunks:
+            yield {"type": "chunk", "text": chunk}
+        # ChatService と同じ commit barrier / save / done 順序。
+        yield {"type": "finalizing"}
+        text = "".join(self.chunks)
+        ButlyMemory(
+            self.base_dir, instance_name=request.instance_name
+        ).save_single_turn(request.text, text)
+        yield {"type": "done", "data": {"full_text": text}}
 
 
 def make_client(tmp_path: Path, runtime: FakeRuntime) -> TestClient:
@@ -178,6 +201,15 @@ class TestSendChat:
         )
         assert resp.status_code == 422
 
+    def test_empty_text_without_attachment_rejected_422(self, tmp_path):
+        client = make_client(tmp_path, FakeRuntime())
+        resp = client.post(
+            "/api/v1/chat",
+            json={"instance_name": "t1", "text": "  \n  "},
+        )
+        assert resp.status_code == 422
+        assert resp.json()["code"] == "validation_error"
+
     def test_no_runtime_503(self, tmp_path):
         instances_dir = tmp_path / "butly_core" / "instances"
         (instances_dir / "t1").mkdir(parents=True)
@@ -300,3 +332,63 @@ class TestStreamChat:
         )
         assert resp.status_code == 404
         assert resp.json()["code"] == "instance_not_found"
+
+    @pytest.mark.parametrize(
+        "chunks",
+        [
+            ["native ", "multi", " chunk"],
+            ["gemini buffered fallback"],
+        ],
+        ids=["native-multi-chunk", "gemini-buffered"],
+    )
+    def test_stream_persists_and_completed_retry_replays_once(
+        self, tmp_path, chunks
+    ):
+        runtime = PersistingRuntime(tmp_path, chunks)
+        client = make_client(tmp_path, runtime)
+        logical_id = "logical-persist-once"
+
+        initial = client.get("/api/v1/instances/t1/messages")
+        assert initial.status_code == 200
+        assert initial.json()["items"] == []
+
+        first = client.post(
+            "/api/v1/chat/stream",
+            headers={"X-Request-ID": "transport-original"},
+            json={
+                "instance_name": "t1",
+                "text": "question",
+                "client_request_id": logical_id,
+            },
+        )
+        first_events = parse_sse(first.text)
+        assert first_events[-1]["event"] == "done"
+        assert first_events[-1]["payload"]["data"]["full_text"] == "".join(
+            chunks
+        )
+
+        # Same logical request attaches to the completed attempt. The transport
+        # header and every replayed event keep the original server request id.
+        replay = client.post(
+            "/api/v1/chat/stream",
+            headers={"X-Request-ID": "transport-new"},
+            json={
+                "instance_name": "t1",
+                "text": "question",
+                "client_request_id": logical_id,
+            },
+        )
+        replay_events = parse_sse(replay.text)
+        assert replay.headers["X-Request-ID"] == "transport-original"
+        assert all(
+            item["payload"]["request_id"] == "transport-original"
+            for item in replay_events
+        )
+        assert runtime.calls == 1
+
+        history = client.get("/api/v1/instances/t1/messages")
+        assert history.status_code == 200
+        assert [item["text"] for item in history.json()["items"]] == [
+            "question",
+            "".join(chunks),
+        ]

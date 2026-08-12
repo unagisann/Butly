@@ -83,8 +83,11 @@ export type AttachmentSummary = {
  * `GET /api/v1/capabilities` の応答。
  */
 export type CapabilitiesResponse = {
+    active_connection?: string | null;
+    active_model?: string | null;
     attachments: AttachmentLimits;
     chat: Capability;
+    chat_debug: Capability;
     generic_web_search: Capability;
     native_google_search: Capability;
     streaming: StreamingCapability;
@@ -116,10 +119,16 @@ export type ChatChunkEvent = {
     sequence: number;
 };
 
+export type ChatDebugSummary = {
+    gatekeeper: GatekeeperDebugSummary;
+    rag?: RagDebugSummary;
+};
+
 /**
  * done event の payload。full_text は全 chunk 連結と一致する。
  */
 export type ChatDone = {
+    debug?: ChatDebugSummary | null;
     full_text: string;
     sources?: Array<CitationSource>;
 };
@@ -141,6 +150,7 @@ export type ChatErrorEvent = {
  * metadata event の payload。Gatekeeper 判定の public な部分だけを写す。
  */
 export type ChatMetadata = {
+    debug?: ChatDebugSummary | null;
     keywords?: Array<string>;
     need?: string | null;
     search_targets?: Array<string> | null;
@@ -164,10 +174,14 @@ export type ChatMetadataEvent = {
 export type ChatRequest = {
     attachments?: Array<AttachmentInput>;
     /**
-     * double submit 識別用に client が採番する ID
+     * SSE の double submit/replay 識別用に client が採番する ID。non-stream fallback は idempotency 対象外
      */
     client_request_id?: string | null;
     connection?: string | null;
+    /**
+     * developer mode で安全な Gatekeeper/RAG 要約を含める
+     */
+    include_debug?: boolean;
     instance_name: string;
     model_name?: string | null;
     text?: string;
@@ -177,9 +191,26 @@ export type ChatRequest = {
 };
 
 /**
+ * process-local generation request の状態。
+ */
+export type ChatRequestStatus = {
+    attempt?: number;
+    cancellable?: boolean;
+    client_request_id?: string | null;
+    created_at: string;
+    error?: ApiError | null;
+    finished_at?: string | null;
+    request_id: string;
+    retryable?: boolean;
+    started_at?: string | null;
+    state: 'running' | 'finalizing' | 'completed' | 'failed' | 'cancelled';
+};
+
+/**
  * `POST /api/v1/chat`（non-stream fallback / test 用）の応答。
  */
 export type ChatResult = {
+    debug?: ChatDebugSummary | null;
     keywords?: Array<string>;
     request_id: string;
     sources?: Array<CitationSource>;
@@ -203,6 +234,63 @@ export type ChatStreamEvent = ({
 export type CitationSource = {
     title?: string;
     url?: string;
+};
+
+/**
+ * 秘密値・接続 URL・provider の raw error を含まない疎通結果。
+ */
+export type ConnectionPreflight = {
+    configured: boolean;
+    connection_id: string;
+    label: string;
+    latency_ms?: number | null;
+    /**
+     * active chat model の catalog 確認結果（非chat接続/空catalogはnull）
+     */
+    model_available?: boolean | null;
+    model_count?: number;
+    /**
+     * 疎通で確認した model ID（最大20件）
+     */
+    models?: Array<string>;
+    protocol: 'openai_compat' | 'gemini_native';
+    reachable: boolean;
+    reason?: string | null;
+    required_for?: Array<'chat' | 'embedding'>;
+    status: 'ready' | 'degraded' | 'unavailable' | 'not_configured' | 'unreachable' | 'unsupported';
+};
+
+/**
+ * 固定テスト文字列で実 embedding を生成した疎通結果。
+ */
+export type EmbeddingPreflight = {
+    configured: boolean;
+    connection_id?: string | null;
+    dimension?: number | null;
+    latency_ms?: number | null;
+    model_available?: boolean | null;
+    model_name?: string | null;
+    reachable: boolean;
+    reason?: string | null;
+    status: 'ready' | 'degraded' | 'unavailable' | 'not_configured' | 'unreachable' | 'unsupported';
+};
+
+/**
+ * prompt や検索本文を含めない Gatekeeper の診断要約。
+ */
+export type GatekeeperDebugSummary = {
+    fallback_reason?: string | null;
+    memory_probe_status?: string | null;
+    need?: string | null;
+    scores?: {
+        [key: string]: number;
+    } | null;
+    search_targets?: Array<string> | null;
+    tier?: string | null;
+};
+
+export type HttpValidationError = {
+    detail?: Array<ValidationError>;
 };
 
 /**
@@ -261,6 +349,27 @@ export type MessagePage = {
 };
 
 /**
+ * Chat UI 起動前に表示する部分的 availability。
+ */
+export type PreflightResponse = {
+    checked_at: string;
+    connections?: Array<ConnectionPreflight>;
+    embedding: EmbeddingPreflight;
+    status: 'ready' | 'degraded' | 'unavailable';
+};
+
+/**
+ * RAG の件数と注入状態だけを返す安全な診断要約。
+ */
+export type RagDebugSummary = {
+    active_nodes?: Array<string>;
+    candidate_count?: number;
+    enabled?: boolean;
+    injected_count?: number;
+    injection_status?: string | null;
+};
+
+/**
  * readiness を構成する個別チェックの結果。
  */
 export type ReadinessCheck = {
@@ -296,6 +405,16 @@ export type StreamingCapability = {
      * unavailable 時の理由 code（例: gemini_api_key_not_configured）
      */
     reason?: string | null;
+};
+
+export type ValidationError = {
+    ctx?: {
+        [key: string]: unknown;
+    };
+    input?: unknown;
+    loc: Array<string | number>;
+    msg: string;
+    type: string;
 };
 
 export type GetAppInfoData = {
@@ -339,13 +458,25 @@ export type SendChatData = {
 
 export type SendChatErrors = {
     /**
+     * Developer debug is disabled
+     */
+    403: ApiError;
+    /**
      * Instance not found
      */
     404: ApiError;
     /**
+     * Idempotency conflict
+     */
+    409: ApiError;
+    /**
      * Validation error
      */
     422: ApiError;
+    /**
+     * Request registry capacity exceeded
+     */
+    429: ApiError;
     /**
      * Backend is not ready
      */
@@ -363,6 +494,68 @@ export type SendChatResponses = {
 
 export type SendChatResponse = SendChatResponses[keyof SendChatResponses];
 
+export type GetChatRequestStatusData = {
+    body?: never;
+    path: {
+        request_id: string;
+    };
+    query?: never;
+    url: '/api/v1/chat/requests/{request_id}';
+};
+
+export type GetChatRequestStatusErrors = {
+    /**
+     * Request not found
+     */
+    404: ApiError;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type GetChatRequestStatusError = GetChatRequestStatusErrors[keyof GetChatRequestStatusErrors];
+
+export type GetChatRequestStatusResponses = {
+    /**
+     * Successful Response
+     */
+    200: ChatRequestStatus;
+};
+
+export type GetChatRequestStatusResponse = GetChatRequestStatusResponses[keyof GetChatRequestStatusResponses];
+
+export type CancelChatRequestData = {
+    body?: never;
+    path: {
+        request_id: string;
+    };
+    query?: never;
+    url: '/api/v1/chat/requests/{request_id}/cancel';
+};
+
+export type CancelChatRequestErrors = {
+    /**
+     * Request not found
+     */
+    404: ApiError;
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+};
+
+export type CancelChatRequestError = CancelChatRequestErrors[keyof CancelChatRequestErrors];
+
+export type CancelChatRequestResponses = {
+    /**
+     * Successful Response
+     */
+    200: ChatRequestStatus;
+};
+
+export type CancelChatRequestResponse = CancelChatRequestResponses[keyof CancelChatRequestResponses];
+
 export type StreamChatData = {
     body: ChatRequest;
     path?: never;
@@ -372,13 +565,25 @@ export type StreamChatData = {
 
 export type StreamChatErrors = {
     /**
+     * Developer debug is disabled
+     */
+    403: ApiError;
+    /**
      * Instance not found
      */
     404: ApiError;
     /**
+     * Idempotency conflict
+     */
+    409: ApiError;
+    /**
      * Validation error
      */
     422: ApiError;
+    /**
+     * Request registry capacity exceeded
+     */
+    429: ApiError;
     /**
      * Backend is not ready
      */
@@ -478,6 +683,40 @@ export type ListInstanceMessagesResponses = {
 };
 
 export type ListInstanceMessagesResponse = ListInstanceMessagesResponses[keyof ListInstanceMessagesResponses];
+
+export type GetPreflightData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * true なら30秒のpreflight cacheを使わず再確認する
+         */
+        refresh?: boolean;
+    };
+    url: '/api/v1/preflight';
+};
+
+export type GetPreflightErrors = {
+    /**
+     * Validation Error
+     */
+    422: HttpValidationError;
+    /**
+     * Backend is not ready
+     */
+    503: ApiError;
+};
+
+export type GetPreflightError = GetPreflightErrors[keyof GetPreflightErrors];
+
+export type GetPreflightResponses = {
+    /**
+     * Successful Response
+     */
+    200: PreflightResponse;
+};
+
+export type GetPreflightResponse = GetPreflightResponses[keyof GetPreflightResponses];
 
 export type GetReadinessData = {
     body?: never;

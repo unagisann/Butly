@@ -1,8 +1,10 @@
 # 正式フロントエンド移行計画: Streamlit から Windows デスクトップアプリへ
 
-> **ステータス: Phase 1 実装済み（2026-07-09、CI での Windows 検証待ち）。次は Phase 2（Chat vertical slice）。**
+> **ステータス: Phase 2 実装済み（2026-08-12）。次は Phase 3（Onboarding / instance basic settings）。**
 > 段階移行を前提に `docs/planning/active/` で管理し、§18 の完了条件を満たしたら
 > archived へ移す。
+> Phase 1 の Windows 実機 installer / CI 初回検証は引き続き未完了であり、
+> Phase 2 の実 API key を使う integration test と合わせて release 前に確認する。
 >
 > Phase 0 実装済み: `butly_api/` app factory（`create_app()`）、
 > `/api/v1/health` `/ready` `/app-info` `/capabilities`、`ApiError` envelope +
@@ -454,9 +456,11 @@ sources: CitationSource[]
 status: "completed" | "failed" | "cancelled"
 ```
 
-現行 `save_single_turn()` は text だけを保存し、historical attachment / sources / debug_info を会話記憶には保存しない。
-最初は `attachments=[]`, `sources=[]` で過去データを表現して後方互換を保つ。正式UIで画像履歴の再表示を要件にする場合、
-storage policy（容量、削除、private data）を別途決めてから backend 保存形式を拡張する。
+旧履歴では `attachments=[]`, `sources=[]` として後方互換を保つ。Phase 2 では画像の
+base64 本体を保存せず、MIME / 名前 / byte 数だけを user message の安全な添付要約として
+保存する。引用元も title / URL を上限付きで assistant message に保存する。画像本体の履歴
+再表示を要件にする場合は、容量、削除、private data を含む storage policy を別途決める。
+`debug_info`、prompt、生成 raw response は会話記憶に保存しない。
 
 `ChatRequest` は `attachments: Attachment[]` を生dictでなく型付けし、次を明示する。
 
@@ -466,7 +470,10 @@ storage policy（容量、削除、private data）を別途決めてから backe
 - `connection` / `model_name` は developer override。通常UIはinstance configに従う
 - `use_google_search` と `use_web_search` は相互排他的にbackend validation
 - `client_request_id` を受け、double submit の識別に使う
-- `include_debug` は developer mode + local token の時だけ許可
+- `include_debug` は明示的な developer mode の時だけ許可する。production sidecar は
+  全 API が per-launch local token で保護され、developer mode は既定で無効とする。
+  token を設定しない `--dev-cors` 開発起動でも利用できるが、返す内容は sanitized summary
+  に限定する
 
 ### 8.5 SSE event contract
 
@@ -999,6 +1006,26 @@ idle
 - end-to-end test。
 
 **完了条件:** Gemini / non-Gemini mockで履歴→送信→stream→done→再読込が一致。
+
+> **Phase 2 実装状況（2026-08-12）**
+>
+> - 実装済み: instance 一覧 / 選択、typed 履歴、POST SSE chat、native
+>   multi-chunk と Gemini Google Search buffered fallback、画像添付、引用元、日英 UI、
+>   backend 到達性の継続監視 / 再接続、生成 cancel / request status / idempotent retry、
+>   Connection / embedding preflight、capability gate、sanitized Gatekeeper / RAG debug。
+> - API: `GET /api/v1/preflight`、`GET /api/v1/chat/requests/{request_id}`、
+>   `POST /api/v1/chat/requests/{request_id}/cancel` を追加。request registry は同一
+>   `client_request_id` の attach / replay / retry attempt、active 数と replay 容量の
+>   上限、保存直前の finalizing barrier、graceful shutdown 時の finalization drain を持つ。
+> - UI: OpenAPI 生成 client を JSON API の正本とし、SSE framing だけを独立 parser に
+>   閉じ込めた。Lucide Icons を使う responsive 2-pane UI とし、評価画面（LoCoMo、
+>   日本語 A/B、検索比較）は Streamlit に残した。
+> - テスト: backend contract / registry / provider mock と frontend parser / state / UI
+>   test で、履歴 → 送信 → stream → done → 永続化 → replay / 再読込を native と
+>   buffered の両方で検証する。実 provider key を使う `-m integration`、Windows 実機
+>   installer / CI 初回実行は release 検証として残る。
+>
+> 詳細仕様: [frontend_chat.ja.md](../../reference/frontend_chat.ja.md)。
 
 ### Phase 3 — Onboarding / instance basic settings
 

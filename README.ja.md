@@ -78,7 +78,20 @@ OpenAI / xAI / Ollama は `butly_core/llm/_openai_compat.py` の共通ヘルパ�
 
 ### ストリーミング応答 (SSE)
 
-`POST /chat/stream` は `text/event-stream` 形式で `metadata` → `chunk` → `done` イベントを順次返します。Streamlit UI のチャットヘッダーに「Streaming」トグルがあり、バッファ応答と逐次応答をターンごとに切替できます。Gatekeeper メタデータ（tier / need / scores）は最初の chunk より前に送出され、`StateUpdater` は並列実行でクリティカルパス外に逃がしています。
+正式デスクトップ UI は typed `POST /api/v1/chat/stream` を使い、
+`metadata` → `chunk` → `done`（失敗時は `error`）を逐次処理します。
+生成停止、冪等な再送、引用元、画像添付、接続復旧、Gatekeeper / RAG の安全な診断要約に対応します。
+legacy `POST /chat/stream` は Streamlit 互換のため移行中も維持します。
+
+### 正式デスクトップ UI（開発中）
+
+正式 frontend は Tauri v2 + React + TypeScript で、FastAPI sidecar と
+OpenAPI 生成クライアントだけを通じて通信します。現在の Chat vertical slice では、
+インスタンス選択、会話履歴、SSE chat、停止・再送、画像、引用元、
+Connection / Embedding preflight、日本語 / 英語 UI を利用できます。
+
+Streamlit は移行中の管理・評価 UI として残します。LoCoMo、日本語対話 A/B、
+検索方式比較などの評価画面はデスクトップ UI へ移さず、引き続き Streamlit で実行します。
 
 ### Web検索
 
@@ -158,6 +171,25 @@ cp user_config.json.example user_config.json
 > ```
 
 ### 5. 起動
+
+**正式デスクトップ UI（開発モード）:**
+
+```bash
+# ターミナル 1: versioned API
+venv/bin/python -m butly_api.server --dev-cors --port 8000
+
+# ターミナル 2: Tauri + React
+cd frontend
+pnpm install --frozen-lockfile
+BUTLY_DEV_BACKEND_PORT=8000 pnpm tauri dev
+```
+
+Windows PowerShell では最後の行を
+`$env:BUTLY_DEV_BACKEND_PORT="8000"; pnpm tauri dev` とします。
+sidecar と installer の詳細は
+[Desktop sidecar 仕様](docs/reference/desktop_sidecar.ja.md)を参照してください。
+
+**legacy Streamlit（評価・未移行の設定画面）:**
 
 **Linux / macOS:**
 
@@ -252,8 +284,9 @@ flowchart TD
 ## 技術スタック
 
 - **LLM**: Google Gemini / OpenAI / xAI (Grok) / Ollama — マルチプロバイダー
-- **バックエンド**: FastAPI + Uvicorn（REST `/chat`、SSE `/chat/stream`、WebSocket `/ws`）
-- **フロントエンド**: Streamlit
+- **バックエンド**: FastAPI + Uvicorn（typed `/api/v1` REST + POST SSE）
+- **正式フロントエンド**: Tauri v2 + React + TypeScript + Vite
+- **legacy / 評価 UI**: Streamlit
 - **DB**: SQLite（ベクトル検索: コサイン類似度 + NumPy）
 - **Web検索**: Tavily API / Ollama Cloud Web Search / Google Search Grounding
 
@@ -265,6 +298,8 @@ flowchart TD
 - [Discord 連携セットアップ](docs/guides/discord_integration_setup.ja.md)
 - [LINE 連携セットアップ](docs/guides/line_integration_setup.ja.md)
 - [アーキテクチャ図集](docs/reference/DIAGRAMS.ja.md)
+- [Desktop sidecar 仕様](docs/reference/desktop_sidecar.ja.md)
+- [正式 Chat フロントエンド仕様](docs/reference/frontend_chat.ja.md)
 - [Gatekeeper 入出力仕様](docs/reference/gatekeeper_io_summary.ja.md)
 - [記憶ライフサイクル](docs/reference/memory_lifecycle.ja.md)
 - [ファイル構成](docs/reference/FILE_STRUCTURE.ja.md)

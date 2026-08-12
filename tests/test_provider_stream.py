@@ -149,3 +149,46 @@ class TestGeminiStream:
         assert len(events) == 2
         assert events[0] == {"type": "chunk", "text": "fallback resp"}
         assert events[1]["sources"] == [{"title": "src"}]
+
+    def test_google_search_failure_has_no_success_events(
+        self, gemini_provider, monkeypatch
+    ):
+        """Buffered Gemini failure propagates instead of becoming saved text."""
+        async def failed_generate(text, attachments, context):
+            raise RuntimeError("Gemini generation failed")
+
+        monkeypatch.setattr(gemini_provider, "async_generate", failed_generate)
+
+        with pytest.raises(RuntimeError, match="Gemini generation failed"):
+            _run_async(
+                _collect_stream(
+                    gemini_provider,
+                    "q",
+                    [],
+                    {"use_google_search": True},
+                )
+            )
+
+    def test_generate_sanitizes_google_search_provider_exception(
+        self, gemini_provider, monkeypatch
+    ):
+        raw = "secret-token at /private/provider/path"
+
+        def failed_search(*args, **kwargs):
+            raise RuntimeError(raw)
+
+        monkeypatch.setattr(
+            gemini_provider, "_try_search_with_retry", failed_search
+        )
+        with pytest.raises(RuntimeError) as caught:
+            gemini_provider.generate(
+                "q",
+                [],
+                {
+                    "brain": MagicMock(),
+                    "memory_manager": MagicMock(),
+                    "use_google_search": True,
+                },
+            )
+        assert str(caught.value) == "Gemini generation failed"
+        assert raw not in str(caught.value)

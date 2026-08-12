@@ -240,6 +240,16 @@ class TestCors:
         resp = self._preflight(client, "http://tauri.localhost")
         assert resp.headers.get("access-control-allow-credentials") != "true"
 
+    def test_actual_response_exposes_request_id(self, tmp_path, monkeypatch):
+        client = _make_client(tmp_path, monkeypatch)
+        resp = client.get(
+            "/api/v1/health",
+            headers={"Origin": "http://tauri.localhost"},
+        )
+        exposed = resp.headers.get("access-control-expose-headers", "")
+        assert "x-request-id" in exposed.lower()
+        assert resp.headers.get("X-Request-ID")
+
 
 # ===================================================================
 # subprocess E2E（実 uvicorn / 実 socket）

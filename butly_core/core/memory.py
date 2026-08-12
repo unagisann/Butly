@@ -543,13 +543,16 @@ class ButlyMemory:
         model_text: str,
         meta: Optional[dict] = None,
         created_at: Optional[datetime] = None,
+        assistant_meta: Optional[dict] = None,
     ) -> Optional[str]:
         """ローカル記憶用に short_term_json へ保存。
 
-        meta: 話者帰属メタ (person_id / display_name / lane / source /
-        channel_key)。指定時は user メッセージに構造化メタデータとして載せる。
+        meta: 話者帰属メタおよび安全な添付要約。指定時は user メッセージに
+        構造化メタデータとして載せる。
         None なら従来形式のまま（meta 欠落は owner / direct / web と解釈される
         後方互換規則があるため、Web チャットはこの経路で正しい）。
+
+        assistant_meta: 引用元など assistant 側の安全な表示メタデータ。
 
         created_at: 会話の発生日時。省略時は現在日時を使う。履歴インポート時に
         元日時を保持するための引数で、既存呼び出し元は指定不要。
@@ -574,11 +577,15 @@ class ButlyMemory:
         if meta:
             user_msg["meta"] = meta
 
+        model_msg = {"role": "model", "parts": [model_text]}
+        if assistant_meta:
+            model_msg["meta"] = assistant_meta
+
         turn_data = {
             "timestamp": created_at.isoformat(),
             "messages": [
                 user_msg,
-                {"role": "model", "parts": [model_text]},
+                model_msg,
             ],
         }
 

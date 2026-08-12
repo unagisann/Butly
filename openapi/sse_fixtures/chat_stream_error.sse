@@ -1,5 +1,5 @@
 event: metadata
-data: {"event":"metadata","request_id":"req_fixture_error_001","data":{"tier":"mid","need":null,"keywords":[],"search_targets":null}}
+data: {"event":"metadata","request_id":"req_fixture_error_001","data":{"tier":"mid","need":null,"keywords":[],"search_targets":null,"debug":null}}
 
 event: chunk
 data: {"event":"chunk","request_id":"req_fixture_error_001","sequence":0,"data":{"text":"途中まで"}}

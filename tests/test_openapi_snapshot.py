@@ -78,6 +78,9 @@ def test_contract_schemas_are_published(spec):
         "ReadinessResponse",
         "AppInfoResponse",
         "CapabilitiesResponse",
+        "PreflightResponse",
+        "EmbeddingPreflight",
+        "ChatRequestStatus",
     ]:
         assert name in schemas, f"components.schemas に {name} がない"
 
@@ -88,6 +91,26 @@ def test_chat_stream_event_is_discriminated_union(spec):
     discriminator = stream["discriminator"]
     assert discriminator["propertyName"] == "event"
     assert set(discriminator["mapping"]) == {"metadata", "chunk", "done", "error"}
+
+
+def test_phase2_chat_lifecycle_operations_are_published(spec):
+    paths = spec["paths"]
+    assert paths["/api/v1/preflight"]["get"]["operationId"] == "get_preflight"
+    status_path = "/api/v1/chat/requests/{request_id}"
+    cancel_path = f"{status_path}/cancel"
+    assert paths[status_path]["get"]["operationId"] == (
+        "get_chat_request_status"
+    )
+    assert paths[cancel_path]["post"]["operationId"] == (
+        "cancel_chat_request"
+    )
+
+    status = spec["components"]["schemas"]["ChatRequestStatus"]
+    state = status["properties"]["state"]
+    assert "finalizing" in state["enum"]
+    assert "cancellable" in status["properties"]
+    embedding = spec["components"]["schemas"]["EmbeddingPreflight"]
+    assert "dimension" in embedding["properties"]
 
 
 def test_api_error_requires_all_envelope_keys(spec):

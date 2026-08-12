@@ -78,8 +78,23 @@ Hybrid retrieval combining keyword filtering (SQLite LIKE) with vector cosine si
 
 ### Streaming Responses (SSE)
 
-`POST /chat/stream` returns a `text/event-stream` with `metadata` → `chunk` → `done` events.
-The Streamlit UI exposes a Streaming toggle in the chat header so you can switch between buffered and streaming modes per turn. Gatekeeper metadata (tier / need / scores) is emitted before the first chunk; `StateUpdater` runs in parallel and ships off the critical path.
+The official desktop UI consumes typed `POST /api/v1/chat/stream` events in
+`metadata` → `chunk` → `done` order (`error` terminates failures). It supports
+generation cancellation, idempotent retry, sources, image attachments,
+connection recovery, and safe Gatekeeper / RAG diagnostic summaries.
+Legacy `POST /chat/stream` remains available while Streamlit is being migrated.
+
+### Official Desktop UI (in development)
+
+The official frontend uses Tauri v2, React, and TypeScript. It communicates
+only with the FastAPI sidecar through the OpenAPI-generated client and the
+typed POST-SSE transport. The current chat vertical slice includes instance
+selection, history, streaming chat, cancel/retry, images, sources,
+Connection / Embedding preflight, and Japanese/English UI.
+
+Streamlit remains the migration-period administration and evaluation UI.
+LoCoMo, Japanese dialogue A/B, and retrieval comparison screens intentionally
+stay in Streamlit and are not part of the desktop migration.
 
 ### Web Search
 
@@ -159,6 +174,25 @@ See `user_config.json.example` for Gemini / OpenAI / Ollama configuration exampl
 > ```
 
 ### 5. Start
+
+**Official desktop UI (development mode):**
+
+```bash
+# Terminal 1: versioned API
+venv/bin/python -m butly_api.server --dev-cors --port 8000
+
+# Terminal 2: Tauri + React
+cd frontend
+pnpm install --frozen-lockfile
+BUTLY_DEV_BACKEND_PORT=8000 pnpm tauri dev
+```
+
+In Windows PowerShell, use
+`$env:BUTLY_DEV_BACKEND_PORT="8000"; pnpm tauri dev` for the last line.
+See the [desktop sidecar specification](docs/reference/desktop_sidecar.md) for
+sidecar and installer details.
+
+**Legacy Streamlit (evaluation and settings not migrated yet):**
 
 **Linux / macOS:**
 
@@ -253,8 +287,9 @@ All configurable via `user_config.json`.
 ## Tech Stack
 
 - **LLM**: Google Gemini / OpenAI / xAI (Grok) / Ollama — multi-provider
-- **Backend**: FastAPI + Uvicorn (REST `/chat`, SSE `/chat/stream`, WebSocket `/ws`)
-- **Frontend**: Streamlit
+- **Backend**: FastAPI + Uvicorn (typed `/api/v1` REST + POST SSE)
+- **Official frontend**: Tauri v2 + React + TypeScript + Vite
+- **Legacy / evaluation UI**: Streamlit
 - **DB**: SQLite (vector search via cosine similarity + NumPy)
 - **Web Search**: Tavily API / Ollama Cloud Web Search / Google Search Grounding
 
@@ -266,6 +301,8 @@ All configurable via `user_config.json`.
 - [Discord Integration Setup](docs/guides/discord_integration_setup.md)
 - [LINE Integration Setup](docs/guides/line_integration_setup.md)
 - [Architecture Diagrams](docs/reference/DIAGRAMS.md)
+- [Desktop Sidecar Specification](docs/reference/desktop_sidecar.md)
+- [Official Chat Frontend Specification](docs/reference/frontend_chat.md)
 - [Gatekeeper I/O Specification](docs/reference/gatekeeper_io_summary.md)
 - [Memory Lifecycle](docs/reference/memory_lifecycle.md)
 - [File Structure](docs/reference/FILE_STRUCTURE.md)

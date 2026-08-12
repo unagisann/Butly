@@ -334,10 +334,7 @@ class OpenAICompatAdapter(BaseProvider):
                 result.debug_info["token_usage"] = token_usage
             return result
         except Exception as e:
-            import traceback
-
-            traceback.print_exc()
-            return ChatResponse(text=f"Error: {e}")
+            raise RuntimeError("Provider generation failed") from e
 
     # ==================================================================
     # ストリーミング

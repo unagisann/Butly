@@ -196,10 +196,35 @@
       "CapabilitiesResponse": {
         "description": "`GET /api/v1/capabilities` の応答。",
         "properties": {
+          "active_connection": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Connection"
+          },
+          "active_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Model"
+          },
           "attachments": {
             "$ref": "#/components/schemas/AttachmentLimits"
           },
           "chat": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "chat_debug": {
             "$ref": "#/components/schemas/Capability"
           },
           "generic_web_search": {
@@ -217,6 +242,7 @@
         },
         "required": [
           "chat",
+          "chat_debug",
           "streaming",
           "vision",
           "native_google_search",
@@ -295,9 +321,35 @@
         "title": "ChatChunkEvent",
         "type": "object"
       },
+      "ChatDebugSummary": {
+        "properties": {
+          "gatekeeper": {
+            "$ref": "#/components/schemas/GatekeeperDebugSummary"
+          },
+          "rag": {
+            "$ref": "#/components/schemas/RagDebugSummary"
+          }
+        },
+        "required": [
+          "gatekeeper"
+        ],
+        "title": "ChatDebugSummary",
+        "type": "object"
+      },
       "ChatDone": {
         "description": "done event の payload。full_text は全 chunk 連結と一致する。",
         "properties": {
+          "debug": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatDebugSummary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "full_text": {
             "title": "Full Text",
             "type": "string"
@@ -370,6 +422,17 @@
       "ChatMetadata": {
         "description": "metadata event の payload。Gatekeeper 判定の public な部分だけを写す。",
         "properties": {
+          "debug": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatDebugSummary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "keywords": {
             "items": {
               "type": "string"
@@ -458,13 +521,15 @@
           "client_request_id": {
             "anyOf": [
               {
+                "maxLength": 128,
+                "minLength": 1,
                 "type": "string"
               },
               {
                 "type": "null"
               }
             ],
-            "description": "double submit 識別用に client が採番する ID",
+            "description": "SSE の double submit/replay 識別用に client が採番する ID。non-stream fallback は idempotency 対象外",
             "title": "Client Request Id"
           },
           "connection": {
@@ -477,6 +542,12 @@
               }
             ],
             "title": "Connection"
+          },
+          "include_debug": {
+            "default": false,
+            "description": "developer mode で安全な Gatekeeper/RAG 要約を含める",
+            "title": "Include Debug",
+            "type": "boolean"
           },
           "instance_name": {
             "minLength": 1,
@@ -521,9 +592,112 @@
         "title": "ChatRequest",
         "type": "object"
       },
+      "ChatRequestStatus": {
+        "description": "process-local generation request の状態。",
+        "properties": {
+          "attempt": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "cancellable": {
+            "default": false,
+            "title": "Cancellable",
+            "type": "boolean"
+          },
+          "client_request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Request Id"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApiError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "request_id": {
+            "title": "Request Id",
+            "type": "string"
+          },
+          "retryable": {
+            "default": false,
+            "title": "Retryable",
+            "type": "boolean"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "state": {
+            "enum": [
+              "running",
+              "finalizing",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "state",
+          "created_at"
+        ],
+        "title": "ChatRequestStatus",
+        "type": "object"
+      },
       "ChatResult": {
         "description": "`POST /api/v1/chat`（non-stream fallback / test 用）の応答。",
         "properties": {
+          "debug": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatDebugSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "keywords": {
             "items": {
               "type": "string"
@@ -600,6 +774,309 @@
           }
         },
         "title": "CitationSource",
+        "type": "object"
+      },
+      "ConnectionPreflight": {
+        "description": "秘密値・接続 URL・provider の raw error を含まない疎通結果。",
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "model_available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "active chat model の catalog 確認結果（非chat接続/空catalogはnull）",
+            "title": "Model Available"
+          },
+          "model_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Model Count",
+            "type": "integer"
+          },
+          "models": {
+            "description": "疎通で確認した model ID（最大20件）",
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "protocol": {
+            "enum": [
+              "openai_compat",
+              "gemini_native"
+            ],
+            "title": "Protocol",
+            "type": "string"
+          },
+          "reachable": {
+            "title": "Reachable",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "required_for": {
+            "items": {
+              "enum": [
+                "chat",
+                "embedding"
+              ],
+              "type": "string"
+            },
+            "title": "Required For",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "degraded",
+              "unavailable",
+              "not_configured",
+              "unreachable",
+              "unsupported"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "label",
+          "protocol",
+          "configured",
+          "reachable",
+          "status"
+        ],
+        "title": "ConnectionPreflight",
+        "type": "object"
+      },
+      "EmbeddingPreflight": {
+        "description": "固定テスト文字列で実 embedding を生成した疎通結果。",
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "dimension": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimension"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency Ms"
+          },
+          "model_available": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Available"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "reachable": {
+            "title": "Reachable",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "degraded",
+              "unavailable",
+              "not_configured",
+              "unreachable",
+              "unsupported"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "configured",
+          "reachable",
+          "status"
+        ],
+        "title": "EmbeddingPreflight",
+        "type": "object"
+      },
+      "GatekeeperDebugSummary": {
+        "description": "prompt や検索本文を含めない Gatekeeper の診断要約。",
+        "properties": {
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Reason"
+          },
+          "memory_probe_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Probe Status"
+          },
+          "need": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Need"
+          },
+          "scores": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scores"
+          },
+          "search_targets": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Targets"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tier"
+          }
+        },
+        "title": "GatekeeperDebugSummary",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
         "type": "object"
       },
       "HealthResponse": {
@@ -800,6 +1277,84 @@
         "title": "MessagePage",
         "type": "object"
       },
+      "PreflightResponse": {
+        "description": "Chat UI 起動前に表示する部分的 availability。",
+        "properties": {
+          "checked_at": {
+            "format": "date-time",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/ConnectionPreflight"
+            },
+            "title": "Connections",
+            "type": "array"
+          },
+          "embedding": {
+            "$ref": "#/components/schemas/EmbeddingPreflight"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "degraded",
+              "unavailable"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "checked_at",
+          "embedding"
+        ],
+        "title": "PreflightResponse",
+        "type": "object"
+      },
+      "RagDebugSummary": {
+        "description": "RAG の件数と注入状態だけを返す安全な診断要約。",
+        "properties": {
+          "active_nodes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Active Nodes",
+            "type": "array"
+          },
+          "candidate_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Candidate Count",
+            "type": "integer"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "injected_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Injected Count",
+            "type": "integer"
+          },
+          "injection_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Injection Status"
+          }
+        },
+        "title": "RagDebugSummary",
+        "type": "object"
+      },
       "ReadinessCheck": {
         "description": "readiness を構成する個別チェックの結果。",
         "properties": {
@@ -888,6 +1443,46 @@
           "available"
         ],
         "title": "StreamingCapability",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
         "type": "object"
       }
     },
@@ -985,6 +1580,16 @@
             },
             "description": "Successful Response"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Developer debug is disabled"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -995,6 +1600,16 @@
             },
             "description": "Instance not found"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Idempotency conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1004,6 +1619,16 @@
               }
             },
             "description": "Validation error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request registry capacity exceeded"
           },
           "503": {
             "content": {
@@ -1022,6 +1647,121 @@
           }
         ],
         "summary": "Send a chat message (non-streaming)",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/v1/chat/requests/{request_id}": {
+      "get": {
+        "operationId": "get_chat_request_status",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRequestStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
+        "summary": "Get generation request status",
+        "tags": [
+          "chat"
+        ]
+      }
+    },
+    "/api/v1/chat/requests/{request_id}/cancel": {
+      "post": {
+        "description": "実行中の server task をキャンセルし、対応する SDK では provider stream のclose も試みる。同期 SDK が close を提供しない場合は provider 側の処理が継続し得るが、部分応答は保存しない。保存開始後（finalizing）の cancel は拒否され、1回だけ保存して completed になる。terminal request への再実行はidempotent。",
+        "operationId": "cancel_chat_request",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatRequestStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
+        "summary": "Cancel generation",
         "tags": [
           "chat"
         ]
@@ -1055,6 +1795,16 @@
             },
             "description": "SSE stream of ChatStreamEvent frames"
           },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Developer debug is disabled"
+          },
           "404": {
             "content": {
               "application/json": {
@@ -1065,6 +1815,16 @@
             },
             "description": "Instance not found"
           },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Idempotency conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1074,6 +1834,16 @@
               }
             },
             "description": "Validation error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Request registry capacity exceeded"
           },
           "503": {
             "content": {
@@ -1254,6 +2024,67 @@
         "summary": "Get chat message history",
         "tags": [
           "instances"
+        ]
+      }
+    },
+    "/api/v1/preflight": {
+      "get": {
+        "description": "Connection ごとの疎通と active embedding model の利用可否を並列・期限付きで確認する。embedding は固定の非ユーザー文字列から有限のvectorを実生成し、dimensionだけを返す。結果は30秒cacheする。秘密値、接続 URL、provider のraw error は返さない。",
+        "operationId": "get_preflight",
+        "parameters": [
+          {
+            "description": "true なら30秒のpreflight cacheを使わず再確認する",
+            "in": "query",
+            "name": "refresh",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "true なら30秒のpreflight cacheを使わず再確認する",
+              "title": "Refresh",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreflightResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Backend is not ready"
+          }
+        },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
+        "summary": "Check active LLM and embedding connectivity",
+        "tags": [
+          "system"
         ]
       }
     },
