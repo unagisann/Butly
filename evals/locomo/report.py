@@ -78,6 +78,9 @@ def _render(
         f"sessions={_fmt_limit(run_config.get('session_limit'))}, "
         f"questions={_fmt_limit(run_config.get('question_limit'))}",
         f"- Errors recorded: {error_count} (see errors.jsonl)",
+        f"- QA transport retries: {butly.get('qa_retry_total', 0)} across "
+        f"{_fmt(butly.get('qa_retry_question_rate'))} of questions "
+        f"({_fmt_distribution(butly.get('qa_retry_reason_distribution'))})",
         "",
         "## Official-compatible scores",
         "",

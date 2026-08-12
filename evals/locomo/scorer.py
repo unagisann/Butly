@@ -202,6 +202,7 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
     token_usage = diagnostics.get("token_usage") or {}
     token_usage_total = diagnostics.get("token_usage_total") or {}
     gatekeeper = diagnostics.get("gatekeeper") or {}
+    qa_retry = diagnostics.get("qa_retry") or {}
     entry = {
         "question_id": row.get("question_id"),
         "sample_id": row.get("sample_id"),
@@ -232,6 +233,13 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
         "intent_floor_applied": gatekeeper.get("intent_floor_applied"),
         "latency_ms": row.get("latency_ms"),
         "error": row.get("error"),
+        "qa_attempts": qa_retry.get("attempts", 1),
+        "qa_retry_count": qa_retry.get("retry_count", 0),
+        "qa_retry_reasons": [
+            item.get("reason")
+            for item in (qa_retry.get("failures") or [])
+            if isinstance(item, dict) and item.get("reason")
+        ],
         # 検索の実行と注入は別物（計画書 §3.7）。rag_triggered は注入の有無。
         "search_executed": bool(retrieval.get("executed")),
         "retrieval_mode": retrieval.get("mode"),
@@ -406,6 +414,11 @@ def _butly_aggregate(
     with_evidence = [
         e for e in question_scores if e["evidence_coverage"] is not None
     ]
+    qa_retry_reasons: dict[str, int] = {}
+    for entry in question_scores:
+        for reason in entry.get("qa_retry_reasons") or []:
+            key = str(reason)
+            qa_retry_reasons[key] = qa_retry_reasons.get(key, 0) + 1
     metrics = {
         "correctness_threshold": CORRECTNESS_THRESHOLD,
         "rag_trigger_rate": _mean(
@@ -423,6 +436,20 @@ def _butly_aggregate(
         "latency_ms_mean": _mean(latencies),
         "latency_ms_p50": _percentile(latencies, 50),
         "latency_ms_p95": _percentile(latencies, 95),
+        "qa_retry_total": sum(
+            int(entry.get("qa_retry_count") or 0)
+            for entry in question_scores
+        ),
+        "qa_retry_question_rate": _mean(
+            [
+                float(int(entry.get("qa_retry_count") or 0) > 0)
+                for entry in question_scores
+            ]
+        ),
+        "qa_attempts_mean": _mean(
+            [int(entry.get("qa_attempts") or 1) for entry in question_scores]
+        ),
+        "qa_retry_reason_distribution": qa_retry_reasons,
         "tier_distribution": _distribution(question_scores, "tier"),
         "need_intent_distribution": _distribution(question_scores, "need_intent"),
         "classifier_fallback_rate": _mean(

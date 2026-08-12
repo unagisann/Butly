@@ -623,6 +623,38 @@ class TestScoreRun:
         assert butly["classifier_fallback_reasons"] == {"parse_error": 1}
         assert butly["intent_floor_rate"] == pytest.approx(0.5)
 
+    def test_qa_retry_metrics_are_aggregated_and_legacy_rows_are_zero(self, tmp_path):
+        rows = [
+            _qa_row(
+                "qa-1",
+                diagnostics={
+                    "gatekeeper": {"tier": "mid"},
+                    "rag": {"results": []},
+                    "qa_retry": {
+                        "attempts": 3,
+                        "retry_count": 2,
+                        "failures": [
+                            {"reason": "connection"},
+                            {"reason": "timeout"},
+                        ],
+                    },
+                },
+            ),
+            _qa_row("qa-2"),
+        ]
+        run_dir = _write_run(tmp_path, rows)
+
+        scores = score_run(run_dir)
+        butly = scores["butly"]
+        assert scores["questions"][0]["qa_retry_count"] == 2
+        assert butly["qa_retry_total"] == 2
+        assert butly["qa_retry_question_rate"] == pytest.approx(0.5)
+        assert butly["qa_attempts_mean"] == pytest.approx(2.0)
+        assert butly["qa_retry_reason_distribution"] == {
+            "connection": 1,
+            "timeout": 1,
+        }
+
 
 class TestReport:
     def test_report_requires_scores(self, tmp_path):

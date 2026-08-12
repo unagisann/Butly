@@ -141,6 +141,15 @@ python -m evals.locomo.cli run \
 
 `run` finishes with scoring and a summary; pass `--skip-scoring` to stop after
 QA. `--model-name` and `--connection` override the chat role for QA.
+
+During QA, transient provider connection failures and timeouts are retried up
+to three times with 1, 2, and 4 second backoff. Authentication, invalid-model,
+bad-request, and other configuration errors fail immediately. Retry events are
+written durably to `results/qa_retries.jsonl`; successful question rows include
+`diagnostics.qa_retry`, and aggregate retry counts appear in `scores.json`,
+`summary.md`, and the Web Console. Failed provider attempts happen before
+conversation/checkpoint persistence, so retrying cannot duplicate a QA turn.
+
 `--profile <yaml>` applies role sections (`chat` / `gatekeeper` / `summary` /
 `knowledge` / `embedding`) plus the optional runtime `reranker` and non-model `memory`, `brain`,
 `memory_probe`, and `context_levels` sections

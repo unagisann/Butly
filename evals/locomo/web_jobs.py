@@ -2932,6 +2932,13 @@ class EvaluationJobManager:
             "classifier_fallback_rate": butly_scores.get(
                 "classifier_fallback_rate"
             ),
+            "qa_retry_total": butly_scores.get("qa_retry_total"),
+            "qa_retry_question_rate": butly_scores.get(
+                "qa_retry_question_rate"
+            ),
+            "qa_retry_reason_distribution": butly_scores.get(
+                "qa_retry_reason_distribution"
+            ),
             "latency_ms_mean": butly_scores.get("latency_ms_mean"),
             "prompt_tokens_total": butly_scores.get("prompt_tokens_total"),
             "completion_tokens_total": butly_scores.get(
