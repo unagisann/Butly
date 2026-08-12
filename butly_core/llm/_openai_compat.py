@@ -373,6 +373,42 @@ def build_chat_response(
 # ストリーミング (OpenAI 互換 SDK 共通)
 # =====================================================================
 
+# 最初の 1 回 + 即時リトライ 1 回。上流が空応答を返す事象が実際に起きており、
+# 同じ入力の手動再送で成功している（transient）。
+MAX_STREAM_ATTEMPTS = 2
+
+
+def is_retryable_stream_error(error: Exception) -> bool:
+    """chunk が 1 つも来ないまま**即座に**失敗した種類か。
+
+    再試行してよいのは「待ち時間をほとんど増やさず、成功する見込みがある」もの
+    だけに限る。
+
+    - 対象: 上流の空応答、接続断、5xx
+    - 対象外: **timeout**（再試行すると待ちが倍になる。体感を最も損なう）
+    - 対象外: **429 / 認証 / 不正リクエスト**（間を置かない再試行が無意味か有害）
+
+    呼び出し側で「まだ 1 文字も送っていない」ことを確認しているので、
+    二重生成にはならない。
+    """
+    try:
+        import openai
+    except ImportError:  # openai 未導入の互換プロバイダー経路
+        return False
+
+    # timeout は APIConnectionError の派生なので、先に弾く
+    if isinstance(error, openai.APITimeoutError):
+        return False
+    if isinstance(error, openai.APIConnectionError):
+        return True
+    if isinstance(error, openai.InternalServerError):
+        return True
+    if isinstance(error, openai.APIStatusError):
+        # 429 / 4xx はここで落とす（status を持つ失敗は上流の意思表示）
+        return False
+    # status を持たない素の APIError。上流が本文なしでストリームを閉じた場合が該当。
+    return isinstance(error, openai.APIError)
+
 
 async def async_chat_completion_stream(
     client,
@@ -421,55 +457,76 @@ async def async_chat_completion_stream(
 
     def _producer():
         full_text = ""
-        stream = None
-        try:
-            print(f"[{log_tag}] Streaming start")
-            stream = client.chat.completions.create(**kwargs)
-            stream_holder["stream"] = stream
-            for chunk in stream:
+        attempt = 0
+        while True:
+            attempt += 1
+            stream = None
+            try:
+                print(f"[{log_tag}] Streaming start")
+                stream = client.chat.completions.create(**kwargs)
+                stream_holder["stream"] = stream
+                for chunk in stream:
+                    if stop_event.is_set():
+                        break
+                    if not getattr(chunk, "choices", None):
+                        continue
+                    choice = chunk.choices[0]
+                    delta = getattr(choice, "delta", None)
+                    if delta is None:
+                        continue
+                    text_chunk = getattr(delta, "content", None) or ""
+                    if text_chunk:
+                        full_text += text_chunk
+                        _enqueue({"type": "chunk", "text": text_chunk})
                 if stop_event.is_set():
-                    break
-                if not getattr(chunk, "choices", None):
-                    continue
-                choice = chunk.choices[0]
-                delta = getattr(choice, "delta", None)
-                if delta is None:
-                    continue
-                text_chunk = getattr(delta, "content", None) or ""
-                if text_chunk:
-                    full_text += text_chunk
-                    _enqueue({"type": "chunk", "text": text_chunk})
-            if stop_event.is_set():
+                    return
+                print(f"[{log_tag}] Streaming done")
+                _enqueue(
+                    {
+                        "type": "done",
+                        "full_text": full_text,
+                        "sources": list(web_sources or []),
+                        "debug": debug_data or {},
+                    }
+                )
                 return
-            print(f"[{log_tag}] Streaming done")
-            _enqueue(
-                {
-                    "type": "done",
-                    "full_text": full_text,
-                    "sources": list(web_sources or []),
-                    "debug": debug_data or {},
-                }
-            )
-        except Exception as e:
-            if stop_event.is_set():
-                return
-            import traceback
+            except Exception as e:
+                if stop_event.is_set():
+                    return
+                if (
+                    not full_text
+                    and attempt < MAX_STREAM_ATTEMPTS
+                    and is_retryable_stream_error(e)
+                ):
+                    # まだ 1 文字も送っていないので、二重生成にはならない。
+                    print(
+                        f"[{log_tag}] Stream failed before any output "
+                        f"({type(e).__name__}); retrying once"
+                    )
+                    logger.info(
+                        "provider stream retry: attempt=%d error=%s",
+                        attempt,
+                        type(e).__name__,
+                    )
+                    continue
+                import traceback
 
-            traceback.print_exc()
-            _enqueue(
-                {
-                    "type": "error",
-                    "message": str(e),
-                }
-            )
-        finally:
-            stream_holder.pop("stream", None)
-            close = getattr(stream, "close", None)
-            if callable(close):
-                try:
-                    close()
-                except Exception:
-                    logger.debug("provider stream close failed", exc_info=True)
+                traceback.print_exc()
+                _enqueue(
+                    {
+                        "type": "error",
+                        "message": str(e),
+                    }
+                )
+                return
+            finally:
+                stream_holder.pop("stream", None)
+                close = getattr(stream, "close", None)
+                if callable(close):
+                    try:
+                        close()
+                    except Exception:
+                        logger.debug("provider stream close failed", exc_info=True)
 
     producer_future = loop.run_in_executor(None, _producer)
 

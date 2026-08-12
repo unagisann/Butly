@@ -163,15 +163,6 @@ export function ChatPage({
                   : ""}
               </small>
             </span>
-            {session.canRetry && (
-              <button
-                className="text-button"
-                type="button"
-                onClick={() => void session.retry()}
-              >
-                {t("chat.retry")}
-              </button>
-            )}
           </div>
         )}
         {capabilitiesError && (
@@ -206,6 +197,8 @@ export function ChatPage({
           messages={session.messages}
           phase={session.phase}
           loading={session.phase === "loading_history"}
+          canRetry={session.canRetry}
+          onRetry={() => void session.retry()}
         />
       </div>
 
@@ -222,13 +215,11 @@ export function ChatPage({
           }
           busy={session.busy}
           canCancel={session.busy && session.phase !== "finalizing"}
-          canRetry={session.canRetry}
           debugEnabled={debugEnabled}
           debugAvailable={debugAvailable}
           onDebugEnabledChange={setDebugEnabled}
           onSend={session.send}
           onCancel={session.cancel}
-          onRetry={session.retry}
         />
       ) : (
         <div className="composer-skeleton" aria-label={t("backend.connecting")} />

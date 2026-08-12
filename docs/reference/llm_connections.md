@@ -196,6 +196,37 @@ user-defined Connections.
 External URLs, catalogs, and pricing can change. Verify each service's current
 documentation before registering it.
 
+## Immediate streaming retry
+
+When an OpenAI-compatible stream fails **before emitting any output**,
+`butly_core/llm/_openai_compat.py` re-issues it **once** (`MAX_STREAM_ATTEMPTS`).
+Upstreams have been observed opening the SSE stream and closing it without a
+body (`Upstream returned an empty response`); the same input succeeds on a
+manual resend, so the failure is transient. A manual resend restarts from
+Gatekeeper classification, which makes retrying at the provider layer the
+faster path.
+
+Only failures that barely add to the wait are retried
+(`is_retryable_stream_error`).
+
+| Failure | Retried | Why |
+|---|---|---|
+| Empty upstream response (`APIError` without status) | yes | Fails instantly and usually succeeds on the next attempt |
+| Connection drop (`APIConnectionError`) | yes | Same |
+| 5xx (`InternalServerError`) | yes | Transient upstream fault |
+| **Timeout (`APITimeoutError`)** | **no** | Doubles the wait — the worst case for perceived latency |
+| 429 / 401 / 400 (`APIStatusError`) | no | An immediate retry is useless or harmful |
+
+**No retry happens once any text has been emitted**, which is what keeps a
+retry from producing duplicate output; the caller checks that `full_text` is
+still empty. Only a second failure emits the `error` event, so the contract
+seen by the UI (`metadata` → `chunk` → `done`, or a terminal `error`) is
+unchanged. Retries appear only in the server log.
+
+This is separate from the LoCoMo QA retry (three attempts with 1/2/4s backoff);
+conversation favors not keeping the user waiting, so it retries once,
+immediately.
+
 ## NanoGPT
 
 ### Separate pay-as-you-go and Pro

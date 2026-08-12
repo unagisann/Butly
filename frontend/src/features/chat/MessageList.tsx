@@ -1,5 +1,11 @@
 import { useEffect, useRef } from "react";
-import { Bot, CircleStop, Image as ImageIcon, UserRound } from "lucide-react";
+import {
+  Bot,
+  CircleStop,
+  Image as ImageIcon,
+  RotateCcw,
+  UserRound,
+} from "lucide-react";
 
 import { useI18n } from "../../i18n/strings";
 import { SourceList } from "./SourceList";
@@ -9,6 +15,9 @@ interface MessageListProps {
   messages: ChatMessageView[];
   phase: ChatPhase;
   loading: boolean;
+  /** 再送できるのは直近のリクエストだけなので、対象は末尾の失敗メッセージに限る。 */
+  canRetry?: boolean;
+  onRetry?: () => void;
 }
 
 function formatTime(value: string | null | undefined, locale: "ja" | "en"): string {
@@ -33,7 +42,13 @@ function formatAttachmentSize(
   )} ${unit}`;
 }
 
-export function MessageList({ messages, phase, loading }: MessageListProps) {
+export function MessageList({
+  messages,
+  phase,
+  loading,
+  canRetry = false,
+  onRetry,
+}: MessageListProps) {
   const { locale, t } = useI18n();
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -77,10 +92,18 @@ export function MessageList({ messages, phase, loading }: MessageListProps) {
         aria-label={t("chat.title")}
         aria-live="off"
       >
-        {messages.map((message) => {
+        {messages.map((message, index) => {
           const assistant = message.role === "assistant";
           const showTyping =
             assistant && message.delivery === "sending" && !message.text;
+          // 再送ボタンは失敗した発言のすぐ下に置く。何を送り直すのかが
+          // 吹き出しの並びから読み取れるようにするため。
+          const showRetry =
+            canRetry &&
+            onRetry !== undefined &&
+            index === messages.length - 1 &&
+            (message.delivery === "failed" ||
+              message.delivery === "disconnected");
           const summaryOnlyAttachments = (message.attachments ?? []).filter(
             (_attachment, index) => !message.attachmentPreviews?.[index],
           );
@@ -147,6 +170,15 @@ export function MessageList({ messages, phase, loading }: MessageListProps) {
                 )}
                 {message.delivery === "failed" && (
                   <p className="message-state error">{t("chat.failed")}</p>
+                )}
+                {showRetry && (
+                  <button
+                    className="text-button compact message-retry"
+                    type="button"
+                    onClick={onRetry}
+                  >
+                    <RotateCcw size={14} aria-hidden="true" /> {t("chat.retry")}
+                  </button>
                 )}
                 {assistant && <SourceList sources={message.sources ?? []} />}
               </div>

@@ -191,6 +191,33 @@ APIキー保存・解除レスポンスにキー値は含まれない。
 外部サービスのURL、モデル提供状況、料金は変わり得る。登録前に各サービスの
 公式仕様を確認する。
 
+## ストリーミングの即時リトライ
+
+OpenAI 互換プロバイダーのストリームが**出力前に即座に失敗**した場合、
+`butly_core/llm/_openai_compat.py` が **1 回だけ**引き直す（`MAX_STREAM_ATTEMPTS`）。
+上流が SSE を開いたまま本文を返さず `Upstream returned an empty response` で
+落ちる事象が実際に起きており、同じ入力の手動再送で成功するため transient と
+扱える。手動再送は Gatekeeper の分類からやり直しになるので、provider 層で
+引き直すほうが待ち時間が短い。
+
+再試行するのは待ち時間をほとんど増やさない種類に限る（`is_retryable_stream_error`）。
+
+| 種類 | 再試行 | 理由 |
+|---|---|---|
+| 上流の空応答（status を持たない `APIError`） | する | 即座に失敗し、再試行で成功する |
+| 接続断（`APIConnectionError`） | する | 同上 |
+| 5xx（`InternalServerError`） | する | 上流の一時障害 |
+| **timeout（`APITimeoutError`）** | **しない** | 待ち時間が倍になる。体感を最も損なう |
+| 429 / 401 / 400 等（`APIStatusError`） | しない | 間を置かない再試行が無意味か有害 |
+
+**1 文字でも送出済みなら再試行しない。**二重生成を避けるための条件で、
+呼び出し側が `full_text` の空を確認してから引き直す。2 回目も失敗したときだけ
+`error` event を出すので、UI から見た契約（`metadata` → `chunk` → `done` /
+終端 `error`）は変わらない。再試行はサーバーログにのみ残る。
+
+LoCoMo 評価側の QA リトライ（3 回・1/2/4 秒バックオフ）とは別物で、
+対話では待たせないことを優先して 1 回・即時とする。
+
 ## NanoGPT
 
 ### Pay-as-you-go と Pro を分ける
