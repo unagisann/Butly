@@ -29,6 +29,8 @@ ENV/
 .env
 APIkey.env
 *.env
+# Vite のローカル env（frontend/.env.development.local 等）。*.example は対象外。
+.env.*.local
 
 # Database
 *.db

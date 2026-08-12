@@ -183,6 +183,7 @@ framing has a handwritten parser. See [Official Desktop Chat UI](frontend_chat.m
 | Path | Purpose |
 |---|---|
 | `src-tauri/src/` | Sidecar spawn, dynamic port/token handshake, crash monitoring, restart, and graceful shutdown. |
+| `src/lifecycle/` | Bridge hiding Tauri commands/events. Outside Tauri it falls back to NullBridge, or to DevBrowserBridge when `VITE_BUTLY_DEV_BACKEND_URL` is set in development ([startup guide](../guides/desktop_dev_setup.md)). |
 | `src/api/generated/` | Generated API client and DTOs from `openapi/butly.openapi.json`; never hand-edited. |
 | `src/api/sse.ts` | Validates split frames, LF/CRLF, UTF-8 boundaries, ordering, and typed terminal events. |
 | `src/api/transport.ts` | Adapter hiding the generated client and POST-SSE parser from feature code. |

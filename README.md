@@ -189,8 +189,25 @@ BUTLY_DEV_BACKEND_PORT=8000 pnpm tauri dev
 
 In Windows PowerShell, use
 `$env:BUTLY_DEV_BACKEND_PORT="8000"; pnpm tauri dev` for the last line.
-See the [desktop sidecar specification](docs/reference/desktop_sidecar.md) for
-sidecar and installer details.
+
+**Official desktop UI (browser only, no Tauri):**
+
+A development mode for working on the UI without Tauri (WebKitGTK / WebView2).
+It works on headless machines such as a Raspberry Pi.
+
+```bash
+# Terminal 1: versioned API
+venv/bin/python -m butly_api.server --dev-cors --port 8000
+
+# Terminal 2: Vite dev server (open http://localhost:1420)
+cd frontend
+VITE_BUTLY_DEV_BACKEND_URL=http://localhost:8000 pnpm dev
+```
+
+For choosing between the startup modes, SSH port forwarding, and the
+limitations, see [Desktop UI Startup](docs/guides/desktop_dev_setup.md); for
+sidecar and installer details, see the
+[desktop sidecar specification](docs/reference/desktop_sidecar.md).
 
 **Legacy Streamlit (evaluation and settings not migrated yet):**
 

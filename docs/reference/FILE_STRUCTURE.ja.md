@@ -241,6 +241,7 @@ JSON endpoint は OpenAPI 生成 client を使い、SSE framing だけを手書�
 | パス | 役割 |
 |---|---|
 | `src-tauri/src/` | sidecar spawn、dynamic port / token handshake、crash 監視、restart、graceful shutdown |
+| `src/lifecycle/` | Tauri command / event を隠す bridge。Tauri 外では NullBridge、dev の browser 実行では `VITE_BUTLY_DEV_BACKEND_URL` 指定時のみ DevBrowserBridge（[起動手順](../guides/desktop_dev_setup.ja.md)） |
 | `src/api/generated/` | `openapi/butly.openapi.json` から生成する API client / DTO。手編集禁止 |
 | `src/api/sse.ts` | split frame、LF / CRLF、UTF-8 境界と typed terminal event を検証する SSE parser |
 | `src/api/transport.ts` | 生成 client と POST-SSE parser を UI から隠す transport adapter |

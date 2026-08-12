@@ -11,6 +11,7 @@
 
 ## セットアップ
 
+- [デスクトップ UI の起動手順（通常 / 開発）](guides/desktop_dev_setup.ja.md)
 - [Discord 連携セットアップ](guides/discord_integration_setup.ja.md)
 - [LINE 連携セットアップ](guides/line_integration_setup.ja.md)
 
