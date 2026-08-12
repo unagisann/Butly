@@ -193,12 +193,12 @@ Tauri（WebKitGTK / WebView2）を使わず、UI だけをブラウザで確認�
 Raspberry Pi のような headless 環境でも使えます。
 
 ```bash
-# ターミナル 1: versioned API
-venv/bin/python -m butly_api.server --dev-cors --port 8000
+# ターミナル 1: versioned API（8000 は legacy Streamlit が使うので別 port）
+venv/bin/python -m butly_api.server --port 8010
 
-# ターミナル 2: Vite dev server（http://localhost:1420 を開く）
+# ターミナル 2: Vite dev server（http://127.0.0.1:1420 を開く）
 cd frontend
-VITE_BUTLY_DEV_BACKEND_URL=http://localhost:8000 pnpm dev
+BUTLY_DEV_BACKEND_URL=http://127.0.0.1:8010 pnpm dev
 ```
 
 起動モードの使い分け、SSH port forward、制約は

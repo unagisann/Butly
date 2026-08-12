@@ -2,8 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createLifecycleBridge } from "./bridge";
 
-const DEV_URL_ENV = "VITE_BUTLY_DEV_BACKEND_URL";
-
 function healthResponse(): Response {
   return new Response(
     JSON.stringify({ status: "ok", backend_version: "0.1.0", api_version: "v1" }),
@@ -12,24 +10,11 @@ function healthResponse(): Response {
 }
 
 afterEach(() => {
-  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
 
-describe("createLifecycleBridge", () => {
-  it("falls back to NullBridge when neither Tauri nor dev URL is present", async () => {
-    vi.stubEnv(DEV_URL_ENV, "");
-    const bridge = createLifecycleBridge();
-
-    await expect(bridge.getBackendState()).resolves.toEqual({
-      phase: "unavailable",
-      detail: "not_running_in_tauri",
-    });
-    await expect(bridge.getConnectionInfo()).resolves.toBeNull();
-  });
-
-  it("connects to the manually started sidecar when a dev URL is set", async () => {
-    vi.stubEnv(DEV_URL_ENV, "http://localhost:8000/");
+describe("createLifecycleBridge (dev browser)", () => {
+  it("probes the sidecar through the dev server's same-origin /api proxy", async () => {
     const fetchMock = vi.fn().mockResolvedValue(healthResponse());
     vi.stubGlobal("fetch", fetchMock);
 
@@ -42,33 +27,58 @@ describe("createLifecycleBridge", () => {
       detail: "dev_browser",
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/api/v1/health",
+      `${window.location.origin}/api/v1/health`,
       expect.anything(),
     );
-    // dev browser 経路は token を持たない（VITE_* は bundle に inline されるため）
-    await expect(bridge.getConnectionInfo()).resolves.toEqual({
-      baseUrl: "http://localhost:8000",
+  });
+
+  it("hands the transport a same-origin base URL and no token", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(healthResponse()));
+
+    // token を持たないのは意図。dev browser 経路は認証オフの loopback sidecar 専用。
+    await expect(createLifecycleBridge().getConnectionInfo()).resolves.toEqual({
+      baseUrl: window.location.origin,
       token: null,
     });
   });
 
-  it("reports unavailable instead of throwing when the dev sidecar is down", async () => {
-    vi.stubEnv(DEV_URL_ENV, "http://localhost:8000");
+  it("reports a missing proxy separately from a broken backend", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("", { status: 404 })),
+    );
+
+    await expect(createLifecycleBridge().getBackendState()).resolves.toEqual({
+      phase: "unavailable",
+      detail: "dev_backend_not_configured",
+    });
+  });
+
+  it("keeps other HTTP failures distinguishable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("", { status: 503 })),
+    );
+
+    await expect(createLifecycleBridge().getBackendState()).resolves.toEqual({
+      phase: "unavailable",
+      detail: "dev_health_http_503",
+    });
+  });
+
+  it("reports unavailable instead of throwing when the sidecar is down", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockRejectedValue(new TypeError("Failed to fetch")),
     );
 
-    const bridge = createLifecycleBridge();
-
-    await expect(bridge.getBackendState()).resolves.toEqual({
+    await expect(createLifecycleBridge().getBackendState()).resolves.toEqual({
       phase: "unavailable",
       detail: "dev_health_failed_TypeError",
     });
   });
 
   it("re-probes and notifies subscribers on restart", async () => {
-    vi.stubEnv(DEV_URL_ENV, "http://localhost:8000");
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response("", { status: 503 }))

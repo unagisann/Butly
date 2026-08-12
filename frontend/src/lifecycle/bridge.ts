@@ -3,8 +3,9 @@
 //   React は event 購読と command 呼び出しだけを行い、shell を spawn できない。
 // - テストや素の browser 実行では Tauri API が無いので、interface に切り出して
 //   差し替えられるようにする。
-// - dev 限定で、手動起動した sidecar へ browser から直接つなぐ DevBrowserBridge
-//   を選べる（Rust 側 `BUTLY_DEV_BACKEND_PORT` の browser 版）。
+// - dev では Vite dev server が `/api` を手動起動した sidecar へ proxy するので、
+//   Tauri 無しの browser 実行を DevBrowserBridge が同一 origin で受け持つ
+//   （Rust 側 `BUTLY_DEV_BACKEND_PORT` の browser 版）。
 //   手順は docs/guides/desktop_dev_setup.ja.md。
 
 import type { BackendState, ConnectionInfo } from "./types";
@@ -74,17 +75,21 @@ const DEV_HEALTH_TIMEOUT_MS = 3_000;
 /**
  * dev 限定。Tauri を使わず Vite dev server を素の browser で開くための bridge。
  *
- * - process は管理しない。`--dev-cors` で手動起動済みの sidecar を
- *   `GET /api/v1/health` で確認するだけ。restart は再 probe であって再起動ではない。
- * - token は扱わない（常に null）。`VITE_*` は bundle に inline されるため、
- *   この経路の対象は `BUTLY_DESKTOP_TOKEN` 未設定＝認証オフの loopback sidecar に限る。
+ * - backend は Vite dev server が `/api` を proxy する先（`BUTLY_DEV_BACKEND_URL`）。
+ *   browser から見ると同一 origin なので、base URL は常に現在の origin になる。
+ * - process は管理しない。手動起動済みの sidecar を `GET /api/v1/health` で
+ *   確認するだけで、restart は再 probe であって再起動ではない。
+ * - token は扱わない（常に null）。対象は `BUTLY_DESKTOP_TOKEN` 未設定＝認証オフの
+ *   loopback sidecar に限る。
  * - version 期待値の正本は Rust 側なので、version_mismatch の判定はしない。
  *   sidecar spawn / token 受け渡し / crash 復帰の確認は Tauri 実行でのみ行う。
  */
 class DevBrowserBridge implements LifecycleBridge {
   private readonly handlers = new Set<(state: BackendState) => void>();
 
-  constructor(private readonly baseUrl: string) {}
+  private get baseUrl(): string {
+    return window.location.origin;
+  }
 
   async getBackendState(): Promise<BackendState> {
     return this.probe();
@@ -116,7 +121,13 @@ class DevBrowserBridge implements LifecycleBridge {
         signal: controller.signal,
       });
       if (!response.ok) {
-        return { phase: "unavailable", detail: `dev_health_http_${response.status}` };
+        // proxy 未設定なら dev server 自身が 404 を返す。sidecar 側の 404 は
+        // health が消えたときだけなので、設定漏れとして扱ってよい。
+        const detail =
+          response.status === 404
+            ? "dev_backend_not_configured"
+            : `dev_health_http_${response.status}`;
+        return { phase: "unavailable", detail };
       }
       const body = (await response.json()) as {
         backend_version?: string;
@@ -137,20 +148,12 @@ class DevBrowserBridge implements LifecycleBridge {
   }
 }
 
-/** 末尾 `/` を落とす。空文字なら null（= dev browser 経路を使わない）。 */
-function normalizeDevBackendUrl(raw: string | undefined): string | null {
-  if (typeof raw !== "string") return null;
-  const normalized = raw.trim().replace(/\/+$/, "");
-  return normalized.length > 0 ? normalized : null;
-}
-
 export function createLifecycleBridge(): LifecycleBridge {
   if (hasTauri()) return new TauriBridge();
   // `import.meta.env.DEV` は build 時に定数化されるので、production bundle では
   // この block ごと（DevBrowserBridge 本体も）dead code として削除される。
-  if (import.meta.env.DEV) {
-    const devUrl = normalizeDevBackendUrl(import.meta.env.VITE_BUTLY_DEV_BACKEND_URL);
-    if (devUrl) return new DevBrowserBridge(devUrl);
-  }
+  // dev では常に同一 origin の `/api` を見る。proxy 未設定なら probe が
+  // `dev_backend_not_configured` を返すので、設定漏れは画面で分かる。
+  if (import.meta.env.DEV) return new DevBrowserBridge();
   return new NullBridge();
 }

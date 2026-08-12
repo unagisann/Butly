@@ -196,12 +196,12 @@ A development mode for working on the UI without Tauri (WebKitGTK / WebView2).
 It works on headless machines such as a Raspberry Pi.
 
 ```bash
-# Terminal 1: versioned API
-venv/bin/python -m butly_api.server --dev-cors --port 8000
+# Terminal 1: versioned API (8000 belongs to legacy Streamlit, so use another port)
+venv/bin/python -m butly_api.server --port 8010
 
-# Terminal 2: Vite dev server (open http://localhost:1420)
+# Terminal 2: Vite dev server (open http://127.0.0.1:1420)
 cd frontend
-VITE_BUTLY_DEV_BACKEND_URL=http://localhost:8000 pnpm dev
+BUTLY_DEV_BACKEND_URL=http://127.0.0.1:8010 pnpm dev
 ```
 
 For choosing between the startup modes, SSH port forwarding, and the

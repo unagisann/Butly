@@ -91,14 +91,15 @@
 - Attach Tauri without spawning: set `BUTLY_DEV_BACKEND_PORT=8000` (when using
   a token, set the same `BUTLY_DESKTOP_TOKEN` for both Tauri and the backend).
 - Open in a plain browser without Tauri: set
-  `VITE_BUTLY_DEV_BACKEND_URL=http://localhost:8000` for Vite. React then selects
-  `DevBrowserBridge` (`frontend/src/lifecycle/bridge.ts`) instead of Tauri
-  commands and derives readiness from `GET /api/v1/health`. It **never handles a
-  token** (`VITE_*` values are inlined into the bundle, so this path is only for a
-  loopback sidecar started without one). It also performs no process supervision
-  and no version check, so sidecar spawn, token handling, crash recovery, and
-  `version_mismatch` must be verified under Tauri. Production builds drop the
-  entire path as dead code.
+  `BUTLY_DEV_BACKEND_URL=http://127.0.0.1:8010` for Vite. The dev server proxies
+  `/api` to that sidecar, and React uses `DevBrowserBridge`
+  (`frontend/src/lifecycle/bridge.ts`) against the same origin, deriving
+  readiness from `GET /api/v1/health`. Same-origin means no CORS setup is needed
+  (`--dev-cors` only matters for debug summaries). It **never handles a token**
+  (this path is only for a loopback sidecar started without one). It also
+  performs no process supervision and no version check, so sidecar spawn, token
+  handling, crash recovery, and `version_mismatch` must be verified under Tauri.
+  Production builds drop the entire path as dead code.
 - `main.py` remains the compatibility entrypoint (legacy routers + wildcard
   CORS).
 - Step-by-step instructions:
