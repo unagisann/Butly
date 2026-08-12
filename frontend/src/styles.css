@@ -656,12 +656,23 @@ details[open] > summary .summary-chevron {
   border: 0;
 }
 
+/* notices と debug panel は条件付きで現れる子なので、行番号で高さを配る grid
+   だと、消えたときに後続が 1 行ずつ繰り上がって composer が画面外へ出る。
+   位置ではなく役割で伸縮を決める flex にして、子の増減から独立させる。 */
 .chat-page {
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   min-height: 0;
   background: var(--surface);
+}
+
+.chat-page > * {
+  flex: 0 0 auto;
+}
+
+.chat-page > .conversation-scroll {
+  flex: 1 1 auto;
 }
 
 .chat-notices:empty {
