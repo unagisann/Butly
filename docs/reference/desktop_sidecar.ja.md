@@ -82,7 +82,17 @@
   有効にする場合は `BUTLY_DEVELOPER_MODE=1` を指定する。production bundle は既定で無効。
 - Tauri を spawn なしで繋ぐ場合: `BUTLY_DEV_BACKEND_PORT=8000`（token を使うなら
   Tauri と backend の両方に同じ `BUTLY_DESKTOP_TOKEN` を設定）。
+- Tauri を使わず素の browser で開く場合: Vite 側に
+  `VITE_BUTLY_DEV_BACKEND_URL=http://localhost:8000`。React は Tauri command の
+  代わりに `DevBrowserBridge`（`frontend/src/lifecycle/bridge.ts`）を選び、
+  `GET /api/v1/health` で ready を判定する。**token は扱わない**（`VITE_*` は
+  bundle に inline されるため、token 未設定の loopback sidecar 専用）。process
+  管理と version 判定も行わないので、sidecar spawn / token / crash 復帰 /
+  `version_mismatch` の確認は Tauri 実行で行う。production build では
+  この経路ごと dead code として削除される。
 - `main.py` は従来どおりの互換 entrypoint（legacy routers + wildcard CORS）。
+- 手順の詳細は
+  [デスクトップ UI の起動手順](../guides/desktop_dev_setup.ja.md)。
 
 ## packaging
 

@@ -11,6 +11,7 @@ Documents are grouped by purpose:
 
 ## Setup Guides
 
+- [Desktop UI Startup (Normal And Development)](guides/desktop_dev_setup.md)
 - [Discord Integration Setup](guides/discord_integration_setup.md)
 - [LINE Integration Setup](guides/line_integration_setup.md)
 
