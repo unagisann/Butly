@@ -1,10 +1,10 @@
 # RAG評価・改善レポート — Web Console移行以降
 
-対象期間: 2026-07-26〜2026-08-13
+対象期間: 2026-07-26〜2026-08-15
 
 起点: LoCoMo Evaluation Web Console導入（commit `3f0ffa3`）
 
-集計日: 2026-08-13（JST）
+集計日: 2026-08-15（JST）
 
 この文書は、Colab上の試行錯誤を扱わず、評価をWeb Consoleへ移した時点からの
 RAG（Retrieval-Augmented Generation、検索拡張生成）の課題、テスト結果、改善、
@@ -89,7 +89,7 @@ Colab上の実行手順や試行履歴を再掲するものではない。
 | 検索専用 | QAを行わず、検索順位だけを比較 |
 | モデル変更参考 | 複数モデル要因を含み、単一要因へ帰属しない比較 |
 | 停止 | 未完了。完了runとスコア比較しない |
-| 未commit実験 | 現行作業ツリー由来。採用値や確定仕様として扱わない |
+| 実験 | 比較用の検索モードによる測定。採用値や確定仕様として扱わない |
 
 ### 2.2 評価パイプライン
 
@@ -116,7 +116,7 @@ cat5を除外し、conv-26ではoracleあり139問を分母にする。この2�
 
 実行artifact、会話本文、QA本文、DB、個人用instanceはgitignore対象のローカルデータであり、
 この文書やCSVへ複製していない。保存したのは集計値、run設定、判定に必要な件数だけである。
-実行artifactは再実行で上書きされ得るため、本レポートとCSVは2026-08-13時点の
+実行artifactは再実行で上書きされ得るため、本レポートとCSVは2026-08-15時点の
 スナップショットとして扱う。
 
 ## 3. Web Console移行以降に顕在化した課題
@@ -154,10 +154,10 @@ cat5を除外し、conv-26ではoracleあり139問を分母にする。この2�
 | 08-12 | `b4a6b92` | retrieval prep、Evidence Fusion、full-QA比較経路を正式導入 | landing直前のworktree評価でall-10 Recall@3 67.61%→70.84% | 比較基盤は採用、Fusionは既定OFFの候補 |
 | 08-12 | `e25d2c9` | 一時的QA失敗を1/2/4秒で最大3回再試行 | 大規模runの欠損耐性を改善 | 採用 |
 | 08-12 | `bb83aa3` | Evidence=0を失敗段階へ分類 | v31の46問を11 / 12 / 23へ分解 | 採用 |
-| 08-13 | 未commit | Fusion重み、候補50、MMRを探索 | conv-26で40/60と50/50が@3 108問で並ぶ、MMR差なし | all-10で不再現 |
-| 08-14 | 未commit | 候補pool 20対50を2×2で分離 | pool効果は@3最大+1問、@1は±0問 | pool 50不採用 |
-| 08-14 | 未commit | all-10 oracle 1,405問で重みを再測定 | @3は70/30の1,115問が最良、40/60は-7問 | 40/60不採用、70/30維持 |
-| 08-14 | 未commit | v34の+5.81ptを検索変化の有無で帰属 | 検索由来は+0.44pt、残り+5.37ptはモデル差 | 帰属修正 |
+| 08-13 | `587d5f7` | Fusion重み、候補50、MMRを探索 | conv-26で40/60と50/50が@3 108問で並ぶ、MMR差なし | all-10で不再現 |
+| 08-14 | `587d5f7` | 候補pool 20対50を2×2で分離 | pool効果は@3最大+1問、@1は±0問 | pool 50不採用 |
+| 08-14 | `587d5f7` | all-10 oracle 1,405問で重みを再測定 | @3は70/30の1,115問が最良、40/60は-7問 | 40/60不採用、70/30維持 |
+| 08-14 | `587d5f7` | v34の+5.81ptを検索変化の有無で帰属 | 検索由来は+0.44pt、残り+5.37ptはモデル差 | 帰属修正 |
 
 ## 5. LoCoMo QAの推移
 
@@ -336,11 +336,12 @@ Hybrid Evidence Fusionは、vector＋BM25のRRF順位とEvidence順位をもう�
 Recall@3は+3.23ポイント、Hit@3は+48問だった。一方、Recall@1と@20は同値なので、
 新しい根拠を候補poolへ追加したのではなく、主にtop20内の順位をtop3へ持ち上げた改善である。
 
-### 6.4 重み・MMR探索（未commit）
+### 6.4 重み・MMR探索（conv-26）
 
 MMR（Maximal Marginal Relevance）は、質問との関連度だけでなく候補同士の重複も抑え、
-候補を多様化する方法である。以下は候補pool 50、同一107カードの未commit実験であり、
-確定結果ではない。
+候補を多様化する方法である。以下は候補pool 50、同一107カードでの測定である。
+比較用の検索モードは`587d5f7`でlandingした。conv-26単独の結果であり、
+6.6のall-10で再現しなかった点に注意する。
 
 | 条件 | Recall@1 | Recall@3 | Recall@5 | Recall@20 | 判断 |
 |---|---:|---:|---:|---:|---|
@@ -475,7 +476,7 @@ policy比較に近いのは両arm top3のv8・v9であり、v7をpolicy単独の
 | Evidence Fusion | OFF | 70/30ほか | 検索改善を確認、QA継続 |
 | Fusion重み | 70/30 | 40/60・50/50をall-10で比較 | 70/30維持、40/60は@3-7問で不採用 |
 | 候補pool | 20 | 20対50を2×2で分離 | 50は@3最大+1問のため不採用 |
-| MMR | OFF | 未commit実験 | 効果未確認 |
+| MMR | OFF | conv-26で70/30と比較 | Recall差0のため効果未確認 |
 
 `retrieval_execution`と`injection_policy`の両方に`intent_gated`という値があるが、意味が違う。
 前者は主にMemoryProbe Layer 1のカード検索を「実行するか」、後者は検索した候補を
@@ -522,7 +523,7 @@ policy比較に近いのは両arm top3のv8・v9であり、v7をpolicy単独の
 | 一般reranker | vector top-NをCross-EncoderまたはLLMで再採点する仕組み | thresholdでabstain可能。Evidence rerankとは別 |
 | Evidence rerank | カード自身のEpisodeと`source_files`で逆引きしたRAW断片をembedding MaxPで再順位付け | pool外のカードは救えない |
 | Hybrid Evidence Fusion | vector＋BM25のRRF順位とEpisode/RAW順位を逆順位で再融合 | 70/30なら`0.7/base_rank + 0.3/evidence_rank`。`+k`なし |
-| MMR | 関連度と候補の多様性を両立する選択法 | 現時点では未commit・効果未確認 |
+| MMR | 関連度と候補の多様性を両立する選択法 | conv-26ではRecall差0。効果未確認 |
 | `retrieval_execution` | 主にMemoryProbe Layer 1カード検索を常時行うか、intentで絞るか | GlossaryやDeepを含む全検索の総スイッチではない |
 | `intent_gated` | Gatekeeperが必要と判断した時だけ記憶を注入 | 同名の検索実行値とは意味が違う |
 | `retrieval_assisted` | intentがnullでもhybrid候補にvector・BM25双方が支持するカードがあれば注入 | hybrid専用。vectorやdual-queryの両query一致では発火しない |
@@ -541,8 +542,8 @@ policy比較に近いのは両arm top3のv8・v9であり、v7をpolicy単独の
 1. **比較条件manifestを固定する。** dataset hash、質問ID、source memory run、カード件数と
    hash、埋め込みrecipe、モデル、temperature、prompt、検索候補数、注入上限、Fusion重み、
    RAG source、Judge設定を一つの比較キーとして保存する。
-2. **Fusionを同一条件で再評価する。** 未commitの50/50を確定値にせず、まず全10 sampleの
-   retrieval replayで再現し、その後同じ107カードのvector対Fusionをfull QAする。
+2. **Fusion重みの再評価は完了した（6.6）。** all-10で40/60・50/50はRecall@3を改善せず、
+   70/30を維持する。残るのは同じ107カードでのvector対Fusion 70/30のfull QA比較である。
 3. **回答品質を主判定にする。** Recall@3に加え、cat1-4、cat5、Semantic、prompt tokens、
    latency、rescue/harmを同時に合格条件へ入れる。
 4. **Evidence=0の段階別に直す。** 11問はカード生成、12問は候補生成、23問はrerankを改善し、
@@ -581,7 +582,9 @@ Google Sheetsには次のタブとグラフを用意している。
 | 用語集 | 固有名詞と指標の日本語説明 | — |
 
 新しいrunを追加する時は、既存行を書き換えず次の行へ追加し、未完了・部分Judge・
-未commitを状態列で区別する。グラフには比較可能な完了runだけを含める。
+後続結果に置き換えられた行を状態列で区別する。グラフには比較可能な完了runだけを含める。
+`improvements.csv`の`commit_or_status`には測定に使ったコードのcommitを入れ、
+run名からモデルを推定しない（v34は`qwen3_14b_web_v34`という名前でgemma-4-12b-itを使っていた）。
 
 ## 12. 根拠
 
