@@ -443,6 +443,7 @@ def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
         "injection_policy": str(
             request.get("injection_policy") or "intent_gated"
         ),
+        "vector_search_limit": int(request.get("vector_search_limit", 3)),
     }
     profile["context_levels"] = {
         "preset": "custom",
@@ -735,6 +736,7 @@ def validate_job_request(
         normalized[name] = value
 
     for name, default in (
+        ("vector_search_limit", 3),
         ("bm25_candidates", 20),
         ("vector_candidates", 20),
         ("dual_query_candidates", 15),

@@ -937,6 +937,7 @@ class TestSearchSettingsInProfile:
         assert profile["memory_probe"] == {
             "retrieval_execution": "always",
             "injection_policy": "intent_gated",
+            "vector_search_limit": 3,
         }
 
     def test_hybrid_run_writes_bm25_params(self):
@@ -960,7 +961,21 @@ class TestSearchSettingsInProfile:
         assert profile["memory_probe"] == {
             "retrieval_execution": "intent_gated",
             "injection_policy": "retrieval_assisted",
+            "vector_search_limit": 3,
         }
+
+    def test_injection_top_k_reaches_memory_probe(self):
+        """注入カード上限をtop3以外でもA/Bできること（top-k比較の前提）"""
+        profile = build_profile_payload(_request(vector_search_limit=5))
+
+        assert profile["memory_probe"]["vector_search_limit"] == 5
+
+    def test_injection_top_k_rejects_non_positive(self):
+        with pytest.raises(EvaluationJobError, match="vector_search_limit"):
+            validate_job_request(
+                _request(vector_search_limit=0),
+                output_dir=Path("/tmp"),
+            )
 
     def test_hybrid_evidence_fusion_writes_runtime_params(self):
         profile = build_profile_payload(

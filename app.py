@@ -2319,7 +2319,7 @@ def _render_evaluation_start_form(
             "dual_query は元発話とGatekeeper検索文を各15件検索してRRF融合する。"
             "検索の実行と注入判定は別設定。"
         )
-        search_cols = st.columns(3)
+        search_cols = st.columns(4)
         with search_cols[0]:
             search_mode_options = (
                 evaluation_config.get("search_modes")
@@ -2380,6 +2380,19 @@ def _render_evaluation_start_form(
                     "retrieval_assisted は分類器 null でもベクトルと BM25 の"
                     "両方が支持した候補を注入する（hybrid 専用）。"
                     "candidates は候補があれば注入する"
+                ),
+            )
+        with search_cols[3]:
+            vector_search_limit = st.number_input(
+                "注入カード上限 (top-k)",
+                min_value=1,
+                value=int(previous_request.get("vector_search_limit", 3)),
+                step=1,
+                key="evaluation_vector_search_limit",
+                help=(
+                    "候補から実際に回答へ渡すカード枚数。既定3。"
+                    "候補数(BM25/Vector candidates)とは別で、"
+                    "Recall@k の k はこの値に対応する"
                 ),
             )
         bm25_candidates = int(
@@ -2465,7 +2478,8 @@ def _render_evaluation_start_form(
                     f"{float(evidence_fusion_base_weight):.2f}。"
                     f"BM25/Vectorから統合した最大"
                     f"{max(int(bm25_candidates), int(vector_candidates))}件を"
-                    "Episode/RAW Evidenceで順位付けし、最終top3だけを注入します。"
+                    f"Episode/RAW Evidenceで順位付けし、"
+                    f"最終top{int(vector_search_limit)}だけを注入します。"
                     "初回結果はrun内へvector/hashのみ保存し、以後の質問で再利用します。"
                     "質問と候補Episode/RAWは選択中のEmbedding Connectionへ送信されます。"
                     "API keyは通常の認証だけに使い、cacheや評価artifactへ保存しません。"
@@ -2897,6 +2911,7 @@ def _render_evaluation_start_form(
             "search_mode": search_mode,
             "retrieval_execution": retrieval_execution,
             "injection_policy": injection_policy,
+            "vector_search_limit": int(vector_search_limit),
             "bm25_candidates": int(bm25_candidates),
             "vector_candidates": int(vector_candidates),
             "dual_query_candidates": int(dual_query_candidates),

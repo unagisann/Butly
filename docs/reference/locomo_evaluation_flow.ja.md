@@ -286,7 +286,10 @@ API keyはConnection認証にだけ使われ、cacheや成果物へ保存しな�
 各モードの一段目top3からのrescue/harmを分けて表示する。
 
 Webコンソールの「検索設定（Dual Query / Hybrid / Reranker）」から
-`search_mode` / `retrieval_execution` / `injection_policy` を選べる。
+`search_mode` / `retrieval_execution` / `injection_policy` /
+「注入カード上限 (top-k)」を選べる。top-kは`memory_probe.vector_search_limit`
+（既定3）へ書き込まれ、候補数（`bm25_candidates` / `vector_candidates`）とは別に
+「候補のうち何件を実際に回答へ渡すか」を決める。`Recall@k`のkはこの値に対応する。
 `hybrid`のときだけ`bm25_candidates` / `vector_candidates` / `rrf_k` /
 `bm25_max_df_ratio`の入力欄が出て、profile YAMLの`brain`・`memory_probe`
 セクションへ書き込まれる（`vector` runのprofileにBM25キーは残さない）。

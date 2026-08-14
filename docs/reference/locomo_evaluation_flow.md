@@ -289,7 +289,12 @@ progress, cache hits/misses/writes, completion/fallback, added latency, and
 top-three rescue/harm relative to the original vector order.
 
 The Web Console exposes `search_mode` / `retrieval_execution` /
-`injection_policy` under "検索設定（Dual Query / Hybrid / Reranker）"; `hybrid` additionally
+`injection_policy` / "注入カード上限 (top-k)" under
+"検索設定（Dual Query / Hybrid / Reranker）". The top-k input writes
+`memory_probe.vector_search_limit` (default 3), which decides how many of the
+retrieved candidates actually reach the answer — distinct from the candidate
+pool sizes (`bm25_candidates` / `vector_candidates`). The `k` in `Recall@k`
+corresponds to this value. `hybrid` additionally
 reveals `bm25_candidates` / `vector_candidates` / `rrf_k` /
 `bm25_max_df_ratio`. Those land in the profile YAML's `brain` and
 `memory_probe` sections (BM25 keys are omitted from `vector` runs), and the run
