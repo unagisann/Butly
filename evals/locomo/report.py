@@ -56,6 +56,7 @@ def _render(
     semantic_scores: Optional[dict] = None,
 ) -> str:
     official = scores.get("official", {})
+    scoring = scores.get("scoring", {})
     auxiliary = scores.get("auxiliary", {})
     butly = scores.get("butly", {})
     questions = scores.get("questions", [])
@@ -72,8 +73,12 @@ def _render(
         f"- Memory source: "
         f"{run_config.get('memory_reused_from_run_id') or 'built in this run'}",
         f"- Prompt locale: {run_config.get('locale') or 'legacy/unknown'}",
+        f"- Dataset locale: "
+        f"{run_config.get('dataset_locale') or scoring.get('locale') or 'unknown'}",
         f"- QA prompt version: "
         f"{run_config.get('qa_prompt_version') or 'legacy/unknown'}",
+        f"- Scoring: {scoring.get('method') or 'legacy/unknown'} "
+        f"(official-compatible: {scoring.get('official_compatible')})",
         f"- Scope: samples={_fmt_limit(run_config.get('sample_limit'))}, "
         f"sessions={_fmt_limit(run_config.get('session_limit'))}, "
         f"questions={_fmt_limit(run_config.get('question_limit'))}",
@@ -82,7 +87,11 @@ def _render(
         f"{_fmt(butly.get('qa_retry_question_rate'))} of questions "
         f"({_fmt_distribution(butly.get('qa_retry_reason_distribution'))})",
         "",
-        "## Official-compatible scores",
+        (
+            "## Japanese-localized scores (not comparable to official English)"
+            if scoring.get("locale") == "ja"
+            else "## Official-compatible scores"
+        ),
         "",
         f"- Overall score: {_fmt(official.get('overall'))}",
         f"- No-information accuracy (category 5): "

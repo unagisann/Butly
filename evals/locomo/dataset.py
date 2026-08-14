@@ -16,6 +16,8 @@ _OFFICIAL_DATETIME_FORMATS = (
     "%I:%M %p on %d %B %Y",
 )
 _NO_INFORMATION_ANSWER = "No information available"
+_JA_NO_INFORMATION_ANSWER = "情報がありません"
+_JAPANESE_TEXT = re.compile(r"[\u3040-\u30ff\u3400-\u9fff]")
 
 
 class LocomoDatasetError(ValueError):
@@ -54,6 +56,24 @@ class LocomoConversation:
     speaker_b: str
     sessions: list[LocomoSession]
     questions: list[LocomoQuestion]
+
+
+def detect_dataset_locale(conversations: list[LocomoConversation]) -> str:
+    """Infer the benchmark language from its questions.
+
+    LoCoMo questions are the stable evaluation input and are less likely than
+    names or image metadata to contain isolated non-Latin characters. A simple
+    majority therefore keeps locale selection dependency-free and deterministic.
+    """
+    questions = [
+        question.question
+        for conversation in conversations
+        for question in conversation.questions
+    ]
+    if not questions:
+        return "en"
+    japanese = sum(bool(_JAPANESE_TEXT.search(question)) for question in questions)
+    return "ja" if japanese > len(questions) / 2 else "en"
 
 
 def load_dataset(path: Path) -> list[LocomoConversation]:
@@ -241,7 +261,11 @@ def _parse_question(
             raise LocomoDatasetError(
                 f"{context}.answer may be null only for category 5"
             )
-        answer = _NO_INFORMATION_ANSWER
+        answer = (
+            _JA_NO_INFORMATION_ANSWER
+            if _JAPANESE_TEXT.search(question)
+            else _NO_INFORMATION_ANSWER
+        )
     elif isinstance(raw_answer, bool) or not isinstance(raw_answer, (str, int, float)):
         raise LocomoDatasetError(
             f"{context}.answer must be text, number, or null for category 5"

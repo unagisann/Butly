@@ -86,7 +86,8 @@ instances tree. The bundled mini fixture is synthetic.
 - `checkpoint.py` — atomic per-session/Sleeptime/QA checkpoints with run-id
   validation and corruption detection.
 - `config.py`, `cli.py` — typed CLI configuration (workflow, QA mode, exact
-  sample IDs/session/question scope, and locale; rebuildable from
+  sample IDs/session/question scope, prompt locale, and detected dataset
+  locale; rebuildable from
   `run_config.json` for resume),
   profile YAML loading, and the `run` / `resume` / `rerun-qa` / `score` /
   `judge` / `report` subcommands. `judge` evaluates a completed run through a
@@ -101,13 +102,14 @@ instances tree. The bundled mini fixture is synthetic.
 `independent` QA (the comparison default) starts every question from the same
 post-Sleeptime state. `sequential` QA retains QA turns for operational
 endurance testing. A full LoCoMo run explicitly selects all samples, sessions,
-and questions. Locale precedence is CLI `--locale`, then profile top-level
-`locale`, then `en`. Locale selects Butly's internal prompt and memory-output
-language; it does not translate LoCoMo questions or gold answers. QA answers
-remain English for compatibility with the official token-F1 scorer. A Japanese
-benchmark requires a separately translated dataset and Japanese-compatible
-scoring. Evaluation instances disable local `user_prompts.json` overrides for
-reproducibility.
+and questions. Prompt-locale precedence is CLI `--locale`, then profile
+top-level `locale`, then the detected dataset locale, then `en`. Runtime never
+translates the questions or gold answers. The separately persisted
+`dataset_locale` selects the QA-answer instruction and scorer: English uses
+official-compatible Porter token F1, while a translated Japanese dataset uses
+NFKC mixed-script character F1. The Japanese score is a same-dataset diagnostic
+and is not numerically comparable with the official English result. Evaluation
+instances disable local `user_prompts.json` overrides for reproducibility.
 
 ---
 

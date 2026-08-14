@@ -80,6 +80,19 @@ def test_qa_system_instruction_is_grounded_and_has_no_unexpanded_slots():
     assert "{question}" not in prompt
 
 
+def test_japanese_qa_system_instruction_requires_terse_japanese_answers():
+    prompt = _build_qa_system_instruction("Maya", "ja")
+
+    assert prompt.startswith("あなたは会話相手のMayaです")
+    assert "提示された記憶コンテキストだけ" in prompt
+    assert "元の会話日時を基準" in prompt
+    assert "回答は日本語" in prompt
+    assert "複数の事実を答える場合は読点「、」" in prompt
+    assert "2023年5月7日" in prompt
+    assert "正確に「情報がありません」" in prompt
+    assert "外部のWeb知識は使用しない" in prompt
+
+
 class FakeProvider:
     """One provider surface reused by every existing Butly model role."""
 

@@ -32,7 +32,7 @@ from .config import (
     load_profile,
     resolve_evaluation_locale,
 )
-from .dataset import LocomoConversation, load_dataset
+from .dataset import LocomoConversation, detect_dataset_locale, load_dataset
 from .progress import ProgressReporter
 from .qa_runner import QARunner
 from .sleeptime_runner import SleeptimeRunner
@@ -49,6 +49,7 @@ _SAFE_INSTANCE_NAME = re.compile(r"^[A-Za-z0-9_]+$")
 _MAX_READABLE_SLUG_LENGTH = 96
 _MAX_LEGACY_INSTANCE_NAME_LENGTH = 180
 LOCOMO_QA_PROMPT_VERSION = "grounded-memory-v3"
+LOCOMO_JA_QA_PROMPT_VERSION = "grounded-memory-ja-v1"
 
 
 @dataclass(frozen=True)
@@ -68,8 +69,12 @@ async def run_evaluation(
     progress_reporter: Optional[ProgressReporter] = None,
 ) -> EvaluationRunResult:
     """Start a fresh run without importing any HTTP or UI layer."""
-    config, profile = _resolve_config_and_profile(config)
-    conversations = _select_conversations(load_dataset(config.dataset_path), config)
+    loaded_conversations = load_dataset(config.dataset_path)
+    config, profile = _resolve_config_and_profile(
+        config,
+        detect_dataset_locale(loaded_conversations),
+    )
+    conversations = _select_conversations(loaded_conversations, config)
     workspace = EvaluationWorkspace.create(
         config.output_dir,
         run_id=config.run_id,
@@ -99,8 +104,12 @@ async def resume_evaluation(
         workspace.run_config_path.read_text(encoding="utf-8")
     )
     config = ReplayConfig.from_json_dict(run_config)
-    config, profile = _resolve_config_and_profile(config)
-    conversations = _select_conversations(load_dataset(config.dataset_path), config)
+    loaded_conversations = load_dataset(config.dataset_path)
+    config, profile = _resolve_config_and_profile(
+        config,
+        detect_dataset_locale(loaded_conversations),
+    )
+    conversations = _select_conversations(loaded_conversations, config)
     checkpoint = Checkpoint.load(workspace.run_id, workspace.checkpoints_dir)
     if run_config.get("stage3_bootstrap"):
         _assert_stage3_bootstrap_completed(workspace, checkpoint)
@@ -211,8 +220,12 @@ async def rerun_qa_from_memory(
         profile_path=Path(profile_path) if profile_path is not None else None,
         clean=False,
     )
-    config, profile = _resolve_config_and_profile(config)
-    conversations = _select_conversations(load_dataset(config.dataset_path), config)
+    loaded_conversations = load_dataset(config.dataset_path)
+    config, profile = _resolve_config_and_profile(
+        config,
+        detect_dataset_locale(loaded_conversations),
+    )
+    conversations = _select_conversations(loaded_conversations, config)
     _verify_reused_dataset(source_workspace, config.dataset_path)
 
     source_checkpoint = Checkpoint.load(
@@ -783,7 +796,10 @@ def _create_instance(
     config,
     profile: Optional[EvaluationProfile] = None,
 ) -> None:
-    template = _build_qa_system_instruction(conversation.speaker_b)
+    template = _build_qa_system_instruction(
+        conversation.speaker_b,
+        config.dataset_locale or config.locale or "en",
+    )
     success, message = runtime.instance_manager.create_instance(
         instance_name,
         template,
@@ -808,7 +824,7 @@ def _create_instance(
     )
 
 
-def _build_qa_system_instruction(speaker_b: str) -> str:
+def _build_qa_system_instruction(speaker_b: str, locale: str = "en") -> str:
     """Build the versioned, memory-grounded LoCoMo answer policy.
 
     Grounding (use every memory section, interpret tense relative to the
@@ -818,6 +834,32 @@ def _build_qa_system_instruction(speaker_b: str) -> str:
     clause and Gemini regressed from exact facts to full sentences
     (EM 0.40 -> 0.00). v3 restores the fact-only instruction.
     """
+    if locale == "ja":
+        return (
+            f"あなたは会話相手の{speaker_b}です。"
+            "提示された記憶コンテキストだけを使って評価質問に答えてください。"
+            "プロンプト内の「Past Memories (RAG)」、"
+            "「Source Conversation Excerpts」、"
+            "「Related Matured Memories (active nodes)」を含むすべての記憶欄を、"
+            "取得済みの会話記憶として扱ってください。質問へ直接答えられる情報が"
+            "いずれかにあれば、その情報を使ってください。記憶は過去の会話日時を"
+            "基準に出来事を説明している場合があります。時制は現在の実日時ではなく、"
+            "元の会話日時を基準に解釈してください。出来事が起きた時期や予定を"
+            "尋ねられた場合は、記憶レコードの保存日や現在日ではなく、その出来事に"
+            "ついて述べられた日付を使ってください。"
+            "回答は日本語で、質問された事実だけを可能な限り短く答えてください。"
+            "説明、理由、完全な文章、質問の言い換えは付けないでください。"
+            "複数の事実を答える場合は読点「、」で区切ってください。"
+            "例えば「彼女は2022年に描きました」ではなく「2022年」、"
+            "「キャロラインは独身です」ではなく「独身」と答えてください。"
+            "日付は「2023年5月7日」のような日本語の年月日で書き、"
+            "「2023-05-07」のようなISO形式や英語の日付形式は使わないでください。"
+            "提示されたどの記憶にも質問へ答える情報がない場合に限り、"
+            "正確に「情報がありません」と答えてください。"
+            "外部のWeb知識は使用しないでください。"
+        )
+    if locale != "en":
+        raise ValueError(f"unsupported LoCoMo QA locale: {locale!r}")
     return (
         f"You are {speaker_b}, a conversational companion. "
         "Answer the evaluation question using only the memory context supplied "
@@ -911,7 +953,10 @@ def _configure_instance(
     if qa_speaker is not None:
         updated, update_message = runtime.instance_manager.update_instruction(
             instance_name,
-            _build_qa_system_instruction(qa_speaker),
+            _build_qa_system_instruction(
+                qa_speaker,
+                config.dataset_locale or config.locale or "en",
+            ),
         )
         if not updated:
             raise RuntimeError(
@@ -1301,7 +1346,15 @@ def _write_run_metadata(
             "schema_version": 2,
             "created_at": datetime.now(timezone.utc).isoformat(),
             **config.to_json_dict(),
-            "qa_prompt_version": LOCOMO_QA_PROMPT_VERSION,
+            "qa_prompt_version": (
+                LOCOMO_JA_QA_PROMPT_VERSION
+                if config.dataset_locale == "ja"
+                else LOCOMO_QA_PROMPT_VERSION
+            ),
+            "dataset_locale": (
+                config.dataset_locale
+                or detect_dataset_locale(conversations)
+            ),
             "judge": judge,
             "selected_sample_ids": [item.sample_id for item in conversations],
         }
@@ -1336,17 +1389,24 @@ def _write_run_metadata(
 
 def _resolve_config_and_profile(
     config: ReplayConfig,
+    dataset_locale: Optional[str] = None,
 ) -> tuple[ReplayConfig, Optional[EvaluationProfile]]:
     profile = (
         load_profile(config.profile_path)
         if config.profile_path is not None
         else None
     )
+    effective_dataset_locale = dataset_locale or config.dataset_locale
     locale = resolve_evaluation_locale(
         config.locale,
         profile.locale if profile is not None else None,
+        effective_dataset_locale,
     )
-    return replace(config, locale=locale), profile
+    return replace(
+        config,
+        locale=locale,
+        dataset_locale=effective_dataset_locale,
+    ), profile
 
 
 def _instance_name(sample_id: str) -> str:

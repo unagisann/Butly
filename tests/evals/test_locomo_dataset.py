@@ -9,6 +9,7 @@ import pytest
 
 from evals.locomo.dataset import (
     LocomoDatasetError,
+    detect_dataset_locale,
     load_dataset,
     parse_dataset,
 )
@@ -53,6 +54,21 @@ def test_questions_get_stable_ids_and_normalized_answers():
     assert [question.category for question in questions] == [1, 2, 3, 4, 5]
     assert questions[4].answer == "No information available"
     assert questions[4].evidence == []
+
+
+def test_detects_japanese_dataset_and_localizes_null_no_information_answer():
+    payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    for index, question in enumerate(payload[0]["qa"], start=1):
+        question["question"] = f"日本語の質問{index}ですか？"
+
+    conversations = parse_dataset(payload)
+
+    assert detect_dataset_locale(conversations) == "ja"
+    assert conversations[0].questions[4].answer == "情報がありません"
+
+
+def test_detects_english_dataset():
+    assert detect_dataset_locale(load_dataset(FIXTURE)) == "en"
 
 
 def test_parse_does_not_mutate_source_payload():

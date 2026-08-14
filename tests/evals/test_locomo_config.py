@@ -31,6 +31,7 @@ def test_replay_config_roundtrip_preserves_all_limits_and_mode(tmp_path):
         qa_mode="independent",
         workflow="retrieval_prep",
         locale="ja",
+        dataset_locale="ja",
     )
 
     restored = ReplayConfig.from_json_dict(config.to_json_dict())
@@ -41,6 +42,7 @@ def test_replay_config_roundtrip_preserves_all_limits_and_mode(tmp_path):
     assert restored.qa_mode == "independent"
     assert restored.workflow == "retrieval_prep"
     assert restored.locale == "ja"
+    assert restored.dataset_locale == "ja"
 
 
 def test_old_run_config_resumes_in_sequential_mode(tmp_path):
@@ -338,7 +340,12 @@ context_levels:
 def test_locale_resolution_prefers_cli_then_profile_then_english():
     assert resolve_evaluation_locale(" ja ", "en") == "ja"
     assert resolve_evaluation_locale(None, "ja") == "ja"
+    assert resolve_evaluation_locale(None, None, "ja") == "ja"
     assert resolve_evaluation_locale(None, None) == "en"
+
+
+def test_explicit_prompt_locale_may_differ_from_dataset_locale():
+    assert resolve_evaluation_locale("en", None, "ja") == "en"
 
 
 def test_run_config_resolves_and_persists_profile_locale(tmp_path):

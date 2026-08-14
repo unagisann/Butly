@@ -33,6 +33,7 @@
 
 - [プロジェクト状況スナップショット](history/project_status.ja.md)
 - [更新履歴](history/recent_changes.ja.md)
+- [RAG評価・改善レポート（Web Console移行以降）](history/rag_evaluation_report.ja.md)
 
 ## 計画書
 

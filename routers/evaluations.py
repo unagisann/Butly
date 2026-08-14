@@ -114,15 +114,20 @@ class RetrievalReplayRequest(BaseModel):
             "evidence_rerank",
             "hybrid_evidence_rerank",
             "hybrid_evidence_fusion",
+            "hybrid_evidence_fusion_w40",
+            "hybrid_evidence_fusion_w50",
+            "hybrid_evidence_fusion_w60",
+            "hybrid_evidence_fusion_mmr",
         ]
     ] = Field(
-        default_factory=lambda: ["bm25"], min_length=1, max_length=8
+        default_factory=lambda: ["bm25"], min_length=1, max_length=12
     )
     limit: int = Field(default=20, ge=1, le=100)
     reranker: Optional[RoleModelRequest] = None
     reranker_max_candidate_chars: int = Field(default=1600, ge=100, le=10000)
     evidence_raw_chunk_chars: int = Field(default=1800, ge=200, le=10000)
     evidence_fusion_base_weight: float = Field(default=0.7, ge=0.0, le=1.0)
+    evidence_mmr_lambda: float = Field(default=0.8, ge=0.0, le=1.0)
 
 
 class DialogueABStartRequest(BaseModel):
@@ -363,6 +368,7 @@ def replay_run_retrieval(request: RetrievalReplayRequest) -> dict[str, Any]:
             "evidence_fusion_base_weight": (
                 request.evidence_fusion_base_weight
             ),
+            "evidence_mmr_lambda": request.evidence_mmr_lambda,
         }
         if request.reranker is not None:
             replay_options["reranker"] = request.reranker.model_dump(

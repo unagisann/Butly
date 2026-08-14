@@ -59,6 +59,7 @@ class ReplayConfig:
     qa_mode: str = "independent"
     workflow: str = "full"
     locale: Optional[str] = None
+    dataset_locale: Optional[str] = None
     model_name: Optional[str] = None
     connection: Optional[str] = None
     profile_path: Optional[Path] = None
@@ -83,6 +84,13 @@ class ReplayConfig:
             raise ValueError(
                 f"locale must be one of {SUPPORTED_EVALUATION_LOCALES}"
             )
+        if self.dataset_locale is not None and (
+            not isinstance(self.dataset_locale, str)
+            or self.dataset_locale.strip() not in SUPPORTED_EVALUATION_LOCALES
+        ):
+            raise ValueError(
+                f"dataset_locale must be one of {SUPPORTED_EVALUATION_LOCALES}"
+            )
 
     def to_json_dict(self) -> dict:
         return {
@@ -96,6 +104,7 @@ class ReplayConfig:
             "qa_mode": self.qa_mode,
             "workflow": self.workflow,
             "locale": self.locale,
+            "dataset_locale": self.dataset_locale,
             "model_name": self.model_name,
             "connection": self.connection,
             "profile_path": (
@@ -132,6 +141,7 @@ class ReplayConfig:
             qa_mode=str(qa_mode),
             workflow=str(payload.get("workflow") or "full"),
             locale=_optional_text(payload.get("locale")),
+            dataset_locale=_optional_text(payload.get("dataset_locale")),
             model_name=payload.get("model_name"),
             connection=payload.get("connection"),
             profile_path=(
@@ -269,13 +279,21 @@ def _load_reranker_section(path: Path, value: Any) -> dict[str, Any]:
 def resolve_evaluation_locale(
     cli_locale: Optional[str],
     profile_locale: Optional[str],
+    dataset_locale: Optional[str] = None,
 ) -> str:
-    """Resolve CLI > profile > English for reproducible evaluation runs."""
-    return (
+    """Resolve CLI > profile > detected dataset language > English.
+
+    The prompt locale may intentionally differ from the dataset language for
+    cross-language memory experiments. QA output and scoring use the separately
+    persisted ``dataset_locale``.
+    """
+    resolved = (
         (cli_locale.strip() if cli_locale is not None else None)
         or (profile_locale.strip() if profile_locale is not None else None)
+        or (dataset_locale.strip() if dataset_locale is not None else None)
         or DEFAULT_EVALUATION_LOCALE
     )
+    return resolved
 
 
 def _validate_optional_limit(name: str, value: Optional[int]) -> None:

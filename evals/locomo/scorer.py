@@ -1,4 +1,4 @@
-"""Official-compatible LoCoMo scoring plus Butly-specific auxiliary metrics.
+"""English official-compatible and Japanese-localized LoCoMo scoring.
 
 Question-level rules follow the official task_eval/evaluation.py:
 
@@ -13,6 +13,11 @@ Question-level rules follow the official task_eval/evaluation.py:
 
 Exact match and answer containment are auxiliary debug metrics, not part of
 the official score.
+
+Japanese runs use dependency-free mixed-script tokenization: NFKC-normalized
+Latin/number runs stay whole while Japanese characters become individual
+tokens. This is a localized diagnostic and is not numerically comparable with
+the official English score.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from pathlib import Path
 import re
 import sqlite3
 import string
+import unicodedata
 from typing import Any, Optional
 
 from .artifacts import append_jsonl, write_json
@@ -31,6 +37,13 @@ from .stemming import stem
 
 
 NO_INFORMATION_PATTERNS = ("no information available", "not mentioned")
+JA_NO_INFORMATION_PATTERNS = (
+    re.compile(r"情報(?:が|は)?(?:あり|見つかり|得られ)?(?:ません|ない)"),
+    re.compile(r"情報なし"),
+    re.compile(r"(?:記載|言及)(?:が|は)?(?:されて)?(?:いません|ない)"),
+    re.compile(r"(?:分かり|わかり)ません"),
+    re.compile(r"不明(?:です)?"),
+)
 CORRECTNESS_THRESHOLD = 0.5
 
 _ARTICLES = re.compile(r"\b(a|an|the|and)\b")
@@ -41,20 +54,37 @@ class ScoringError(ValueError):
     """Raised when a run directory lacks the artifacts needed for scoring."""
 
 
-def normalize_answer(text: Any) -> str:
+def normalize_answer(text: Any, locale: str = "en") -> str:
+    if locale == "ja":
+        value = unicodedata.normalize("NFKC", str(text)).lower()
+        return "".join(
+            char
+            for char in value
+            if not char.isspace()
+            and not unicodedata.category(char).startswith(("P", "S"))
+        )
+    if locale != "en":
+        raise ValueError(f"unsupported LoCoMo scoring locale: {locale!r}")
     value = str(text).replace(",", "").lower()
     value = "".join(char for char in value if char not in _PUNCTUATION)
     value = _ARTICLES.sub(" ", value)
     return " ".join(value.split())
 
 
-def stemmed_tokens(text: Any) -> list[str]:
-    return [stem(token) for token in normalize_answer(text).split()]
+def stemmed_tokens(text: Any, locale: str = "en") -> list[str]:
+    normalized = normalize_answer(text, locale)
+    if locale == "ja":
+        return re.findall(r"[a-z0-9]+|[^\x00-\x7f]", normalized)
+    return [stem(token) for token in normalized.split()]
 
 
-def token_f1(prediction: Any, ground_truth: Any) -> float:
-    prediction_tokens = stemmed_tokens(prediction)
-    ground_truth_tokens = stemmed_tokens(ground_truth)
+def token_f1(
+    prediction: Any,
+    ground_truth: Any,
+    locale: str = "en",
+) -> float:
+    prediction_tokens = stemmed_tokens(prediction, locale)
+    ground_truth_tokens = stemmed_tokens(ground_truth, locale)
     if not prediction_tokens or not ground_truth_tokens:
         return 0.0
     common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
@@ -66,54 +96,97 @@ def token_f1(prediction: Any, ground_truth: Any) -> float:
     return (2 * precision * recall) / (precision + recall)
 
 
-def exact_match(prediction: Any, ground_truth: Any) -> bool:
-    return set(normalize_answer(prediction).split()) == set(
-        normalize_answer(ground_truth).split()
+def exact_match(
+    prediction: Any,
+    ground_truth: Any,
+    locale: str = "en",
+) -> bool:
+    if locale == "ja":
+        return normalize_answer(prediction, locale) == normalize_answer(
+            ground_truth,
+            locale,
+        )
+    return set(normalize_answer(prediction, locale).split()) == set(
+        normalize_answer(ground_truth, locale).split()
     )
 
 
-def answer_contained(prediction: Any, ground_truth: Any) -> bool:
-    gold = normalize_answer(ground_truth)
-    return bool(gold) and gold in normalize_answer(prediction)
+def answer_contained(
+    prediction: Any,
+    ground_truth: Any,
+    locale: str = "en",
+) -> bool:
+    gold = normalize_answer(ground_truth, locale)
+    return bool(gold) and gold in normalize_answer(prediction, locale)
 
 
-def claims_no_information(prediction: Any) -> bool:
+def claims_no_information(prediction: Any, locale: str = "en") -> bool:
     text = str(prediction).lower()
+    if locale == "ja":
+        normalized = unicodedata.normalize("NFKC", text)
+        return any(pattern.search(normalized) for pattern in JA_NO_INFORMATION_PATTERNS)
+    if locale != "en":
+        raise ValueError(f"unsupported LoCoMo scoring locale: {locale!r}")
     return any(pattern in text for pattern in NO_INFORMATION_PATTERNS)
 
 
-def _multi_answer_f1(prediction: Any, ground_truth: Any) -> float:
-    gold_parts = [part.strip() for part in str(ground_truth).split(",") if part.strip()]
+def _answer_parts(value: Any, locale: str) -> list[str]:
+    separator = r"[,、，]" if locale == "ja" else r","
+    return [part.strip() for part in re.split(separator, str(value)) if part.strip()]
+
+
+def _multi_answer_f1(
+    prediction: Any,
+    ground_truth: Any,
+    locale: str = "en",
+) -> float:
+    gold_parts = _answer_parts(ground_truth, locale)
     predicted_parts = [
-        part.strip() for part in str(prediction).split(",") if part.strip()
+        part.strip() for part in _answer_parts(prediction, locale) if part.strip()
     ]
     if not gold_parts:
         return 0.0
     if not predicted_parts:
         predicted_parts = [str(prediction)]
     return sum(
-        max(token_f1(part, gold) for part in predicted_parts)
+        max(token_f1(part, gold, locale) for part in predicted_parts)
         for gold in gold_parts
     ) / len(gold_parts)
 
 
-def official_score(prediction: Any, ground_truth: Any, category: int) -> float:
+def official_score(
+    prediction: Any,
+    ground_truth: Any,
+    category: int,
+    locale: str = "en",
+) -> float:
     if category == 5:
-        return 1.0 if claims_no_information(prediction) else 0.0
+        return 1.0 if claims_no_information(prediction, locale) else 0.0
     if category == 1:
-        return _multi_answer_f1(prediction, ground_truth)
+        return _multi_answer_f1(prediction, ground_truth, locale)
     if category == 3:
-        ground_truth = str(ground_truth).split(";")[0].strip()
-    return token_f1(prediction, ground_truth)
+        separator = r"[;；。]" if locale == "ja" else r";"
+        ground_truth = re.split(separator, str(ground_truth), maxsplit=1)[0].strip()
+    return token_f1(prediction, ground_truth, locale)
 
 
-def score_question(prediction: Any, ground_truth: Any, category: int) -> dict:
+def score_question(
+    prediction: Any,
+    ground_truth: Any,
+    category: int,
+    locale: str = "en",
+) -> dict:
     return {
-        "official_score": official_score(prediction, ground_truth, category),
-        "token_f1": token_f1(prediction, ground_truth),
-        "exact_match": exact_match(prediction, ground_truth),
-        "answer_contained": answer_contained(prediction, ground_truth),
-        "no_information_claimed": claims_no_information(prediction),
+        "official_score": official_score(
+            prediction,
+            ground_truth,
+            category,
+            locale,
+        ),
+        "token_f1": token_f1(prediction, ground_truth, locale),
+        "exact_match": exact_match(prediction, ground_truth, locale),
+        "answer_contained": answer_contained(prediction, ground_truth, locale),
+        "no_information_claimed": claims_no_information(prediction, locale),
     }
 
 
@@ -132,14 +205,16 @@ def score_run(run_dir: Path, dataset_path: Optional[Path] = None) -> dict:
     )
     replay_rows = _read_jsonl_optional(run_path / "results" / "replay_log.jsonl")
 
+    locale = _scoring_locale(run_path, qa_rows)
     provenance = _load_provenance(run_path, qa_rows)
-    question_scores = [_score_row(row, provenance) for row in qa_rows]
+    question_scores = [_score_row(row, provenance, locale) for row in qa_rows]
     scores = {
         "schema_version": 1,
         "run_id": _run_id(run_path, qa_rows),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "question_count": len(question_scores),
-        "official": _official_aggregate(question_scores),
+        "scoring": _scoring_metadata(locale),
+        "official": _official_aggregate(question_scores, locale),
         "auxiliary": _auxiliary_aggregate(question_scores),
         "butly": _butly_aggregate(question_scores, sleeptime_rows),
         "questions": question_scores,
@@ -187,10 +262,60 @@ def _run_id(run_path: Path, qa_rows: list[dict]) -> str:
     return str(qa_rows[0].get("run_id", run_path.name))
 
 
-def _score_row(row: dict, provenance: Optional[dict]) -> dict:
+def _scoring_locale(run_path: Path, qa_rows: list[dict]) -> str:
+    config_path = run_path / "run_config.json"
+    if config_path.is_file():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ScoringError(f"Invalid run_config.json: {exc}") from exc
+        # Legacy ``locale`` selected the internal prompt language and could
+        # differ from the dataset. Only the explicit field is safe here.
+        locale = config.get("dataset_locale")
+        if locale in {"en", "ja"}:
+            return str(locale)
+        if locale is not None:
+            raise ScoringError(f"Unsupported scoring locale: {locale!r}")
+
+    japanese = sum(
+        bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff]", str(row.get("question") or "")))
+        for row in qa_rows
+    )
+    return "ja" if japanese > len(qa_rows) / 2 else "en"
+
+
+def _scoring_metadata(locale: str) -> dict:
+    if locale == "ja":
+        return {
+            "locale": "ja",
+            "method": "localized-ja-mixed-script-f1-v1",
+            "official_compatible": False,
+            "tokenization": (
+                "NFKC; punctuation/space removal; Latin and number runs; "
+                "Japanese character tokens"
+            ),
+        }
+    return {
+        "locale": "en",
+        "method": "official-compatible-en-porter-f1",
+        "official_compatible": True,
+        "tokenization": "official normalization plus Porter stemming",
+    }
+
+
+def _score_row(
+    row: dict,
+    provenance: Optional[dict],
+    locale: str = "en",
+) -> dict:
     prediction = row.get("prediction") or ""
     category = int(row.get("category", 0))
-    graded = score_question(prediction, row.get("expected_answer", ""), category)
+    graded = score_question(
+        prediction,
+        row.get("expected_answer", ""),
+        category,
+        locale,
+    )
 
     diagnostics = row.get("diagnostics") or {}
     rag = diagnostics.get("rag") or {}
@@ -207,6 +332,7 @@ def _score_row(row: dict, provenance: Optional[dict]) -> dict:
         "question_id": row.get("question_id"),
         "sample_id": row.get("sample_id"),
         "category": category,
+        "scoring_locale": locale,
         "question": row.get("question"),
         "expected_answer": row.get("expected_answer"),
         "prediction": prediction,
@@ -365,7 +491,10 @@ def _oracle_available(row: dict, provenance: Optional[dict]) -> Optional[bool]:
     )
 
 
-def _official_aggregate(question_scores: list[dict]) -> dict:
+def _official_aggregate(
+    question_scores: list[dict],
+    locale: str = "en",
+) -> dict:
     by_category: dict[str, dict] = {}
     for category in sorted({entry["category"] for entry in question_scores}):
         subset = [e for e in question_scores if e["category"] == category]
@@ -382,7 +511,18 @@ def _official_aggregate(question_scores: list[dict]) -> dict:
             if adversarial
             else None
         ),
-        "stemming": "porter-original (nltk-compatible except rare extensions)",
+        "official_compatible": locale == "en",
+        "scoring_locale": locale,
+        "stemming": (
+            "porter-original (nltk-compatible except rare extensions)"
+            if locale == "en"
+            else None
+        ),
+        "tokenization": (
+            "mixed-script Japanese character F1 v1"
+            if locale == "ja"
+            else "official-compatible English tokens"
+        ),
     }
 
 
@@ -868,7 +1008,10 @@ def _load_card_source_files(instance_dir: Path) -> dict[str, set]:
     if db_path is None:
         return {}
     try:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(
+            f"{db_path.resolve().as_uri()}?mode=ro",
+            uri=True,
+        )
         try:
             rows = conn.execute(
                 "SELECT id, source_files FROM knowledge_cards"

@@ -1933,6 +1933,16 @@ def _render_evaluation_start_form(
             key="evaluation_use_dataset_candidate",
         ):
             st.session_state.evaluation_dataset_path = selected_dataset
+            try:
+                detected_locale = _evaluation_dataset_samples(
+                    api_url,
+                    selected_dataset,
+                ).get("locale")
+            except (requests.RequestException, RuntimeError, ValueError) as exc:
+                st.warning(f"データセット言語を判定できません: {exc}")
+                detected_locale = None
+            if detected_locale in {"en", "ja"}:
+                st.session_state.evaluation_locale = detected_locale
             st.rerun()
     dataset_path = st.text_input(
         "LoCoMo dataset path",
@@ -2327,6 +2337,9 @@ def _render_evaluation_start_form(
                     search_mode_options,
                     previous_request.get("search_mode", "vector"),
                 ),
+                format_func=lambda value: _QA_SEARCH_MODE_LABELS.get(
+                    value, value
+                ),
                 key="evaluation_search_mode",
             )
         with search_cols[1]:
@@ -2448,7 +2461,11 @@ def _render_evaluation_start_form(
                         key="evaluation_evidence_raw_chunk_chars",
                     )
                 st.caption(
-                    "hybrid上位20件だけを対象にEpisode/RAWをEmbeddingします。"
+                    f"QA設定: hybrid weight="
+                    f"{float(evidence_fusion_base_weight):.2f}。"
+                    f"BM25/Vectorから統合した最大"
+                    f"{max(int(bm25_candidates), int(vector_candidates))}件を"
+                    "Episode/RAW Evidenceで順位付けし、最終top3だけを注入します。"
                     "初回結果はrun内へvector/hashのみ保存し、以後の質問で再利用します。"
                     "質問と候補Episode/RAWは選択中のEmbedding Connectionへ送信されます。"
                     "API keyは通常の認証だけに使い、cacheや評価artifactへ保存しません。"
@@ -3070,6 +3087,39 @@ def _render_evaluation_jobs(api_url: str) -> None:
     _jobs_fragment()
 
 
+_RETRIEVAL_EVIDENCE_MODES = frozenset(
+    {
+        "evidence_rerank",
+        "hybrid_evidence_rerank",
+        "hybrid_evidence_fusion",
+        "hybrid_evidence_fusion_w40",
+        "hybrid_evidence_fusion_w50",
+        "hybrid_evidence_fusion_w60",
+        "hybrid_evidence_fusion_mmr",
+    }
+)
+_RETRIEVAL_FUSION_MODES = frozenset(
+    {
+        "hybrid_evidence_fusion",
+        "hybrid_evidence_fusion_w40",
+        "hybrid_evidence_fusion_w50",
+        "hybrid_evidence_fusion_w60",
+        "hybrid_evidence_fusion_mmr",
+    }
+)
+_RETRIEVAL_MODE_LABELS = {
+    "hybrid_evidence_fusion_w40": "Fusion（Hybrid 0.40）",
+    "hybrid_evidence_fusion_w50": "Fusion（Hybrid 0.50）",
+    "hybrid_evidence_fusion_w60": "Fusion（Hybrid 0.60）",
+    "hybrid_evidence_fusion_mmr": "Fusion + MMR top3",
+}
+_QA_SEARCH_MODE_LABELS = {
+    "hybrid_evidence_fusion": (
+        "hybrid_evidence_fusion（Fusion比率を調整可能）"
+    ),
+}
+
+
 def _format_retrieval_reranker_scores(scores) -> str:
     """Format problem-level reranker scores for the compact UI table."""
     formatted = []
@@ -3080,6 +3130,8 @@ def _format_retrieval_reranker_scores(scores) -> str:
         score = item.get("score")
         if score is None:
             score = item.get("fusion_score")
+        if score is None:
+            score = item.get("mmr_score")
         if isinstance(score, (int, float)) and not isinstance(score, bool):
             formatted.append(f"{card_id}:{score:.4f}")
         else:
@@ -3097,16 +3149,26 @@ def _render_retrieval_replay_result(result: dict) -> None:
     )
     rows = []
     detail_modes = []
-    for mode in (
-        "bm25",
-        "vector",
-        "hybrid",
-        "dual_query",
-        "reranked",
-        "evidence_rerank",
-        "hybrid_evidence_rerank",
-        "hybrid_evidence_fusion",
-    ):
+    result_modes = result.get("modes")
+    mode_order = (
+        [str(mode) for mode in result_modes]
+        if isinstance(result_modes, list)
+        else [
+            "bm25",
+            "vector",
+            "hybrid",
+            "dual_query",
+            "reranked",
+            "evidence_rerank",
+            "hybrid_evidence_rerank",
+            "hybrid_evidence_fusion",
+            "hybrid_evidence_fusion_w40",
+            "hybrid_evidence_fusion_w50",
+            "hybrid_evidence_fusion_w60",
+            "hybrid_evidence_fusion_mmr",
+        ]
+    )
+    for mode in mode_order:
         stats = result.get(mode)
         if not isinstance(stats, dict):
             continue
@@ -3117,8 +3179,10 @@ def _render_retrieval_replay_result(result: dict) -> None:
             "questions": stats.get("questions"),
             "recall@1": stats.get("recall_at_1"),
             "recall@3": stats.get("recall_at_3"),
+            "recall@5": stats.get("recall_at_5"),
             "recall@20": stats.get("recall_at_20"),
             "hit@3": stats.get("hit_at_3"),
+            "hit@5": stats.get("hit_at_5"),
             "hit@20": stats.get("hit_at_20"),
         }
         reranker = stats.get("reranker") or {}
@@ -3176,6 +3240,36 @@ def _render_retrieval_replay_result(result: dict) -> None:
                     "fusion base weight": (
                         (evidence.get("fusion") or {}).get("base_weight")
                     ),
+                    "MMR relevance weight": (
+                        (evidence.get("mmr") or {}).get(
+                            "relevance_weight"
+                        )
+                    ),
+                    "MMR top3入替": (
+                        (evidence.get("mmr") or {}).get(
+                            "selected_set_changed"
+                        )
+                    ),
+                    "MMR rescue": (
+                        (evidence.get("mmr") or {}).get(
+                            "rescued_at_3_vs_fusion"
+                        )
+                    ),
+                    "MMR harm": (
+                        (evidence.get("mmr") or {}).get(
+                            "harmed_at_3_vs_fusion"
+                        )
+                    ),
+                    "MMR similarity before": (
+                        (evidence.get("mmr") or {}).get(
+                            "pairwise_similarity_before_mean"
+                        )
+                    ),
+                    "MMR similarity after": (
+                        (evidence.get("mmr") or {}).get(
+                            "pairwise_similarity_after_mean"
+                        )
+                    ),
                 }
             )
         rows.append(row)
@@ -3199,12 +3293,8 @@ def _render_retrieval_replay_result(result: dict) -> None:
     stats = result.get(selected_mode) or {}
     details = stats.get("details") or []
     filter_options = ["all"]
-    if selected_mode in (
-        "reranked",
-        "dual_query",
-        "evidence_rerank",
-        "hybrid_evidence_rerank",
-        "hybrid_evidence_fusion",
+    if selected_mode in {"reranked", "dual_query"} | set(
+        _RETRIEVAL_EVIDENCE_MODES
     ):
         filter_options.extend(
             ["rescue", "harm", "fallback", "error", "unchanged"]
@@ -3230,11 +3320,7 @@ def _render_retrieval_replay_result(result: dict) -> None:
         if not isinstance(item, dict):
             continue
         delta = item.get("reranker_delta_at_3")
-        if selected_mode in {
-            "evidence_rerank",
-            "hybrid_evidence_rerank",
-            "hybrid_evidence_fusion",
-        }:
+        if selected_mode in _RETRIEVAL_EVIDENCE_MODES:
             delta = item.get("evidence_delta_at_3")
         if selected_mode == "dual_query":
             fused_recall = item.get("recall_at_3")
@@ -3275,6 +3361,7 @@ def _render_retrieval_replay_result(result: dict) -> None:
                 "question": item.get("question"),
                 "recall@1": item.get("recall_at_1"),
                 "recall@3": item.get("recall_at_3"),
+                "recall@5": item.get("recall_at_5"),
                 "recall@20": item.get("recall_at_20"),
                 "base mode": item.get("base_search_mode"),
                 "base recall@3": (
@@ -3289,6 +3376,19 @@ def _render_retrieval_replay_result(result: dict) -> None:
                     "retrieval_query_recall_at_3"
                 ),
                 "selected recall@3": item.get("selected_recall_at_3"),
+                "MMR base recall@3": (
+                    (item.get("evidence_mmr") or {}).get(
+                        "base_recall_at_3"
+                    )
+                ),
+                "MMR delta@3": (
+                    (item.get("evidence_mmr") or {}).get("delta_at_3")
+                ),
+                "MMR set changed": (
+                    (item.get("evidence_mmr") or {}).get(
+                        "selected_set_changed"
+                    )
+                ),
                 "delta@3": delta,
                 "change": change,
                 "reranker status": item.get("reranker_status"),
@@ -3299,11 +3399,7 @@ def _render_retrieval_replay_result(result: dict) -> None:
                 "fusion status": query_fusion.get("status"),
                 "latency ms": (
                     item.get("evidence_rerank_latency_ms")
-                    if selected_mode in {
-                        "evidence_rerank",
-                        "hybrid_evidence_rerank",
-                        "hybrid_evidence_fusion",
-                    }
+                    if selected_mode in _RETRIEVAL_EVIDENCE_MODES
                     else item.get("reranker_latency_ms")
                 ),
                 "base top3": ", ".join(
@@ -3332,6 +3428,9 @@ def _render_retrieval_replay_result(result: dict) -> None:
                 ),
                 "reranker scores": _format_retrieval_reranker_scores(
                     item.get("reranker_scores")
+                ),
+                "MMR scores": _format_retrieval_reranker_scores(
+                    (item.get("evidence_mmr") or {}).get("scores")
                 ),
                 "evidence scores": _format_retrieval_reranker_scores(
                     item.get("evidence_scores")
@@ -3553,7 +3652,9 @@ def _render_retrieval_replay(api_url: str, runs: list) -> None:
             "RAW会話断片のEmbeddingでtop3へ再順位付けします。"
             "hybrid_evidence_rerank は同じ処理をhybrid top-Nへ適用します。"
             "hybrid_evidence_fusion はhybrid順位を主軸にEvidence順位を"
-            "重み付き融合します。"
+            "重み付き融合します。w40/w50/w60は比率を一度に比較する固定値、"
+            "Fusion + MMRは既存カード/Evidenceベクトルでnear-dupを減点し、"
+            "注入top3の多様性を高めます。"
             "dual_query は保存済み検索文を再利用し、無い旧runでは元runの"
             "Gatekeeperを1回呼んでからembeddingを2回実行します。"
             " 実行はバックグラウンドで継続し、画面を閉じても中断しません。"
@@ -3577,8 +3678,15 @@ def _render_retrieval_replay(api_url: str, runs: list) -> None:
                     "evidence_rerank",
                     "hybrid_evidence_rerank",
                     "hybrid_evidence_fusion",
+                    "hybrid_evidence_fusion_w40",
+                    "hybrid_evidence_fusion_w50",
+                    "hybrid_evidence_fusion_w60",
+                    "hybrid_evidence_fusion_mmr",
                 ],
                 default=["bm25"],
+                format_func=lambda value: _RETRIEVAL_MODE_LABELS.get(
+                    value, value
+                ),
                 key="evaluation_replay_modes",
             )
         with replay_cols[2]:
@@ -3590,6 +3698,11 @@ def _render_retrieval_replay(api_url: str, runs: list) -> None:
                 step=1,
                 key="evaluation_replay_limit",
             )
+        st.caption(
+            f"候補数={int(replay_limit)}では、各モードの統合候補を最大"
+            f"{int(replay_limit)}件まで順位付けします。"
+            "Evidence/Fusion/MMRもこの候補集合を評価し、指標上の選択はtop3固定です。"
+        )
         replay_reranker_choice = None
         replay_cross_encoder_model = None
         replay_reranker_engine = "cross_encoder"
@@ -3601,11 +3714,8 @@ def _render_retrieval_replay(api_url: str, runs: list) -> None:
         replay_score_threshold = 0.0
         evidence_raw_chunk_chars = 1800
         evidence_fusion_base_weight = 0.7
-        if {
-            "evidence_rerank",
-            "hybrid_evidence_rerank",
-            "hybrid_evidence_fusion",
-        } & set(modes):
+        evidence_mmr_lambda = 0.8
+        if _RETRIEVAL_EVIDENCE_MODES & set(modes):
             evidence_raw_chunk_chars = st.number_input(
                 "RAW chunk max chars",
                 min_value=200,
@@ -3621,7 +3731,10 @@ def _render_retrieval_replay(api_url: str, runs: list) -> None:
                 "選択根拠の先頭最大600文字を保存します。API keyは通常のConnection"
                 "認証にだけ使用します。質問Embeddingは二段の検索で共有します。"
             )
-        if "hybrid_evidence_fusion" in modes:
+        if {
+            "hybrid_evidence_fusion",
+            "hybrid_evidence_fusion_mmr",
+        } & set(modes):
             evidence_fusion_base_weight = st.number_input(
                 "Fusion hybrid weight",
                 min_value=0.0,
@@ -3632,6 +3745,19 @@ def _render_retrieval_replay(api_url: str, runs: list) -> None:
                 help=(
                     "hybrid順位の重み。Evidence順位は1からこの値を引いた"
                     "重みになります。v29での初期候補は0.70です。"
+                ),
+            )
+        if "hybrid_evidence_fusion_mmr" in modes:
+            evidence_mmr_lambda = st.number_input(
+                "MMR relevance weight",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.8,
+                step=0.05,
+                key="evaluation_replay_evidence_mmr_lambda",
+                help=(
+                    "Fusion関連度の重み。残りを候補同士の類似度減点に使います。"
+                    "追加のLLM・Embedding呼び出しはありません。"
                 ),
             )
         if "reranked" in modes:
@@ -3760,6 +3886,7 @@ def _render_retrieval_replay(api_url: str, runs: list) -> None:
                     "evidence_fusion_base_weight": float(
                         evidence_fusion_base_weight
                     ),
+                    "evidence_mmr_lambda": float(evidence_mmr_lambda),
                 }
                 if (
                     "reranked" in modes
@@ -3911,6 +4038,10 @@ def _render_retrieval_replay_comparison(api_url: str, runs: list) -> None:
                     "Δ@3 vs baseline": item.get(
                         "delta_vs_baseline_at_3"
                     ),
+                    "recall@5": item.get("recall_at_5"),
+                    "Δ@5 vs baseline": item.get(
+                        "delta_vs_baseline_at_5"
+                    ),
                     "recall@20": item.get("recall_at_20"),
                     "Δ@20 vs baseline": item.get(
                         "delta_vs_baseline_at_20"
@@ -3952,6 +4083,9 @@ def _render_retrieval_replay_comparison(api_url: str, runs: list) -> None:
                     "baseline @3": item.get("baseline_recall_at_3"),
                     "target @3": item.get("comparison_recall_at_3"),
                     "Δ@3": item.get("delta_at_3"),
+                    "baseline @5": item.get("baseline_recall_at_5"),
+                    "target @5": item.get("comparison_recall_at_5"),
+                    "Δ@5": item.get("delta_at_5"),
                     "baseline @20": item.get("baseline_recall_at_20"),
                     "target @20": item.get("comparison_recall_at_20"),
                     "Δ@20": item.get("delta_at_20"),

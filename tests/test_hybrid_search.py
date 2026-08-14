@@ -499,6 +499,101 @@ class TestBrainHybrid:
         assert diag["evidence_fusion"]["fallback"] is True
         assert "cache unavailable" in diag["evidence_fusion"]["error"]
 
+    def test_hybrid_evidence_fusion_ranks_configured_candidate_pool(
+        self, hybrid_brain, monkeypatch
+    ):
+        observed = {}
+
+        def fake_hybrid_search(
+            _user_input,
+            _target_instances,
+            *,
+            limit,
+            **_kwargs,
+        ):
+            observed["hybrid_limit"] = limit
+            results = [
+                {"id": f"k{index}", "score": 1.0 / (index + 1)}
+                for index in range(limit)
+            ]
+            return {
+                "results": results,
+                "diagnostics": {
+                    "mode": "hybrid",
+                    "fused_candidate_ids": [row["id"] for row in results],
+                },
+            }
+
+        class FakeCache:
+            @staticmethod
+            def diagnostics():
+                return {
+                    "hits": 0,
+                    "misses": 50,
+                    "writes": 50,
+                    "errors": 0,
+                    "by_kind": {},
+                }
+
+        class FakeFusion:
+            def __init__(self, *_args, **_kwargs):
+                self.cache = FakeCache()
+
+            @staticmethod
+            def embed_query(_question):
+                return _unit(1.0, 0.0, 0.0)
+
+            @staticmethod
+            def rerank(_question, candidates, *, top_n, **_kwargs):
+                observed["rerank_count"] = len(candidates)
+                observed["top_n"] = top_n
+                ids = [str(row["id"]) for row in candidates]
+                return {
+                    "status": "completed",
+                    "fallback": False,
+                    "error": None,
+                    "candidate_ids": ids,
+                    "selected_candidate_ids": ids[:top_n],
+                    "evidence_candidate_ids": ids,
+                    "scores": [],
+                    "fusion_scores": [],
+                    "candidate_count": len(candidates),
+                    "scored_count": len(candidates),
+                    "latency_ms": 1,
+                }
+
+            @staticmethod
+            def close():
+                return None
+
+        monkeypatch.setattr(
+            hybrid_brain, "_hybrid_search_diag", fake_hybrid_search
+        )
+        monkeypatch.setattr(brain_module, "RuntimeEvidenceFusion", FakeFusion)
+
+        out = hybrid_brain.quick_vector_search_diag(
+            "question",
+            "00_master",
+            limit=3,
+            threshold=0.4,
+            override_config={
+                "brain": {
+                    "search_mode": "hybrid_evidence_fusion",
+                    "vector_candidates": 50,
+                    "bm25_candidates": 50,
+                    "evidence_fusion_base_weight": 0.4,
+                }
+            },
+        )
+
+        assert observed == {
+            "hybrid_limit": 50,
+            "rerank_count": 50,
+            "top_n": 3,
+        }
+        assert len(out["results"]) == 3
+        assert out["diagnostics"]["evidence_fusion"]["base_weight"] == 0.4
+
     def test_hybrid_survives_embedding_failure(self, hybrid_brain, monkeypatch):
         """embedding が落ちても BM25 側だけで候補を返せる"""
         monkeypatch.setattr(hybrid_brain, "get_embedding", lambda *a, **kw: None)

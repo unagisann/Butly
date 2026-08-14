@@ -114,14 +114,14 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | `qa_runner.py` | RAG有効・外部検索無効で`ButlyRuntime.chat()`を実行し、独立／逐次QAの結果とTraceを保存 |
 | `replay.py` | セッションReplay、Sleeptime、独立／逐次QA、checkpoint更新のオーケストレーション。逐次QAはcheckpoint commit前の中断時にinstance・結果・Traceをrollbackし、`resume_evaluation()`で重複なく途中再開。`rerun_qa_from_memory()`は独立runのpost-Sleeptime instanceを新runへ複製してQAだけ再実行 |
 | `artifacts.py` | JSON/JSONL、Traceコピー、セッション前後スナップショットの保存 |
-| `scorer.py` | LoCoMo公式互換採点（正規化+stemming Token F1、カテゴリ別規則、No-info判定）とButly固有指標。検索実行率／注入率／`retrieval_recall_at_k`／BM25・Reranker・Evidence Fusionのrescue/fallback/遅延も集計。`scores.json` / `errors.jsonl`出力 |
+| `scorer.py` | 英語LoCoMo公式互換採点（正規化+stemming Token F1）と、日本語ローカライズ診断採点（NFKC + mixed-script文字F1、カテゴリ別規則、No-info判定）。日本語スコアは英語公式値と数値比較しない。Butly固有の検索実行率／注入率／`retrieval_recall_at_k`／BM25・Reranker・Evidence Fusionのrescue/fallback/遅延も集計し、`scores.json` / `errors.jsonl`へ出力 |
 | `semantic_judge_runner.py` | 公式スコアを変更しない任意の意味判定。問題単位atomic artifact、fingerprint再開、`semantic_scores.json`を生成 |
 | `retrieval_replay.py` | 回答を生成しないoffline retrieval replay。通常runの`qa_results.jsonl`またはQAなしrunの`retrieval_questions.json`を読み、DBを一時複製して各検索方式のRecall@kを比較する |
 | `evidence_reranker.py` | `evidence_rerank` / `hybrid_evidence_rerank` / `hybrid_evidence_fusion`用の評価専用二段検索。vectorまたはhybrid候補をEpisode / RAW chunk embeddingのMaxP cosineで採点し、全面再順位付けまたはhybrid順位との重み付き融合を行う。本文を含まないSQLite vector cacheとレビュー用の選択根拠previewを管理 |
 | `stemming.py` | 依存追加なしのPorter (1980) stemmer。公式のnltk stemmerと稀な語で差が出る旨をdocstringに明記 |
 | `report.py` | `scores.json`と任意の`semantic_scores.json`から`summary.md`を生成 |
 | `checkpoint.py` | セッション/Sleeptime/QA単位のatomicなcheckpoint。run ID照合と破損検出つき |
-| `config.py` | CLI設定DTO（workflow、QA mode、sample ID/session/question範囲、localeを含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
+| `config.py` | CLI設定DTO（workflow、QA mode、sample ID/session/question範囲、内部prompt用`locale`、採点用`dataset_locale`を含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
 | `cli.py` | `run` / `resume` / `rerun-qa` / `score` / `judge` / `report` subcommands。`judge`は既存runのQAを再実行せず別モデルで意味判定 |
 | `progress.py` | CLI / Colab向けの即時進捗ログ。Replay・Sleeptime・QAの完了unitを0〜90%、採点・レポートを90〜100%としてstderrへ表示 |
 | `web_jobs.py` | Web Console用の永続subprocessジョブ管理。dataset sample一覧、QAなし検索準備、CLI command/profile生成、停止・resume、履歴・offline retrieval replayを担当 |
@@ -146,12 +146,14 @@ profileのembedding設定で貼り直せる（既定は保存済みベクトル�
 QA modeは、全質問を同じpost-Sleeptime状態から評価する`independent`
 （バージョン比較の既定）と、QAターンを同一instanceへ蓄積する`sequential`
 （連続運用・耐久評価）を分離する。全LoCoMo評価はsample/session/questionの
-3軸すべてで`--all-*`を明示する。評価localeの優先順位は
-CLI `--locale` → profile top-level `locale` → `en`。localeはButly内部promptと
-memory出力言語を選び、LoCoMoの質問・正解は翻訳しない。公式Token F1との
-互換性を保つためQA回答も英語に固定する。日本語版ベンチマークには、別途
-翻訳済みdatasetと日本語対応scorerが必要となる。評価instanceでは再現性の
-ためローカル`user_prompts.json` overrideを無効化する。
+3軸すべてで`--all-*`を明示する。内部prompt用localeの優先順位は
+CLI `--locale` → profile top-level `locale` → dataset自動判定 → `en`。
+LoCoMoの質問・正解は実行時に翻訳しない。質問多数決で判定した
+`dataset_locale`を別に保存し、英語datasetでは英語QA指示と公式互換Token F1、
+翻訳済み日本語datasetでは日本語QA指示とNFKC + mixed-script文字F1を使う。
+日本語スコアは同じ日本語dataset上のButly run比較用であり、英語公式値とは
+数値比較しない。評価instanceでは再現性のためローカル`user_prompts.json`
+overrideを無効化する。
 
 ---
 

@@ -73,7 +73,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--locale",
         choices=SUPPORTED_EVALUATION_LOCALES,
-        help="Evaluation prompt locale (overrides profile locale; default: en)",
+        help=(
+            "Evaluation prompt locale (overrides profile locale; default: "
+            "detected dataset locale)"
+        ),
     )
     run_parser.add_argument("--model-name")
     run_parser.add_argument("--connection")

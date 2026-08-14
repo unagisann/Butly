@@ -29,6 +29,9 @@ class TestNormalization:
     def test_normalize_removes_and_as_article(self):
         assert normalize_answer("a mug and an planter") == "mug planter"
 
+    def test_japanese_normalization_uses_nfkc_and_removes_punctuation(self):
+        assert normalize_answer("２０２３年５月７日。", "ja") == "2023年5月7日"
+
     def test_porter_stemmer_matches_reference_words(self):
         expected = {
             "caresses": "caress",
@@ -78,6 +81,37 @@ class TestQuestionScores:
         assert official_score("That was not mentioned in our chats.", "x", 5) == 1.0
         assert official_score("She studied nursing.", "x", 5) == 0.0
         assert claims_no_information("NOT MENTIONED anywhere") is True
+
+    def test_japanese_character_f1_penalizes_explanatory_sentences(self):
+        assert token_f1("2023年5月7日", "２０２３年５月７日。", "ja") == 1.0
+        verbose = token_f1(
+            "イベントは2023年5月7日に開催されました",
+            "2023年5月7日",
+            "ja",
+        )
+        assert 0.0 < verbose < 1.0
+
+    def test_japanese_category_1_accepts_japanese_list_separator(self):
+        score = official_score(
+            "カウンセリング資格、心理学",
+            "心理学、カウンセリング資格",
+            1,
+            "ja",
+        )
+        assert score == pytest.approx(1.0)
+
+    def test_japanese_category_3_ignores_explanatory_clause(self):
+        assert official_score(
+            "国立公園",
+            "国立公園。アウトドアが好きだからです",
+            3,
+            "ja",
+        ) == pytest.approx(1.0)
+
+    def test_japanese_category_5_detects_no_information_phrases(self):
+        assert official_score("情報がありません", "x", 5, "ja") == 1.0
+        assert official_score("会話では言及されていません", "x", 5, "ja") == 1.0
+        assert official_score("彼女は看護学を学びました", "x", 5, "ja") == 0.0
 
 
 def _qa_row(question_id: str, **overrides) -> dict:
@@ -233,6 +267,56 @@ class TestScoreRun:
         errors = (run_dir / "errors.jsonl").read_text(encoding="utf-8").splitlines()
         assert len(errors) == 1
         assert json.loads(errors[0])["source"] == "sleeptime"
+
+    def test_score_run_uses_japanese_locale_from_run_config(self, tmp_path):
+        rows = [
+            _qa_row(
+                "qa-ja",
+                question="何を作る予定でしたか？",
+                expected_answer="青いマグカップ、ハーブ用プランター",
+                prediction="青いマグカップ、ハーブ用プランター",
+            )
+        ]
+        run_dir = _write_run(tmp_path, rows)
+        (run_dir / "run_config.json").write_text(
+            json.dumps(
+                {
+                    "run_id": "score-test",
+                    "locale": "ja",
+                    "dataset_locale": "ja",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        scores = score_run(run_dir)
+
+        assert scores["scoring"] == {
+            "locale": "ja",
+            "method": "localized-ja-mixed-script-f1-v1",
+            "official_compatible": False,
+            "tokenization": (
+                "NFKC; punctuation/space removal; Latin and number runs; "
+                "Japanese character tokens"
+            ),
+        }
+        assert scores["official"]["overall"] == pytest.approx(1.0)
+        assert scores["official"]["stemming"] is None
+        assert scores["questions"][0]["scoring_locale"] == "ja"
+
+    def test_legacy_prompt_locale_does_not_override_dataset_detection(
+        self, tmp_path
+    ):
+        run_dir = _write_run(tmp_path, [_qa_row("qa-en")])
+        (run_dir / "run_config.json").write_text(
+            json.dumps({"run_id": "score-test", "locale": "ja"}),
+            encoding="utf-8",
+        )
+
+        scores = score_run(run_dir)
+
+        assert scores["scoring"]["locale"] == "en"
+        assert scores["official"]["official_compatible"] is True
 
     def test_raw_reference_metrics_aggregated(self, tmp_path):
         """rag.raw_reference の status/chars/truncated が集計される"""

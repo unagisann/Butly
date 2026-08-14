@@ -100,6 +100,7 @@ class FakeManager:
         limit,
         evidence_raw_chunk_chars,
         evidence_fusion_base_weight,
+        evidence_mmr_lambda,
     ):
         if run_id == "missing":
             raise KeyError(run_id)
@@ -109,6 +110,7 @@ class FakeManager:
             "limit": limit,
             "evidence_raw_chunk_chars": evidence_raw_chunk_chars,
             "evidence_fusion_base_weight": evidence_fusion_base_weight,
+            "evidence_mmr_lambda": evidence_mmr_lambda,
         }
 
     def start_retrieval_replay(self, request):
@@ -248,6 +250,7 @@ def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
         "limit": 5,
         "evidence_raw_chunk_chars": 1800,
         "evidence_fusion_base_weight": 0.7,
+        "evidence_mmr_lambda": 0.8,
     }
     replay_request = evaluations.RetrievalReplayRequest(
         run_id="run-a",
@@ -258,6 +261,10 @@ def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
             "evidence_rerank",
             "hybrid_evidence_rerank",
             "hybrid_evidence_fusion",
+            "hybrid_evidence_fusion_w40",
+            "hybrid_evidence_fusion_w50",
+            "hybrid_evidence_fusion_w60",
+            "hybrid_evidence_fusion_mmr",
         ],
     )
     replay_job = evaluations.start_retrieval_replay_job(replay_request)

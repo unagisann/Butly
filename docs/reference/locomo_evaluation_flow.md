@@ -140,18 +140,23 @@ flowchart LR
     N --> O["Advance checkpoint.qa_completed"]
 ```
 
-The fixed QA request policy enables RAG, disables Google and web search, keeps
-the original LoCoMo question text, and requests concise English answers for
-official-scorer compatibility. The QA clock is fixed to one day after the last
-selected session.
+The fixed QA request policy enables RAG, disables Google and web search, and
+keeps the original LoCoMo question text. A majority vote over QA questions is
+persisted as `dataset_locale`; English datasets request concise English answers
+and translated Japanese datasets request concise Japanese answers. The QA clock
+is fixed to one day after the last selected session.
 
 The evaluation instance System Instruction treats every supplied memory section
 as answer evidence. If a knowledge card, source RAW excerpt, or active node
 directly answers the question, the model is told to use it and interpret tense
-relative to the original conversation date. It may return
-`No information available` only when none of the supplied memories contains the
-answer. `qa_prompt_version` in `run_config.json` records the template version;
-scores from different versions are not the same evaluation condition.
+relative to the original conversation date. Only when no supplied memory has
+the answer may it return `No information available` in English or
+`情報がありません` in Japanese. English datasets use official-compatible Porter
+token F1; Japanese datasets use localized NFKC mixed-script character F1, which
+is for comparisons on the same translated dataset and is not numerically
+comparable with the official English result. `qa_prompt_version` in
+`run_config.json` records the template version; scores from different versions
+are not the same evaluation condition.
 
 After generation, ChatService persists the question and answer as a normal
 conversation turn in the target instance and updates session state.

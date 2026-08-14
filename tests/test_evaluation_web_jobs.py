@@ -1519,10 +1519,15 @@ class TestRetrievalReplayEndpointBacking:
         job = manager.start_retrieval_replay(
             {
                 "run_id": "v26",
-                "modes": ["vector", "hybrid_evidence_fusion"],
+                "modes": [
+                    "vector",
+                    "hybrid_evidence_fusion_w40",
+                    "hybrid_evidence_fusion_mmr",
+                ],
                 "limit": 20,
                 "evidence_raw_chunk_chars": 1400,
                 "evidence_fusion_base_weight": 0.65,
+                "evidence_mmr_lambda": 0.75,
             }
         )
 
@@ -1536,9 +1541,13 @@ class TestRetrievalReplayEndpointBacking:
         assert command[
             command.index("--evidence-fusion-base-weight") + 1
         ] == "0.65"
+        assert command[
+            command.index("--evidence-mmr-lambda") + 1
+        ] == "0.75"
         request = manager._records[job["job_id"]]["request"]
         assert request["evidence_raw_chunk_chars"] == 1400
         assert request["evidence_fusion_base_weight"] == 0.65
+        assert request["evidence_mmr_lambda"] == 0.75
 
     def test_evidence_replay_rejects_invalid_chunk_size(self, tmp_path):
         manager = self._manager(tmp_path)
@@ -1569,6 +1578,22 @@ class TestRetrievalReplayEndpointBacking:
                     "run_id": "v26",
                     "modes": ["hybrid_evidence_fusion"],
                     "evidence_fusion_base_weight": 1.1,
+                }
+            )
+
+    def test_evidence_mmr_rejects_invalid_lambda(self, tmp_path):
+        manager = self._manager(tmp_path)
+        self._write_run(tmp_path / "runs")
+
+        with pytest.raises(
+            EvaluationJobError,
+            match="evidence_mmr_lambda must be between",
+        ):
+            manager.start_retrieval_replay(
+                {
+                    "run_id": "v26",
+                    "modes": ["hybrid_evidence_fusion_mmr"],
+                    "evidence_mmr_lambda": -0.1,
                 }
             )
 
@@ -1827,6 +1852,7 @@ def test_dataset_description_lists_exact_sample_scope():
     result = describe_locomo_dataset(FIXTURE)
 
     assert result["sample_count"] == 1
+    assert result["locale"] == "en"
     assert result["samples"][0] == {
         "sample_id": "synthetic-conv-1",
         "session_count": 2,
@@ -1834,6 +1860,16 @@ def test_dataset_description_lists_exact_sample_scope():
         "speaker_a": "Maya",
         "speaker_b": "Noah",
     }
+
+
+def test_job_request_keeps_prompt_and_dataset_locales_separate(tmp_path):
+    normalized = validate_job_request(
+        _request(locale="ja"),
+        output_dir=tmp_path,
+    )
+
+    assert normalized["locale"] == "ja"
+    assert normalized["dataset_locale"] == "en"
 
 
 def test_build_reuse_command_enables_stage3_bootstrap(tmp_path):

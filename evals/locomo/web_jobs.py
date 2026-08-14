@@ -48,6 +48,21 @@ RETRIEVAL_REPLAY_MODES = (
     "evidence_rerank",
     "hybrid_evidence_rerank",
     "hybrid_evidence_fusion",
+    "hybrid_evidence_fusion_w40",
+    "hybrid_evidence_fusion_w50",
+    "hybrid_evidence_fusion_w60",
+    "hybrid_evidence_fusion_mmr",
+)
+_RETRIEVAL_EVIDENCE_MODES = frozenset(
+    {
+        "evidence_rerank",
+        "hybrid_evidence_rerank",
+        "hybrid_evidence_fusion",
+        "hybrid_evidence_fusion_w40",
+        "hybrid_evidence_fusion_w50",
+        "hybrid_evidence_fusion_w60",
+        "hybrid_evidence_fusion_mmr",
+    }
 )
 RETRIEVAL_EXECUTIONS = ("always", "intent_gated")
 INJECTION_POLICIES = ("intent_gated", "retrieval_assisted", "candidates")
@@ -180,7 +195,11 @@ def describe_locomo_dataset(dataset_path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise EvaluationJobError(f"dataset is not a file: {path}")
 
-    from .dataset import LocomoDatasetError, load_dataset
+    from .dataset import (
+        LocomoDatasetError,
+        detect_dataset_locale,
+        load_dataset,
+    )
 
     try:
         conversations = load_dataset(path)
@@ -190,6 +209,7 @@ def describe_locomo_dataset(dataset_path: Path) -> dict[str, Any]:
         raise EvaluationJobError(f"cannot read dataset {path}: {exc}") from exc
     return {
         "dataset_path": str(path),
+        "locale": detect_dataset_locale(conversations),
         "sample_count": len(conversations),
         "samples": [
             {
@@ -584,6 +604,14 @@ def validate_job_request(
         Path(str(normalized.get("dataset_path") or ""))
     )
     normalized["dataset_path"] = dataset_info["dataset_path"]
+    dataset_locale = str(dataset_info["locale"])
+    requested_locale = str(normalized.get("locale") or dataset_locale)
+    if requested_locale not in {"en", "ja"}:
+        raise EvaluationJobError(
+            f"unsupported locale: {requested_locale!r}; expected 'en' or 'ja'"
+        )
+    normalized["locale"] = requested_locale
+    normalized["dataset_locale"] = dataset_locale
     raw_sample_ids = normalized.get("sample_ids") or []
     if not isinstance(raw_sample_ids, list):
         raise EvaluationJobError("sample_ids must be an array")
@@ -1114,11 +1142,7 @@ def build_retrieval_replay_command(
     if profile_path:
         command.extend(["--profile", str(profile_path)])
 
-    if {
-        "evidence_rerank",
-        "hybrid_evidence_rerank",
-        "hybrid_evidence_fusion",
-    } & set(request["modes"]):
+    if _RETRIEVAL_EVIDENCE_MODES & set(request["modes"]):
         command.extend(
             [
                 "--evidence-raw-chunk-chars",
@@ -1127,6 +1151,8 @@ def build_retrieval_replay_command(
                 str(request["evidence_cache_path"]),
                 "--evidence-fusion-base-weight",
                 str(request.get("evidence_fusion_base_weight", 0.7)),
+                "--evidence-mmr-lambda",
+                str(request.get("evidence_mmr_lambda", 0.8)),
             ]
         )
 
@@ -1226,7 +1252,9 @@ class EvaluationJobManager:
         for candidate in (
             Path(configured_dataset).expanduser() if configured_dataset else None,
             self.project_root / "data" / "locomo10.json",
+            self.project_root / "data" / "locomo10_ja.json",
             self.data_dir / "data" / "locomo10.json",
+            self.data_dir / "data" / "locomo10_ja.json",
             self.project_root / "tests" / "evals" / "fixtures" / "mini_locomo.json",
         ):
             if candidate is None:
@@ -1937,9 +1965,11 @@ class EvaluationJobManager:
                     "mode": mode,
                     "recall_at_1": stats.get("recall_at_1"),
                     "recall_at_3": stats.get("recall_at_3"),
+                    "recall_at_5": stats.get("recall_at_5"),
                     "recall_at_20": stats.get("recall_at_20"),
                     "hit_at_1": stats.get("hit_at_1"),
                     "hit_at_3": stats.get("hit_at_3"),
+                    "hit_at_5": stats.get("hit_at_5"),
                     "hit_at_20": stats.get("hit_at_20"),
                     "base_search_mode": diagnostics.get(
                         "base_search_mode"
@@ -1949,7 +1979,7 @@ class EvaluationJobManager:
                     "fallback_rate": diagnostics.get("fallback_rate"),
                 }
                 baseline_stats = baseline_result.get(mode)
-                for k in (1, 3, 20):
+                for k in (1, 3, 5, 20):
                     current_value = stats.get(f"recall_at_{k}")
                     baseline_value = (
                         baseline_stats.get(f"recall_at_{k}")
@@ -1980,7 +2010,7 @@ class EvaluationJobManager:
                         or base_item.get("question")
                     ),
                 }
-                for k in (1, 3, 20):
+                for k in (1, 3, 5, 20):
                     base_value = base_item.get(f"recall_at_{k}")
                     comparison_value = comparison_item.get(f"recall_at_{k}")
                     item[f"baseline_recall_at_{k}"] = base_value
@@ -2095,6 +2125,15 @@ class EvaluationJobManager:
             raise EvaluationJobError(
                 "evidence_fusion_base_weight must be between 0 and 1"
             )
+        evidence_mmr_lambda = request.get("evidence_mmr_lambda", 0.8)
+        if (
+            isinstance(evidence_mmr_lambda, bool)
+            or not isinstance(evidence_mmr_lambda, (int, float))
+            or not 0.0 <= float(evidence_mmr_lambda) <= 1.0
+        ):
+            raise EvaluationJobError(
+                "evidence_mmr_lambda must be between 0 and 1"
+            )
 
         run_dir = self.output_dir / run_id
         config = self._read_json(run_dir / "run_config.json")
@@ -2138,6 +2177,7 @@ class EvaluationJobManager:
             "evidence_fusion_base_weight": float(
                 evidence_fusion_base_weight
             ),
+            "evidence_mmr_lambda": float(evidence_mmr_lambda),
             "evidence_cache_path": str(
                 run_dir
                 / "retrieval_cache"
@@ -2157,6 +2197,7 @@ class EvaluationJobManager:
         reranker_max_candidate_chars: int = 1600,
         evidence_raw_chunk_chars: int = 1800,
         evidence_fusion_base_weight: float = 0.7,
+        evidence_mmr_lambda: float = 0.8,
     ) -> dict[str, Any]:
         """既存 run の記憶に対して検索だけを回し、Recall@k を比較する。
 
@@ -2183,6 +2224,7 @@ class EvaluationJobManager:
                 "evidence_fusion_base_weight": (
                     evidence_fusion_base_weight
                 ),
+                "evidence_mmr_lambda": evidence_mmr_lambda,
             }
         )
         run_dir = Path(normalized["run_dir"])
@@ -2201,6 +2243,7 @@ class EvaluationJobManager:
                 evidence_fusion_base_weight=normalized[
                     "evidence_fusion_base_weight"
                 ],
+                evidence_mmr_lambda=normalized["evidence_mmr_lambda"],
             )
         except (FileNotFoundError, ValueError) as exc:
             raise EvaluationJobError(str(exc)) from exc
@@ -2209,6 +2252,20 @@ class EvaluationJobManager:
         result["generated_at"] = utc_now()
         result["limit"] = normalized["limit"]
         result["modes"] = normalized["modes"]
+        if set(normalized["modes"]) & {
+            "hybrid_evidence_fusion",
+            "hybrid_evidence_fusion_w40",
+            "hybrid_evidence_fusion_w50",
+            "hybrid_evidence_fusion_w60",
+            "hybrid_evidence_fusion_mmr",
+        }:
+            result["evidence_fusion_base_weight"] = normalized[
+                "evidence_fusion_base_weight"
+            ]
+        if "hybrid_evidence_fusion_mmr" in normalized["modes"]:
+            result["evidence_mmr_lambda"] = normalized[
+                "evidence_mmr_lambda"
+            ]
         atomic_write_text(
             run_dir / "retrieval_replay.json",
             json.dumps(result, ensure_ascii=False, indent=2),

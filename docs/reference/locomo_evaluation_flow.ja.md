@@ -154,13 +154,17 @@ QA用`ChatRequest`は次の固定ポリシーを使う。
 - `use_rag=True`
 - Google検索・Web検索は無効
 - LoCoMoの質問文は翻訳しない
-- 回答は公式scorer互換のため英語の短答
+- QA質問の多数決で`dataset_locale`を判定し、英語datasetには英語、日本語datasetには
+  日本語の短答を要求する
 - 「現在時刻」は選択sessionの最終日時の翌日に固定
 
 評価instanceのSystem Instructionは、prompt内の全memory sectionを回答根拠として扱う。
 特にknowledge card、参照元RAW、active nodeのいずれかが問いへ直接答える場合はその
-情報を使い、元会話日時を基準に時制を解釈する。`No information available`は、
-提供されたどのmemoryにも答えがない場合だけ返す。テンプレートの版は
+情報を使い、元会話日時を基準に時制を解釈する。答えがない場合だけ、英語では
+`No information available`、日本語では`情報がありません`を返す。英語datasetは
+公式互換Porter Token F1、日本語datasetはNFKC + mixed-script文字F1で採点する。
+日本語スコアは同じ日本語dataset上の比較用であり、英語公式値とは数値比較しない。
+テンプレートの版は
 `run_config.json`の`qa_prompt_version`へ保存し、異なる版のスコアを同一条件として
 比較しない。
 

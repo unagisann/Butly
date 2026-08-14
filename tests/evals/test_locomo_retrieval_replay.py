@@ -14,12 +14,24 @@ import pytest
 from butly_core.core.database import ButlyDatabase
 from evals.locomo.retrieval_replay import (
     _build_gatekeeper_query_generator,
+    _mode_override,
     evaluate,
     fuse_hybrid_evidence_ranks,
     load_questions,
     main,
     mirror_workspace,
+    select_mmr_candidates,
 )
+
+
+def test_offline_fusion_limit_50_sets_both_hybrid_candidate_pools():
+    config = _mode_override(
+        {}, "hybrid_evidence_fusion_w40", limit=50
+    )
+
+    assert config["brain"]["search_mode"] == "hybrid"
+    assert config["brain"]["vector_candidates"] == 50
+    assert config["brain"]["bm25_candidates"] == 50
 
 
 def test_hybrid_evidence_rank_fusion_preserves_base_and_uses_evidence():
@@ -37,6 +49,45 @@ def test_hybrid_evidence_rank_fusion_preserves_base_and_uses_evidence():
     assert candidate_ids[:3] == ["base-1", "evidence-1", "base-2"]
     assert scores[0]["fusion_rank"] == 1
     assert scores[0]["fusion_score"] == pytest.approx(0.85)
+
+
+def test_mmr_selection_replaces_a_near_duplicate_without_extra_candidates():
+    similarities = {
+        frozenset({"a", "b"}): 0.98,
+        frozenset({"a", "c"}): 0.10,
+        frozenset({"b", "c"}): 0.10,
+    }
+
+    candidate_ids, diagnostics = select_mmr_candidates(
+        ["a", "b", "c", "d"],
+        [
+            {"card_id": "a", "fusion_score": 1.0},
+            {"card_id": "b", "fusion_score": 0.9},
+            {"card_id": "c", "fusion_score": 0.8},
+            {"card_id": "d", "fusion_score": 0.1},
+        ],
+        lambda left, right: similarities.get(frozenset({left, right}), 0.0),
+        relevance_weight=0.7,
+    )
+
+    assert candidate_ids[:3] == ["a", "c", "b"]
+    assert set(candidate_ids) == {"a", "b", "c", "d"}
+    assert diagnostics[1]["original_fusion_rank"] == 3
+    assert diagnostics[1]["max_selected_similarity"] == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [-0.1, 1.1, True],
+)
+def test_mmr_selection_rejects_invalid_relevance_weight(value):
+    with pytest.raises(ValueError, match="MMR relevance weight"):
+        select_mmr_candidates(
+            ["a"],
+            [{"card_id": "a", "fusion_score": 1.0}],
+            lambda _left, _right: 0.0,
+            relevance_weight=value,
+        )
 
 
 def _write_run(tmp_path: Path) -> Path:
@@ -173,6 +224,7 @@ class TestRetrievalReplay:
         # cat5 と oracle 無しの問は分母から外れる
         assert result["oracle_questions"] == 1
         assert result["bm25"]["recall_at_3"] == pytest.approx(1.0)
+        assert result["bm25"]["recall_at_5"] == pytest.approx(1.0)
         assert result["bm25"]["hit_at_1"] == 1
 
     def test_source_run_is_not_modified(self, tmp_path):
@@ -400,6 +452,10 @@ class TestRetrievalReplay:
                 "evidence_rerank",
                 "hybrid_evidence_rerank",
                 "hybrid_evidence_fusion",
+                "hybrid_evidence_fusion_w40",
+                "hybrid_evidence_fusion_w50",
+                "hybrid_evidence_fusion_w60",
+                "hybrid_evidence_fusion_mmr",
             ],
             limit=20,
             override_config={"embedding": {"model_name": "fake"}},
@@ -430,6 +486,10 @@ class TestRetrievalReplay:
             "vector",
             "hybrid",
             "hybrid",
+            "hybrid",
+            "hybrid",
+            "hybrid",
+            "hybrid",
         ]
         assert result["hybrid"]["recall_at_3"] == pytest.approx(0.0)
         assert query_embed_calls == ["What pottery did they make?"]
@@ -456,6 +516,27 @@ class TestRetrievalReplay:
         assert fusion_detail["selected_candidate_ids"][:2] == ["x1", "k1"]
         assert fusion_detail["evidence_fusion_scores"]
         assert fusion_detail["recall_at_3"] == pytest.approx(1.0)
+
+        for mode, weight in (
+            ("hybrid_evidence_fusion_w40", 0.4),
+            ("hybrid_evidence_fusion_w50", 0.5),
+            ("hybrid_evidence_fusion_w60", 0.6),
+        ):
+            assert result[mode]["evidence_reranker"]["fusion"][
+                "base_weight"
+            ] == pytest.approx(weight)
+
+        mmr = result["hybrid_evidence_fusion_mmr"]
+        mmr_summary = mmr["evidence_reranker"]["mmr"]
+        assert mmr_summary["strategy"] == (
+            "card_embedding_cosine_with_evidence_fallback"
+        )
+        assert mmr_summary["relevance_weight"] == 0.8
+        assert mmr_summary["diversity_weight"] == pytest.approx(0.2)
+        assert mmr_summary["extra_embedding_calls"] == 0
+        assert "selected_set_changed" in mmr_summary
+        assert "rescued_at_3_vs_fusion" in mmr_summary
+        assert mmr["details"][0]["evidence_mmr"]["scores"]
 
         def fail_if_called(_text, _kind):
             raise AssertionError("cached embeddings must be reused")

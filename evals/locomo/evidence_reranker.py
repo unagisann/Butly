@@ -304,6 +304,10 @@ class EvidenceReranker:
         )
         self._units: dict[tuple[str, str], list[EvidenceUnit]] = {}
         self._vectors: dict[str, np.ndarray] = {}
+        self._card_vectors: dict[tuple[str, str], np.ndarray] = {}
+        self._card_similarity_cache: dict[
+            tuple[str, str, str], Optional[float]
+        ] = {}
         self._unit_counts: Counter[str] = Counter()
         self._prepare_errors: Counter[str] = Counter()
         self._missing_raw_files = 0
@@ -353,7 +357,12 @@ class EvidenceReranker:
                     continue
                 optional = [
                     name
-                    for name in ("episode", "source_date", "source_files")
+                    for name in (
+                        "episode",
+                        "source_date",
+                        "source_files",
+                        "embedding_blob",
+                    )
                     if name in columns
                 ]
                 selected = [*sorted(required), *optional]
@@ -421,6 +430,16 @@ class EvidenceReranker:
         if not card_id:
             return
         self._card_count += 1
+        raw_card_vector = card.get("embedding_blob")
+        if isinstance(raw_card_vector, (bytes, bytearray, memoryview)):
+            card_vector = np.frombuffer(
+                bytes(raw_card_vector),
+                dtype=np.float32,
+            )
+            if card_vector.size and np.all(np.isfinite(card_vector)):
+                self._card_vectors[(instance_name, card_id)] = (
+                    card_vector.copy()
+                )
         title = str(card.get("title") or "").strip()
         episode = str(card.get("episode") or "").strip()
         summary = str(card.get("summary") or "").strip()
@@ -531,6 +550,54 @@ class EvidenceReranker:
             QUERY,
             self._embedder,
         )
+
+    def card_similarity(
+        self,
+        instance_name: str,
+        left_card_id: str,
+        right_card_id: str,
+    ) -> Optional[float]:
+        """Return MaxP similarity using vectors already built for evidence."""
+        left_id = str(left_card_id)
+        right_id = str(right_card_id)
+        if left_id == right_id:
+            return 1.0
+        first, second = sorted((left_id, right_id))
+        key = (str(instance_name), first, second)
+        if key in self._card_similarity_cache:
+            return self._card_similarity_cache[key]
+
+        left_card_vector = self._card_vectors.get(
+            (str(instance_name), left_id)
+        )
+        right_card_vector = self._card_vectors.get(
+            (str(instance_name), right_id)
+        )
+        if left_card_vector is not None and right_card_vector is not None:
+            card_score = _cosine(left_card_vector, right_card_vector)
+            if card_score is not None:
+                self._card_similarity_cache[key] = card_score
+                return card_score
+
+        left_vectors = [
+            self._vectors[unit.text_hash]
+            for unit in self._units.get((str(instance_name), left_id), [])
+            if unit.text_hash in self._vectors
+        ]
+        right_vectors = [
+            self._vectors[unit.text_hash]
+            for unit in self._units.get((str(instance_name), right_id), [])
+            if unit.text_hash in self._vectors
+        ]
+        similarities = [
+            score
+            for left in left_vectors
+            for right in right_vectors
+            if (score := _cosine(left, right)) is not None
+        ]
+        result = max(similarities) if similarities else None
+        self._card_similarity_cache[key] = result
+        return result
 
     def rerank(
         self,

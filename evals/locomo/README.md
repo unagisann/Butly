@@ -13,7 +13,8 @@ API.
   Google/Web search disabled.
 - Save replay, Sleeptime, QA, Trace, environment, dataset manifest, and compact
   memory snapshot artifacts.
-- Score answers with official-compatible rules and write `scores.json`,
+- Score English answers with official-compatible rules, or Japanese answers
+  with the localized diagnostic scorer, and write `scores.json`,
   `errors.jsonl`, and a Markdown `summary.md`.
 - Checkpoint after every session, Sleeptime pass, and question so interrupted
   runs continue with `resume`.
@@ -36,6 +37,17 @@ LoCoMo evaluations). Exact match and answer
 containment are auxiliary metrics, not official scores. Stemming uses a
 self-contained original-Porter implementation (no nltk dependency), so rare
 words may stem slightly differently from the official nltk stemmer.
+
+For a translated Japanese dataset, the runner detects Japanese from the QA
+questions and uses the localized `mixed-script-f1-v1` scorer. It applies NFKC,
+removes spaces and punctuation, keeps Latin/number runs intact, and tokenizes
+Japanese text by character. Japanese commas are accepted for category 1,
+category 3 stops at the first Japanese full stop or semicolon, and category 5
+recognizes Japanese no-information phrases. This dependency-free score is a
+stable diagnostic for comparing Butly runs on the same Japanese dataset; it is
+not numerically comparable with the official English LoCoMo score. The method,
+dataset locale, and compatibility flag are recorded in `scores.json` and
+`summary.md`.
 
 Butly-specific metrics (RAG trigger rates, retrieved cards, latency
 percentiles, tier / need_intent distributions, classifier fallback / intent
@@ -65,8 +77,9 @@ official score.
 
 ### Optional semantic judge
 
-Token F1 remains the official LoCoMo score. An optional, separately selected
-LLM judge can add a meaning-based diagnostic for paraphrases, translated
+For English runs, Token F1 remains the official-compatible LoCoMo score. The
+Japanese mixed-script F1 described above is localized. An optional, separately
+selected LLM judge can add a meaning-based diagnostic for paraphrases, translated
 answers, missing facts, and reversed claims. Its output is written to
 `semantic_scores.json` and `results/semantic_judge/`; it never replaces or
 modifies `scores.json.official`.
@@ -278,6 +291,33 @@ python -m evals.locomo.retrieval_replay \
 `hybrid_evidence_fusion` combines reciprocal hybrid and Evidence ranks instead
 of replacing the hybrid order. Its default weights are 0.70 and 0.30; use
 `--evidence-fusion-base-weight` to test another hybrid weight.
+Offline replay reports Recall/Hit at 1, 3, 5, and 20; Recall@5 is diagnostic
+only and does not increase the runtime injection limit of three cards.
+
+The offline-only fixed modes `hybrid_evidence_fusion_w40`,
+`hybrid_evidence_fusion_w50`, and `hybrid_evidence_fusion_w60` make a single
+replay compare hybrid weights 0.40, 0.50, and 0.60 without changing runtime
+configuration. `hybrid_evidence_fusion_mmr` keeps the configured fusion weight
+and selects a diverse top three with Maximal Marginal Relevance. Its pairwise
+redundancy penalty reuses each card's stored Summary embedding (falling back to
+the already-built Episode/RAW evidence vectors), so it adds no LLM or embedding
+request and does not increase the injected card count.
+Use `--evidence-mmr-lambda` (default 0.80) to balance fusion relevance against
+diversity. These modes are screening tools; promote a setting to runtime only
+after `rerun-qa` confirms an official-score improvement.
+
+```bash
+python -m evals.locomo.retrieval_replay \
+  --run ./eval_runs/runs/Gemini_Flash_3.6_web_v33 \
+  --modes hybrid_evidence_fusion \
+          hybrid_evidence_fusion_w40 \
+          hybrid_evidence_fusion_w50 \
+          hybrid_evidence_fusion_w60 \
+          hybrid_evidence_fusion_mmr \
+  --evidence-fusion-base-weight 0.6 \
+  --evidence-mmr-lambda 0.8 \
+  --profile ./eval_runs/profiles/<source-job>.yaml
+```
 
 The first stage is either the existing card vector (Title / Tags / Summary)
 top 20 or the hybrid RRF top 20.
@@ -289,6 +329,14 @@ altered. `hybrid_evidence_fusion` is also available as a full LoCoMo QA
 `brain.search_mode`; the other evidence modes remain offline comparisons.
 During QA it lazily embeds only the current hybrid top-N, shares the question
 vector with the first stage, and falls back to hybrid order on any failure.
+To run the offline `hybrid_evidence_fusion_w40` setting through full QA, use
+`brain.search_mode: hybrid_evidence_fusion` and set
+`brain.evidence_fusion_base_weight: 0.40`; the fixed `w40` name itself is an
+offline comparison alias. Increasing offline `--limit` to 50 ranks a pool of
+up to 50 candidates while keeping selection at top three. For the same QA
+experiment, set both `brain.vector_candidates` and `brain.bm25_candidates` to
+50. The fused pool is capped at 50 (not 100), and only its final top three are
+injected.
 
 Document and question vectors are cached in
 `retrieval_cache/evidence_embeddings.sqlite3`. Keys include the embedding
@@ -402,19 +450,21 @@ chat:
   model_name: qwen3-14b
 ```
 
-or overridden for one CLI run with `--locale en` / `--locale ja`. Resolution
-order is:
+or overridden for one CLI run with `--locale en` / `--locale ja`. This setting
+controls Butly's internal prompt and memory-output language. Resolution order
+is:
 
 ```text
---locale > profile top-level locale > en
+--locale > profile top-level locale > detected dataset locale > en
 ```
 
-Locale selects Butly's internal localized prompts and memory-output language;
-it does not translate the LoCoMo dataset, questions, or gold answers. QA
-answers remain explicitly English to match the official LoCoMo questions,
-reference answers, and token-F1 scorer. A true Japanese benchmark therefore
-requires a separately translated dataset and Japanese-compatible scoring,
-rather than only `--locale ja`.
+The dataset itself is never translated at runtime. Its QA language is detected
+separately and persisted as `dataset_locale`. That field selects the QA-answer
+instruction and scorer: English data uses the official-compatible English
+path; translated Japanese data requests terse Japanese answers and uses the
+localized Japanese scorer described above. An explicit `--locale` may differ
+from `dataset_locale` for a cross-language memory experiment without changing
+the answer language or scorer.
 Evaluation instances disable project-local `user_prompts.json` overrides so a
 machine-specific custom prompt cannot silently change the selected language or
 invalidate a cross-version comparison. Normal Butly instances retain their

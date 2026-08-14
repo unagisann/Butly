@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import sqlite3
 import tempfile
@@ -48,18 +49,154 @@ from butly_core.io_utils import atomic_write_text
 from evals.locomo import scorer as S
 from evals.locomo.progress import ProgressReporter, create_console_progress
 
-RECALL_KS = (1, 3, 20)
+RECALL_KS = (1, 3, 5, 20)
 BM25_COLUMNS = ["id", "title", "summary", "episode", "is_archived"]
 EVIDENCE_RERANK_MODES = frozenset(
     {
         "evidence_rerank",
         "hybrid_evidence_rerank",
         "hybrid_evidence_fusion",
+        "hybrid_evidence_fusion_w40",
+        "hybrid_evidence_fusion_w50",
+        "hybrid_evidence_fusion_w60",
+        "hybrid_evidence_fusion_mmr",
     }
 )
 HYBRID_EVIDENCE_MODES = frozenset(
-    {"hybrid_evidence_rerank", "hybrid_evidence_fusion"}
+    {
+        "hybrid_evidence_rerank",
+        "hybrid_evidence_fusion",
+        "hybrid_evidence_fusion_w40",
+        "hybrid_evidence_fusion_w50",
+        "hybrid_evidence_fusion_w60",
+        "hybrid_evidence_fusion_mmr",
+    }
 )
+EVIDENCE_FUSION_WEIGHT_MODES = {
+    "hybrid_evidence_fusion_w40": 0.4,
+    "hybrid_evidence_fusion_w50": 0.5,
+    "hybrid_evidence_fusion_w60": 0.6,
+}
+EVIDENCE_FUSION_MODES = frozenset(
+    {
+        "hybrid_evidence_fusion",
+        "hybrid_evidence_fusion_mmr",
+        *EVIDENCE_FUSION_WEIGHT_MODES,
+    }
+)
+MMR_EVIDENCE_FUSION_MODE = "hybrid_evidence_fusion_mmr"
+
+
+def _fusion_weight_for_mode(mode: str, configured_weight: float) -> float:
+    return EVIDENCE_FUSION_WEIGHT_MODES.get(mode, configured_weight)
+
+
+def select_mmr_candidates(
+    candidate_ids: list[str],
+    fusion_scores: list[dict[str, Any]],
+    similarity: Callable[[str, str], Optional[float]],
+    *,
+    top_n: int = 3,
+    relevance_weight: float = 0.8,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Select a diverse top-N without another model or embedding call."""
+    if isinstance(top_n, bool) or not isinstance(top_n, int) or top_n < 1:
+        raise ValueError("MMR top_n must be a positive integer")
+    if (
+        isinstance(relevance_weight, bool)
+        or not isinstance(relevance_weight, (int, float))
+        or not 0.0 <= float(relevance_weight) <= 1.0
+    ):
+        raise ValueError("MMR relevance weight must be between 0 and 1")
+
+    ordered_ids = list(dict.fromkeys(str(value) for value in candidate_ids))
+    score_by_id = {
+        str(item.get("card_id")): float(item["fusion_score"])
+        for item in fusion_scores
+        if isinstance(item, dict)
+        and item.get("card_id") is not None
+        and isinstance(item.get("fusion_score"), (int, float))
+        and not isinstance(item.get("fusion_score"), bool)
+        and math.isfinite(float(item["fusion_score"]))
+    }
+    max_relevance = max(
+        (max(score_by_id.get(card_id, 0.0), 0.0) for card_id in ordered_ids),
+        default=0.0,
+    )
+    relevance = {
+        card_id: (
+            max(score_by_id.get(card_id, 0.0), 0.0) / max_relevance
+            if max_relevance > 0.0
+            else 0.0
+        )
+        for card_id in ordered_ids
+    }
+    original_rank = {
+        card_id: index for index, card_id in enumerate(ordered_ids, start=1)
+    }
+
+    selected: list[str] = []
+    diagnostics: list[dict[str, Any]] = []
+    remaining = list(ordered_ids)
+    selection_limit = min(top_n, len(remaining))
+    while remaining and len(selected) < selection_limit:
+        ranked = []
+        for card_id in remaining:
+            similarities = []
+            for chosen in selected:
+                raw_similarity = similarity(card_id, chosen)
+                if raw_similarity is None:
+                    continue
+                value = float(raw_similarity)
+                if math.isfinite(value):
+                    similarities.append(min(max(value, 0.0), 1.0))
+            max_similarity = max(similarities, default=0.0)
+            mmr_score = (
+                float(relevance_weight) * relevance[card_id]
+                - (1.0 - float(relevance_weight)) * max_similarity
+            )
+            ranked.append(
+                (
+                    -mmr_score,
+                    -relevance[card_id],
+                    original_rank[card_id],
+                    card_id,
+                    mmr_score,
+                    max_similarity,
+                )
+            )
+        ranked.sort()
+        chosen = ranked[0]
+        card_id = chosen[3]
+        selected.append(card_id)
+        remaining.remove(card_id)
+        diagnostics.append(
+            {
+                "card_id": card_id,
+                "selection_rank": len(selected),
+                "original_fusion_rank": original_rank[card_id],
+                "normalized_relevance": relevance[card_id],
+                "max_selected_similarity": chosen[5],
+                "mmr_score": chosen[4],
+            }
+        )
+    return [*selected, *remaining], diagnostics
+
+
+def _mean_pairwise_similarity(
+    candidate_ids: list[str],
+    similarity: Callable[[str, str], Optional[float]],
+) -> Optional[float]:
+    values = []
+    for index, left in enumerate(candidate_ids):
+        for right in candidate_ids[index + 1:]:
+            raw_value = similarity(left, right)
+            if raw_value is None:
+                continue
+            value = float(raw_value)
+            if math.isfinite(value):
+                values.append(min(max(value, 0.0), 1.0))
+    return sum(values) / len(values) if values else None
 
 
 def load_questions(run_dir: Path) -> list[dict]:
@@ -141,6 +278,7 @@ def evaluate(
     evidence_fusion_base_weight: float = (
         DEFAULT_EVIDENCE_FUSION_BASE_WEIGHT
     ),
+    evidence_mmr_lambda: float = 0.8,
 ) -> dict:
     """mode ごとに Recall@k / no-hit を集計する。
 
@@ -161,6 +299,10 @@ def evaluate(
         "evidence_rerank",
         "hybrid_evidence_rerank",
         "hybrid_evidence_fusion",
+        "hybrid_evidence_fusion_w40",
+        "hybrid_evidence_fusion_w50",
+        "hybrid_evidence_fusion_w60",
+        "hybrid_evidence_fusion_mmr",
     }
     unknown_modes = set(modes) - allowed_modes
     if not modes or unknown_modes:
@@ -175,6 +317,12 @@ def evaluate(
         raise ValueError("evidence fusion base weight must be a number")
     if not 0.0 <= float(evidence_fusion_base_weight) <= 1.0:
         raise ValueError("evidence fusion base weight must be between 0 and 1")
+    if (
+        isinstance(evidence_mmr_lambda, bool)
+        or not isinstance(evidence_mmr_lambda, (int, float))
+        or not 0.0 <= float(evidence_mmr_lambda) <= 1.0
+    ):
+        raise ValueError("evidence MMR lambda must be between 0 and 1")
     rows = load_questions(run_dir)
     provenance = S._load_provenance(run_dir, rows)
     if provenance is None:
@@ -200,6 +348,10 @@ def evaluate(
             "evidence_rerank",
             "hybrid_evidence_rerank",
             "hybrid_evidence_fusion",
+            "hybrid_evidence_fusion_w40",
+            "hybrid_evidence_fusion_w50",
+            "hybrid_evidence_fusion_w60",
+            "hybrid_evidence_fusion_mmr",
         } & set(modes):
             from butly_core.core.brain import ButlyBrain
 
@@ -283,6 +435,7 @@ def evaluate(
                     evidence_fusion_base_weight=float(
                         evidence_fusion_base_weight
                     ),
+                    evidence_mmr_lambda=float(evidence_mmr_lambda),
                 )
         finally:
             if evidence_reranker is not None:
@@ -307,6 +460,7 @@ def _evaluate_mode(
     evidence_fusion_base_weight: float = (
         DEFAULT_EVIDENCE_FUSION_BASE_WEIGHT
     ),
+    evidence_mmr_lambda: float = 0.8,
 ) -> dict:
     coverage: dict = {k: [] for k in RECALL_KS}
     hits: dict = {k: 0 for k in RECALL_KS}
@@ -337,6 +491,12 @@ def _evaluate_mode(
     evidence_errors: dict[str, int] = {}
     evidence_selected_coverage: list[float] = []
     evidence_selected_hits = 0
+    mmr_set_changes = 0
+    mmr_order_changes = 0
+    mmr_rescues = 0
+    mmr_harms = 0
+    mmr_similarity_before: list[float] = []
+    mmr_similarity_after: list[float] = []
     details: list[dict] = []
     try:
         for row_index, row in enumerate(targets, start=1):
@@ -493,17 +653,96 @@ def _evaluate_mode(
                         top_n=3,
                         query_vector=evidence_query_vector,
                     )
-                    if mode == "hybrid_evidence_fusion":
+                    if mode in EVIDENCE_FUSION_MODES:
                         evidence_only_ids = list(
                             evidence_diag.get("candidate_ids") or []
+                        )
+                        fusion_weight = _fusion_weight_for_mode(
+                            mode,
+                            evidence_fusion_base_weight,
                         )
                         fused_ids, fusion_scores = (
                             fuse_hybrid_evidence_ranks(
                                 evidence_base_ids,
                                 list(evidence_diag.get("scores") or []),
-                                base_weight=evidence_fusion_base_weight,
+                                base_weight=fusion_weight,
                             )
                         )
+                        mmr_scores: list[dict[str, Any]] = []
+                        mmr_diag = None
+                        if mode == MMR_EVIDENCE_FUSION_MODE:
+                            pre_mmr_ids = list(fused_ids[:3])
+                            card_similarity = lambda left, right: (
+                                evidence_reranker.card_similarity(
+                                    instance_name,
+                                    left,
+                                    right,
+                                )
+                            )
+                            fused_ids, mmr_scores = select_mmr_candidates(
+                                fused_ids,
+                                fusion_scores,
+                                card_similarity,
+                                top_n=3,
+                                relevance_weight=evidence_mmr_lambda,
+                            )
+                            selected_mmr_ids = list(fused_ids[:3])
+                            before_similarity = _mean_pairwise_similarity(
+                                pre_mmr_ids,
+                                card_similarity,
+                            )
+                            after_similarity = _mean_pairwise_similarity(
+                                selected_mmr_ids,
+                                card_similarity,
+                            )
+                            before_coverage = S._coverage_for_card_ids(
+                                row,
+                                provenance,
+                                pre_mmr_ids,
+                            ) or 0.0
+                            after_coverage = S._coverage_for_card_ids(
+                                row,
+                                provenance,
+                                selected_mmr_ids,
+                            ) or 0.0
+                            set_changed = set(pre_mmr_ids) != set(
+                                selected_mmr_ids
+                            )
+                            order_changed = pre_mmr_ids != selected_mmr_ids
+                            mmr_set_changes += set_changed
+                            mmr_order_changes += order_changed
+                            mmr_rescues += after_coverage > before_coverage
+                            mmr_harms += after_coverage < before_coverage
+                            if before_similarity is not None:
+                                mmr_similarity_before.append(
+                                    before_similarity
+                                )
+                            if after_similarity is not None:
+                                mmr_similarity_after.append(after_similarity)
+                            mmr_diag = {
+                                "strategy": (
+                                    "card_embedding_cosine_with_"
+                                    "evidence_fallback"
+                                ),
+                                "relevance_weight": evidence_mmr_lambda,
+                                "diversity_weight": 1.0
+                                - evidence_mmr_lambda,
+                                "base_selected_candidate_ids": pre_mmr_ids,
+                                "selected_candidate_ids": selected_mmr_ids,
+                                "selected_set_changed": set_changed,
+                                "selection_order_changed": order_changed,
+                                "base_recall_at_3": before_coverage,
+                                "selected_recall_at_3": after_coverage,
+                                "delta_at_3": after_coverage
+                                - before_coverage,
+                                "pairwise_similarity_before": (
+                                    before_similarity
+                                ),
+                                "pairwise_similarity_after": (
+                                    after_similarity
+                                ),
+                                "scores": mmr_scores,
+                            }
                         evidence_diag["evidence_candidate_ids"] = (
                             evidence_only_ids
                         )
@@ -516,6 +755,8 @@ def _evaluate_mode(
                         # truthful; rank/type/source remain in fusion_scores.
                         evidence_diag["selected_matches"] = []
                         evidence_diag["fusion_scores"] = fusion_scores
+                        evidence_diag["fusion_base_weight"] = fusion_weight
+                        evidence_diag["mmr"] = mmr_diag
                     evidence_attempts += 1
                     if evidence_diag.get("status") in {
                         "completed",
@@ -594,6 +835,7 @@ def _evaluate_mode(
                 "evidence": list(row.get("evidence") or []),
                 "recall_at_1": row_coverage[1],
                 "recall_at_3": row_coverage[3],
+                "recall_at_5": row_coverage[5],
                 "recall_at_20": row_coverage[20],
                 "candidate_ids": list(candidate_ids),
             }
@@ -667,6 +909,7 @@ def _evaluate_mode(
                             "fusion_scores"
                         )
                         or [],
+                        "evidence_mmr": evidence_diag.get("mmr"),
                         "evidence_candidate_ids": evidence_diag.get(
                             "evidence_candidate_ids"
                         )
@@ -806,12 +1049,46 @@ def _evaluate_mode(
             "fusion": (
                 {
                     "strategy": "weighted_reciprocal_rank",
-                    "base_weight": evidence_fusion_base_weight,
+                    "base_weight": _fusion_weight_for_mode(
+                        mode,
+                        evidence_fusion_base_weight,
+                    ),
                     "evidence_weight": 1.0
-                    - evidence_fusion_base_weight,
+                    - _fusion_weight_for_mode(
+                        mode,
+                        evidence_fusion_base_weight,
+                    ),
                     "rrf_k": 0,
                 }
-                if mode == "hybrid_evidence_fusion"
+                if mode in EVIDENCE_FUSION_MODES
+                else None
+            ),
+            "mmr": (
+                {
+                    "strategy": (
+                        "card_embedding_cosine_with_evidence_fallback"
+                    ),
+                    "relevance_weight": evidence_mmr_lambda,
+                    "diversity_weight": 1.0 - evidence_mmr_lambda,
+                    "extra_embedding_calls": 0,
+                    "selected_set_changed": mmr_set_changes,
+                    "selection_order_changed": mmr_order_changes,
+                    "rescued_at_3_vs_fusion": mmr_rescues,
+                    "harmed_at_3_vs_fusion": mmr_harms,
+                    "pairwise_similarity_before_mean": (
+                        sum(mmr_similarity_before)
+                        / len(mmr_similarity_before)
+                        if mmr_similarity_before
+                        else None
+                    ),
+                    "pairwise_similarity_after_mean": (
+                        sum(mmr_similarity_after)
+                        / len(mmr_similarity_after)
+                        if mmr_similarity_after
+                        else None
+                    ),
+                }
+                if mode == MMR_EVIDENCE_FUSION_MODE
                 else None
             ),
             "candidate_limit": limit,
@@ -1047,6 +1324,10 @@ def main(argv: Optional[list] = None) -> int:
             "evidence_rerank",
             "hybrid_evidence_rerank",
             "hybrid_evidence_fusion",
+            "hybrid_evidence_fusion_w40",
+            "hybrid_evidence_fusion_w50",
+            "hybrid_evidence_fusion_w60",
+            "hybrid_evidence_fusion_mmr",
         ],
         help="比較する検索モード（bm25 は embedding を呼ばない）",
     )
@@ -1084,6 +1365,12 @@ def main(argv: Optional[list] = None) -> int:
         type=float,
         default=DEFAULT_EVIDENCE_FUSION_BASE_WEIGHT,
         help="hybrid_evidence_fusionのhybrid順位重み（0〜1）",
+    )
+    parser.add_argument(
+        "--evidence-mmr-lambda",
+        type=float,
+        default=0.8,
+        help="MMRの関連度重み（0〜1、残りは候補間の多様性）",
     )
     parser.add_argument("--out", type=Path, help="結果 JSON の書き出し先")
     parser.add_argument(
@@ -1136,6 +1423,7 @@ def main(argv: Optional[list] = None) -> int:
         evidence_cache_path=args.evidence_cache,
         evidence_raw_chunk_chars=args.evidence_raw_chunk_chars,
         evidence_fusion_base_weight=args.evidence_fusion_base_weight,
+        evidence_mmr_lambda=args.evidence_mmr_lambda,
     )
     from datetime import datetime, timezone
 
@@ -1143,10 +1431,12 @@ def main(argv: Optional[list] = None) -> int:
     result["generated_at"] = datetime.now(timezone.utc).isoformat()
     result["limit"] = args.limit
     result["modes"] = list(args.modes)
-    if "hybrid_evidence_fusion" in args.modes:
+    if EVIDENCE_FUSION_MODES & set(args.modes):
         result["evidence_fusion_base_weight"] = (
             args.evidence_fusion_base_weight
         )
+    if MMR_EVIDENCE_FUSION_MODE in args.modes:
+        result["evidence_mmr_lambda"] = args.evidence_mmr_lambda
     if args.job_id:
         result["job_id"] = args.job_id
 
