@@ -21,3 +21,7 @@ date,commit_or_status,problem,change,numeric_result,decision,remaining_issue
 2026-08-15,587d5f7,"v34の+5.81ptがモデル差か検索設定か未分離","199問をtop3検索変化の有無で分割し寄与を帰属","検索が変わらない188問で+5.37pt、検索改善8問で+0.80pt、悪化3問で-0.36pt。official +5.81ptに対し検索由来は+0.44ptのみ","attribution corrected","gemma-4-12b固定でw70/pool20へ戻したfull-QA run"
 2026-08-15,587d5f7,"候補pool 50と重みw40の寄与が同時変更で不可分","pool 20/50 × w70/w40 の2x2 offline replay","conv-26 Recall@3: pool効果は+0問(w70)/+1問(w40)、重み効果は+3〜4問。Recall@1のpool効果は両者とも±0問","pool 50 rejected","注入top3のままなら候補50は余剰"
 2026-08-15,587d5f7,"conv-26 139問では1問=0.7ptで重みの差を判定できない","all-10 oracle 1,405問でw70/w40/w50を再測定","Recall@3: w70 1,115問 / w50 1,112問 / w40 1,108問。w40は-7問。Recall@1はw50が+35問で最高。harm@3は14→59へ増加","w40 rejected; w70 retained","@1改善を活かすには注入top-kの見直しが必要"
+2026-08-15,fdb03b0,"自前の数値が他OSSの公開値と同じ軸に置けない","reader・記憶抽出をGPT-4o-miniへ統一しall-10のfull QAを実行","v37: 公式0.4646 / cat1-4 0.4225 / cat5 0.6099、1986問、カード1105枚","external-comparison baseline adopted","比較先のcat5込み/除外を揃える"
+2026-08-15,fdb03b0,"GPT-4o-miniは世界知識が多く測定器として鈍る懸念","根拠の有無で条件付けた正答率を実測","検索感度0.432 / 根拠なし正答14.9%。gemma-4-12b(0.469/9.7%)に次ぐ2位でGemini Flash(0.390/25.7%)より良好","concern resolved","外部比較と社内A/Bを1モデルで兼ねられる"
+2026-08-15,fdb03b0,"top-5の伸びしろがv29のqwen製カード上の推定だった","v37の実カードでretrieval replayを再実行","oracle1326問中132問で根拠増、hit@3 1038→1111で+73問。v29の+51問より大きい","top-5 experiment justified","cat5低下の可能性があり公式互換では判定しない"
+2026-08-15,fdb03b0,"Fusion 70/30の判断がqwen製カードでのものだった","GPT-4o-mini製カードで再検証","hybrid @3 997問 → fusion 1038問で+41問（rescue68/harm32）","70/30 reconfirmed","別モデル・別カードで再現"
