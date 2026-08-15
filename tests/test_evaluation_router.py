@@ -187,6 +187,35 @@ def test_start_request_accepts_exact_samples_and_retrieval_prep():
     assert request.sample_ids == ["conv-30"]
 
 
+def test_start_request_accepts_injection_top_k():
+    """注入カード上限をtop3以外でも受け付けること（top-k比較の前提）"""
+    request = evaluations.EvaluationStartRequest(
+        dataset_path="/tmp/locomo.json",
+        run_id="topk-5",
+        vector_search_limit=5,
+    )
+
+    assert request.vector_search_limit == 5
+
+
+def test_start_request_defaults_injection_top_k_to_three():
+    request = evaluations.EvaluationStartRequest(
+        dataset_path="/tmp/locomo.json",
+        run_id="topk-default",
+    )
+
+    assert request.vector_search_limit == 3
+
+
+def test_start_request_rejects_non_positive_injection_top_k():
+    with pytest.raises(ValidationError):
+        evaluations.EvaluationStartRequest(
+            dataset_path="/tmp/locomo.json",
+            run_id="topk-zero",
+            vector_search_limit=0,
+        )
+
+
 def test_evaluation_endpoints_delegate_to_manager(monkeypatch):
     manager = FakeManager()
     monkeypatch.setattr(evaluations, "_get_manager", lambda: manager)

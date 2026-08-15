@@ -76,6 +76,9 @@ class EvaluationStartRequest(BaseModel):
     injection_policy: Literal[
         "intent_gated", "retrieval_assisted", "candidates"
     ] = "intent_gated"
+    # 候補のうち実際に回答へ渡すカード枚数（memory_probe.vector_search_limit）。
+    # 候補数（bm25_candidates / vector_candidates）とは別軸。
+    vector_search_limit: int = Field(default=3, ge=1)
     bm25_candidates: int = Field(default=20, ge=1)
     vector_candidates: int = Field(default=20, ge=1)
     dual_query_candidates: int = Field(default=15, ge=1)
