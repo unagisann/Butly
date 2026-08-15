@@ -160,6 +160,81 @@ def test_daily_digest_resolves_provider_with_connection(tmp_path, monkeypatch):
     assert created[0]["model_name"] == "qwen3-14b"
 
 
+def test_daily_digest_returns_true_on_success(tmp_path, monkeypatch):
+    """成功時は「処理済みにして良い」を返す。"""
+    instances_dir = tmp_path / "instances"
+    instance_dir = _instance_with_roles(
+        instances_dir,
+        {"summary": {"connection": "colab_local", "model_name": "qwen3-14b"}},
+    )
+    sleeptime = ButlySleeptime(
+        base_dir=tmp_path / "workspace", instances_dir=instances_dir
+    )
+
+    def fake_create(model):
+        provider = MagicMock()
+        provider.classify.return_value = "digest body"
+        return provider
+
+    monkeypatch.setattr(
+        "butly_core.llm.factory.ProviderFactory.create", fake_create
+    )
+
+    raw_text = "[2023-05-08 13:56] Caroline: I started pottery today.\n" * 30
+    assert sleeptime._generate_daily_digest(instance_dir, raw_text) is True
+    assert (instance_dir / "mid_term_digest.txt").read_text(encoding="utf-8")
+
+
+def test_daily_digest_retries_then_reports_failure(tmp_path, monkeypatch):
+    """503 が続いたら False を返す。呼び出し側が未処理へ戻せるようにするため。"""
+    instances_dir = tmp_path / "instances"
+    instance_dir = _instance_with_roles(
+        instances_dir,
+        {"summary": {"connection": "colab_local", "model_name": "qwen3-14b"}},
+    )
+    sleeptime = ButlySleeptime(
+        base_dir=tmp_path / "workspace", instances_dir=instances_dir
+    )
+
+    calls = []
+
+    def fake_create(model):
+        provider = MagicMock()
+
+        def boom(*args, **kwargs):
+            calls.append(1)
+            raise RuntimeError(
+                "Error code: 503 - {'error': {'type': 'service_unavailable'}}"
+            )
+
+        provider.classify.side_effect = boom
+        return provider
+
+    monkeypatch.setattr(
+        "butly_core.llm.factory.ProviderFactory.create", fake_create
+    )
+    monkeypatch.setattr("sleeptime.time.sleep", lambda *_: None)
+
+    raw_text = "[2023-05-08 13:56] Caroline: I started pottery today.\n" * 30
+    assert sleeptime._generate_daily_digest(instance_dir, raw_text) is False
+    assert len(calls) == 5, f"503 should be retried 5 times, got {len(calls)}"
+    assert not (instance_dir / "mid_term_digest.txt").exists()
+
+
+def test_daily_digest_skips_are_not_failures(tmp_path, monkeypatch):
+    """文字数不足の意図的スキップは True（再処理させない）。"""
+    instances_dir = tmp_path / "instances"
+    instance_dir = _instance_with_roles(
+        instances_dir,
+        {"summary": {"connection": "colab_local", "model_name": "qwen3-14b"}},
+    )
+    sleeptime = ButlySleeptime(
+        base_dir=tmp_path / "workspace", instances_dir=instances_dir
+    )
+
+    assert sleeptime._generate_daily_digest(instance_dir, "too short") is True
+
+
 def test_recent_headlines_keeps_connection_in_provider_and_classify(
     tmp_path, monkeypatch
 ):

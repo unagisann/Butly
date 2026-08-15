@@ -637,7 +637,19 @@ class ButlySleeptime:
 
         # --- 6. ★NEW: 二層要約の日次生成 ---
         if new_text.strip() and self.should_update(inst_cfg, "digest"):
-            self._generate_daily_digest(instance_path, new_text)
+            if not self._generate_daily_digest(instance_path, new_text) and newly_processed:
+                # digest を作れなかった分は「処理済み」から戻す。
+                # 2b で先にマークしているため、ここで戻さないと次回の Phase 1 が
+                # 早期 return し、この RAW は二度と digest へ入らない。
+                processed_set.difference_update(newly_processed)
+                tracker_file.write_text(
+                    json.dumps(sorted(processed_set), ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                print(
+                    f"[Sleeptime] Daily digest failed; {len(newly_processed)} "
+                    "log(s) returned to the unprocessed set for the next run."
+                )
 
         # --- 7. recent_digest_headlines 生成 ---
         self._generate_recent_headlines(instance_path)
@@ -731,23 +743,27 @@ class ButlySleeptime:
             model = AI_CONFIG["summary"]
         return ProviderFactory.create(model)
 
-    def _generate_daily_digest(self, instance_path: Path, new_text: str):
+    def _generate_daily_digest(self, instance_path: Path, new_text: str) -> bool:
         """
         当日分のRAWテキストからエピソード付き事実ダイジェストを生成し、
         mid_term_digest.txt に差分追記する。
         上限超過時は古い部分を archive_digest.txt へアーカイブ。
-        
+
         入力は常に当日分のRAW（new_text）のみ。要約の要約は絶対にしない。
+
+        戻り値は「この new_text を処理済みとして良いか」。生成成功と、設定無効・
+        文字数不足による意図的なスキップは True。API 失敗など生成できなかった
+        場合だけ False を返し、呼び出し側が再試行できるようにする。
         """
         from butly_core.config import SYSTEM_CONFIG, AI_CONFIG
-        
+
         if not SYSTEM_CONFIG.get("memory", {}).get("generate_mid_term_summaries", True):
             print("[Sleeptime] Mid-term summary generation is disabled in config.")
-            return
-        
+            return True
+
         if len(new_text.strip()) < 200:
             print(f"[Sleeptime] Daily digest: new_text too short ({len(new_text)} chars), skipping.")
-            return
+            return True
         
         print(f"[Sleeptime] Daily digest: Generating from {len(new_text)} chars of today's raw text...")
         
@@ -790,8 +806,17 @@ class ButlySleeptime:
                     raw_text=chunk,
                     max_chars=max_digest,
                 )
-                result = provider.classify(digest_prompt, summary_conf)
+                # 503/429 は Stage 2 と同じ指数バックオフで粘る。
+                # ここで諦めると当日分の RAW が digest へ入らないまま失われる。
+                result = self._robust_api_call(
+                    provider.classify, digest_prompt, summary_conf
+                )
                 self._track_llm_usage(provider)
+                if result is None:
+                    raise RuntimeError(
+                        "daily digest LLM call failed after retries "
+                        f"(chunk {ci + 1}/{len(text_chunks)})"
+                    )
                 if result and result.strip():
                     digest_parts.append(result.strip())
                 # チャンク間のAPI待機
@@ -826,9 +851,12 @@ class ButlySleeptime:
                     digest_file.write_text(combined_digest, encoding="utf-8")
                 
                 print(f"[Sleeptime] Digest updated: +{len(digest_new)} chars")
-            
+
+            return True
+
         except Exception as e:
             print(f"[Sleeptime] Daily digest generation error: {e}")
+            return False
 
     def _generate_recent_headlines(self, instance_path: Path):
         """
