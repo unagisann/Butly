@@ -918,7 +918,7 @@ def _build_rag(blocks: dict, level: str, tier: str, h) -> str | None:
     # Stage 3: active node の小量併記 (opt-in)
     active_nodes = blocks.get("active_nodes") or []
     if active_nodes:
-        node_lines = ["", h("active_nodes")]
+        node_lines = []
         for n in active_nodes[:5]:
             statement = (n.get("statement") or "").strip().replace("\n", " ")
             if not statement:
@@ -928,8 +928,11 @@ def _build_rag(blocks: dict, level: str, tier: str, h) -> str | None:
             node_lines.append(
                 f"{h('rag_bullet')}{_node_slots(n)}{statement}{conf_str}"
             )
-        if len(node_lines) > 2:
-            body += "\n" + "\n".join(node_lines[1:])
+        if node_lines:
+            body += (
+                f"\n{h('active_nodes')}\n{h('note_active_nodes')}\n"
+                + "\n".join(node_lines)
+            )
     return body
 
 

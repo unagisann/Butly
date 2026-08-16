@@ -54,6 +54,7 @@ REQUIRED_SECTION_HEADER_KEYS = frozenset(
         "memory_usage_note",
         "mid_term_digest",
         "mid_term_memory",
+        "note_active_nodes",
         "note_current_time",
         "note_glossary",
         "note_google_search",

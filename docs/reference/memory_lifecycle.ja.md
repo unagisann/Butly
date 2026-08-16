@@ -226,7 +226,7 @@ Stage 1/2 がエピソードを「溜める」層なのに対し、Stage 3 は�
 | **bootstrap** | `venv/bin/python sleeptime.py stage3-bootstrap --instance <name> [--max-cards N]`。キューが空になるまで batch を反復（安全上限 `knowledge_maturation_bootstrap_max_cards`=2000）。失敗カードは invocation 内だけ隔離し、`partial` として失敗一覧・残数を報告。transaction 単位で冪等・再開可能 |
 | **reflection（減衰）** | `memory_node_decay_enabled=True` のとき run 末に SQL スイープ。`last_reinforced_at`/`last_decay_at` 基準の未適用 stale 期間数（`memory_node_stale_days`=30 単位）× `memory_node_decay_per_period`=0.05 を減点。同一期間の再 run で二重減点しない。active が `memory_node_active_threshold` 割れで uncertain 降格、uncertain の 2 期間以上放置は `metadata.stale=true`（削除しない） |
 | **昇格提案** | active ∧ confidence≥`memory_node_promotion_threshold` ∧ supports≥`memory_node_promotion_min_sources` ∧ 複数日（`source_date` 優先）の node を `memory_node_proposals.json` へ出力（全 eligible node を pagination）。Key Memory への自動反映は未実装（計画 Phase 6） |
-| **Chat/QA 注入** | `knowledge_maturation_enabled=True` のとき、RAG でヒットしたカードに紐づく `status='active'` node を最大 5 件併走注入（カード非ヒット時は node も見えない）。Traceと`debug_info.rag.active_nodes`にはlookup理由、候補、紐づくカードID、最終prompt内の実在判定を保存する |
+| **Chat/QA 注入** | `knowledge_maturation_enabled=True` のとき、RAG でヒットしたカードに紐づく `status='active'` node を最大 5 件併走注入（カード非ヒット時は node も見えない）。各行は `・[主語 \| トピック] statement (conf=…)` 形式で、`note_active_nodes` が主語の一致確認を指示する（主語なしの statement が別人の質問へ流用されるのを防ぐため）。Traceと`debug_info.rag.active_nodes`にはlookup理由、候補、紐づくカードID、subject/topic、最終prompt内の実在判定を保存する |
 | **設定キー** | `knowledge_maturation_batch_size`=40 / `_max_batches_per_run`=1 / `_prompt_max_chars`=40000 / `_retry_max_calls_per_run`=8 / `_bootstrap_max_cards`=2000。旧 `max_cards` はインスタンス設定に残っていれば batch_size として読み替え。旧 `window_days`/`min_usage_count`/`interval_days` は廃止 |
 
 ---

@@ -68,3 +68,7 @@ rag_source_raw: "[Source Excerpts]"
 rag_source_raw_note: >-
   Use these excerpts to verify original wording and resolve ambiguity.
 active_nodes: "[Consolidated Knowledge]"
+note_active_nodes: >-
+  Knowledge consolidated across several conversations.
+  The [subject | topic] on each item states who or what it is about.
+  Do not use an item as evidence about anyone or anything other than its subject.
