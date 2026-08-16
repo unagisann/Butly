@@ -84,9 +84,12 @@ class ProviderFactory:
             )
 
         if connection.protocol == "gemini_native":
-            from butly_core.llm.providers.gemini import GeminiProvider
+            from butly_core.llm.protocols.gemini_native import GeminiNativeAdapter
 
-            return GeminiProvider(default_model_name=ref.model_name)
+            return GeminiNativeAdapter(
+                connection=connection,
+                default_model_name=ref.model_name,
+            )
 
         raise NotImplementedError(
             f"Unsupported protocol: {connection.protocol!r} for connection {connection.id!r}"
