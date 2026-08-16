@@ -885,6 +885,22 @@ def _build_mid_term(blocks: dict, level: str, tier: str, h) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
+def _node_slots(node: dict) -> str:
+    """active node の subject / topic を ``[主語 | トピック] `` として前置する。
+
+    statement だけを出すと「誰の話か」が本文に書かれていないノードが主語なし
+    の事実として読まれ、別人の質問へ流用される（LoCoMo cat5 の典型的な誤答）。
+    subject/topic は memory_nodes に既にあるので、注入時に落とさず出す。
+    ラベル語を置かないのは locale 非依存にするため。空欄は詰める。
+    """
+    slots = [
+        str(node.get(key) or "").strip().replace("\n", " ")
+        for key in ("subject", "topic")
+    ]
+    filled = [s for s in slots if s]
+    return f"[{' | '.join(filled)}] " if filled else ""
+
+
 def _build_rag(blocks: dict, level: str, tier: str, h) -> str | None:
     # RAG は need 連動の tier 非依存注入（reflex でも rag_context があれば描画）
     if level == "off":
@@ -909,7 +925,9 @@ def _build_rag(blocks: dict, level: str, tier: str, h) -> str | None:
                 continue
             confidence = n.get("confidence")
             conf_str = f" (conf={confidence:.2f})" if isinstance(confidence, (int, float)) else ""
-            node_lines.append(f"{h('rag_bullet')}{statement}{conf_str}")
+            node_lines.append(
+                f"{h('rag_bullet')}{_node_slots(n)}{statement}{conf_str}"
+            )
         if len(node_lines) > 2:
             body += "\n" + "\n".join(node_lines[1:])
     return body

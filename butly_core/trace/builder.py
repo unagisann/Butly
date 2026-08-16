@@ -283,6 +283,7 @@ def build_chat_trace(
                 {
                     "id": node.get("id"),
                     "kind": node.get("kind"),
+                    "subject": node.get("subject"),
                     "topic": node.get("topic"),
                     "statement": str(node.get("statement") or "")
                     .strip()

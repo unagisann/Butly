@@ -1931,3 +1931,52 @@ class TestActiveNodesInRag:
             "matched_count": 1,
             "reason": "completed",
         }
+
+
+class TestActiveNodeSlotRendering:
+    """subject / topic を statement の前に出す（主語なし事実の流用を防ぐ）。"""
+
+    @staticmethod
+    def _render(node: dict) -> str:
+        from butly_core.core.gatekeeper.memory_builder import _build_rag
+
+        return _build_rag(
+            {"rag_context": "cards", "active_nodes": [node]},
+            "high",
+            "mid",
+            lambda key: {"rag_bullet": "- "}.get(key, f"[{key}]"),
+        )
+
+    def test_subject_and_topic_are_prefixed(self):
+        body = self._render(
+            {
+                "subject": "キャロライン",
+                "topic": "養子縁組",
+                "statement": "養子縁組斡旋機関を調べている",
+                "confidence": 0.9,
+            }
+        )
+        assert "- [キャロライン | 養子縁組] 養子縁組斡旋機関を調べている" in body
+
+    def test_only_filled_slots_are_rendered(self):
+        body = self._render(
+            {"subject": "Melanie", "topic": "", "statement": "陶芸教室に申し込んだ"}
+        )
+        assert "- [Melanie] 陶芸教室に申し込んだ" in body
+
+    def test_no_slots_keeps_legacy_line(self):
+        body = self._render({"statement": "user likes fruit", "confidence": 1.0})
+        assert "- user likes fruit (conf=1.00)" in body
+
+    def test_statement_and_confidence_stay_contiguous(self):
+        # chat.service の注入検証は (statement + conf) の部分一致で見ているため、
+        # slot を足しても両者の間に文字を挟んではいけない。
+        body = self._render(
+            {
+                "subject": "キャロライン",
+                "topic": "陶芸",
+                "statement": "青いマグを作った",
+                "confidence": 1.0,
+            }
+        )
+        assert "青いマグを作った (conf=1.00)" in body

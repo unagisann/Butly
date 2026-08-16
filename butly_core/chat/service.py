@@ -180,6 +180,7 @@ def _build_active_node_trace(
             {
                 "id": node.get("id"),
                 "kind": node.get("kind"),
+                "subject": node.get("subject"),
                 "topic": node.get("topic"),
                 "statement": statement,
                 "confidence": confidence,
