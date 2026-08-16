@@ -51,6 +51,9 @@ def _invalidate_model_catalog(connection_id: str | None = None) -> None:
 
 def _discover_connection_models(conn) -> list[str]:
     """Fetch one Connection's raw model IDs exactly once per cache fill."""
+    from butly_core.llm.capabilities import invalidate_provider_metadata
+
+    invalidate_provider_metadata(conn.id)
     if conn.api_key_env and not conn.resolve_api_key():
         return []
 
@@ -69,6 +72,24 @@ def _discover_connection_models(conn) -> list[str]:
                     model_id = model_id[len("models/") :]
                 if model_id:
                     models.append(model_id)
+                    metadata: dict[str, Any] = {}
+                    dump = getattr(model, "model_dump", None)
+                    if callable(dump):
+                        try:
+                            dumped = dump(mode="python")
+                        except TypeError:
+                            dumped = dump()
+                        if isinstance(dumped, dict):
+                            metadata = dumped
+                    from butly_core.llm.capabilities import (
+                        register_provider_metadata,
+                    )
+                    from butly_core.llm.model_registry import ModelRef
+
+                    register_provider_metadata(
+                        ModelRef(conn.id, model_id),
+                        metadata,
+                    )
             return list(dict.fromkeys(models))
         except Exception:
             return []
@@ -95,6 +116,15 @@ def _discover_connection_models(conn) -> list[str]:
                 for item in (data.get("data") or [])
                 if isinstance(item, dict) and item.get("id")
             ]
+            from butly_core.llm.capabilities import register_provider_metadata
+            from butly_core.llm.model_registry import ModelRef
+
+            for item in data.get("data") or []:
+                if isinstance(item, dict) and item.get("id"):
+                    register_provider_metadata(
+                        ModelRef(conn.id, item["id"]),
+                        item,
+                    )
             return list(dict.fromkeys(models))
         except Exception:
             return []
@@ -322,6 +352,9 @@ def set_ollama_url(url: str = Body(..., embed=True)):
     upsert_env_var(env_path, OLLAMA_BASE_URL_ENV, base_url)
     os.environ[OLLAMA_BASE_URL_ENV] = base_url
     _invalidate_model_catalog("ollama")
+    from butly_core.llm.capabilities import invalidate_capability_cache
+
+    invalidate_capability_cache("ollama")
 
     print(f"[Server] Ollama base URL updated to {base_url} (saved to {env_path})")
     return {"message": "Ollama の接続先を保存しました", "url": root}
@@ -555,6 +588,9 @@ def add_connection(payload: ConnectionPayload):
     cfg["LLM_CONNECTIONS"] = existing
     _save_user_config(cfg)
     _invalidate_model_catalog(payload.id)
+    from butly_core.llm.capabilities import invalidate_capability_cache
+
+    invalidate_capability_cache(payload.id)
 
     return {
         "message": f"Connection {payload.id!r} を登録しました",
@@ -656,6 +692,9 @@ def delete_connection(connection_id: str, force: bool = False):
         _save_user_config(cfg)
     reg.unregister(connection_id)
     _invalidate_model_catalog(connection_id)
+    from butly_core.llm.capabilities import invalidate_capability_cache
+
+    invalidate_capability_cache(connection_id)
     return {"message": f"Connection {connection_id!r} を削除しました"}
 
 
@@ -814,6 +853,9 @@ def refresh_model_catalog(
     if connection_id is not None:
         _require_connection(connection_id)
     _invalidate_model_catalog(connection_id)
+    from butly_core.llm.capabilities import invalidate_capability_cache
+
+    invalidate_capability_cache(connection_id)
     return {
         "message": (
             f"Connection {connection_id!r} のモデル一覧を更新します"

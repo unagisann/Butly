@@ -25,7 +25,8 @@
         "  例: chat=openai, embedding=google, gatekeeper=ollama",
         "",
         "■ APIキーは設定画面(LLMプロバイダー タブ)から保存できます。",
-        "■ OpenAI reasoning モデル (o1/o3/o4) は reasoning_effort を設定可能。"
+        "■ reasoning_effort等の対応可否はprovider metadata / 観測cache / manual overrideで解決。",
+        "  モデル名のprefixだけでは判定しません。"
     ],
 
     "LLM_PROVIDERS": {
@@ -73,6 +74,20 @@
             "default_embedding_model": "nomic-embed-text"
         }
     ],
+
+    "_LLM_CAPABILITY_OVERRIDES_example": {
+        "_comment": "このキーをLLM_CAPABILITY_OVERRIDESへ変更して使用。通常は自動判定に任せ、metadataが無いモデルだけ指定する。モデルIDはAPI送信時の値。",
+        "nanogpt-sub": {
+            "gpt-5.6-luna": {
+                "token_limit_parameter": "max_completion_tokens",
+                "supports_reasoning": true,
+                "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+                "default_reasoning_effort": "medium",
+                "temperature_supported": false,
+                "structured_outputs_supported": true
+            }
+        }
+    },
 
     "AI_CONFIG": {
         "chat": {
