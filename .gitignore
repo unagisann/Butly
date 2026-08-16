@@ -34,6 +34,7 @@ APIkey.env
 
 # Database
 *.db
+llm_capabilities.json
 !butly_memory.db.example # 例として残す場合は除外
 
 # AI agent local rules (not published)
