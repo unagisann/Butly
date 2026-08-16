@@ -1245,6 +1245,12 @@ async def _run_dialogue_judgments(
                 answers=answers,
             )
         except Exception as exc:
+            if (
+                isinstance(exc, SemanticJudgeError)
+                and exc.fatal_configuration
+            ):
+                # 全promptで再現するparameter契約エラーは即時停止する。
+                raise
             judgment = _judge_error_artifact(
                 prompt=prompt,
                 judge_config=judge_config,
