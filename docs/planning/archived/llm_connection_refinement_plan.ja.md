@@ -1,8 +1,15 @@
 # LLM Connection 洗練計画（NanoGPT / OpenAI 互換 provider 対応）
 
 対象: ユーザー定義 LLM Connection の設定・保存・利用フロー全体
-状態: 計画（未着手）
-最終更新: 2026-07-25
+状態: 実装済み（Phase 4の案はCanonical Request / Capability Resolverで置換）
+最終更新: 2026-08-16
+
+> この文書は当時の設計判断を残す履歴であり、現行仕様ではない。
+> 生成parameterの現行仕様は
+> [`docs/reference/llm_connections.ja.md`](../../reference/llm_connections.ja.md)
+> を参照する。特に、下記Phase 4のConnection単位`unsupported_params`案は採用せず、
+> protocol Adapter、provider metadata、成功時のみ保存する観測cache、モデル単位manual
+> overrideへ置き換えた。
 
 ---
 

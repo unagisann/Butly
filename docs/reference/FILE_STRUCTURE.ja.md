@@ -870,6 +870,25 @@ Web ConsoleのConnection→モデル二段階選択と保存を支えるpure hel
 
 ---
 
+### `butly_core/llm/canonical.py`
+
+Provider非依存の生成契約。
+
+- `CanonicalGenerationRequest` / `CanonicalGenerationOptions` — 共通parameterと用途、stream、明示指定parameterを保持
+- `CanonicalMessage` / `TextPart` / `ImagePart` — protocolに依存しないmessage/part
+- `request_from_config()` — 既存role configをCanonical Requestへ正規化し、呼び出し側既定値と明示値を区別
+
+### `butly_core/llm/capabilities.py`
+
+Connection + API送信時model ID単位のCapability Resolver。
+
+- `ModelCapabilities` — token上限parameter、reasoning effort、temperature、structured outputの対応状態
+- `CapabilityResolver` — Adapter既定 → preset → provider metadata → 観測cache → manual overrideの順でfield単位に解決
+- `CapabilityStore` — 成功した補正だけを`DATA_DIR/llm_capabilities.json`へatomic保存
+- `configure_capability_runtime()` / `register_provider_metadata()` / `invalidate_provider_metadata()` / `invalidate_capability_cache()`
+
+---
+
 ### `butly_core/llm/embedding_profiles.py`
 Embedding モデル別の入力規約（クエリ/文書 prefix）のレジストリ。付け忘れると埋め込みが 1 つの円錐に潰れて cosine の識別力が失われるため、モデル名から規約を引ける形にしてある。`config.py` から import せず循環を避ける。詳細は [memory_lifecycle.ja.md](memory_lifecycle.ja.md#embedding-プロファイルモデル別の入力規約)。
 
@@ -887,9 +906,11 @@ Protocol Adapter 群。`Connection` を受けて、具体的な API protocol を
 
 - `protocols/__init__.py` — `OpenAICompatAdapter` / `GeminiNativeAdapter` を re-export
 - `protocols/openai_compat.py` — `OpenAICompatAdapter`。OpenAI 互換エンドポイント（OpenAI / xAI / Ollama / 将来の Groq 等）を共通実装で駆動する。内部で `_openai_compat` ヘルパーを呼ぶ
-  - `generate(...)` / `async_generate_stream(...)`
+  - chat / summary / classify / streamをCanonical Request経路で実行
+  - 明確なunsupported parameterだけ1回補正し、成功したCapabilityを保存
   - サブクラス（`OpenAIProvider` 等）からは `_build_client()` をオーバーライドして接続先 SDK を差し替え可能
-- `protocols/gemini_native.py` — `GeminiNativeAdapter`。`providers/gemini.py` の実装をそのまま委譲する薄いシム
+- `protocols/openai_chat.py` — Canonical Message / optionをOpenAI Chat Completions kwargsへ変換し、安全な補正対象を判定
+- `protocols/gemini_native.py` — `GeminiNativeRequestAdapter`がCanonical RequestをGemini Content / `GenerateContentConfig`へ変換。`GeminiNativeAdapter`は実行Provider互換名
 
 ---
 
@@ -908,14 +929,14 @@ Gemini API プロバイダー。コンテキストキャッシュ・画像アッ
 OpenAI 互換プロバイダー (OpenAI / Ollama / xAI) で共通利用するヘルパー関数群。継承ではなく import して使う設計。
 
 - `load_env_file()` — APIkey.env / .env を探してロード
-- `is_reasoning_model(model_name)` — OpenAI o1/o3/o4 系の判定（temperature 禁止、max_completion_tokens 使用）
+- `is_reasoning_model(model_name)` — 旧直接helper呼び出し互換用のo1/o3/o4判定。通常のProvider経路はCapability Resolverを使用
 - `resolve_position(context)` — system_instruction の配置位置を解決（context_levels → context_order → "top"）
 - `resolve_system_instruction(context)` / `resolve_context_prefix(context)` — Gatekeeper の build 関数を呼び出す
 - `build_user_content(text, attachments)` — テキスト + 画像を OpenAI 形式に変換
 - `convert_history(history)` — Butly 履歴を OpenAI messages 形式に変換（`role: "model"` → `"assistant"`）
 - `build_messages(...)` — system / context / history / user を position に応じて配列化
 - `merge_chat_config(base_conf, override_config)` — AI_CONFIG と instance override をマージ
-- `build_chat_completion_kwargs(chat_conf, messages, model_name)` — reasoning / 通常の 2 系統で API kwargs を構築
+- `build_chat_completion_kwargs(chat_conf, messages, model_name)` — 旧helper直接呼び出し用の互換kwargs構築。通常経路では使用しない
 - `build_chat_response(response_text, rag_results)` — ChatResponse を組み立て
 
 ---

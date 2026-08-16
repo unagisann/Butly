@@ -2,7 +2,7 @@
 
 🌐 **日本語** | [English](llm_connections.md)
 
-> 最終更新: 2026-07-26
+> 最終更新: 2026-08-16
 
 ## 概要
 
@@ -27,6 +27,69 @@ Butly は、モデルと接続先を別の値として管理する。
   }
 }
 ```
+
+## LLMリクエストとCapability解決
+
+生成系の呼び出しは、モデル名による分岐ではなく次の境界を通る。
+
+`Butly Core → CanonicalGenerationRequest → Protocol Adapter → Provider SDK`
+
+- Coreは`temperature`、`max_output_tokens`、`reasoning_effort`などの共通語彙だけを使う。
+- `openai_compat`はChat Completionsの`max_tokens` / `max_completion_tokens`へ変換する。
+- `gemini_native`は`GenerateContentConfig`、JSON Schema、Thinking Configへ変換する。
+- chat、summary、classify、streamは同じCanonical変換を使う。Embeddingは対象外。
+
+Capabilityはフィールド単位で、後の情報を優先して重ねる。
+
+1. protocol Adapterの既定値
+2. Butlyの静的モデルプリセット
+3. `/models`等が返すprovider metadata / `supported_parameters`
+4. 成功した自動補正の観測キャッシュ
+5. `LLM_CAPABILITY_OVERRIDES`の手動指定
+
+metadataが無い、または不完全な場合も、未知のモデル名を推測して分岐しない。
+明示指定されていないparameterはProvider公式defaultへ委ねられる。Semantic Judgeでは
+`reasoning_effort`が未指定なら、Capabilityに公式defaultがあればそれを、reasoning対応
+だけ判明していれば`medium`を使う。Capability自体が不明ならparameterを送らず、
+Provider公式defaultを使う。ユーザーの明示指定はこの自動既定より優先される。
+
+### 観測キャッシュと安全な1回補正
+
+OpenAI互換endpointが400で`unsupported_parameter`または`unknown_parameter`と
+parameter名を明示した場合だけ、出力前に安全な補正を1回行う。現在の補正対象は、
+`max_tokens`と`max_completion_tokens`の別名切替、およびユーザーが明示していない
+`temperature` / `reasoning_effort`の省略である。曖昧なエラー、認証、429、明示指定の
+削除は対象外である。
+
+補正後の呼び出しまで成功した場合だけ、Connection + API送信時のmodel IDをキーに
+`DATA_DIR/llm_capabilities.json`へatomic保存する。このファイルはgit管理外で、APIキーや
+promptは含まない。2回目も失敗した場合は保存しない。Connectionの変更・削除、または
+モデル一覧の明示更新で該当キャッシュを破棄する。
+
+### モデル単位のManual Override
+
+Provider metadataも自動補正も利用できない場合は`user_config.json`で上書きできる。
+モデルキーには`model_name_strip_prefix`を除去した、実際にAPIへ送るIDを指定する。
+
+```json
+{
+  "LLM_CAPABILITY_OVERRIDES": {
+    "nanogpt-sub": {
+      "gpt-5.6-luna": {
+        "token_limit_parameter": "max_completion_tokens",
+        "supports_reasoning": true,
+        "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+        "default_reasoning_effort": "medium",
+        "temperature_supported": false,
+        "structured_outputs_supported": true
+      }
+    }
+  }
+}
+```
+
+overrideは必要なフィールドだけ指定できる。利用可能な`token_limit_parameter`は
+`max_tokens`、`max_completion_tokens`、`max_output_tokens`である。
 
 ## Connection のフィールド
 
@@ -208,7 +271,7 @@ OpenAI 互換プロバイダーのストリームが**出力前に即座に失�
 | 接続断（`APIConnectionError`） | する | 同上 |
 | 5xx（`InternalServerError`） | する | 上流の一時障害 |
 | **timeout（`APITimeoutError`）** | **しない** | 待ち時間が倍になる。体感を最も損なう |
-| 429 / 401 / 400 等（`APIStatusError`） | しない | 間を置かない再試行が無意味か有害 |
+| 429 / 401 / 一般の400（`APIStatusError`） | しない | 間を置かない再試行が無意味か有害 |
 
 **1 文字でも送出済みなら再試行しない。**二重生成を避けるための条件で、
 呼び出し側が `full_text` の空を確認してから引き直す。2 回目も失敗したときだけ
@@ -217,6 +280,9 @@ OpenAI 互換プロバイダーのストリームが**出力前に即座に失�
 
 LoCoMo 評価側の QA リトライ（3 回・1/2/4 秒バックオフ）とは別物で、
 対話では待たせないことを優先して 1 回・即時とする。
+明確なunsupported parameterの1回補正も同じ「出力前・最大2回」の枠を共有する。
+Semantic Judgeでこの補正後も同じ設定エラーが残る場合は、全設問で失敗を繰り返さず
+評価runを即時停止する。
 
 ## NanoGPT
 

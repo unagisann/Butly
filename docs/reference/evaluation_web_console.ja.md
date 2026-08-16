@@ -324,15 +324,19 @@ LoCoMo公式Token F1は`scores.json`の正本として維持し、意味判定�
 言い換え、事実の逆転、重要要素の欠落を`correct` / `partial` / `incorrect`に分け、
 公式スコアとの不一致をレビュー候補として表示する。問題別画面では`partial`、矛盾、
 重要情報欠落、low confidence、公式判定とのpossible false positive / false negativeを
-理由付きで絞り込める。判定失敗は0点にせず、
-`partial`として失敗問だけをresume時に再試行する。
+理由付きで絞り込める。通常の判定失敗は0点にせず、`partial`として失敗問だけを
+resume時に再試行する。ただし明確なunsupported parameter等、全問で再現する
+設定契約エラーはAdapterの安全な1回補正後にrunを即時停止する。
 
 `semantic_scores.json`の`question_set_fingerprint`は、現在の`scores.json`にある質問・
 参照回答・予測とJudge設定（prompt versionを含む）から毎回再計算する。一致しない
 成果物は`stale`として扱い、過去の集計値と問題別判定を画面・reportから隠す。
 QA成果物を編集・再生成した場合はSemantic Judgeを再実行する。
 
-Judge用temperatureは0.0に固定し、回答生成と別系統のモデルを選べる。
+Judge用temperatureは対応モデルで0.0に固定し、非対応またはCapability不明の
+モデルでは送信せずProvider公式defaultを使う。`reasoning_effort`を明示しなければ、
+Capabilityが公開するdefault、reasoning対応だけ既知なら`medium`、Capability不明なら
+Provider公式defaultを使う。回答生成と別系統のモデルを選べる。
 OpenAI互換ConnectionではDialogue A/BとLoCoMoそれぞれのstrict JSON Schemaを
 APIへ渡し、余分なキーや壊れたJSONを生成段階で防ぐ。戻り値は従来どおり
 ローカルでも厳格に再検証する。
