@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterator, Optional, Union
+from typing import Any, Iterator, Optional, Union
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -53,6 +53,10 @@ class RootSettings(BaseSettings):
     llm_connections: list[LLMConnection] = Field(
         default_factory=list, alias="LLM_CONNECTIONS"
     )
+    llm_capability_overrides: dict[str, dict[str, dict[str, Any]]] = Field(
+        default_factory=dict,
+        alias="LLM_CAPABILITY_OVERRIDES",
+    )
 
     @property
     def AI_CONFIG(self) -> dict:
@@ -68,6 +72,10 @@ class RootSettings(BaseSettings):
             conn.model_dump(mode="python", exclude_none=True)
             for conn in self.llm_connections
         ]
+
+    @property
+    def LLM_CAPABILITY_OVERRIDES(self) -> dict[str, dict[str, dict[str, Any]]]:
+        return deepcopy(self.llm_capability_overrides)
 
 
 @lru_cache(maxsize=None)

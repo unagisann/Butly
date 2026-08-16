@@ -13,7 +13,7 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -418,6 +418,11 @@ async def async_chat_completion_stream(
     debug_data: Optional[dict] = None,
     web_sources: Optional[list] = None,
     log_tag: str = "OpenAICompat",
+    request_kwargs: Optional[dict[str, Any]] = None,
+    parameter_error_handler: Optional[
+        Callable[[Exception, dict[str, Any]], Optional[dict[str, Any]]]
+    ] = None,
+    on_success: Optional[Callable[[], None]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     OpenAI 互換 SDK (`client.chat.completions.create(stream=True)`) を使い、
@@ -441,11 +446,15 @@ async def async_chat_completion_stream(
     log_tag : str
         ログ出力用のプロバイダ名タグ
     """
-    kwargs = build_chat_completion_kwargs(chat_conf, messages, model_name=model)
+    kwargs = (
+        dict(request_kwargs)
+        if request_kwargs is not None
+        else build_chat_completion_kwargs(chat_conf, messages, model_name=model)
+    )
     kwargs["model"] = model
     kwargs["stream"] = True
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     queue: asyncio.Queue = asyncio.Queue()
     stop_event = threading.Event()
     stream_holder: Dict[str, Any] = {}
@@ -481,6 +490,16 @@ async def async_chat_completion_stream(
                 if stop_event.is_set():
                     return
                 print(f"[{log_tag}] Streaming done")
+                if on_success is not None:
+                    try:
+                        on_success()
+                    except Exception:
+                        # 応答自体は成功しているため、キャッシュ保存失敗で
+                        # ユーザーへの出力を失敗扱いにしない。
+                        logger.warning(
+                            "provider capability observation could not be saved",
+                            exc_info=True,
+                        )
                 _enqueue(
                     {
                         "type": "done",
@@ -493,6 +512,39 @@ async def async_chat_completion_stream(
             except Exception as e:
                 if stop_event.is_set():
                     return
+                if (
+                    not full_text
+                    and attempt < MAX_STREAM_ATTEMPTS
+                    and parameter_error_handler is not None
+                ):
+                    try:
+                        corrected_kwargs = parameter_error_handler(
+                            e,
+                            dict(kwargs),
+                        )
+                    except Exception as handler_error:
+                        logger.exception(
+                            "provider parameter correction failed"
+                        )
+                        _enqueue(
+                            {
+                                "type": "error",
+                                "message": str(handler_error),
+                            }
+                        )
+                        return
+                    if corrected_kwargs is not None:
+                        kwargs.clear()
+                        kwargs.update(corrected_kwargs)
+                        kwargs["model"] = model
+                        kwargs["stream"] = True
+                        logger.info(
+                            "provider stream unsupported-parameter correction: "
+                            "attempt=%d error=%s",
+                            attempt,
+                            type(e).__name__,
+                        )
+                        continue
                 if (
                     not full_text
                     and attempt < MAX_STREAM_ATTEMPTS
@@ -529,6 +581,20 @@ async def async_chat_completion_stream(
                         logger.debug("provider stream close failed", exc_info=True)
 
     producer_future = loop.run_in_executor(None, _producer)
+
+    def _producer_finished(future) -> None:
+        if future.cancelled():
+            return
+        error = future.exception()
+        if error is None or stop_event.is_set() or loop.is_closed():
+            return
+        logger.error(
+            "provider stream producer terminated unexpectedly",
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        queue.put_nowait({"type": "error", "message": str(error)})
+
+    producer_future.add_done_callback(_producer_finished)
 
     try:
         while True:

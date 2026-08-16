@@ -26,6 +26,14 @@ from butly_core.chat.types import (
     INLINE_SIZE_TOTAL,
 )
 from butly_core.llm.base import BaseProvider
+from butly_core.llm.canonical import (
+    CanonicalGenerationRequest,
+    CanonicalMessage,
+    request_from_config,
+)
+from butly_core.llm.capabilities import get_capability_resolver
+from butly_core.llm.connections import get_connection
+from butly_core.llm.model_registry import ModelRef
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +133,13 @@ class GeminiProvider(BaseProvider):
         """
         self._client = None
         self.default_model_name = default_model_name
+        self.connection = get_connection("google")
+        self._capability_resolver = get_capability_resolver()
+        from butly_core.llm.protocols.gemini_native import (
+            GeminiNativeRequestAdapter,
+        )
+
+        self._request_adapter = GeminiNativeRequestAdapter()
 
     @property
     def client(self) -> genai.Client:
@@ -136,6 +151,45 @@ class GeminiProvider(BaseProvider):
     def supports_vision(model_name: str) -> bool:
         return model_name not in VISION_UNSUPPORTED_MODELS
 
+    def _canonical_request(
+        self,
+        *,
+        model_name: str,
+        messages: list[CanonicalMessage],
+        config: Optional[dict[str, Any]],
+        default_temperature: Any,
+        default_max_output_tokens: Any = None,
+        stream: bool = False,
+        purpose: str = "chat",
+        reasoning_effort_policy: str = "provider_default",
+    ) -> CanonicalGenerationRequest:
+        kwargs: dict[str, Any] = {}
+        if default_max_output_tokens is not None:
+            kwargs["default_max_output_tokens"] = default_max_output_tokens
+        return request_from_config(
+            model=ModelRef(self.connection.id, model_name),
+            messages=messages,
+            config=config,
+            default_temperature=default_temperature,
+            stream=stream,
+            purpose=purpose,
+            reasoning_effort_policy=reasoning_effort_policy,
+            **kwargs,
+        )
+
+    def _direct_request_kwargs(
+        self,
+        request: CanonicalGenerationRequest,
+    ) -> dict[str, Any]:
+        capabilities = self._capability_resolver.resolve(
+            self.connection,
+            request.model,
+        )
+        return self._request_adapter.build_direct_kwargs(
+            request,
+            capabilities,
+        )
+
     # ==================================================================
     # BaseProvider 必須メソッド
     # ==================================================================
@@ -145,16 +199,11 @@ class GeminiProvider(BaseProvider):
         from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
         from butly_core.prompts import PromptLoader, resolve_prompt_locale
 
-        # config から model_name / temperature を取得（brain.summarize_conversation がマージ済み）
+        # config は brain.summarize_conversation 側でrole設定とマージ済み。
         model_name = config.get("model_name", AI_CONFIG["summary"]["model_name"])
-        temperature = config.get(
-            "temperature",
-            AI_CONFIG["summary"]["generation_config"].get("temperature", 0.3),
-        )
         char_limit = config.get(
             "summary_char_limit", SYSTEM_CONFIG["brain"]["summary_char_limit"]
         )
-        safety_settings = AI_CONFIG["summary"].get("safety_settings")
 
         locale = config.get("locale") or resolve_prompt_locale()
         loader = PromptLoader(
@@ -173,13 +222,22 @@ class GeminiProvider(BaseProvider):
         )
 
         try:
+            request_config = dict(config)
+            request_config.setdefault(
+                "safety_settings",
+                AI_CONFIG["summary"].get("safety_settings"),
+            )
+            request = self._canonical_request(
+                model_name=model_name,
+                messages=[CanonicalMessage.text("user", prompt)],
+                config=request_config,
+                default_temperature=AI_CONFIG["summary"][
+                    "generation_config"
+                ].get("temperature", 0.3),
+                purpose="summary",
+            )
             response = self.client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=temperature,
-                    safety_settings=safety_settings,
-                ),
+                **self._direct_request_kwargs(request)
             )
             self._set_last_token_usage(_extract_gemini_usage(response))
             if response.text:
@@ -217,16 +275,19 @@ class GeminiProvider(BaseProvider):
         エラー時は例外を送出する。握りつぶして "" を返すと、呼び出し側で
         provider エラーと「本当に空の応答」を区別できない。
         """
-        response = self.client.models.generate_content(
-            model=config["model_name"],
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=config["generation_config"].get("temperature", 0.0),
-                max_output_tokens=config["generation_config"].get(
-                    "max_output_tokens", 512
-                ),
-                safety_settings=config.get("safety_settings"),
+        request = self._canonical_request(
+            model_name=config["model_name"],
+            messages=[CanonicalMessage.text("user", prompt)],
+            config=config,
+            default_temperature=0.0,
+            default_max_output_tokens=512,
+            purpose=str(config.get("_purpose") or "classify"),
+            reasoning_effort_policy=str(
+                config.get("_reasoning_effort_policy") or "provider_default"
             ),
+        )
+        response = self.client.models.generate_content(
+            **self._direct_request_kwargs(request)
         )
         self._set_last_token_usage(_extract_gemini_usage(response))
         self._set_last_completion_metadata(_extract_finish_metadata(response))
@@ -421,7 +482,7 @@ class GeminiProvider(BaseProvider):
             context_levels=context_levels,
         )
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         stop_event = threading.Event()
         stream_holder: Dict[str, Any] = {}
@@ -516,6 +577,20 @@ class GeminiProvider(BaseProvider):
 
         producer_future = loop.run_in_executor(None, _producer)
 
+        def _producer_finished(future) -> None:
+            if future.cancelled():
+                return
+            error = future.exception()
+            if error is None or stop_event.is_set() or loop.is_closed():
+                return
+            logger.error(
+                "Gemini stream producer terminated unexpectedly",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+            queue.put_nowait({"type": "error", "message": str(error)})
+
+        producer_future.add_done_callback(_producer_finished)
+
         try:
             while True:
                 event = await queue.get()
@@ -537,7 +612,10 @@ class GeminiProvider(BaseProvider):
                 try:
                     await producer_future
                 except Exception:
-                    logger.debug("Gemini stream producer failed", exc_info=True)
+                    logger.debug(
+                        "Gemini stream producer failed",
+                        exc_info=True,
+                    )
             else:
                 producer_future.cancel()
 
@@ -642,38 +720,6 @@ class GeminiProvider(BaseProvider):
         if override_config and "chat" in override_config:
             chat_conf = self._merge_config(chat_conf, override_config["chat"])
 
-        # History → types.Content 変換
-        history_contents = []
-        for h in history:
-            if isinstance(h, dict):
-                role = h.get("role")
-                parts = [
-                    (
-                        types.Part(text=p)
-                        if isinstance(p, str)
-                        else types.Part(text=str(p))
-                    )
-                    for p in h.get("parts", [])
-                ]
-                history_contents.append(types.Content(role=role, parts=parts))
-            else:
-                history_contents.append(h)
-
-        # Tools
-        tools_config = None
-        if use_google_search:
-            tools_config = [{"google_search": {}}]
-
-        generate_config = types.GenerateContentConfig(
-            temperature=chat_conf["generation_config"].get("temperature"),
-            top_p=chat_conf["generation_config"].get("top_p"),
-            top_k=chat_conf["generation_config"].get("top_k"),
-            max_output_tokens=chat_conf["generation_config"].get("max_output_tokens"),
-            safety_settings=chat_conf.get("safety_settings"),
-            tools=tools_config,
-            system_instruction=None,
-        )
-
         # ProviderFactory.create(ModelRef) 経由で渡された default_model_name を優先。
         # 未指定なら AI_CONFIG / override_config 由来の chat_conf にフォールバック。
         model_name = self.default_model_name or chat_conf["model_name"]
@@ -699,20 +745,40 @@ class GeminiProvider(BaseProvider):
             context_order=context_order,
             context_levels=context_levels,
         )
-        if context_prefix:
-            prefix_content = types.Content(
-                role="user", parts=[types.Part(text=context_prefix)]
-            )
-            history_contents = [prefix_content] + history_contents
-
-        generate_config.system_instruction = base_instruction
-
-        chat = self.client.chats.create(
-            model=model_name,
-            config=generate_config,
-            history=history_contents,
+        from butly_core.llm.protocols.gemini_native import (
+            canonical_messages_from_gemini_history,
         )
-        return chat
+
+        canonical_messages = [
+            CanonicalMessage.text("system", base_instruction),
+        ]
+        if context_prefix:
+            canonical_messages.append(
+                CanonicalMessage.text("user", context_prefix)
+            )
+        canonical_messages.extend(
+            canonical_messages_from_gemini_history(history)
+        )
+        request = self._canonical_request(
+            model_name=model_name,
+            messages=canonical_messages,
+            config=chat_conf,
+            default_temperature=0.7,
+            purpose="chat",
+        )
+        capabilities = self._capability_resolver.resolve(
+            self.connection,
+            request.model,
+        )
+        adapter_kwargs: dict[str, Any] = {}
+        if use_google_search:
+            adapter_kwargs["tools_override"] = [{"google_search": {}}]
+        chat_kwargs = self._request_adapter.build_chat_kwargs(
+            request,
+            capabilities,
+            **adapter_kwargs,
+        )
+        return self.client.chats.create(**chat_kwargs)
 
     # ------------------------------------------------------------------
     # 内部: 画像変換

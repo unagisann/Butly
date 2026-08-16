@@ -128,6 +128,16 @@ def test_judge_config_forces_zero_temperature_and_validates_output_limit():
     assert config.model_name == "gemma"
     assert config.generation_config["temperature"] == 0.0
     assert config.generation_config["max_output_tokens"] == 512
+    provider_config = config.provider_config()
+    assert "temperature" not in provider_config["generation_config"]
+    assert provider_config["_purpose"] == "evaluation"
+    assert (
+        provider_config["_reasoning_effort_policy"]
+        == "medium_if_supported"
+    )
+    assert config.public_dict()["parameter_policy"]["temperature"] == (
+        "zero_if_supported"
+    )
 
     with pytest.raises(SemanticJudgeError, match="positive integer"):
         JudgeConfig("gemma", generation_config={"max_output_tokens": 0})
@@ -234,6 +244,23 @@ def test_provider_error_keeps_available_usage_metadata():
         "completion_tokens": 3,
     }
     assert caught.value.completion_metadata == {"finish_reason": "stop"}
+
+
+def test_unsupported_parameter_error_is_marked_fatal_configuration():
+    error = RuntimeError("Unsupported parameter: 'temperature'")
+    error.status_code = 400
+    error.body = {
+        "message": "Unsupported parameter: 'temperature'",
+        "type": "invalid_request_error",
+        "param": "temperature",
+        "code": "unsupported_parameter",
+    }
+    judge, _provider = _judge([error])
+
+    with pytest.raises(SemanticJudgeError) as caught:
+        judge.call("prompt")
+
+    assert caught.value.fatal_configuration is True
 
 
 def test_fingerprint_covers_semantic_input_and_model_config():

@@ -115,11 +115,13 @@ class SemanticJudgeError(RuntimeError):
         raw_response: Optional[str] = None,
         token_usage: Optional[dict[str, Any]] = None,
         completion_metadata: Optional[dict[str, Any]] = None,
+        fatal_configuration: bool = False,
     ):
         super().__init__(message)
         self.raw_response = raw_response
         self.token_usage = token_usage
         self.completion_metadata = completion_metadata
+        self.fatal_configuration = fatal_configuration
 
 
 @dataclass(frozen=True)
@@ -153,7 +155,8 @@ class JudgeConfig:
             raise SemanticJudgeError(
                 "judge.generation_config.max_output_tokens must be a positive integer"
             )
-        # Evaluation reproducibility takes precedence over a saved UI value.
+        # Audit / fingerprint 上は常に temperature=0。Provider へ渡す際は
+        # capability-aware な既定値として扱い、非対応モデルでは省略できる。
         generation["temperature"] = 0.0
         generation["max_output_tokens"] = max_tokens
         object.__setattr__(self, "model_name", model_name)
@@ -182,16 +185,30 @@ class JudgeConfig:
         )
 
     def provider_config(self) -> dict[str, Any]:
+        generation = dict(self.generation_config or {})
+        generation.pop("temperature", None)
         payload: dict[str, Any] = {
             "model_name": self.model_name,
-            "generation_config": dict(self.generation_config or {}),
+            "generation_config": generation,
+            "_purpose": "evaluation",
+            "_reasoning_effort_policy": "medium_if_supported",
         }
         if self.connection:
             payload["connection"] = self.connection
         return payload
 
     def public_dict(self) -> dict[str, Any]:
-        return self.provider_config()
+        payload: dict[str, Any] = {
+            "model_name": self.model_name,
+            "generation_config": dict(self.generation_config or {}),
+            "parameter_policy": {
+                "temperature": "zero_if_supported",
+                "reasoning_effort": "medium_if_supported_else_provider_default",
+            },
+        }
+        if self.connection:
+            payload["connection"] = self.connection
+        return payload
 
     def signature(self) -> str:
         serialized = json.dumps(
@@ -216,6 +233,33 @@ def _load_runtime_connections() -> None:
     resolved.
     """
     import butly_core.config  # noqa: F401
+
+
+def _is_provider_configuration_error(error: Exception) -> bool:
+    """全設問で再現する明確なparameter契約エラーかをcause chainから判定。"""
+    from butly_core.llm.protocols.openai_chat import (
+        CanonicalParameterError,
+        is_unsupported_parameter_error,
+    )
+    from butly_core.llm.protocols.gemini_native import (
+        GeminiCanonicalParameterError,
+    )
+
+    current: Optional[BaseException] = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(
+            current,
+            (CanonicalParameterError, GeminiCanonicalParameterError),
+        ):
+            return True
+        if isinstance(current, Exception) and is_unsupported_parameter_error(
+            current
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 class SemanticJudge:
@@ -263,6 +307,7 @@ class SemanticJudge:
                 f"judge provider call failed: {exc}",
                 token_usage=usage,
                 completion_metadata=completion,
+                fatal_configuration=_is_provider_configuration_error(exc),
             ) from exc
         latency_ms = int((time.perf_counter() - started) * 1000)
         usage = _pop_provider_metadata(self.provider, "pop_last_token_usage")

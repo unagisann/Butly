@@ -78,6 +78,40 @@ def test_settings_normalizes_model_name_connection_mismatch(tmp_path: Path):
     assert settings.AI_CONFIG["chat"]["connection"] == "openai"
 
 
+def test_settings_loads_llm_capability_manual_overrides(tmp_path: Path):
+    cfg_path = tmp_path / "user_config.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "LLM_CAPABILITY_OVERRIDES": {
+                    "gateway": {
+                        "reasoner": {
+                            "token_limit_parameter": (
+                                "max_completion_tokens"
+                            ),
+                            "supports_reasoning": True,
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    from butly_core.settings import get_settings
+
+    settings = get_settings(cfg_path)
+
+    assert settings.LLM_CAPABILITY_OVERRIDES == {
+        "gateway": {
+            "reasoner": {
+                "token_limit_parameter": "max_completion_tokens",
+                "supports_reasoning": True,
+            }
+        }
+    }
+
+
 def test_get_settings_cache_clear_reloads_file(tmp_path: Path):
     cfg_path = tmp_path / "user_config.json"
     cfg_path.write_text(

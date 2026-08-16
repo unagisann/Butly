@@ -352,8 +352,10 @@ artifacts. They classify translated or paraphrased answers, reversed facts,
 and missing material details as correct, partial, or incorrect. The per-question
 view flags partial verdicts, contradictions, missing critical information, low
 confidence, and both possible false positives and false negatives against the
-official score. A judge failure is never converted to zero; the aggregate
-becomes partial and resume retries only failed items.
+official score. An ordinary judge failure is never converted to zero; the
+aggregate becomes partial and resume retries only failed items. A deterministic
+parameter-contract error, such as a clear unsupported parameter, stops the run
+after the Adapter's one safe correction instead of failing every question.
 
 The `question_set_fingerprint` in `semantic_scores.json` is recomputed from the
 current questions, references, predictions, and judge configuration (including
@@ -361,8 +363,12 @@ the prompt version). A mismatch marks the artifact `stale`; reports and the Web
 UI hide its old aggregate and per-question judgments until the run is judged
 again.
 
-Judge temperature is fixed at 0.0, and a model independent from answer
-generation can be selected. OpenAI-compatible Connections receive the strict
+Judge temperature is fixed at 0.0 when supported; it is omitted for an
+unsupported or unknown capability so the provider's official default applies.
+When `reasoning_effort` is not explicit, the judge uses the advertised default,
+`medium` when reasoning support alone is known, or the provider default when
+the capability is unknown. A model independent from answer generation can be
+selected. OpenAI-compatible Connections receive the strict
 Dialogue A/B or LoCoMo JSON Schema at the API boundary, and the returned object
 is still validated locally. LoCoMo sends the question, reference answer, and
 candidate answer to that Connection. Dialogue A/B sends the prompt, minimal

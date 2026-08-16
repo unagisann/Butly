@@ -335,6 +335,12 @@ try:
     AI_CONFIG = copy.deepcopy(_settings.AI_CONFIG)
     SYSTEM_CONFIG = copy.deepcopy(_settings.SYSTEM_CONFIG)
     _register_user_connections(_settings.LLM_CONNECTIONS)
+    from butly_core.llm.capabilities import configure_capability_runtime
+
+    configure_capability_runtime(
+        USER_CONFIG_PATH.parent,
+        _settings.LLM_CAPABILITY_OVERRIDES,
+    )
     if USER_CONFIG_PATH.exists():
         print("[Config] Loaded user_config.json")
 except Exception as e:

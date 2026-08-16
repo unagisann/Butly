@@ -12,6 +12,7 @@ from typing import Any, Callable, Optional
 from evals.semantic_judge import (
     JudgeConfig,
     SemanticJudge,
+    SemanticJudgeError,
     judge_locomo_answer,
     summarize_locomo_judgments,
 )
@@ -246,6 +247,10 @@ def _judge_one(
             prediction=prediction,
         )
     except Exception as exc:
+        if isinstance(exc, SemanticJudgeError) and exc.fatal_configuration:
+            # 同じparameter契約エラーを全設問で繰り返さない。Adapter側の
+            # 1回補正でも解消しなかった場合だけrun自体を止める。
+            raise
         logger.exception(
             "LoCoMo semantic judge failed for %s/%s",
             sample_id,

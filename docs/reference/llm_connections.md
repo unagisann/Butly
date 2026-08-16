@@ -2,7 +2,7 @@
 
 🌐 [日本語](llm_connections.ja.md) | **English**
 
-> Last updated: 2026-07-26
+> Last updated: 2026-08-16
 
 ## Overview
 
@@ -26,6 +26,78 @@ must persist both values.
   }
 }
 ```
+
+## LLM requests and capability resolution
+
+Generation calls cross a protocol boundary instead of branching on model-name
+substrings:
+
+`Butly Core → CanonicalGenerationRequest → Protocol Adapter → Provider SDK`
+
+- Core uses only canonical fields such as `temperature`, `max_output_tokens`,
+  and `reasoning_effort`.
+- `openai_compat` maps those fields to Chat Completions, including the
+  `max_tokens` / `max_completion_tokens` distinction.
+- `gemini_native` maps them to `GenerateContentConfig`, JSON Schema, and
+  Thinking Config.
+- Chat, summary, classification, and streaming share this conversion path.
+  Embeddings are outside this generation contract.
+
+Capabilities are overlaid field by field, with later sources taking priority:
+
+1. protocol-Adapter defaults
+2. Butly's static model preset
+3. provider metadata or `supported_parameters` returned by `/models`
+4. an observed setting from a successful automatic correction
+5. a manual `LLM_CAPABILITY_OVERRIDES` entry
+
+Missing or incomplete metadata does not cause Butly to guess from a model-name
+substring. An unspecified parameter may instead use the provider's official
+default. For the semantic judge, an omitted `reasoning_effort` uses the
+capability's advertised default, or `medium` when reasoning support alone is
+known. If the capability itself is unknown, the parameter is omitted and the
+provider default applies. An explicit user value always takes precedence over
+this automatic policy.
+
+### Observed cache and one safe correction
+
+An OpenAI-compatible endpoint is corrected only when a 400 response explicitly
+identifies an `unsupported_parameter` or `unknown_parameter`. Before any output,
+Butly may switch the `max_tokens` / `max_completion_tokens` alias, or omit a
+non-user-specified `temperature` or `reasoning_effort`, and retry exactly once.
+Ambiguous failures, authentication, 429s, and removal of explicit user values
+are not eligible.
+
+Only a successful corrected call is saved atomically under Connection + the
+model ID actually sent to the API in `DATA_DIR/llm_capabilities.json`. This
+git-ignored file contains no API keys or prompts. A failed second call is not
+saved. Changing/deleting a Connection or explicitly refreshing its model list
+invalidates the affected cache.
+
+### Per-model manual override
+
+Use `user_config.json` when neither metadata nor safe correction is available.
+The model key is the ID sent to the API after `model_name_strip_prefix` removal.
+
+```json
+{
+  "LLM_CAPABILITY_OVERRIDES": {
+    "nanogpt-sub": {
+      "gpt-5.6-luna": {
+        "token_limit_parameter": "max_completion_tokens",
+        "supports_reasoning": true,
+        "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+        "default_reasoning_effort": "medium",
+        "temperature_supported": false,
+        "structured_outputs_supported": true
+      }
+    }
+  }
+}
+```
+
+Specify only the fields that need overriding. Valid `token_limit_parameter`
+values are `max_tokens`, `max_completion_tokens`, and `max_output_tokens`.
 
 ## Connection fields
 
@@ -215,7 +287,7 @@ Only failures that barely add to the wait are retried
 | Connection drop (`APIConnectionError`) | yes | Same |
 | 5xx (`InternalServerError`) | yes | Transient upstream fault |
 | **Timeout (`APITimeoutError`)** | **no** | Doubles the wait — the worst case for perceived latency |
-| 429 / 401 / 400 (`APIStatusError`) | no | An immediate retry is useless or harmful |
+| 429 / 401 / ordinary 400 (`APIStatusError`) | no | An immediate retry is useless or harmful |
 
 **No retry happens once any text has been emitted**, which is what keeps a
 retry from producing duplicate output; the caller checks that `full_text` is
@@ -226,6 +298,10 @@ unchanged. Retries appear only in the server log.
 This is separate from the LoCoMo QA retry (three attempts with 1/2/4s backoff);
 conversation favors not keeping the user waiting, so it retries once,
 immediately.
+The clear unsupported-parameter correction shares the same before-output,
+two-attempt limit. If a semantic-judge configuration error remains after that
+correction, the evaluation run stops immediately instead of repeating the same
+failure for every question.
 
 ## NanoGPT
 

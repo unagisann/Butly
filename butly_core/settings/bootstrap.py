@@ -15,12 +15,17 @@ def apply_runtime_settings(data_dir: Path) -> RootSettings:
     settings = get_settings(data_dir / "user_config.json")
 
     from butly_core import config as legacy_config
+    from butly_core.llm.capabilities import configure_capability_runtime
     from butly_core.llm.connections import Connection, get_registry
 
     legacy_config.AI_CONFIG.clear()
     legacy_config.AI_CONFIG.update(deepcopy(settings.AI_CONFIG))
     legacy_config.SYSTEM_CONFIG.clear()
     legacy_config.SYSTEM_CONFIG.update(deepcopy(settings.SYSTEM_CONFIG))
+    configure_capability_runtime(
+        data_dir,
+        settings.LLM_CAPABILITY_OVERRIDES,
+    )
 
     registry = get_registry()
     registry.reset_to_builtin()

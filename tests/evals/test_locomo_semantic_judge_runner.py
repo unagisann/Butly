@@ -212,6 +212,29 @@ def test_error_is_partial_and_retried_on_next_run(tmp_path):
     assert second["error_count"] == 0
 
 
+def test_parameter_configuration_error_stops_without_repeating(tmp_path):
+    run_dir = _write_run(
+        tmp_path,
+        [_question("q-1"), _question("q-2")],
+    )
+    config = _judge_config()
+    failed = FakeJudge(
+        config,
+        [
+            SemanticJudgeError(
+                "unsupported parameter",
+                fatal_configuration=True,
+            ),
+            _complete(2),
+        ],
+    )
+
+    with pytest.raises(SemanticJudgeError, match="unsupported parameter"):
+        run_locomo_semantic_judge(run_dir, config, judge=failed)
+
+    assert len(failed.prompts) == 1
+
+
 def test_config_change_invalidates_completed_artifact(tmp_path):
     run_dir = _write_run(tmp_path, [_question("q-1")])
     old_config = _judge_config("judge-v1")

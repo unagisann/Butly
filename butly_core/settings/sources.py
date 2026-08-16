@@ -63,6 +63,7 @@ def load_settings_data(config_path: Path) -> dict[str, Any]:
         "AI_CONFIG": deepcopy(DEFAULT_AI_CONFIG),
         "SYSTEM_CONFIG": deepcopy(DEFAULT_SYSTEM_CONFIG),
         "LLM_CONNECTIONS": [],
+        "LLM_CAPABILITY_OVERRIDES": {},
     }
 
     try:
@@ -89,6 +90,10 @@ def load_settings_data(config_path: Path) -> dict[str, Any]:
         recursive_update(data["SYSTEM_CONFIG"], raw["SYSTEM_CONFIG"])
     if "LLM_CONNECTIONS" in raw:
         data["LLM_CONNECTIONS"] = raw["LLM_CONNECTIONS"]
+    if isinstance(raw.get("LLM_CAPABILITY_OVERRIDES"), dict):
+        data["LLM_CAPABILITY_OVERRIDES"] = raw[
+            "LLM_CAPABILITY_OVERRIDES"
+        ]
 
     normalize_ai_config(data["AI_CONFIG"])
     return data

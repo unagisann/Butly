@@ -17,13 +17,23 @@ OpenAI / xAI / Ollama / Groq / Together / DeepInfra etc. はこの 1 クラス�
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from butly_core.chat.types import Attachment, ChatResponse
 from butly_core.llm import _openai_compat as compat
 from butly_core.llm.base import BaseProvider
+from butly_core.llm.canonical import CanonicalGenerationRequest, request_from_config
+from butly_core.llm.capabilities import get_capability_resolver
 from butly_core.llm.connections import Connection
+from butly_core.llm.model_registry import ModelRef
+from butly_core.llm.protocols.openai_chat import (
+    OpenAIChatCompletionsRequestAdapter,
+    canonical_messages_from_openai,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAICompatAdapter(BaseProvider):
@@ -45,6 +55,8 @@ class OpenAICompatAdapter(BaseProvider):
         self.connection = connection
         self.default_model_name = default_model_name
         self._client = None
+        self._capability_resolver = get_capability_resolver()
+        self._request_adapter = OpenAIChatCompletionsRequestAdapter()
 
     # ==================================================================
     # クライアント生成 (subclass で override 可能)
@@ -123,42 +135,6 @@ class OpenAICompatAdapter(BaseProvider):
         )
         return self._strip(m)
 
-    def _to_chat_completion_conf(
-        self,
-        config: dict,
-        *,
-        default_temperature: float = 0.7,
-    ) -> dict:
-        """summarize / classify の flat config を build_chat_completion_kwargs 用の
-        chat_conf 形式 (model_name + generation_config) に正規化する。
-
-        summarize は `temperature` を flat に置く流儀。
-        classify は `generation_config.temperature` 流儀。両方を吸収する。
-        """
-        gen = dict(config.get("generation_config") or {})
-
-        # flat な temperature を generation_config 側に持ち込む
-        if "temperature" not in gen and "temperature" in config:
-            gen["temperature"] = config["temperature"]
-        gen.setdefault("temperature", default_temperature)
-
-        # reasoning_effort が flat か generation_config 内かを吸収
-        reasoning_effort = config.get("reasoning_effort") or gen.get("reasoning_effort")
-
-        normalized: dict[str, Any] = {
-            "model_name": config.get("model_name"),
-            "generation_config": gen,
-        }
-        if reasoning_effort is not None:
-            normalized["reasoning_effort"] = reasoning_effort
-        response_format = config.get("response_format")
-        if response_format is not None:
-            if not isinstance(response_format, dict):
-                raise ValueError("response_format must be a mapping")
-            normalized["response_format"] = response_format
-
-        return normalized
-
     def _resolve_embedding_model(self, config: Optional[dict]) -> str:
         """embed model を優先順位に従って解決する。
 
@@ -176,6 +152,73 @@ class OpenAICompatAdapter(BaseProvider):
         if self.connection.default_embedding_model:
             return self.connection.default_embedding_model
         return "text-embedding-3-small"
+
+    def _canonical_request(
+        self,
+        *,
+        model_name: str,
+        messages: list[dict[str, Any]],
+        config: Optional[dict[str, Any]],
+        default_temperature: Any,
+        default_max_output_tokens: Any = None,
+        stream: bool = False,
+        purpose: str = "chat",
+        reasoning_effort_policy: str = "provider_default",
+    ) -> CanonicalGenerationRequest:
+        kwargs: dict[str, Any] = {}
+        if default_max_output_tokens is not None:
+            kwargs["default_max_output_tokens"] = default_max_output_tokens
+        return request_from_config(
+            model=ModelRef(self.connection.id, model_name),
+            messages=canonical_messages_from_openai(messages),
+            config=config,
+            default_temperature=default_temperature,
+            stream=stream,
+            purpose=purpose,
+            reasoning_effort_policy=reasoning_effort_policy,
+            **kwargs,
+        )
+
+    def _complete_canonical(self, request: CanonicalGenerationRequest):
+        capabilities = self._capability_resolver.resolve(
+            self.connection,
+            request.model,
+        )
+        kwargs = self._request_adapter.build_kwargs(request, capabilities)
+        kwargs["model"] = request.model.model_name
+        try:
+            return self.client.chat.completions.create(**kwargs)
+        except Exception as error:
+            correction = self._request_adapter.correction_for_error(
+                error,
+                request,
+            )
+            if correction is None:
+                raise
+
+        corrected_capabilities = capabilities.overlay(correction)
+        corrected_kwargs = self._request_adapter.build_kwargs(
+            request,
+            corrected_capabilities,
+        )
+        corrected_kwargs["model"] = request.model.model_name
+        logger.info(
+            "retrying one request after unsupported-parameter correction: "
+            "connection=%s model=%s",
+            self.connection.id,
+            request.model.model_name,
+        )
+        response = self.client.chat.completions.create(**corrected_kwargs)
+        try:
+            self._capability_resolver.record_observed(request.model, correction)
+        except Exception:
+            # Provider応答は成功しているため、ローカルcache障害で失敗へ
+            # 巻き戻さない。次回に同じ安全な補正が再実行されるだけでよい。
+            logger.warning(
+                "provider capability observation could not be saved",
+                exc_info=True,
+            )
+        return response
 
     # ==================================================================
     # BaseProvider 必須メソッド
@@ -207,19 +250,15 @@ class OpenAICompatAdapter(BaseProvider):
         try:
             model = self._resolve_chat_model(config)
             messages = [{"role": "user", "content": prompt}]
-            # reasoning model (o1/o3/o4) を summary に割り当てても動くよう
-            # build_chat_completion_kwargs に通す
-            normalized_conf = self._to_chat_completion_conf(
-                config,
-                default_temperature=0.3,
-            )
-            kwargs = compat.build_chat_completion_kwargs(
-                normalized_conf,
-                messages,
+            # Canonical RequestからCapabilityに応じたProvider payloadへ変換する。
+            request = self._canonical_request(
                 model_name=model,
+                messages=messages,
+                config=config,
+                default_temperature=0.3,
+                purpose="summary",
             )
-            kwargs["model"] = model
-            resp = self.client.chat.completions.create(**kwargs)
+            resp = self._complete_canonical(request)
             self._set_last_token_usage(compat.extract_token_usage(resp))
             if resp.choices:
                 return resp.choices[0].message.content.strip()
@@ -254,18 +293,19 @@ class OpenAICompatAdapter(BaseProvider):
         """
         model = self._resolve_chat_model(config)
         messages = [{"role": "user", "content": prompt}]
-        # classify でも reasoning model 対応のため build_chat_completion_kwargs 経由
-        normalized_conf = self._to_chat_completion_conf(
-            config,
-            default_temperature=0.0,
-        )
-        kwargs = compat.build_chat_completion_kwargs(
-            normalized_conf,
-            messages,
+        # classifyもchat/summaryと同じCanonical経路を使う。
+        request = self._canonical_request(
             model_name=model,
+            messages=messages,
+            config=config,
+            default_temperature=0.0,
+            default_max_output_tokens=512,
+            purpose=str(config.get("_purpose") or "classify"),
+            reasoning_effort_policy=str(
+                config.get("_reasoning_effort_policy") or "provider_default"
+            ),
         )
-        kwargs["model"] = model
-        resp = self.client.chat.completions.create(**kwargs)
+        resp = self._complete_canonical(request)
         self._set_last_token_usage(compat.extract_token_usage(resp))
         finish_reason = (
             getattr(resp.choices[0], "finish_reason", None) if resp.choices else None
@@ -311,12 +351,14 @@ class OpenAICompatAdapter(BaseProvider):
         _debug_messages = compat.build_debug_messages(messages)
 
         try:
-            kwargs = compat.build_chat_completion_kwargs(
-                chat_conf,
-                messages,
+            request = self._canonical_request(
                 model_name=model_name,
+                messages=messages,
+                config=chat_conf,
+                default_temperature=0.7,
+                purpose="chat",
             )
-            resp = self.client.chat.completions.create(model=model_name, **kwargs)
+            resp = self._complete_canonical(request)
             response_text = resp.choices[0].message.content if resp.choices else ""
 
             result = compat.build_chat_response(response_text, rag_results)
@@ -376,6 +418,49 @@ class OpenAICompatAdapter(BaseProvider):
             "messages_full": messages,
         }
 
+        request = self._canonical_request(
+            model_name=model_name,
+            messages=messages,
+            config=chat_conf,
+            default_temperature=0.7,
+            stream=True,
+            purpose="chat",
+        )
+        capabilities = self._capability_resolver.resolve(
+            self.connection,
+            request.model,
+        )
+        request_kwargs = self._request_adapter.build_kwargs(
+            request,
+            capabilities,
+        )
+        request_kwargs["model"] = model_name
+
+        pending_correction = None
+
+        def _correct_parameter_error(error, _current_kwargs):
+            nonlocal pending_correction
+            correction = self._request_adapter.correction_for_error(
+                error,
+                request,
+            )
+            if correction is None:
+                return None
+            pending_correction = correction
+            corrected = self._request_adapter.build_kwargs(
+                request,
+                capabilities.overlay(correction),
+            )
+            corrected["model"] = model_name
+            return corrected
+
+        def _record_correction() -> None:
+            if pending_correction is not None:
+                self._capability_resolver.record_observed(
+                    request.model,
+                    pending_correction,
+                )
+
         async for event in compat.async_chat_completion_stream(
             client=self.client,
             model=model_name,
@@ -383,6 +468,9 @@ class OpenAICompatAdapter(BaseProvider):
             chat_conf=chat_conf,
             debug_data=debug_data,
             log_tag=self._log_tag(),
+            request_kwargs=request_kwargs,
+            parameter_error_handler=_correct_parameter_error,
+            on_success=_record_correction,
         ):
             yield event
 
