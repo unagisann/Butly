@@ -18,7 +18,7 @@
 - Debug logging / telemetry where the save itself failing should not affect the response (see `ChatService` debug_logs).
 
 ### Existing code
-- ~168 `except Exception:` sites exist as of 2026-05. No mass migration planned — fix opportunistically when touching the surrounding code.
+- ~217 `except Exception` sites exist across `butly_core/`, `app.py`, and `sleeptime.py` as of 2026-08 (up from ~168 in 2026-05). No mass migration planned — fix opportunistically when touching the surrounding code.
 
 ## File writes
 
@@ -27,12 +27,15 @@
 - One-shot writes during fresh instance creation (`InstanceManager.create_instance`) are exempt — failure means "no instance" which is recoverable by retry.
 - Debug / transient logs (e.g. `ChatService` `latest.json`) are exempt by judgment — they are rolling, redundant, and reconstructable.
 
-### Atomic-required callsites (as of 2026-05)
+### Atomic-required callsites (as of 2026-08)
 - `butly_core/core/memory.py` — glossary, session-turn JSON, session digests
 - `butly_core/core/key_memory.py` — `Key_Memory.yaml`, proposals JSON
 - `butly_core/core/gatekeeper/session_state.py` — `session_state.json` (written every turn)
 - `butly_core/core/instance_manager.py` — `config.json` updates, `system_instruction.txt` updates, rename-time fan-out
 - `butly_core/search/usage_tracker.py` — `search_usage.json`
+- `butly_core/llm/capabilities.py` — `llm_capabilities.json` (observed capability cache)
+- `routers/settings.py` — `system_config.json` (legacy UI settings)
+- `upsert_env_var()` / `remove_env_vars()` in `butly_core/io_utils.py` — `.env` (a secret file, so permissions are tightened too)
 
 ## Type hints
 
@@ -42,8 +45,10 @@
 
 ## Config access
 
-- New code should not directly import `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG`. They remain for Phase 1 compatibility, but new or touched code should read settings through `butly_core.settings.get_settings()`.
+- New code should not directly import `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG`. They remain as a compatibility shim, but new or touched code should read settings through `butly_core.settings.get_settings()`.
+- `butly_core/settings/defaults.py` is authoritative for default values. Do not scatter magic numbers through the code.
 - Tests that need config overrides should use `override_settings()` or `get_settings.cache_clear()` / `clear_settings_cache()`. Direct mutation of legacy globals is kept only for existing compatibility tests until the migration reaches those callsites.
+- `BUTLY_*` environment overrides **do not currently take effect** ([Configuration Layer](configuration.md) §4). Do not write code that assumes an env switch.
 
 ## Comments
 
@@ -56,3 +61,10 @@
 - `print("[Module] ...")` is acceptable for top-level startup / shutdown / one-shot events.
 - Use Python `logging` for anything inside a hot path or that benefits from level filtering (per-turn diagnostics, gatekeeper traces, provider calls).
 - New modules should prefer `logging` from the start; old `print`-based modules can stay until touched.
+
+## Documentation
+
+- When behavior changes, update the matching `docs/reference/` page in the same PR — and `docs/guides/` if a procedure changed.
+- Japanese `*.ja.md` and English `*.md` are pairs. Update both ideally, `*.ja.md` at minimum.
+- Cross-check any value or key name you write against `defaults.py`. When they disagree, the code wins.
+- Do not delete a document that has outlived its purpose — move it to `docs/Old/` with a frozen banner and a link to its successor.

@@ -1,5 +1,7 @@
 # 正式デスクトップ Chat UI
 
+🌐 **日本語** | [English](frontend_chat.md)
+
 この文書は、Tauri v2 + React + TypeScript で提供する Butly の正式 Chat UI と、
 `/api/v1` の接続契約を定義する。LoCoMo、日本語 A/B、検索比較などの評価機能は
 正式 UI へ移さず、Streamlit の Evaluation Web Console に残す。
