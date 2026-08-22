@@ -216,9 +216,10 @@ butly_core.config.AI_CONFIG / SYSTEM_CONFIG（互換シム・in-place 更新）
 テストでの差し替えは `override_settings()` / `clear_settings_cache()` を使います。
 `butly_core.config` の legacy global は移行が終わるまでの互換シムです。
 
-> `RootSettings` は `BUTLY_*` 環境変数を宣言していますが、設定値は init kwargs として
-> 渡されるため **env による上書きは現状効きません**。設定変更は `user_config.json` か
-> インスタンス `config.json` で行ってください。APIキーだけは `.env` から
+> **設定値を環境変数で上書きする経路はありません（意図的）。** 変更は
+> `user_config.json` かインスタンス `config.json` で行ってください。実際に効く
+> `BUTLY_*`（`DESKTOP_TOKEN` / `CHRONOS_NOW` など）はすべて `os.environ` 直読みの
+> 「起動時の実行環境」で、この層は通りません。APIキーも `.env` から
 > `os.environ` へ別経路で読み込まれます。
 
 > 補足: legacy Streamlit の設定画面が書く `system_config.json` はこのチェーンとは別系統で、

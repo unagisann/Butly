@@ -152,3 +152,37 @@ def test_override_settings_context_manager(tmp_path: Path):
         assert get_settings(cfg_path).AI_CONFIG["chat"]["model_name"] == "gpt-4o"
 
     assert get_settings(cfg_path) is original
+
+
+def test_env_vars_do_not_override_settings(tmp_path: Path, monkeypatch):
+    """`BUTLY_*` で設定値を上書きできないことを固定する（意図的な設計）。
+
+    RootSettings に環境変数 source を足すと、セクションが `dict[str, Any]` で
+    あるため env はマージではなく**置換**として適用される。
+    `BUTLY_SYSTEM__brain__search_mode` を 1 つ置くだけで brain の残りキー
+    （search_limit / time_decay_rate / bm25_weights …）が消え、さらに
+    `search_limit` が int ではなく "5" になる。
+    セクションの型付け（計画 Phase 2/3）が済むまでは env source を持たない。
+    """
+    from butly_core.settings import clear_settings_cache, get_settings
+
+    cfg_path = tmp_path / "user_config.json"
+    cfg_path.write_text(json.dumps({}), encoding="utf-8")
+
+    baseline = get_settings(cfg_path).SYSTEM_CONFIG["brain"]
+    assert baseline["search_mode"] == "vector"
+    assert baseline["search_limit"] == 3
+
+    for name in (
+        "BUTLY_SYSTEM__brain__search_mode",
+        "BUTLY_SYSTEM_CONFIG__brain__search_mode",
+        "BUTLY_SYSTEM__brain__search_limit",
+    ):
+        monkeypatch.setenv(name, "hybrid" if "mode" in name else "5")
+    clear_settings_cache()
+
+    brain = get_settings(cfg_path).SYSTEM_CONFIG["brain"]
+    assert brain["search_mode"] == "vector"
+    assert brain["search_limit"] == 3
+    # セクションのキーが env によって削られていないこと。
+    assert brain.keys() == baseline.keys()

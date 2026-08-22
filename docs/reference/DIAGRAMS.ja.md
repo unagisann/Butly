@@ -349,7 +349,7 @@ flowchart TD
     BOOT --> CRT["Capability runtime"]
     LEG --> INST["インスタンス config.json<br/><i>override_config として深いマージ</i>"]
     INST --> REQ["リクエスト単位 override<br/><i>model_name 等</i>"]
-    ENV["BUTLY_* 環境変数"] -.->|init kwargs が勝つため<br/>現状 no-op| RS
+    ENV["BUTLY_* 環境変数"] -.->|env source なし<br/>設定は上書きできない| RS
 
     style ENV fill:#7f1d1d,color:#fca5a5,stroke-dasharray: 5 5
     style LEG fill:#1f2937,color:#8899aa

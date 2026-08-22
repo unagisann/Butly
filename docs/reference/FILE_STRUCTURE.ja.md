@@ -328,8 +328,9 @@ pydantic-settings ベースの typed 設定層。**設定値の正はここ**。
 `AI_CONFIG` / `SYSTEM_CONFIG` / `LLM_CONNECTIONS` / `LLM_CAPABILITY_OVERRIDES`
 プロパティは deepcopy を返すので、戻り値を書き換えてもキャッシュは汚れない。
 
-> `RootSettings` は `BUTLY_*` env を宣言しているが、設定値は init kwargs で渡されるため
-> **env による上書きは現状効かない**（pydantic-settings の `init > env` 優先順位のため）。
+> `RootSettings` に環境変数 source は**無い**（意図的）。`dict[str, Any]` セクションへの
+> env 適用はマージではなく置換になり、セクションの他キーを消してしまうため。
+> 詳細は [設定レイヤー](configuration.ja.md) §4。
 
 ---
 

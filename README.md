@@ -223,10 +223,11 @@ New code should use `butly_core.settings.get_settings()`; tests should substitut
 `override_settings()` / `clear_settings_cache()`. The legacy globals in
 `butly_core.config` are a compatibility shim until the migration finishes.
 
-> `RootSettings` declares `BUTLY_*` environment variables, but settings values are
-> passed as init kwargs, so **env overrides do not currently take effect**. Change
-> settings through `user_config.json` or an instance `config.json`. API keys are the
-> exception: they are loaded from `.env` into `os.environ` through a separate path.
+> **There is no path for overriding settings via environment variables (by design).**
+> Change settings through `user_config.json` or an instance `config.json`. The `BUTLY_*`
+> variables that do work (`DESKTOP_TOKEN`, `CHRONOS_NOW`, …) describe the runtime
+> environment and read `os.environ` directly, bypassing this layer. API keys likewise
+> reach `os.environ` from `.env` through a separate path.
 
 > Note: `system_config.json`, written by the legacy Streamlit settings screen, is a
 > separate channel read and written directly by `routers/settings.py`.
