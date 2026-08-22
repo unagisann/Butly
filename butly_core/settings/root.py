@@ -35,13 +35,29 @@ class RootSettings(BaseSettings):
 
     Phase 1 intentionally preserves the legacy dict shape while introducing a
     cached settings object and typed import surface.
+
+    環境変数による上書きは **意図的に用意していない**。
+    ``get_settings()`` は ``load_settings_data()`` の結果を init kwargs として
+    渡すため、pydantic-settings の ``init > env`` 優先順位で env source は
+    どのみち勝てない。加えて、仮に env を有効にすると:
+
+      - セクションが ``dict[str, Any]`` なので env は**マージではなく置換**に
+        なる。``BUTLY_SYSTEM__brain__search_mode`` を 1 つ置くだけで brain の
+        残り 22 キー（search_limit / time_decay_rate / bm25_weights …）が消える。
+      - 同じ理由で型強制が効かず ``search_limit`` が int ではなく ``"5"`` になる。
+
+    有効化するならセクションの型付け（pydantic-settings 計画 Phase 2/3）と
+    マージを保つ ``settings_customise_sources`` がセットで必要。それまでは
+    「効くように見える宣言」を置かない。
+
+    なお実際に効いている ``BUTLY_*``（DESKTOP_TOKEN / CHRONOS_NOW /
+    DEVELOPER_MODE 等）はすべて ``os.environ`` の直読みで、この層は通らない。
+    ``.env`` の読み込みも ``main.py:_load_env_from_data_dir()`` が
+    ``<data_dir>/.env`` に対して行う（``env_file`` は CWD 相対なので
+    packaged sidecar では別ファイルを見てしまう）。
     """
 
     model_config = SettingsConfigDict(
-        env_prefix="BUTLY_",
-        env_nested_delimiter="__",
-        env_file=(".env", "APIkey.env"),
-        env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
     )

@@ -272,8 +272,9 @@ authoritative here.** See [Configuration Layer](configuration.md).
 The `AI_CONFIG` / `SYSTEM_CONFIG` / `LLM_CONNECTIONS` / `LLM_CAPABILITY_OVERRIDES`
 properties return deep copies, so mutating a result never dirties the cache.
 
-> `RootSettings` declares `BUTLY_*` env vars, but values are supplied as init kwargs, so
-> **env overrides do not currently take effect** (pydantic-settings resolves `init > env`).
+> `RootSettings` has **no** environment-variable source (by design): applying env to a
+> `dict[str, Any]` section replaces rather than merges it, wiping the section's other keys.
+> See [Configuration Layer](configuration.md) §4.
 
 ---
 

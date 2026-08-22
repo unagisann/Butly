@@ -139,24 +139,29 @@ and `defaults.py` disagree, **`defaults.py` wins**.
 
 ## 4. Environment variables
 
-### ⚠️ `BUTLY_*` overrides do **not** currently work
+### Environment variables cannot override settings (by design)
 
-`RootSettings` declares `env_prefix="BUTLY_"`, `env_nested_delimiter="__"`, and
-`env_file=(".env", "APIkey.env")`, but `get_settings()` passes the result of
-`load_settings_data()` to `RootSettings(**data)` as **init kwargs**. pydantic-settings
-resolves sources in the order `init > env > dotenv`, so all four fields (`AI_CONFIG`,
-`SYSTEM_CONFIG`, `LLM_CONNECTIONS`, `LLM_CAPABILITY_OVERRIDES`) are filled by init and
-the env source never wins.
+`RootSettings` has **no environment-variable source**. To change a setting, edit
+`user_config.json` or an instance `config.json`.
 
-```bash
-# Both are no-ops (search_mode stays "vector")
-BUTLY_SYSTEM__brain__search_mode=hybrid
-BUTLY_SYSTEM_CONFIG__brain__search_mode=hybrid
-```
+There are two reasons for this.
 
-To change a setting, edit `user_config.json` or an instance `config.json`. Making env
-overrides effective is later-phase work in the
-[pydantic-settings consolidation plan](../planning/active/pydantic_settings_plan.md).
+1. `get_settings()` passes the result of `load_settings_data()` to
+   `RootSettings(**data)` as **init kwargs**. pydantic-settings resolves sources in the
+   order `init > env > dotenv`, so with all four fields filled by init, an env source
+   could never win anyway.
+2. Enabling it would **break things**. Because sections are `dict[str, Any]`, env values
+   apply as a **replacement, not a merge**.
+
+   | Env set | Result |
+   |---|---|
+   | `BUTLY_SYSTEM__brain__search_mode=hybrid` | `brain` drops from **23 keys to 1**; `search_limit`, `time_decay_rate`, `bm25_weights`, `rrf_k`, and the rest vanish |
+   | `BUTLY_SYSTEM__brain__search_limit=5` | `'5'` — a **str**, not an int |
+
+Adding env overrides requires typing the sections (Phase 2/3 of the
+[pydantic-settings consolidation plan](../planning/active/pydantic_settings_plan.md))
+together with a `settings_customise_sources` that preserves merge semantics. Until then,
+no declaration that looks like it works is kept in the code.
 
 ### API keys (separate path)
 
@@ -171,6 +176,23 @@ through the settings chain.
 - A connection's `api_key_env` / `api_key_fallback_envs` decide which variable names are read
 
 `.env.example` is the template. **Never commit `.env` or `APIkey.env`** — both are gitignored.
+
+### The `BUTLY_*` variables that do work (all read `os.environ` directly)
+
+These bypass the settings chain; each consumer reads `os.environ` itself.
+
+| Variable | Read by | Purpose |
+|---|---|---|
+| `BUTLY_DESKTOP_TOKEN` | `butly_api/auth.py` / `server.py` | Per-launch Bearer token for the desktop sidecar. Unset means `/api/v1` auth is off (dev / Streamlit) |
+| `BUTLY_DEVELOPER_MODE` | `main.py` / `butly_api/server.py` | Developer mode |
+| `BUTLY_CHRONOS_NOW` | `butly_core/core/chronos.py` | Pins "now" (for evaluation and tests) |
+| `BUTLY_API_URL` | `app.py` | Streamlit → backend URL |
+| `BUTLY_DEV_BACKEND_PORT` / `BUTLY_DEV_BACKEND_URL` | `frontend/src-tauri/src/backend.rs` / `vite.config.ts` | Backend target in development mode |
+| `BUTLY_EVALUATION_OUTPUT_DIR` / `BUTLY_DIALOGUE_AB_OUTPUT_DIR` / `BUTLY_LOCOMO_DATASET` | `evals/locomo/web_jobs.py` | Evaluation input/output paths |
+| `BUTLY_SIDECAR_ONEFILE` | `scripts/build_backend_sidecar.py` | PyInstaller build mode |
+
+**These describe the runtime environment, not configuration.** There is no path for
+overriding `AI_CONFIG` / `SYSTEM_CONFIG` values through the environment.
 
 ---
 

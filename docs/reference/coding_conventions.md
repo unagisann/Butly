@@ -48,7 +48,7 @@
 - New code should not directly import `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG`. They remain as a compatibility shim, but new or touched code should read settings through `butly_core.settings.get_settings()`.
 - `butly_core/settings/defaults.py` is authoritative for default values. Do not scatter magic numbers through the code.
 - Tests that need config overrides should use `override_settings()` or `get_settings.cache_clear()` / `clear_settings_cache()`. Direct mutation of legacy globals is kept only for existing compatibility tests until the migration reaches those callsites.
-- `BUTLY_*` environment overrides **do not currently take effect** ([Configuration Layer](configuration.md) §4). Do not write code that assumes an env switch.
+- There is **no path** for overriding settings via `BUTLY_*` environment variables ([Configuration Layer](configuration.md) §4). Do not write code that assumes an env switch. Runtime environment (tokens, paths, pinned clock) is read from `os.environ` directly.
 
 ## Comments
 

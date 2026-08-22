@@ -350,7 +350,7 @@ flowchart TD
     BOOT --> CRT["Capability runtime"]
     LEG --> INST["instance config.json<br/><i>deep-merged as override_config</i>"]
     INST --> REQ["per-request override<br/><i>model_name, etc.</i>"]
-    ENV["BUTLY_* env vars"] -.->|no-op today:<br/>init kwargs win| RS
+    ENV["BUTLY_* env vars"] -.->|no env source:<br/>cannot override settings| RS
 
     style ENV fill:#7f1d1d,color:#fca5a5,stroke-dasharray: 5 5
     style LEG fill:#1f2937,color:#8899aa

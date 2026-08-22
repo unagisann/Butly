@@ -139,26 +139,29 @@ legacy global（`butly_core.config.AI_CONFIG`）の直接 mutation は、
 
 ## 4. 環境変数
 
-### ⚠️ `BUTLY_*` による設定上書きは現状**効きません**
+### 設定の上書きに環境変数は使えません（意図的）
 
-`RootSettings` は `env_prefix="BUTLY_"` / `env_nested_delimiter="__"` /
-`env_file=(".env", "APIkey.env")` を宣言していますが、
-`get_settings()` は `load_settings_data()` の結果を **init kwargs** として
-`RootSettings(**data)` に渡します。pydantic-settings の既定の優先順位は
-`init > env > dotenv` なので、4 フィールド（`AI_CONFIG` / `SYSTEM_CONFIG` /
-`LLM_CONNECTIONS` / `LLM_CAPABILITY_OVERRIDES`）はすべて init で埋まり、
-env source は一度も勝ちません。
+`RootSettings` は環境変数 source を**持っていません**。設定を変えるときは
+`user_config.json` かインスタンス `config.json` を編集してください。
 
-```bash
-# どちらも no-op（search_mode は vector のまま）
-BUTLY_SYSTEM__brain__search_mode=hybrid
-BUTLY_SYSTEM_CONFIG__brain__search_mode=hybrid
-```
+理由は 2 つあります。
 
-設定を変えるときは `user_config.json` かインスタンス `config.json` を編集してください。
-env 経由の上書きを有効にするのは
-[pydantic-settings 設定統合計画](../planning/active/pydantic_settings_plan.ja.md)
-の後続 Phase の作業です。
+1. `get_settings()` は `load_settings_data()` の結果を **init kwargs** として
+   `RootSettings(**data)` に渡します。pydantic-settings の優先順位は
+   `init > env > dotenv` なので、4 フィールドすべてが init で埋まる以上、
+   env source はどのみち勝てません。
+2. 仮に有効化すると**壊れます**。セクションが `dict[str, Any]` なので、
+   env は**マージではなく置換**として適用されます。
+
+   | 設定した env | 結果 |
+   |---|---|
+   | `BUTLY_SYSTEM__brain__search_mode=hybrid` | `brain` が **23 キー → 1 キー**。`search_limit` / `time_decay_rate` / `bm25_weights` / `rrf_k` などが全消滅 |
+   | `BUTLY_SYSTEM__brain__search_limit=5` | `'5'`（int ではなく **str**） |
+
+env による上書きを入れるなら、セクションの型付け
+（[pydantic-settings 設定統合計画](../planning/active/pydantic_settings_plan.ja.md)
+の Phase 2/3）と、マージを保つ `settings_customise_sources` がセットで必要です。
+それまでは「効くように見える宣言」を置きません。
 
 ### APIキー（別経路）
 
@@ -173,6 +176,23 @@ settings チェーンも通りません。
 - Connection 定義の `api_key_env` / `api_key_fallback_envs` が参照する環境変数名を決める
 
 雛形は `.env.example`。**`.env` / `APIkey.env` はコミットしない。** gitignore 済みです。
+
+### 実際に効いている `BUTLY_*`（すべて `os.environ` 直読み）
+
+これらは settings チェーンを通らず、参照側が直接 `os.environ` を読みます。
+
+| 変数 | 読む場所 | 用途 |
+|---|---|---|
+| `BUTLY_DESKTOP_TOKEN` | `butly_api/auth.py` / `server.py` | desktop sidecar の per-launch Bearer token。未設定なら `/api/v1` 認証オフ（dev / Streamlit） |
+| `BUTLY_DEVELOPER_MODE` | `main.py` / `butly_api/server.py` | 開発者モード |
+| `BUTLY_CHRONOS_NOW` | `butly_core/core/chronos.py` | 現在時刻の固定（評価・テスト用） |
+| `BUTLY_API_URL` | `app.py` | Streamlit → backend の URL |
+| `BUTLY_DEV_BACKEND_PORT` / `BUTLY_DEV_BACKEND_URL` | `frontend/src-tauri/src/backend.rs` / `vite.config.ts` | 開発モードの backend 接続先 |
+| `BUTLY_EVALUATION_OUTPUT_DIR` / `BUTLY_DIALOGUE_AB_OUTPUT_DIR` / `BUTLY_LOCOMO_DATASET` | `evals/locomo/web_jobs.py` | 評価の入出力パス |
+| `BUTLY_SIDECAR_ONEFILE` | `scripts/build_backend_sidecar.py` | PyInstaller の build モード |
+
+**これらは「設定」ではなく「起動時の実行環境」です。** `AI_CONFIG` / `SYSTEM_CONFIG`
+の値を env で差し替える経路は存在しません。
 
 ---
 

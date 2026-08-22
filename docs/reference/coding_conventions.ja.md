@@ -48,7 +48,7 @@
 - 新規コードでは `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG` を直接参照しない。互換シムとして残しているが、新規・改修コードは `butly_core.settings.get_settings()` を使う。
 - 設定値の既定は `butly_core/settings/defaults.py` が正。マジックナンバーをコード側に散らさない。
 - テストで設定を差し替える場合は `override_settings()` または `get_settings.cache_clear()` / `clear_settings_cache()` を使う。legacy global の直接 mutation は段階移行まで既存テストの互換用途に限定する。
-- `BUTLY_*` 環境変数による上書きは**現状効かない**（[設定レイヤー](configuration.ja.md) §4）。env で切り替える前提のコードを書かない。
+- 設定値を `BUTLY_*` 環境変数で上書きする経路は**用意していない**（[設定レイヤー](configuration.ja.md) §4）。env で切り替える前提のコードを書かない。実行環境（token / パス / 固定時刻）は `os.environ` 直読みで扱う。
 
 ## コメント
 
