@@ -15,7 +15,7 @@ Gatekeeper は以下の 4 コンポーネントに分割されています。
 |---|---|---|
 | `ContextClassifier` | `context_classifier.py` | LLM に 3 スコア（`rc`/`ew`/`cn`）を出力させ、Python 側で reflex か mid を決定 |
 | `StateUpdater` | `state_updater.py` | ユーザー発言から session_state の差分（state_delta）を生成 |
-| `MemoryProbe` | `memory_probe.py` | LLM呼び出しなしの事実ベース記憶検索（ベクトル検索 + 用語集マッチ） |
+| `MemoryProbe` | `memory_probe.py` | LLM 呼び出しなしの事実ベース記憶検索（`search_mode` に応じた候補検索 + 用語集マッチ）。**検索の実行**と**注入の判定**を分離して持つ |
 | `MemoryBlockBuilder` | `memory_builder.py` | tier に応じた記憶ブロック辞書を構築し Brain へ渡す |
 
 tier は `reflex` / `mid` の 2 値のみ。RAG 注入は tier ではなく `need`（MemoryProbe 由来）で独立に決定されます。
@@ -28,8 +28,12 @@ tier は `reflex` / `mid` の 2 値のみ。RAG 注入は tier ではなく `nee
 [A] ContextClassifier.classify()   ← LLM呼び出し (~1s)
 [B] MemoryProbe.probe()            ← LLM不要 (~100ms)
     ├─ Layer 1.5: Glossary Match — 常時実行 (regex のみ・~ms)
-    ├─ Layer 1:   Quick Vector Search — need_intent ∈ {past_fact, relationship} のみ
-    └─ Layer 2:   Deep Search — Layer 1 ヒット無し + (need_intent=past_fact または過去参照パターン) 時のみ
+    ├─ Layer 1:   Quick Retrieval — retrieval_execution="always"（既定）なら常時実行
+    │              (search_mode に応じ vector / hybrid / dual_query / hybrid_evidence_fusion)
+    │              "intent_gated" にすると旧挙動: need_intent ∈ {past_fact, relationship} のみ
+    └─ Layer 2:   Deep Search — Layer 1 ヒット無し + 「注入され得る」場合のみ
+                   (need_intent=past_fact / 過去参照パターン / injection_policy が
+                    retrieval_assisted・candidates)。LLM 呼び出しを伴うため二重ゲート
   ↓
 Gatekeeper.classify() が結果をマージし、最終 need を決定
   ↓
@@ -44,6 +48,16 @@ session_state.apply_delta() → 次ターンの context に反映
 StateUpdater は **応答生成と並列**で動かす（buffered なら `asyncio.gather()`、streaming なら `asyncio.create_task()`）ことでクリティカルパスから外している。今ターンの `topic` は session_state の前ターン値を使用する（1 ターン遅延、許容範囲）。
 
 Glossary scan は regex のみ・~ms オーダーなのでゲートを外している。`need_intent` の値に関わらず常時実行することで、固有名詞・別名認識を安定させる（`null` 時も走る）。
+
+**検索の実行と注入の判定は別物**（`SYSTEM_CONFIG["memory_probe"]`）:
+
+| キー | 既定 | 値 |
+|---|---|---|
+| `retrieval_execution` | `always` | `always` = 分類器の意図に関わらず検索する / `intent_gated` = 旧挙動 |
+| `injection_policy` | `intent_gated` | `intent_gated` = `need_intent` で注入判定（旧挙動） / `retrieval_assisted` = 分類器が null でもベクトルと BM25 の**双方が同じカードを支持**（`retrieval_source="both"`）なら注入候補へ昇格し `retrieval.need_hint="past_fact"` を返す（hybrid 専用） / `candidates` = 候補があれば注入する（分類器の判定を使わない） |
+
+検索は毎ターン走るので、`memory_probe.layers.vector` の診断は
+「注入されなかったターン」でも埋まる。注入されたかどうかは `need` で判断すること。
 
 ---
 
@@ -72,7 +86,7 @@ Glossary scan は regex のみ・~ms オーダーなのでゲートを外して�
 - **Brain インスタンス** (`brain`): ナレッジ DB に対するベクトル検索用。`None` の場合は vector / deep スキップ
 - **Memory manager** (`memory_manager`): 用語集の参照用。`None` の場合は glossary スキップ
 - **history_msgs**: Glossary の履歴スキャン（`scan_depth` ターン）用
-- **need_intent**: vector / deep を実行するかのゲート（`null` の時は glossary のみ）
+- **need_intent**: 注入判定に使う意図種別。`retrieval_execution="intent_gated"` の場合は Layer 1 実行のゲートも兼ねる
 - **recent_headlines**: `_check_headline_match` 用（Layer 2 トリガー判定で参照）
 
 ---
@@ -154,10 +168,10 @@ ContextClassifier は tier に加えて `need_intent` フィールドを出力�
 
 | need_intent | 意味 | MemoryProbe の挙動 |
 |---|---|---|
-| `past_fact` | ユーザーが具体的な過去の出来事/決定/会話を参照している | Layer 1 (vector) + 1.5 (glossary) + 条件付き Layer 2 |
-| `glossary` | 用語や固有名詞の意味を知りたい | Layer 1.5 のみ実行 (vector skip) |
-| `relationship` | 関係性・ムード推移・習慣に関する質問 | Layer 1 + 1.5 + 条件付き Layer 2 |
-| `null` | 長期記憶不要 (挨拶・雑談・将来設計など) | **Layer 1.5 (glossary) のみ実行**。vector/deep はスキップ（glossary ヒット有無で status を返す） |
+| `past_fact` | ユーザーが具体的な過去の出来事/決定/会話を参照している | Layer 1 + 1.5 + 条件付き Layer 2。注入される |
+| `glossary` | 用語や固有名詞の意味を知りたい | Layer 1.5 を注入。Layer 1 は既定では実行されるが注入はされない |
+| `relationship` | 関係性・ムード推移・習慣に関する質問 | Layer 1 + 1.5 + 条件付き Layer 2。注入される |
+| `null` | 長期記憶不要 (挨拶・雑談・将来設計など) | Layer 1.5 (glossary) + **Layer 1 も実行**（`retrieval_execution="always"` の既定時）。ただし `injection_policy="intent_gated"` では**注入されない**。`intent_gated` 実行時は vector/deep をスキップ |
 
 最終 `need` の決定:
 - `need_intent == null`            → `need = null` (LLM が「不要」と判断)
@@ -233,7 +247,7 @@ state_delta = {
 
 ## 5. ストリーミング応答（SSE）
 
-`POST /chat/stream` エンドポイントで Server-Sent Events 形式の逐次応答を返します。
+typed `POST /api/v1/chat/stream`（正式デスクトップ UI）と legacy `POST /chat/stream`（Streamlit 互換）で Server-Sent Events 形式の逐次応答を返します。どちらも同じ `ChatService.execute_stream()` を通ります。
 クライアントの体感レイテンシ改善 (TTFB) を目的に、生成されたトークンを順次配信します。
 
 ### イベントフォーマット

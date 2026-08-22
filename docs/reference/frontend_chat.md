@@ -1,5 +1,7 @@
 # Official Desktop Chat UI
 
+[日本語](frontend_chat.ja.md) | 🌐 **English**
+
 This document defines Butly's official Tauri v2 + React + TypeScript chat UI and
 its `/api/v1` contracts. Evaluation workflows such as LoCoMo, Japanese A/B, and
 retrieval comparisons remain in the Streamlit Evaluation Web Console.

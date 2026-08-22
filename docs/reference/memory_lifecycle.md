@@ -23,15 +23,25 @@ During chat (every turn)
 [Stage 0] short_term_json/* → moved entirely to 1_integrated/
 
 [Stage 1] Read 1_integrated JSONs → format text
-  ├─ [4] mid_term.txt ← append RAW log
-  ├─ [5] mid_term_digest.txt ← LLM daily fact digest (incremental append)
-  └─ [6] mid_term_relationship.txt ← LLM relationship snapshot (full overwrite every 7 days)
+  ├─ [4] raw_memory_cache.txt        ← rebuilt from 2_knowledgeized/ (full overwrite)
+  ├─ [5] mid_term_digest.txt          ← LLM daily fact digest (incremental append)
+  ├─ [5b] recent_digest_headlines.json ← LLM headline extraction (max 4)
+  └─ [6] recent_snapshot.txt          ← LLM recent snapshot (full overwrite every 7 days)
 
 [Stage 2] 1_integrated JSONs → group by date → LLM knowledge extraction
   └─ [7] butly_memory.db ← long-term vector DB (RAG)
           ↓ after processing
          memory_archive/2_knowledgeized/{date}/
+
+[Stage 3] non-archived cards (content-hash queue) → LLM node review   * off by default
+  └─ [8] memory_nodes / memory_node_sources ← consolidated knowledge (same DB)
 ```
+
+> **About the retired layers**: `mid_term.txt` (the RAW log Stage 1 used to append to)
+> and `mid_term_relationship.txt` are gone. `raw_memory_cache.txt` succeeds the former
+> and `recent_snapshot.txt` the latter. The read path
+> (`ButlyMemory.get_recent_snapshot()`) still falls back to the old filename, but
+> **nothing writes to it any more**.
 
 ---
 
@@ -79,7 +89,7 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # number of files to retain
 | **Model used** | `AI_CONFIG["summary"]["model_name"]` (cost-effective, long-context) |
 
 > **Design intent:** session digests compress conversation that overflowed recent sessions, preserving flow that would otherwise fall out of the live context window.
-> Permanent storage is handled by mid_term.txt and butly_memory.db.
+> Permanent storage is handled by the raw JSON in `memory_archive/` (via `raw_memory_cache.txt`) and `butly_memory.db`.
 
 ---
 
@@ -95,22 +105,36 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # number of files to retain
 
 ---
 
-### 4. mid_term.txt (Mid-Term RAW Log)
+### 4. raw_memory_cache.txt (Mid-Term RAW Cache)
+
+The append-to-`mid_term.txt` scheme is retired. RAW mid-term memory is now a **cache
+rebuilt from archived conversation text** — a snapshot regenerated each run, not an
+append-only log.
 
 | Item | Content |
 |---|---|
-| **Location** | `instances/{name}/mid_term.txt` |
-| **Written by** | Sleeptime Stage 1 (`stage_1_cleanup`) — formats 1_integrated JSONs as text and appends |
-| **Limit** | `max_mid_term_chars` (default: 30,000 characters) |
-| **Overflow** | Oldest characters archived to `memory_archive/3_log/archive_long_term.txt`; only recent portion retained |
-| **Injected by Gatekeeper** | When `use_summarized_mid_term = False` (RAW mode): injected as MID-TERM MEMORY block at the mid tier |
-| **Format** | Line-format text: `[YYYY-MM-DD HH:MM:SS] {role_label}: {text}` |
+| **Location** | `instances/{name}/raw_memory_cache.txt` |
+| **Written by** | Sleeptime Stage 1 via `build_raw_memory_cache()` (`core/raw_memory_reader.py`) — **full overwrite** |
+| **Input** | JSON under `memory_archive/2_knowledgeized/`. Sort keys are derived from filenames (three supported `session_*` shapes) and collected chronologically |
+| **Limit** | `max_raw_tokens` (default: 4096 tokens). Packed **newest-first, file by file**, and truncated at the limit |
+| **Token counting** | `core/tokenizer.py` (tiktoken) |
+| **Format** | `raw_injection_format` (default `plaintext`). Speaker labels come from `core/turn_meta.py`, which uses real names in multi-speaker sessions |
+| **Read by** | `ButlyMemory.get_raw_memory()` — **reads the single cache file** rather than scanning JSON on the chat hot path |
+| **Injected by Gatekeeper** | At the mid tier when `use_summarized_mid_term = False` (RAW mode). Even when `True`, an empty digest *and* empty recent snapshot fall back to RAW (`mid_term_mode="raw_fallback"`) |
+| **Overflow** | None (nothing is appended). Content past the limit simply drops out on the next rebuild |
 
 **Config parameters:**
 ```python
-SYSTEM_CONFIG["memory"]["max_mid_term_chars"] = 30000
+SYSTEM_CONFIG["memory"]["max_raw_tokens"] = 4096          # RAW read token budget
+SYSTEM_CONFIG["memory"]["raw_injection_format"] = "plaintext"
 SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True = summary injection, False = RAW injection
+# instance config.json > sleeptime.update_targets:
+raw_memory_cache = True   # False skips the rebuild
 ```
+
+> **Note**: the input is `2_knowledgeized/`, so the cache only contains conversations
+> **already turned into knowledge by Stage 2**. Since Stage 1 runs before Stage 2, the
+> current day's RAW does not reach the cache until a later Sleeptime run.
 
 ---
 
@@ -152,23 +176,34 @@ digest_max_input_chars = 0   # Max input chars per LLM call. 0 = unlimited
 
 ---
 
-### 6. mid_term_relationship.txt (Relationship Snapshot)
+### 6. recent_snapshot.txt (Recent Snapshot)
+
+Formerly `mid_term_relationship.txt`. Reads fall back to the old filename, but writes
+always go to `recent_snapshot.txt`.
 
 | Item | Content |
 |---|---|
-| **Location** | `instances/{name}/mid_term_relationship.txt` |
-| **Written by** | Sleeptime Stage 1 `_update_relationship_if_due()` — full overwrite every 7 days |
+| **Location** | `instances/{name}/recent_snapshot.txt` (legacy: `mid_term_relationship.txt`) |
+| **Written by** | Sleeptime Stage 1 `_update_recent_snapshot_if_due()` — full overwrite every 7 days |
 | **Input** | `mid_term_digest.txt` (accumulated fact digest) — does NOT use daily fragments directly |
-| **Update frequency** | Only updated when `relationship_update_interval_days` (default: 7 days) have elapsed since last update |
-| **Injected by Gatekeeper** | When `use_summarized_mid_term = True`: injected as RELATIONSHIP SNAPSHOT block at the mid tier |
-| **Skip conditions** | `mid_term_digest.txt` shorter than 200 characters, or interval not yet reached |
+| **Update frequency** | Only when `relationship_update_interval_days` (default: 7) have elapsed since the file's mtime. A missing file triggers an initial write |
+| **Limit** | `sleeptime.max_relationship_chars` (default: 600 characters) |
+| **Prompt** | The `recent_snapshot` template from `PromptLoader` (agent_name / system_instruction / key_memory / digest_text / max_chars) |
+| **Injected by Gatekeeper** | Injected alongside the digest at the mid tier when `use_summarized_mid_term = True` (block key: `mid_term_recent_snapshot`) |
+| **Skip conditions** | `generate_mid_term_summaries = False`, no `mid_term_digest.txt`, digest shorter than 200 characters, or interval not yet reached |
 | **Model used** | `AI_CONFIG["knowledge"]["model_name"]` (high-reasoning Pro class) |
-| **Design intent** | Relationships change gradually; daily overwriting causes instability. Weekly cadence is appropriate |
+| **Design intent** | Recent context and relationships change gradually; daily overwriting causes instability. Weekly cadence is appropriate |
 
 **Config parameters:**
 ```python
 SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
+# instance config.json > sleeptime:
+max_relationship_chars = 600
+update_targets = {"recent_snapshot": True}   # False skips the update
 ```
+
+**Backward-compatible alias:** `ButlyMemory.get_mid_term_relationship()` remains as a
+thin wrapper that calls `get_recent_snapshot()`.
 
 ---
 
@@ -249,11 +284,16 @@ ButlySleeptime.run()
     │     ├── [Stage 0] Flush: short_term_json/* → 1_integrated/
     │     ├── [Step 1] Format 1_integrated JSONs to text
     │     ├── [Step 2] Delete session_digests/* (clear temporary context)
-    │     ├── [Step 3] Append to mid_term.txt (archive overflow to 3_log/)
+    │     ├── [Step 3] build_raw_memory_cache() → full overwrite of raw_memory_cache.txt
+    │     │          └── input is 2_knowledgeized/, newest-first up to max_raw_tokens (default 4096)
     │     ├── [Step 4] _generate_daily_digest() → incremental update mid_term_digest.txt
     │     │          └── ★ Chunks by date headers when digest_max_input_chars is exceeded
     │     ├── [Step 5] _generate_recent_headlines() → recent_digest_headlines.json (up to 4 headlines)
-    │     └── [Step 6] _update_relationship_if_due() → mid_term_relationship.txt (7-day interval)
+    │     ├── [Step 6] _update_recent_snapshot_if_due() → recent_snapshot.txt (7-day interval)
+    │     └── [Step 7] _propose_key_memory_updates_if_due() (off by default)
+    │
+    │     * Each step can be disabled individually through sleeptime.update_targets
+    │       (raw_memory_cache / digest / recent_snapshot / key_memory) in the instance config
     │
     ├── stage_2_knowledgeize(instance_path, db_type)
     │     ├── ★ skip_knowledge_generation check (skip if true)
@@ -285,7 +325,7 @@ Independent of the Sleeptime, the following processing occurs during every chat 
        SYSTEM INSTRUCTION   ← system_instruction.txt
        KEY MEMORY           ← Key_Memory.txt
        MID-TERM DIGEST      ← mid_term_digest.txt  (summary mode)
-       MID-TERM MEMORY      ← mid_term.txt         (RAW mode)
+       MID-TERM MEMORY      ← raw_memory_cache.txt (RAW mode / fallback when no summaries)
        CURRENT TIME         ← system clock
        LONG-TERM (RAG)      ← butly_memory.db      (when need is set, tier-independent)
        SESSION DIGEST     ← session_digests/*.txt
@@ -306,9 +346,9 @@ instances/{name}/
 ├── short_term_json/           # ① active raw turn logs
 ├── session_digests/        # ② compressed overflow session digests (from short-term overflow)
 ├── session_digest.txt       # ② legacy file (backward compatibility)
-├── mid_term.txt               # ④ mid-term RAW log (latest 30,000 chars)
+├── raw_memory_cache.txt       # ④ mid-term RAW cache (latest max_raw_tokens, full overwrite)
 ├── mid_term_digest.txt        # ⑤ fact digest (latest 8,000 chars)
-├── mid_term_relationship.txt  # ⑥ relationship snapshot (updated every 7 days)
+├── recent_snapshot.txt        # ⑥ recent snapshot (updated every 7 days; formerly mid_term_relationship.txt)
 ├── Key_Memory.txt             # immutable core memory (manual edit)
 ├── system_instruction.txt     # AI personality definition (manual edit)
 ├── session_state.json         # Gatekeeper session state
@@ -323,7 +363,7 @@ instances/{name}/
     ├── 2_knowledgeized/       # knowledgeized JSONs (per-date folders)
     │   └── {YYYY-MM-DD}/
     └── 3_log/
-        ├── archive_long_term.txt  # overflow from mid_term.txt
+        ├── archive_long_term.txt  # overflow from the retired mid_term.txt (historical data only)
         └── archive_digest.txt     # overflow from mid_term_digest.txt
 ```
 
@@ -336,7 +376,7 @@ instances/{name}/
 | Chat response generation | `AI_CONFIG["chat"]["model_name"]` | Brain main response |
 | Conversation summarization (session_digest) | `AI_CONFIG["summary"]["model_name"]` | Session digest on short-term overflow |
 | Fact digest generation | `AI_CONFIG["summary"]["model_name"]` | Generate mid_term_digest |
-| Relationship snapshot | `AI_CONFIG["knowledge"]["model_name"]` | Generate mid_term_relationship |
+| Recent snapshot | `AI_CONFIG["knowledge"]["model_name"]` | Generate recent_snapshot.txt |
 | Recent headlines extraction | `AI_CONFIG["summary"]["model_name"]` | Generate recent_digest_headlines.json |
 | Knowledge card extraction | `AI_CONFIG["knowledge"]["model_name"]` | Stage 2 RAG DB extraction |
 | Embedding vector generation | `AI_CONFIG["embedding"]["model_name"]` | knowledge_cards.embedding_blob |

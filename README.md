@@ -1,105 +1,237 @@
 # Butly 🤵
 
-🌐 [日本語](README.ja.md) | **English**
+[日本語](README.ja.md) | 🌐 **English**
 
-> ⚠️ This project is currently under active development.
+> ⚠️ This project is under active development.
 
-**Butly** is a personal AI assistant platform with a multi-layered memory system.
-It remembers past conversations, builds knowledge over time, and adapts its responses
-based on accumulated context — not just the current message.
+**Butly** is a personal AI assistant platform built around a layered memory system.
+It remembers past conversations, accumulates knowledge over time, and adapts its
+responses based on that accumulated context rather than the current message alone.
 
-Supports **multiple LLM providers** (Google Gemini / OpenAI / xAI / Ollama),
-**multiple AI instances** (personas), **RAG-based knowledge retrieval** from conversation history,
-and **SSE streaming** for real-time response rendering.
+It supports **multiple providers** (Google Gemini / OpenAI / xAI / Ollama / any
+OpenAI-compatible API), **multiple AI instances** (personas), **RAG-based knowledge
+retrieval** over conversation history, **SSE streaming** for real-time rendering, and a
+**Trace Graph** that visualizes the internal flow of each response.
 
 ---
 
-## Key Features
+## Features
 
 ### Memory System
 
-Butly maintains several layers of memory that work together:
+Butly runs several memory layers in concert.
 
-| Layer | Description |
-|-------|-------------|
-| **Short-term** | Recent conversation turns (JSON) |
-| **Session Digest** | Rolling per-conversation summaries with relative-time headers |
-| **Mid-term Digest** | Episode-tagged fact digest, updated daily |
-| **Relationship Snapshot** | How the AI perceives its relationship with the user, updated weekly |
-| **Knowledge Cards** | Distilled knowledge stored in SQLite with vector embeddings for RAG search |
-| **Glossary / Lorebook** | Per-instance YAML term/aliases dictionary, scanned every turn for semantic memory injection |
-| **Key Memory** | Core persistent facts about the user and persona (text) |
+| Layer | Backing store | Description |
+|---|---|---|
+| **Short-term** | `short_term_json/` | Recent conversation turns (JSON). The last 6 turns are passed as history by default |
+| **Session digests** | `session_digests/` | Rolling summaries of overflowed conversation, with relative-time headers |
+| **Mid-term RAW** | `raw_memory_cache.txt` | Original conversation text from `2_knowledgeized/`, packed newest-first up to `max_raw_tokens` (default 4096). Rebuilt by Sleeptime |
+| **Mid-term digest** | `mid_term_digest.txt` | Fact digest with episodes (updated daily) |
+| **Recent snapshot** | `recent_snapshot.txt` | The AI's read on recent events and the relationship (refreshed every 7 days by default) |
+| **Knowledge cards** | `butly_memory.db` | Distilled knowledge stored in SQLite with vector embeddings (for RAG) |
+| **Memory nodes** | `memory_nodes` table | The "current interpretation" Stage 3 distills from cards. Opt-in |
+| **Glossary / Lorebook** | `glossary.yaml` | Per-instance term and alias dictionary, scanned every turn and injected as semantic memory |
+| **Key memory** | `Key_Memory.txt` | Durable core facts about the user and the persona |
 
-### Gatekeeper (Metacognitive Engine)
+See [Memory Lifecycle](docs/reference/memory_lifecycle.md) for details.
 
-Before generating a response, the Gatekeeper classifies each user message and decides how much memory context to inject:
+### Gatekeeper (metacognition engine)
 
-- **reflex** — Simple exchanges that need minimal context
-- **mid** — Conversations that benefit from memory injection
+Before generating a response, the Gatekeeper classifies the user message and decides
+how much memory context to inject.
 
-Tier thresholds (`tier_rc_threshold` / `tier_cn_threshold`) are configurable per instance.
-RAG injection is **independent of tier** and gated by a two-stage *LLM intent + fact-check* pipeline:
-ContextClassifier emits `need_intent` (`past_fact` / `glossary` / `relationship` / `null`),
-and **MemoryProbe** verifies it via vector search, glossary match, and optional deep search — all without extra LLM calls.
+- **reflex** — light replies that need minimal context
+- **mid** — conversations where memory injection helps
 
-The Glossary scan runs on every turn regardless of `need_intent` (regex-only, ~ms), so terms always stay primed.
+The tier thresholds (`tier_rc_threshold` / `tier_cn_threshold`) are configurable per instance.
 
-It also maintains a **SessionState** (topic, mood, turn count) that persists across the conversation.
+RAG injection is **independent of tier**, and **running retrieval** is separated from
+**injecting its results**.
 
-### Sleeptime (Scheduled Memory Maintenance)
+- **Running retrieval** (`memory_probe.retrieval_execution`, default `always`):
+  search every turn regardless of the classifier's intent.
+- **Injection decision** (`memory_probe.injection_policy`, default `intent_gated`):
+  the RAG block is injected only when both the `need_intent` emitted by the
+  ContextClassifier (`past_fact` / `glossary` / `relationship` / `null`) and the factual
+  backing from **MemoryProbe** (vector search / glossary match / conditional deep search)
+  agree.
 
-A background process that distills raw conversation logs into structured knowledge:
+The glossary scan is regex-only and runs in milliseconds, so it executes every turn
+regardless of `need_intent`. **SessionState** (topic, mood, turn count) persists across
+the whole session.
 
-- **Daily**: Mid-term digest generation + knowledge card creation
-- **Weekly**: Relationship snapshot update
+See [Gatekeeper I/O Specification](docs/reference/gatekeeper_io_summary.md) for details.
 
-Run it manually or from the Web UI when conversations wind down for the day.
+### Sleeptime (periodic memory consolidation)
 
-### Multi-Instance
+A background process that distills raw conversation logs into structured knowledge.
 
-Create and switch between multiple AI personas, each with its own personality, memory, and conversation history.
+| Stage | Cadence | What it does |
+|---|---|---|
+| **Stage 1** | Daily | Flush `short_term_json` into `1_integrated/`, rebuild `raw_memory_cache.txt`, generate the daily digest, update headlines, refresh the recent snapshot (7-day interval), propose Key Memory updates (off by default) |
+| **Stage 2** | Daily | Generate knowledge cards from the RAW in `1_integrated/` and store them with embeddings, then move processed files to `2_knowledgeized/` |
+| **Stage 3** | Daily (off by default) | Knowledge Maturation. Distill memory nodes from cards and update confidence / status |
 
-### Multi-Provider LLM
+Each stage can be disabled individually through `sleeptime.update_targets` in the
+instance `config.json` (`digest` / `recent_snapshot` / `raw_memory_cache` /
+`knowledge_cards` / `knowledge_maturation` / `key_memory`).
 
-Mix and match providers per role — e.g., chat on OpenAI, embeddings on Gemini, gatekeeper on Ollama:
+Run it manually once the day's conversation has settled, or trigger it from the Web UI.
+Stage 3 only runs when both `memory.knowledge_maturation_enabled` and
+`sleeptime.update_targets.knowledge_maturation` are enabled.
 
-| Provider | Model prefix | API Key |
-|----------|-------------|---------|
-| **Gemini** | `gemini-*` / `models/gemini-*` | `GOOGLE_API_KEY` |
-| **OpenAI** | `gpt-*` / `o1` / `o3` / `o4` | `OPENAI_API_KEY` |
-| **xAI (Grok)** | `grok-*` / `xai/*` | `XAI_API_KEY` |
-| **Ollama** | `ollama/*` | Not required (local) |
+### Memory Nodes (Stage 3 / Knowledge Maturation, opt-in)
 
-OpenAI / xAI / Ollama share a common helper (`butly_core/llm/_openai_compat.py`) for message building, reasoning-model handling (`o1`/`o3`/`o4`), and history role mapping (`model` → `assistant`).
+Where Stages 1 and 2 *accumulate* episodes, Stage 3 distills a **current
+interpretation** (`memory_nodes`) out of the accumulated cards.
 
-### RAG Search (ButlyBrain)
+- A content-hash review queue automatically re-queues any card whose body changed
+- Node/source updates, run counters, and card-version stamps commit in a **single SQLite transaction**
+- Staleness decay on confidence, plus promotion proposals for Key Memory (`memory_node_proposals.json`)
+- When enabled, up to 5 `status='active'` nodes tied to RAG-hit cards are injected alongside them
 
-Hybrid retrieval combining keyword filtering (SQLite LIKE) with vector cosine similarity reranking, time decay scoring, and cross-instance DB search. Vector threshold and decay rate are tuned so older cards remain reachable; per-layer diagnostics are surfaced in the chat debug log.
+### Multi-instance
 
-### Streaming Responses (SSE)
+Create and switch between multiple AI personas, each with its own personality, memory,
+conversation history, and database.
 
-The official desktop UI consumes typed `POST /api/v1/chat/stream` events in
-`metadata` → `chunk` → `done` order (`error` terminates failures). It supports
-generation cancellation, idempotent retry, sources, image attachments,
-connection recovery, and safe Gatekeeper / RAG diagnostic summaries.
-Legacy `POST /chat/stream` remains available while Streamlit is being migrated.
+### Multi-provider LLM
 
-### Official Desktop UI (in development)
+Providers can be mixed per role — for example chat on OpenAI, embeddings on Gemini, and
+the Gatekeeper on Ollama.
 
-The official frontend uses Tauri v2, React, and TypeScript. It communicates
-only with the FastAPI sidecar through the OpenAPI-generated client and the
-typed POST-SSE transport. The current chat vertical slice includes instance
-selection, history, streaming chat, cancel/retry, images, sources,
-Connection / Embedding preflight, and Japanese/English UI.
+| Provider | Built-in connection | API key |
+|---|---|---|
+| **Gemini** | `google` | `GEMINI_API_KEY` / `GOOGLE_API_KEY` |
+| **OpenAI** | `openai` | `OPENAI_API_KEY` (proxy via `OPENAI_BASE_URL`) |
+| **xAI (Grok)** | `xai` | `XAI_API_KEY` |
+| **Ollama** | `ollama` | None (runs locally) |
 
-Streamlit remains the migration-period administration and evaluation UI.
-LoCoMo, Japanese dialogue A/B, and retrieval comparison screens intentionally
-stay in Streamlit and are not part of the desktop migration.
+OpenAI-compatible providers such as Groq, Together, DeepInfra, OpenRouter, and NanoGPT
+work by **adding an entry to `LLM_CONNECTIONS` in `user_config.json`** — no new provider
+class required.
 
-### Web Search
+**Canonical requests and capability resolution**
 
-- **Gemini models**: Google Search Grounding (built-in)
-- **Other providers**: Tavily API or Ollama Cloud Web Search (`OLLAMA_WEB_SEARCH_API_KEY`)
+Core and evaluation code never picks provider-specific parameter names directly.
+
+- `butly_core/llm/canonical.py` — a provider-agnostic `CanonicalRequest`.
+  chat / summary / classify / stream all go through this path.
+- `butly_core/llm/capabilities.py` — resolves, per connection + model,
+  `token_limit_parameter` (`max_tokens` / `max_completion_tokens` / `max_output_tokens`),
+  `supports_reasoning`, `reasoning_efforts`, `temperature_supported`, and
+  `structured_outputs_supported`. Provider metadata, then an observed cache, then
+  `LLM_CAPABILITY_OVERRIDES` — **never inferred from the model name prefix**.
+
+See [LLM Connections and API-key management](docs/reference/llm_connections.md).
+
+### RAG retrieval (ButlyBrain)
+
+Retrieval is vector cosine similarity with time-decay scoring, and it can read across
+instance databases. Per-layer diagnostics land in the chat debug log and the Trace.
+
+`brain.search_mode` selects the retrieval strategy (default `vector`).
+
+| Mode | Description |
+|---|---|
+| `vector` | Vector only (default) |
+| `hybrid` | BM25 (FTS5/trigram) and vector candidates fused with RRF |
+| `dual_query` | Retrieves 15 candidates each for the raw utterance and the Gatekeeper's self-contained query, then fuses with RRF |
+| `hybrid_evidence_fusion` | Re-scores hybrid candidates against Episode / RAW text and fuses with the hybrid rank |
+
+Anything other than `vector` is promoted only after evaluation confirms it helps.
+An optional Cross-Encoder / LLM reranker (`butly_core/core/reranker.py`) is also available
+(`requirements-reranker.txt`; it is fail-open and falls back to the original vector order).
+
+The RAG injection source is controlled by `memory.rag_source_mode`:
+`cards` (default, cards only) / `raw` (original conversation text only) / `both`.
+
+### Trace Graph
+
+Each response is recorded as a node-and-edge graph in `trace.json`, showing what was
+skipped, branched, fell back, or failed. The desktop UI renders it as a Mermaid
+flowchart. Control it via `enabled` / `detail` / `hidden_nodes` under `SYSTEM_CONFIG["trace"]`.
+
+### Streaming responses (SSE)
+
+The official desktop UI uses the typed `POST /api/v1/chat/stream` and processes
+`metadata` → `chunk` → `done` (or `error` on failure). It supports cancellation,
+idempotent retry, sources, image attachments, reconnection, and safe diagnostic
+summaries for the Gatekeeper and RAG. The legacy `POST /chat/stream` stays for Streamlit
+compatibility during the migration.
+
+### Official desktop UI (in progress)
+
+The official frontend is Tauri v2 + React + TypeScript and talks to the FastAPI sidecar
+only through the OpenAPI-generated client. The current chat vertical slice covers
+instance selection, conversation history, SSE chat, cancel/retry, Markdown rendering,
+image paste, sources, the Trace Graph, connection/embedding preflight, and a Japanese /
+English UI.
+
+Streamlit remains as the admin and evaluation UI during the migration. Evaluation
+screens — LoCoMo, the Japanese dialogue A/B, retrieval-mode comparison — are staying in
+Streamlit rather than moving to the desktop UI.
+
+### External chat integrations
+
+A Discord bot and a LINE Messaging API webhook can reach the same memory and the same
+instances. They call `ButlyRuntime` directly, so no HTTP router import is needed.
+Speaker attribution uses the `persons.json` PersonRegistry plus external-account pairing.
+
+- [Discord Integration Setup](docs/guides/discord_integration_setup.md)
+- [LINE Integration Setup](docs/guides/line_integration_setup.md)
+
+### Web search
+
+- **With Gemini models**: Google Search Grounding (built in)
+- **With other providers**: Tavily API or Ollama Cloud Web Search (`OLLAMA_WEB_SEARCH_API_KEY`)
+
+### Evaluation harness
+
+Evaluation code is isolated in `evals/` so that scoring formats never leak into the
+product implementation.
+
+| Tool | Description |
+|---|---|
+| **LoCoMo evaluation** | Replays the official fixed conversations into an isolated workspace: Replay → Sleeptime → QA → scoring, with checkpoints so runs can be interrupted and resumed |
+| **Offline retrieval replay** | Compares Recall@k across retrieval modes without generating answers |
+| **Japanese dialogue A/B** | Compares injection policies over production-like dialogue against real memory |
+| **Semantic Judge** | An optional semantic verdict that never alters the official score. Strict JSON, prompt-injection resistant, fingerprint-resumable |
+
+Runs, cancellation, and history comparison are driven from the Streamlit Evaluation
+screen. See [LoCoMo Evaluation Web Console](docs/reference/evaluation_web_console.md) and
+[LoCoMo Evaluation Data and QA Flow](docs/reference/locomo_evaluation_flow.md).
+
+### Settings layer
+
+Configuration is consolidating into `butly_core/settings/`, built on pydantic-settings.
+
+```
+settings/defaults.py            <- defaults for AI_CONFIG / SYSTEM_CONFIG
+        | recursive merge
+<data_dir>/user_config.json     <- AI_CONFIG / SYSTEM_CONFIG / LLM_CONNECTIONS
+        |                          / LLM_CAPABILITY_OVERRIDES
+get_settings() -> RootSettings (typed, cached)
+        | apply_runtime_settings(data_dir)
+butly_core.config.AI_CONFIG / SYSTEM_CONFIG (compatibility shim, updated in place)
++ ConnectionRegistry + capability runtime
+        |
+instance config.json -> per-request override
+```
+
+New code should use `butly_core.settings.get_settings()`; tests should substitute via
+`override_settings()` / `clear_settings_cache()`. The legacy globals in
+`butly_core.config` are a compatibility shim until the migration finishes.
+
+> `RootSettings` declares `BUTLY_*` environment variables, but settings values are
+> passed as init kwargs, so **env overrides do not currently take effect**. Change
+> settings through `user_config.json` or an instance `config.json`. API keys are the
+> exception: they are loaded from `.env` into `os.environ` through a separate path.
+
+> Note: `system_config.json`, written by the legacy Streamlit settings screen, is a
+> separate channel read and written directly by `routers/settings.py`.
+
+See [Configuration Layer](docs/reference/configuration.md).
 
 ---
 
@@ -112,7 +244,7 @@ git clone https://github.com/unagisann/Butly.git
 cd Butly
 ```
 
-### 2. Install Dependencies
+### 2. Install dependencies
 
 **Linux / macOS:**
 
@@ -123,19 +255,28 @@ pip install -r requirements.txt
 ```
 
 **Windows:**
-Double-click `01_setup_requirements.bat` — creates `.venv` and installs dependencies automatically.
+Double-click `01_setup_requirements.bat` — it creates `.venv` and installs dependencies.
 
-### 3. Configure API Keys
+Optional extras:
+
+| File | Purpose |
+|---|---|
+| `requirements-dev.txt` | pytest / flake8 (for the pre-push check) |
+| `requirements-reranker.txt` | Local Cross-Encoder reranker (CPU torch build) |
+| `requirements-discord.txt` | Discord adapter |
+| `requirements-line.txt` | LINE webhook |
+
+### 3. Configure API keys
 
 **Linux / macOS:**
 
 ```bash
-cp APIkey.env .env
+cp .env.example .env
 ```
 
-**Windows:** Automatically handled by the batch file.
+**Windows:** handled automatically by the batch file.
 
-Set the keys for your chosen provider in `.env`:
+Set the keys for the providers you use in `.env`:
 
 ```env
 # Google Gemini (default)
@@ -151,10 +292,12 @@ XAI_API_KEY=xai-...
 TAVILY_API_KEY=tvly-...
 OLLAMA_WEB_SEARCH_API_KEY=...
 
-# Ollama — no key needed (local)
+# Ollama — no key needed (runs locally)
 ```
 
-### 4. Prepare Config
+Keys can also be saved from the Web UI under **⚙️ → LLM Providers**.
+
+### 4. Prepare the config file
 
 **Linux / macOS:**
 
@@ -162,18 +305,18 @@ OLLAMA_WEB_SEARCH_API_KEY=...
 cp user_config.json.example user_config.json
 ```
 
-**Windows:** Automatically handled by the batch file.
+**Windows:** handled automatically by the batch file.
 
-Customize models, parameters, and agent names in `user_config.json`.
-See `user_config.json.example` for Gemini / OpenAI / Ollama configuration examples.
+`user_config.json` customizes models, parameters, agent names, user-defined connections,
+and manual capability overrides.
 
-> **Note**: Switching providers changes embedding dimensions, which degrades RAG accuracy.
-> Regenerate embeddings with:
+> **Note**: switching providers changes the embedding dimension and degrades RAG
+> retrieval accuracy. Regenerate embeddings with:
 > ```bash
 > python migrate_embeddings.py --all
 > ```
 
-### 5. Start
+### 5. Run
 
 **Official desktop UI (development mode):**
 
@@ -187,16 +330,16 @@ pnpm install --frozen-lockfile
 BUTLY_DEV_BACKEND_PORT=8000 pnpm tauri dev
 ```
 
-In Windows PowerShell, use
-`$env:BUTLY_DEV_BACKEND_PORT="8000"; pnpm tauri dev` for the last line.
+On Windows PowerShell, the last line becomes
+`$env:BUTLY_DEV_BACKEND_PORT="8000"; pnpm tauri dev`.
 
-**Official desktop UI (browser only, no Tauri):**
+**Official desktop UI (browser preview, no Tauri):**
 
-A development mode for working on the UI without Tauri (WebKitGTK / WebView2).
-It works on headless machines such as a Raspberry Pi.
+A development mode that renders the UI in a browser without Tauri (WebKitGTK / WebView2),
+so it works on headless hosts such as a Raspberry Pi.
 
 ```bash
-# Terminal 1: versioned API (8000 belongs to legacy Streamlit, so use another port)
+# Terminal 1: versioned API (port 8000 is taken by legacy Streamlit, so use another)
 venv/bin/python -m butly_api.server --port 8010
 
 # Terminal 2: Vite dev server (open http://127.0.0.1:1420)
@@ -204,12 +347,11 @@ cd frontend
 BUTLY_DEV_BACKEND_URL=http://127.0.0.1:8010 pnpm dev
 ```
 
-For choosing between the startup modes, SSH port forwarding, and the
-limitations, see [Desktop UI Startup](docs/guides/desktop_dev_setup.md); for
-sidecar and installer details, see the
-[desktop sidecar specification](docs/reference/desktop_sidecar.md).
+For when to use each mode, SSH port forwarding, and current limitations see
+[Desktop UI Startup](docs/guides/desktop_dev_setup.md); for sidecar and installer details
+see [Desktop sidecar specification](docs/reference/desktop_sidecar.md).
 
-**Legacy Streamlit (evaluation and settings not migrated yet):**
+**Legacy Streamlit (evaluation and not-yet-migrated settings screens):**
 
 **Linux / macOS:**
 
@@ -217,40 +359,40 @@ sidecar and installer details, see the
 # Backend (FastAPI)
 uvicorn main:app --port 8000 --reload
 
-# Frontend (Streamlit) — in a separate terminal
+# Frontend (Streamlit) — in another terminal
 streamlit run app.py
 ```
 
-Open `http://localhost:8501` in your browser.
+Open `http://localhost:8501`.
 
 **Windows:**
-Double-click `02_start_webui.bat` — starts both servers and opens the browser automatically.
+Double-click `02_start_webui.bat` — both servers start and the browser opens.
 
 ---
 
-## First Launch
+## First-run setup
 
-### ① Language
+### 1. Language
 
-**⚙️** (top right) → **Basic Settings** → Select language → **💾 Save**
+**⚙️** (top right) → **General** → pick a language → **💾 Save**
 
-### ② LLM / API Key
+### 2. LLM / API keys
 
-**⚙️** → **LLM Provider** tab:
+**⚙️** → **LLM Providers** tab:
 
-1. Enter your API key → **💾 Save**
-2. Assign models to each role (Chat / Summary / Gatekeeper / Embedding)
-   - Select from presets or choose **"✏️ Custom Input..."** for any model name
-   - Ollama models: prefix with `ollama/` (e.g. `ollama/phi3`)
-3. **💾 Save Model Settings**
+1. Enter the API key → **💾 Save** (secrets are never displayed again)
+2. Assign each role (Chat / Summary / Knowledge / Gatekeeper / Embedding) by picking a
+   **connection first, then a model**
+   - Choose a preset, or use **"✏️ Custom input..."** to type any model ID
+3. **💾 Save model settings**
 
-### ③ Create an AI Instance
+### 3. Create an AI instance
 
-1. Expand **➕ New Instance** on the home screen
-2. Enter an **Instance Name** (alphanumeric & `_`)
-3. Select a **Personality Template** (Butly / Creator / Analyst / Friendly / Caring / Custom)
-4. Enter an **AI Name** (required)
-5. Click **Create** → click the AI name to start chatting
+1. Expand **➕ Create new instance** on the home screen
+2. Enter an **instance name** (alphanumerics and `_`)
+3. Pick a **personality template** (Butly / Creator / Analyst / Friendly / Caring / Custom)
+4. Enter the **AI's name** (required)
+5. Click **Create**, then click the AI's name to start chatting
 
 ---
 
@@ -258,73 +400,109 @@ Double-click `02_start_webui.bat` — starts both servers and opens the browser 
 
 ```mermaid
 flowchart TD
-    A((User Input)) --> B["⧫ Gatekeeper<br/>ContextClassifier + MemoryProbe"]
+    A((User message)) --> B["⧫ Gatekeeper<br/>ContextClassifier + MemoryProbe"]
     B --> C{tier}
     C -->|reflex| D["⚡ Minimal context"]
     C -->|mid| E["◎ Memory injected"]
-    B --> N{"need?<br/>(tier-independent)"}
-    N -->|set| R["⌕ RAG block<br/>from MemoryProbe candidates"]
-    D --> F["◆ ChatService<br/>Provider.generate() / .async_generate_stream()"]
+    B --> N{"Inject?<br/>(tier-independent)"}
+    N -->|yes| R["⌕ RAG block<br/>from MemoryProbe candidates"]
+    D --> F["◆ ChatService<br/>CanonicalRequest → Provider"]
     E --> F
     R --> F
-    F -.->|parallel| SU["⟳ StateUpdater<br/>(post-response)"]
+    F -.->|in parallel| SU["⟳ StateUpdater<br/>(post-response)"]
     F --> G((Response / SSE chunks))
-    G --> H["▣ short_term_json save"]
-    H -.->|scheduled| I["⚙ Sleeptime<br/>Daily + Weekly batch"]
-    I -.->|knowledge generation| J[("⛁ Knowledge DB<br/>(SQLite + Embeddings)")]
-    J -.->|RAG search| F
+    G --> H["▣ Save to short_term_json"]
+    F -.->|records| TR["◇ Trace Graph<br/>trace.json"]
+    H -.->|batch| I["⚙ Sleeptime<br/>Stage 1 / 2 / 3"]
+    I -.->|cards| J[("⛁ Knowledge DB<br/>(SQLite + embeddings)")]
+    I -.->|Stage 3| K[("◈ memory_nodes<br/>consolidated knowledge")]
+    J -.->|RAG| F
+    K -.->|active nodes alongside| F
 ```
 
-### Design Principles
+The full set of diagrams is in [Architecture Diagrams](docs/reference/DIAGRAMS.md).
+
+### Design principles
 
 | Principle | Description |
-|-----------|-------------|
-| **State-centric** | Update internal state with each turn, not just react to utterances |
-| **Missing-prerequisite-centric** | Search for what the current judgment needs, not just similar memories |
-| **Integrated-memory-centric** | Maintain reflection, summary, and generalization beyond raw episodes |
-| **Metacognition-centric** | Let the AI reason about what it needs to know, rather than hardcoding rules |
+|---|---|
+| **State-centric** | Update internal state each conversation instead of reacting to utterances |
+| **Missing-premise-centric** | Look for the premises the current decision needs, not for similar memories |
+| **Consolidated-memory-centric** | Keep reflection, summary, and generalization in layers of their own, not just raw episodes |
+| **Metacognition-centric** | Let the AI decide what it needs to know instead of hard-coding rules |
 
 ---
 
-## Default Models (Gemini)
+## Default models (Gemini)
 
 | Role | Model | Purpose | Frequency |
-|------|-------|---------|-----------|
-| Chat | gemini-3-flash-preview | Response generation | 1×/turn |
-| Gatekeeper | gemini-3.1-flash-lite-preview | Tier classification / metacognition | 1×/turn |
-| Summary | gemini-3.1-flash-lite-preview | Digest / relationship | Daily batch |
-| Knowledge | gemini-3.1-pro-preview | Knowledge card generation | Daily batch |
-| Embedding | gemini-embedding-001 | Vector search | On card generation |
-| Session Digest | gemini-3.1-flash-lite-preview | Overflow compression | Real-time |
+|---|---|---|---|
+| Chat | `gemini-3.5-flash` | Response generation | Once per turn |
+| Gatekeeper | `gemini-3.1-flash-lite` | Tier classification / metacognition | Once per turn |
+| Summary | `gemini-3.1-flash-lite` | Digest, relationship, session digest | Daily batch + on overflow |
+| Knowledge | `gemini-3.1-pro-preview` | Knowledge card generation, Stage 3 | Daily batch |
+| Embedding | `gemini-embedding-2` | Vector search | On card creation |
 
-All configurable via `user_config.json`.
+All are configurable through `AI_CONFIG` in `user_config.json`, and connections can be
+mixed per role.
 
 ---
 
 ## Tech Stack
 
-- **LLM**: Google Gemini / OpenAI / xAI (Grok) / Ollama — multi-provider
+- **LLM**: Google Gemini / OpenAI / xAI (Grok) / Ollama / any OpenAI-compatible API
 - **Backend**: FastAPI + Uvicorn (typed `/api/v1` REST + POST SSE)
+- **Settings**: pydantic-settings (`butly_core/settings/`)
 - **Official frontend**: Tauri v2 + React + TypeScript + Vite
 - **Legacy / evaluation UI**: Streamlit
-- **DB**: SQLite (vector search via cosine similarity + NumPy)
-- **Web Search**: Tavily API / Ollama Cloud Web Search / Google Search Grounding
+- **DB**: SQLite (vector search: cosine similarity + NumPy; BM25: FTS5/trigram)
+- **Web search**: Tavily API / Ollama Cloud Web Search / Google Search Grounding
+
+---
+
+## Development
+
+`./scripts/check_before_push.sh` is the single source of truth for pre-push checks
+(compileall → flake8 fatal → pytest → `pip check` → frontend lint/typecheck/test/build).
+
+```bash
+# Unit tests only
+venv/bin/python -m pytest -m "not integration"
+
+# Full pre-push check
+./scripts/check_before_push.sh
+```
+
+`-m integration` hits real APIs and is not part of the normal loop.
+See [Coding Conventions](docs/reference/coding_conventions.md).
 
 ---
 
 ## Documentation
 
-- [Documentation Index](docs/README.md)
+- [Documentation index](docs/README.md)
+
+**Setup**
+- [Desktop UI Startup](docs/guides/desktop_dev_setup.md)
 - [Discord Integration Setup](docs/guides/discord_integration_setup.md)
 - [LINE Integration Setup](docs/guides/line_integration_setup.md)
+
+**Architecture and reference**
 - [Architecture Diagrams](docs/reference/DIAGRAMS.md)
-- [Desktop Sidecar Specification](docs/reference/desktop_sidecar.md)
-- [Official Chat Frontend Specification](docs/reference/frontend_chat.md)
-- [Gatekeeper I/O Specification](docs/reference/gatekeeper_io_summary.md)
-- [Memory Lifecycle](docs/reference/memory_lifecycle.md)
 - [File Structure](docs/reference/FILE_STRUCTURE.md)
+- [Configuration Layer](docs/reference/configuration.md)
+- [Memory Lifecycle](docs/reference/memory_lifecycle.md)
+- [Gatekeeper I/O Specification](docs/reference/gatekeeper_io_summary.md)
 - [Context Levels](docs/reference/context_levels.md)
-- [Project Status](docs/history/project_status.md) / [Recent Changes](docs/history/recent_changes.md)
+- [LLM Connections and API-key management](docs/reference/llm_connections.md)
+- [Desktop sidecar specification](docs/reference/desktop_sidecar.md)
+- [Official Desktop Chat UI](docs/reference/frontend_chat.md)
+- [Coding Conventions](docs/reference/coding_conventions.md)
+
+**Evaluation**
+- [LoCoMo Evaluation Web Console](docs/reference/evaluation_web_console.md)
+- [LoCoMo Evaluation Data and QA Flow](docs/reference/locomo_evaluation_flow.md)
+- [RAG evaluation report (Japanese)](docs/history/rag_evaluation_report.ja.md)
 
 ---
 

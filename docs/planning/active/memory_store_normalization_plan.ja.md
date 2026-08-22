@@ -1,6 +1,6 @@
 # 記憶ストア正規化計画書: 役割別フォーマット統一 + アクセス層の抽象化
 
-🌐 **日本語** | [English](memory_store_normalization_plan.md)
+🌐 **日本語**（English 版なし）
 
 > **ステータス: 未着手（提案段階）。** 段階移行を前提に `planning/active` で管理する。
 > 完了条件（§9）を満たしたら `archived` へ移す。

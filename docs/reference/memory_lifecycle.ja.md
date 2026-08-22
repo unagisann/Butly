@@ -22,15 +22,26 @@ Butly の記憶システムは、会話の鮮度と重要度に応じて複数�
 
 [Stage 0] short_term_json/* → 1_integrated/ へ全移動
 
-[Stage 1] 1_integrated JSONs を읽 → テキスト整形
-  ├─ [4] mid_term.txt ← RAWログ追記
-  ├─ [5] mid_term_digest.txt ← LLMによる日次事実ダイジェスト（差分追記）  ├─ [5b] recent_digest_headlines.json ← LLMによるヘッドライン抽出（最大 4 件）  └─ [6] mid_term_relationship.txt ← LLMによる関係性スナップショット（7日ごと全上書き）
+[Stage 1] 1_integrated JSONs を読み込み → テキスト整形
+  ├─ [4] raw_memory_cache.txt        ← 2_knowledgeized/ から RAW を再構築（全上書き）
+  ├─ [5] mid_term_digest.txt          ← LLM による日次事実ダイジェスト（差分追記）
+  ├─ [5b] recent_digest_headlines.json ← LLM によるヘッドライン抽出（最大 4 件）
+  └─ [6] recent_snapshot.txt          ← LLM による近況スナップショット（7 日ごと全上書き）
 
-[Stage 2] 1_integrated JSONs → 日付グループ → LLMナレッジ抽出
+[Stage 2] 1_integrated JSONs → 日付グループ → LLM ナレッジ抽出
   └─ [7] butly_memory.db ← 長期記憶ベクトルDB (RAG)
           ↓ 処理後
          memory_archive/2_knowledgeized/{date}/
+
+[Stage 3] 非アーカイブカード（content hash キュー） → LLM ノードレビュー   ※既定 OFF
+  └─ [8] memory_nodes / memory_node_sources ← 統合知識ノード（同一 DB 内）
 ```
+
+> **旧レイヤーについて**: `mid_term.txt`（Stage 1 が追記していた RAW ログ）と
+> `mid_term_relationship.txt` は廃止されました。RAW は `raw_memory_cache.txt`、
+> 関係性は `recent_snapshot.txt` が後継です。読み込み側
+> （`ButlyMemory.get_recent_snapshot()`）は旧ファイル名へフォールバックしますが、
+> **新規に書き込まれることはありません**。
 
 ---
 
@@ -76,7 +87,7 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # 保持ファイル数
 | **使用モデル** | `AI_CONFIG["summary"]["model_name"]`（低コスト・長文コンテキスト向け） |
 
 > **設計意図:** session_digest は、recent sessions から押し出された会話を圧縮し、直近履歴だけでは足りない流れを補うためのコンテキストです。
-> 恒久化は mid_term.txt と butly_memory.db が担います。
+> 恒久化は `memory_archive/` の生 JSON（→ `raw_memory_cache.txt`）と `butly_memory.db` が担います。
 
 ---
 
@@ -92,22 +103,35 @@ SYSTEM_CONFIG["memory"]["short_term_limit"] = 6  # 保持ファイル数
 
 ---
 
-### 4. mid_term.txt（中期記憶 RAW ログ）
+### 4. raw_memory_cache.txt（中期記憶 RAW キャッシュ）
+
+`mid_term.txt` への追記方式は廃止され、RAW は **アーカイブ済み会話原文からの
+再構築キャッシュ**になりました。追記ログではなく毎回作り直すスナップショットです。
 
 | 項目 | 内容 |
 |---|---|
-| **場所** | `instances/{name}/mid_term.txt` |
-| **書き込み** | Sleeptime Stage 1 (`stage_1_cleanup`) が 1_integrated JSON をテキスト整形して追記 |
-| **上限** | `max_mid_term_chars`（デフォルト 30,000 文字） |
-| **オーバーフロー** | 先頭から溢れた分を `memory_archive/3_log/archive_long_term.txt` に追記後、最新部分のみ残す |
-| **Gatekeeper注入** | `use_summarized_mid_term = False`（RAWモード）の場合に mid tier へ MID-TERM MEMORY ブロックとして注入 |
-| **形式** | `[YYYY-MM-DD HH:MM:SS] {role_label}: {text}` の行形式テキスト |
+| **場所** | `instances/{name}/raw_memory_cache.txt` |
+| **生成** | Sleeptime Stage 1 が `build_raw_memory_cache()`（`core/raw_memory_reader.py`）で**全上書き**再生成 |
+| **入力** | `memory_archive/2_knowledgeized/` の JSON。ファイル名（`session_YYYYMMDD_HHMMSS` 等 3 形式）からソートキーを起こし時系列で収集 |
+| **上限** | `max_raw_tokens`（デフォルト 4096 トークン）。**新しい順にファイル単位**で詰め、上限に達したら打ち切る |
+| **トークン計測** | `core/tokenizer.py`（tiktoken） |
+| **形式** | `raw_injection_format`（デフォルト `plaintext`）。話者ラベルは `core/turn_meta.py` が解決し、複数話者セッションでは実名ラベルを使う |
+| **読み出し** | `ButlyMemory.get_raw_memory()` が**キャッシュ 1 ファイルを読むだけ**（チャットのホットパスで JSON を走査しない） |
+| **Gatekeeper注入** | `use_summarized_mid_term = False`（RAW モード）で mid tier に注入。`True` でも digest / recent_snapshot が両方空なら RAW へフォールバック（`mid_term_mode="raw_fallback"`） |
+| **オーバーフロー** | なし（追記しないため）。上限超過分は次回再生成時に自然に落ちる |
 
 **設定パラメータ:**
 ```python
-SYSTEM_CONFIG["memory"]["max_mid_term_chars"] = 30000
+SYSTEM_CONFIG["memory"]["max_raw_tokens"] = 4096          # RAW 読み込みトークン上限
+SYSTEM_CONFIG["memory"]["raw_injection_format"] = "plaintext"
 SYSTEM_CONFIG["memory"]["use_summarized_mid_term"] = True  # True で要約注入、False で RAW注入
+# インスタンス config.json > sleeptime.update_targets:
+raw_memory_cache = True   # False で再生成をスキップ
 ```
+
+> **注意**: 入力は `2_knowledgeized/` なので、キャッシュに載るのは
+> **Stage 2 でナレッジ化済みの会話**だけです。Stage 1 は Stage 2 より先に走るため、
+> 当日分の RAW がキャッシュへ入るのは次回 Sleeptime 以降になります。
 
 ---
 
@@ -149,23 +173,34 @@ digest_max_input_chars = 0   # 1回あたりの最大入力文字数。0=無制�
 
 ---
 
-### 6. mid_term_relationship.txt（関係性スナップショット）
+### 6. recent_snapshot.txt（近況スナップショット）
+
+旧名 `mid_term_relationship.txt`。読み込みは旧ファイル名へフォールバックしますが、
+書き込みは常に `recent_snapshot.txt` です。
 
 | 項目 | 内容 |
 |---|---|
-| **場所** | `instances/{name}/mid_term_relationship.txt` |
-| **書き込み** | Sleeptime Stage 1 内 `_update_relationship_if_due()` — 7 日間隔で全上書き |
+| **場所** | `instances/{name}/recent_snapshot.txt`（旧: `mid_term_relationship.txt`） |
+| **書き込み** | Sleeptime Stage 1 内 `_update_recent_snapshot_if_due()` — 7 日間隔で全上書き |
 | **入力** | `mid_term_digest.txt`（蓄積された事実ダイジェスト）— 日々の断片は使わない |
-| **更新頻度** | `relationship_update_interval_days`（デフォルト 7 日）以上経過した場合のみ更新 |
-| **Gatekeeper注入** | `use_summarized_mid_term = True` の場合に mid tier へ RELATIONSHIP SNAPSHOT ブロックとして注入 |
-| **スキップ条件** | `mid_term_digest.txt` が 200 文字未満、またはインターバル未達 |
+| **更新頻度** | 最終更新（ファイル mtime）から `relationship_update_interval_days`（デフォルト 7 日）以上経過した場合のみ。ファイル未作成なら初回生成 |
+| **上限** | `sleeptime.max_relationship_chars`（デフォルト 600 文字） |
+| **プロンプト** | `PromptLoader` の `recent_snapshot` テンプレート（agent_name / system_instruction / key_memory / digest_text / max_chars） |
+| **Gatekeeper注入** | `use_summarized_mid_term = True` の場合に mid tier へ digest とセットで注入（block key: `mid_term_recent_snapshot`） |
+| **スキップ条件** | `generate_mid_term_summaries = False`、`mid_term_digest.txt` 未作成、digest が 200 文字未満、またはインターバル未達 |
 | **使用モデル** | `AI_CONFIG["knowledge"]["model_name"]`（高推論 Pro 系） |
-| **設計意図** | 関係性は緩やかに変化するため毎日書き換えると不安定になる。週次程度が適切 |
+| **設計意図** | 近況・関係性は緩やかに変化するため毎日書き換えると不安定になる。週次程度が適切 |
 
 **設定パラメータ:**
 ```python
 SYSTEM_CONFIG["memory"]["relationship_update_interval_days"] = 7
+# インスタンス config.json > sleeptime:
+max_relationship_chars = 600
+update_targets = {"recent_snapshot": True}   # False で更新をスキップ
 ```
+
+**後方互換エイリアス:** `ButlyMemory.get_mid_term_relationship()` は
+`get_recent_snapshot()` を呼ぶだけの薄いラッパーとして残っています。
 
 ---
 
@@ -246,11 +281,16 @@ ButlySleeptime.run()
     │     ├── [Stage 0] short_term_json/* → 1_integrated/ へ全移動
     │     ├── [Step 1] 1_integrated JSON をテキスト整形
     │     ├── [Step 2] session_digests/* を削除（一時コンテキストのクリア）
-    │     ├── [Step 3] mid_term.txt に追記（オーバーフロー時は 3_log へアーカイブ）
+    │     ├── [Step 3] build_raw_memory_cache() → raw_memory_cache.txt を全上書き再生成
+    │     │          └── 入力は 2_knowledgeized/。max_raw_tokens（既定 4096）まで新しい順
     │     ├── [Step 4] _generate_daily_digest() → mid_term_digest.txt 差分追記
     │     │          └── ★ digest_max_input_chars 超過時は日付ヘッダ区切りでチャンク分割
     │     ├── [Step 5] _generate_recent_headlines() → recent_digest_headlines.json（最大 4 見出し）
-    │     └── [Step 6] _update_relationship_if_due() → mid_term_relationship.txt（7日間隔）
+    │     ├── [Step 6] _update_recent_snapshot_if_due() → recent_snapshot.txt（7日間隔）
+    │     └── [Step 7] _propose_key_memory_updates_if_due()（既定 OFF）
+    │
+    │     ※ 各 Step は instance config の sleeptime.update_targets
+    │        （raw_memory_cache / digest / recent_snapshot / key_memory）で個別に停止できる
     │
     ├── stage_2_knowledgeize(instance_path, db_type)
     │     ├── ★ skip_knowledge_generation チェック（true ならスキップ）
@@ -281,8 +321,8 @@ Sleeptime とは独立して、チャット中にも以下の処理が行われ�
        ↓ 各ブロックのソース
        SYSTEM INSTRUCTION   ← system_instruction.txt
        KEY MEMORY           ← Key_Memory.txt
-       MID-TERM DIGEST      ← mid_term_digest.txt (要約モード)
-       MID-TERM MEMORY      ← mid_term.txt (RAWモード)
+       MID-TERM DIGEST      ← mid_term_digest.txt + recent_snapshot.txt (要約モード)
+       MID-TERM MEMORY      ← raw_memory_cache.txt (RAWモード / 要約なし時のフォールバック)
        CURRENT TIME         ← システム時刻
        LONG-TERM (RAG)      ← butly_memory.db (need 有時のみ・tier 非依存)
        SESSION DIGEST     ← session_digests/*.txt
@@ -303,9 +343,9 @@ instances/{name}/
 ├── short_term_json/           # ① アクティブな生ターンログ
 ├── session_digests/        # ② 短期溢れ時の会話圧縮ログ（一時）
 ├── session_digest.txt       # ② 旧方式（互換性維持）
-├── mid_term.txt               # ④ 中期記憶 RAW（最新 30,000 文字）
+├── raw_memory_cache.txt       # ④ 中期記憶 RAW キャッシュ（最新 max_raw_tokens 分・全上書き）
 ├── mid_term_digest.txt        # ⑤ 事実ダイジェスト（最新 8,000 文字）
-├── mid_term_relationship.txt  # ⑥ 関係性スナップショット（7日ごと更新）
+├── recent_snapshot.txt        # ⑥ 近況スナップショット（7日ごと更新。旧 mid_term_relationship.txt）
 ├── Key_Memory.txt             # 不変の根幹記憶（手動編集）
 ├── system_instruction.txt     # AI 人格定義（手動編集）
 ├── session_state.json         # Gatekeeper セッション状態
@@ -320,7 +360,7 @@ instances/{name}/
     ├── 2_knowledgeized/       # ナレッジ化済み JSON（日付フォルダ）
     │   └── {YYYY-MM-DD}/
     └── 3_log/
-        ├── archive_long_term.txt  # mid_term.txt のオーバーフロー
+        ├── archive_long_term.txt  # 旧 mid_term.txt のオーバーフロー（過去データのみ）
         └── archive_digest.txt     # mid_term_digest.txt のオーバーフロー
 ```
 
@@ -333,7 +373,7 @@ instances/{name}/
 | チャット応答生成 | `AI_CONFIG["chat"]["model_name"]` | Brain の主応答 |
 | 会話要約 (session_digest) | `AI_CONFIG["summary"]["model_name"]` | 短期溢れ時の会話圧縮ログ |
 | 事実ダイジェスト生成 | `AI_CONFIG["summary"]["model_name"]` | mid_term_digest 生成 |
-| 関係性スナップショット | `AI_CONFIG["knowledge"]["model_name"]` | mid_term_relationship 生成 |
+| 近況スナップショット | `AI_CONFIG["knowledge"]["model_name"]` | recent_snapshot.txt 生成 |
 | ヘッドライン抽出 | `AI_CONFIG["summary"]["model_name"]` | recent_digest_headlines.json 生成 |
 | ナレッジカード抽出 | `AI_CONFIG["knowledge"]["model_name"]` | Stage 2 RAG DB への抽出 |
 | 埋め込みベクトル生成 | `AI_CONFIG["embedding"]["model_name"]` | knowledge_cards.embedding_blob |

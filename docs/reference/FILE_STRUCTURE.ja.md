@@ -2,7 +2,7 @@
 
 🌐 **日本語** | [English](FILE_STRUCTURE.md)
 
-> 最終更新: 2026-08-12
+> 最終更新: 2026-08-22
 
 ---
 
@@ -119,6 +119,7 @@ LoCoMo公式JSONの固定会話をButlyへ投入する、環境非依存の評�
 | `retrieval_replay.py` | 回答を生成しないoffline retrieval replay。通常runの`qa_results.jsonl`またはQAなしrunの`retrieval_questions.json`を読み、DBを一時複製して各検索方式のRecall@kを比較する |
 | `evidence_reranker.py` | `evidence_rerank` / `hybrid_evidence_rerank` / `hybrid_evidence_fusion`用の評価専用二段検索。vectorまたはhybrid候補をEpisode / RAW chunk embeddingのMaxP cosineで採点し、全面再順位付けまたはhybrid順位との重み付き融合を行う。本文を含まないSQLite vector cacheとレビュー用の選択根拠previewを管理 |
 | `stemming.py` | 依存追加なしのPorter (1980) stemmer。公式のnltk stemmerと稀な語で差が出る旨をdocstringに明記 |
+| `evidence_analysis.py` | `evidence=0`（証拠カードが1枚も引けなかった）問題を失敗ステージ別に分類・集計し、テキストレポートを出力する |
 | `report.py` | `scores.json`と任意の`semantic_scores.json`から`summary.md`を生成 |
 | `checkpoint.py` | セッション/Sleeptime/QA単位のatomicなcheckpoint。run ID照合と破損検出つき |
 | `config.py` | CLI設定DTO（workflow、QA mode、sample ID/session/question範囲、内部prompt用`locale`、採点用`dataset_locale`を含み、`from_json_dict()`でresume時復元）とprofile YAML読込 |
@@ -171,6 +172,21 @@ FastAPI のルーターモジュール群。各ルーターは `dependencies.py`
 | `evaluations.py` | `/evaluations/jobs`開始・状態・停止・再開、ログ、run履歴・比較（Streamlit評価Console用） |
 | `dashboard.py` | `/status`（CPU/MEM）、`/discovery`、`/news` |
 | `devices.py` | `/devices`、`/tv/key`、`/tv/launch`（Fire TV 制御） |
+| `pairing.py` | 外部アカウントと `persons.json` の人物をひも付けるペアリングコード発行・確認 |
+| `line.py` | `/line/webhook`（LINE Messaging API）。`line-bot-sdk` 未導入でもアプリは起動する |
+
+---
+
+### `routers/line.py`
+LINE Messaging API の webhook。`ButlyRuntime` を直接呼ぶため legacy chat ルータを経由しない。
+
+- `LineMessagingSender` — reply / push の送信ラッパー
+- `_line_credentials()` — `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_CHANNEL_SECRET` を解決
+- `_validate_with_sdk(raw_body, signature, channel_secret)` — 署名検証（SDK 必須）
+- 長文は `butly_core/external/message_splitter.py` で分割し、話者は `PersonRegistry` +
+  ペアリング済み外部アカウントで同定する
+
+セットアップ手順は [LINE 連携セットアップ](../guides/line_integration_setup.ja.md)。
 
 ---
 
@@ -262,15 +278,58 @@ LoCoMo、日本語対話 A/B、検索比較などの評価画面は `app.py` / `
 
 ## butly_core/
 
-コアロジックパッケージ。`config.py` が全体の定数・モデル設定を管理する。
+コアロジックパッケージ。設定の正は `settings/`、`config.py` はその**互換シム**。
 
-### `butly_core/config.py`
-アプリ全体の設定定数を管理。
+### `butly_core/config.py`（legacy 互換シム）
+module-level の設定 dict を公開する。**新規コードは参照しない**（`settings.get_settings()` を使う）。
+`apply_runtime_settings()` が起動時に typed settings の内容で in-place 更新する。
 
 - `AI_CONFIG` — モデル別の設定（chat / summary / knowledge / embedding / gatekeeper / context_classifier）
-- `SYSTEM_CONFIG` — パス定義・メモリ上限・Brain パラメータ・`memory_probe`・`gatekeeper` tier 閾値・`chat.streaming_enabled`・`glossary` 等
+- `SYSTEM_CONFIG` — パス定義・メモリ上限・Brain パラメータ・`memory_probe`・`gatekeeper` tier 閾値・`chat.streaming_enabled`・`glossary`・`trace` 等
 - `USER_CONFIG_PATH` — ユーザーカスタム設定ファイルのパス
 - `_recursive_update(base, override)` — 設定辞書を再帰マージするユーティリティ
+
+### `butly_core/runtime.py`
+`ButlyRuntime` — チャット実行の中核コンテナ。FastAPI ルータや Streamlit の都合を知らず、
+Discord bot / LINE webhook / CLI / Desktop app が `runtime.chat()` /
+`runtime.chat_stream()` を呼ぶだけで応答を得られるようにする。
+
+- `ButlyRuntime(data_dir, base_dir=None, instances_dir=None)` — パス類・`instance_manager` / `gatekeeper` / `mem_block_builder` / `instance_store` を保持
+- `get_instance_components(instance_name)` — Memory / Brain / Chronos / Cache を遅延初期化してキャッシュ
+- `chat(request)` / `chat_stream(request)` — `ChatService` へ委譲
+- `dependencies.py` のグローバルは同一オブジェクトを指す（二重初期化しない）
+
+### `butly_core/io_utils.py`
+アトミック書き込みと `.env` 編集のヘルパー。書き込みは `<path>.tmp` へ出してから
+`os.replace()` で昇格させる（[コーディング規約](coding_conventions.ja.md)の必須箇所で使用）。
+
+- `atomic_write_text(path, text, encoding="utf-8")` / `atomic_write_bytes(path, data)`
+- `upsert_env_var(path, name, value)` — `.env` の 1 変数を追加・更新（秘密ファイルの権限を絞る）
+- `remove_env_vars(path, names)` — `.env` から変数を削除
+
+---
+
+## butly_core/settings/
+
+pydantic-settings ベースの typed 設定層。**設定値の正はここ**。
+詳細は [設定レイヤー](configuration.ja.md)。
+
+| ファイル | 役割 |
+|---|---|
+| `defaults.py` | `AI_CONFIG` / `SYSTEM_CONFIG` の既定値。数値・キー名の一次情報源 |
+| `sources.py` | `load_settings_data(config_path)`。defaults を deepcopy → `user_config.json` を `recursive_update` → `normalize_ai_config()` で connection 推定・整合検査 |
+| `root.py` | `RootSettings`（`BaseSettings`）。`get_settings(config_path)`（lru_cache）/ `clear_settings_cache()` / `override_settings(settings)` |
+| `ai.py` | `AIConfig` / `RoleConfig` / `GenerationConfig` / `SafetySetting` |
+| `system.py` | `SystemConfig`。セクションごとに dict を保持（legacy dict と同形） |
+| `connections.py` | `LLMConnection`。id / env 名 / base_url / extra_headers を field_validator で検証 |
+| `instance.py` | `InstanceConfig`。現状は `extra="allow"` のプレースホルダ |
+| `bootstrap.py` | `apply_runtime_settings(data_dir)` — legacy global・`ConnectionRegistry`・Capability runtime へ反映 |
+
+`AI_CONFIG` / `SYSTEM_CONFIG` / `LLM_CONNECTIONS` / `LLM_CAPABILITY_OVERRIDES`
+プロパティは deepcopy を返すので、戻り値を書き換えてもキャッシュは汚れない。
+
+> `RootSettings` は `BUTLY_*` env を宣言しているが、設定値は init kwargs で渡されるため
+> **env による上書きは現状効かない**（pydantic-settings の `init > env` 優先順位のため）。
 
 ---
 
@@ -389,9 +448,12 @@ AIアシスタントのコアエンジン群。
   - `get_glossary()` — glossary.yaml からアクティブなエントリを `- term: definition` 形式で返す
   - `get_glossary_raw()` — glossary.yaml を dict で返す（UI/API 向け）
   - `save_glossary(data)` — glossary.yaml を書き出す
-  - `get_mid_term_text_content()` — mid_term.txt を上限文字数でカットして返す
+  - `get_raw_memory()` — `raw_memory_cache.txt`（Sleeptime が再生成する RAW キャッシュ）を返す。チャットのホットパスで JSON を走査しない
   - `get_mid_term_digest()` — mid_term_digest.txt（エピソード付きダイジェスト）を返す
-  - `get_mid_term_relationship()` — mid_term_relationship.txt（関係性グラフ）を返す
+  - `get_recent_snapshot()` — `recent_snapshot.txt`（近況スナップショット）を返す。旧 `mid_term_relationship.txt` へフォールバック
+  - `get_mid_term_relationship()` — `get_recent_snapshot()` の後方互換エイリアス
+  - `get_key_memory()` / `get_key_memory_entries()` / `get_key_memory_low()` — 根幹記憶をテキスト / 構造化 / 低詳細度で返す
+  - `get_agent_profile()` / `get_user_profile()` — config.json のプロフィールを返す
   - `get_session_digest()` — `session_digests/*.txt` を相対時刻ヘッダー（例: `--- 約30分前 ---`）付きで結合して返す。旧 `session_digest.txt` も互換読み取り
   - `load_recent_sessions(limit)` — short_term_json から直近 N 件の会話を返す
   - `save_single_turn(user_msg, ai_msg, meta=None, created_at=None)` — 会話を short_term_json に保存。`meta`（話者帰属: person_id / display_name / lane / source / channel_key）指定時は user メッセージに構造化メタデータとして刻む。`created_at` 指定時は元日時を保持し、同一日時の重複は連番ファイル名で上書きを防ぐ
@@ -521,6 +583,75 @@ ADB over TCP で Fire TV を制御するモジュール。ADB 未インストー
 - `send_key(keycode)` — キー入力送信
 - `launch_app(package_name)` — アプリ起動
 - `KEYCODES` / `APPS` — キーコードとアプリのマッピング辞書
+
+---
+
+### `butly_core/core/raw_memory_reader.py`
+`2_knowledgeized/` の会話 JSON から中期記憶 RAW キャッシュを再構築する。
+チャット時は `raw_memory_cache.txt` を 1 ファイル読むだけになる。
+
+- `collect_raw_sessions(instance_path, max_tokens=4096)` — ファイル名（`session_YYYYMMDD_HHMMSS` / `session_YYMMDD_HHMMSS` / `session_HHMMSS` + 親ディレクトリ日付）からソートキーを起こし、**新しい順にファイル単位**でトークン上限まで収集
+- `format_sessions(...)` — 話者ラベル（`core/turn_meta.py`）を解決してテキスト化。複数話者セッションでは実名ラベルを使う
+- `build_raw_memory_cache(instance_path, max_tokens, injection_format, agent_name, user_name, locale)` — `raw_memory_cache.txt` を**全上書き**生成
+- `CACHE_FILENAME` — `"raw_memory_cache.txt"`
+
+### `butly_core/core/tokenizer.py`
+- `count_tokens(text)` — tiktoken `cl100k_base` によるトークン数。OpenAI 以外では近似値（±10% 程度）として使う
+
+### `butly_core/core/key_memory.py`
+Key Memory（`Key_Memory.yaml`）の読み書き・LLM 形式変換・提案の適用。
+
+- `load_yaml(path)` / `save_yaml(entries, path)` — atomic write 経由
+- `next_id(entries)` — ID 採番
+- `yaml_to_text(entries, mode="high")` — プロンプト注入用テキスト（`context_levels` の詳細度に対応）
+- `yaml_to_llm_format(entries)` — 提案生成用の入力形式
+- `parse_proposals(llm_output, entries)` / `resolve_entry_id(entries, target, content)` / `apply_proposal(proposal, yaml_path)`
+- `load_proposals(instance_path)` / `save_proposals(proposals, instance_path)`
+
+### `butly_core/core/card_content.py`
+ナレッジカードの canonical content と content hash（Stage 3 レビューキューの版識別子）。
+
+- hash 対象は **title / summary / episode / tags / category / source_date のみ**（固定順）。
+  type / importance / usage / embedding / pin / archive は hash にも prompt にも含めない
+- `canonical_card_content(card)` / `compute_content_hash(card)`
+- `coerce_card_text(value)` / `coerce_card_fields(card)` — 型ゆらぎの正規化
+- `utc_now_stamp()` / `format_maturation_time(dt)` / `normalize_maturation_time(value, fallback)`
+- `CardContentError` — 正規化不能な入力
+
+### `butly_core/core/memory_nodes.py`
+Stage 3 のレポジトリ層。`memory_nodes` / `memory_node_sources` /
+`memory_maturation_runs` / `memory_maturation_run_cards` を扱う。
+enum は Python 側で validation する。
+
+- allow-list: `NODE_KINDS`（preference / fact / habit / other）、`NODE_STATUSES`（candidate / active / uncertain / superseded）、`SOURCE_RELATIONS`（supports / contradicts / context）、`RUN_STATUSES`、`RUN_CARD_STATUSES`
+- `normalize_kind()` / `validate_status()` / `validate_relation()` / `validate_run_card_status()`
+- module-level の `_op_*` 関数 — SQL 本体。connection を受け取り **commit しない**
+- `MemoryNodeRepository` — 従来互換。呼び出しごとに接続し即 commit
+- `MaturationUnitOfWork` — 1 connection を所有し途中 commit しない。node/source 更新・run counters・カード版 stamp・run 完了を**同一 transaction** で確定する
+
+### `butly_core/core/knowledge_maturation.py`
+Stage 3 Knowledge Maturation のオーケストレーション（`ButlySleeptime` から呼ばれる）。
+
+- `stage3_process_lock(instance_path)` — instance 単位の non-blocking flock
+- `preflight_backfill_hashes(db_path)` — 非アーカイブ NULL hash の自己修復 backfill。失敗すれば run 失敗
+- `select_queue_cards(...)` — content hash 式レビューキュー。`last_matured_content_hash` が NULL または `content_hash` と不一致のカードを `maturation_queued_at` 昇順 FIFO で選ぶ
+- `count_queue_backlog(db_path)` — 残キュー件数
+- `select_context_nodes(...)` — 既存 node 文脈の語彙スコープ化
+- `build_review_prompt(...)` / `parse_review_output(raw)` — 厳密 parse
+- `classify_review_response(...)` — `ok` / `no_changes` / `truncated_response` / `empty_response` / `parse_error` / `provider_error`
+- `check_reviewed_card_ids(...)` — 不一致は診断に留め、成功条件にしない
+- `apply_link_existing(...)` / `apply_new_nodes(...)` — 入力外の card/node id を参照する操作は**その操作だけ拒否**して diagnostic へ
+- `mark_uncertain_nodes(...)` / `apply_staleness_decay(...)` — reflection（既定 OFF）
+- `collect_promotion_proposals(...)` / `write_promotion_proposals_file(...)` — `memory_node_proposals.json`
+- `MaturationPreflightError` / `ReviewParseError`
+
+### `butly_core/core/embedding_check.py`
+埋め込みモデルを差し替えた際の次元不整合を起動時に検出する。
+
+- `record_embedding_meta(db_path, embedding_conf)` / `read_embedding_meta(db_path)` — DB に埋め込みモデルのメタを記録・読み出し
+- `scan_instance_dims(instances_dir)` / `scan_instance_meta(instances_dir)` — 全インスタンスの次元・メタを走査
+- `check_embeddings(...)` — 設定モデルと保存済みベクトルの整合を判定
+- `log_startup_check(...)` — 起動ログへの警告出力（`migrate_embeddings.py --all` を促す）
 
 ---
 
@@ -1019,6 +1150,35 @@ localized prompt:
 
 ---
 
+## scripts/
+
+build・契約生成・push 前チェックのスクリプト群。
+
+| ファイル | 役割 |
+|---|---|
+| `check_before_push.sh` | **push 前チェックの唯一の正**。compileall → flake8 fatal(`E9,F63,F7,F82`) → `pytest -m "not integration"` → `pip check` → frontend（生成 client の差分検出 / lint / typecheck / test / build / `cargo fmt --check`）。pnpm や cargo が無い環境では該当ステップを SKIP と明示して警告する |
+| `generate_openapi.sh` | frontend 契約 artifact の再生成入口。`--check` で OpenAPI の差分検出のみ（CI 用） |
+| `generate_openapi.py` | `/api/v1` の OpenAPI 3.1 snapshot（`openapi/butly.openapi.json`）を生成 |
+| `generate_sse_fixture.py` | SSE parser contract fixture（`openapi/sse_fixtures/*.sse`）を生成。frontend の手書き parser と契約を共有する正本 |
+| `build_backend_sidecar.py` | PyInstaller で FastAPI sidecar を build し Tauri の配置へコピー。one-folder（既定）/ `--onefile`。**bundle に `.env` / 実 user config / instances が混入していないか検査し、見つかれば失敗させる** |
+| `smoke_test_sidecar.py` | build 済み sidecar の起動確認（listening JSON、無認証 `/health` 200、token なし `/ready` 401、graceful shutdown、起動時間記録）。Windows CI で Tauri build の前に実行する |
+
+`pre-push` フックで `check_before_push.sh` が走る。使うには一度
+`git config core.hooksPath .githooks`。
+
+---
+
+## packaging/
+
+| パス | 役割 |
+|---|---|
+| `packaging/pyinstaller/butly-backend.spec` | FastAPI sidecar の PyInstaller spec |
+| `packaging/pyinstaller/sidecar_entry.py` | sidecar の entry script |
+
+詳細は [Desktop sidecar 仕様](desktop_sidecar.ja.md)。
+
+---
+
 ## docs/
 
 | パス | 役割 |
@@ -1029,6 +1189,7 @@ localized prompt:
 | `docs/history/` | プロジェクト状況のスナップショット・更新履歴 |
 | `docs/planning/active/` | 未完了の実装作業が残る計画書 |
 | `docs/planning/archived/` | 実装済みで設計履歴として保管する計画書 |
+| `docs/Old/` | 凍結ドキュメント。後継に置き換わった旧正本を更新せず保管する |
 
 アーカイブ済み計画は現在の挙動の正ではありません。現行コード・テスト・
 セットアップ資料を優先してください。
@@ -1052,8 +1213,8 @@ localized prompt:
 ③ 現在時刻（Chronos.get_system_note）
 ④ GLOSSARY（共通言語辞書 / 意味記憶） ← glossary.yaml のアクティブエントリ
 ⑤ [mid tier 以上] mid_term 記憶 ← 2 モードあり:
-   - raw モード: mid_term.txt をそのまま
-   - summary モード: mid_term_digest.txt + mid_term_relationship.txt
+   - summary モード（既定）: mid_term_digest.txt + recent_snapshot.txt
+   - raw モード: raw_memory_cache.txt（2_knowledgeized から再構築した会話原文）
 ⑥ [need 有り時のみ・tier 非依存] RAG 検索結果  ← MemoryProbe の candidates から構築
 ⑦ session_digest.txt        ← 直近の会話の会話圧縮ログ
 ⑧ tier 情報 + topic
@@ -1081,5 +1242,5 @@ RAG（⑥）は tier と独立。need が設定されている時のみ、reflex
 **mid_term のモード分岐** (`SYSTEM_CONFIG.memory.use_summarized_mid_term`):
 | モード | 使用ファイル | 説明 |
 |---|---|---|
-| `raw`（デフォルト） | `mid_term.txt` | 生の会話要約テキストをそのまま使用 |
-| `summary` | `mid_term_digest.txt` + `mid_term_relationship.txt` | Sleeptime が生成した構造化ダイジェスト + 関係性スナップショット |
+| `True` = summary（**デフォルト**） | `mid_term_digest.txt` + `recent_snapshot.txt` | Sleeptime が生成した構造化ダイジェスト + 近況スナップショット。両方空なら raw へフォールバック（`mid_term_mode="raw_fallback"`） |
+| `False` = raw | `raw_memory_cache.txt` | `2_knowledgeized/` から `max_raw_tokens`（既定 4096）まで再構築した会話原文 |

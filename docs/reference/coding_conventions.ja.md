@@ -18,7 +18,7 @@
 - デバッグログ・テレメトリの保存失敗が応答に影響してはいけない場合（`ChatService` の debug_logs 等）。
 
 ### 既存コード
-- 2026-05 時点で `except Exception:` は約 168 箇所存在。一括置換は予定なし。**触る箇所だけ漸進的に**直す方針。
+- 2026-08 時点で `butly_core/` + `app.py` + `sleeptime.py` に `except Exception` が約 217 箇所存在（2026-05 は約 168）。一括置換は予定なし。**触る箇所だけ漸進的に**直す方針。
 
 ## ファイル書き込み
 
@@ -27,12 +27,15 @@
 - インスタンス新規作成時の単発書き込み（`InstanceManager.create_instance`）は対象外。失敗しても「インスタンス未作成」状態でリトライ可能。
 - デバッグ・一時ログ（`ChatService` の `latest.json` など）は判断で対象外。ローテーション付きで冗長・再構築可能なため。
 
-### アトミック書き込み必須箇所（2026-05 時点）
+### アトミック書き込み必須箇所（2026-08 時点）
 - `butly_core/core/memory.py` — glossary、セッションターン JSON、session digest
 - `butly_core/core/key_memory.py` — `Key_Memory.yaml`、提案 JSON
 - `butly_core/core/gatekeeper/session_state.py` — `session_state.json`（毎ターン書き込み）
 - `butly_core/core/instance_manager.py` — `config.json` の更新、`system_instruction.txt` の更新、rename 時の波及更新
 - `butly_core/search/usage_tracker.py` — `search_usage.json`
+- `butly_core/llm/capabilities.py` — `llm_capabilities.json`（Capability の観測キャッシュ）
+- `routers/settings.py` — `system_config.json`（legacy UI 設定）
+- `butly_core/io_utils.py` の `upsert_env_var()` / `remove_env_vars()` — `.env`（秘密ファイルなので権限も絞る）
 
 ## 型ヒント
 
@@ -42,8 +45,10 @@
 
 ## 設定参照
 
-- 新規コードでは `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG` を直接参照しない。Phase 1 の間は既存コード互換のため残すが、新規・改修コードは `butly_core.settings.get_settings()` を使う。
+- 新規コードでは `butly_core.config.AI_CONFIG` / `SYSTEM_CONFIG` を直接参照しない。互換シムとして残しているが、新規・改修コードは `butly_core.settings.get_settings()` を使う。
+- 設定値の既定は `butly_core/settings/defaults.py` が正。マジックナンバーをコード側に散らさない。
 - テストで設定を差し替える場合は `override_settings()` または `get_settings.cache_clear()` / `clear_settings_cache()` を使う。legacy global の直接 mutation は段階移行まで既存テストの互換用途に限定する。
+- `BUTLY_*` 環境変数による上書きは**現状効かない**（[設定レイヤー](configuration.ja.md) §4）。env で切り替える前提のコードを書かない。
 
 ## コメント
 
@@ -56,3 +61,10 @@
 - `print("[Module] ...")` はトップレベルの起動・終了・単発イベントなら許容。
 - ホットパス内、もしくはレベルフィルタリングが有用な箇所（ターン毎の診断、gatekeeper のトレース、プロバイダー呼び出し等）は Python の `logging` を使う。
 - 新規モジュールは最初から `logging` を推奨。既存の `print` ベースのモジュールは触るまで放置可。
+
+## ドキュメント
+
+- 振る舞いを変えたら、対応する `docs/reference/` を同じ PR で更新する。手順が変わるなら `docs/guides/` も。
+- 日本語 `*.ja.md` と英語 `*.md` はペア。両方更新が理想、最低でも `*.ja.md`。
+- 数値・キー名を書くときは `defaults.py` と突き合わせる。ズレたらコード側が正。
+- 役目を終えた文書は削除せず `docs/Old/` へ移し、凍結バナーと後継へのリンクを付ける。

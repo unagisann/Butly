@@ -15,7 +15,7 @@ The `Gatekeeper` class acts as a facade that orchestrates each component.
 |---|---|---|
 | `ContextClassifier` | `context_classifier.py` | Has LLM output 3 scores (`rc`/`ew`/`cn`); Python side determines reflex or mid |
 | `StateUpdater` | `state_updater.py` | Generates state_delta (diff) from user utterance |
-| `MemoryProbe` | `memory_probe.py` | Fact-based memory retrieval without LLM calls (vector search + glossary match) |
+| `MemoryProbe` | `memory_probe.py` | Fact-based memory retrieval without LLM calls (candidate search per `search_mode` + glossary match). **Running retrieval** and **deciding injection** are separate concerns |
 | `MemoryBlockBuilder` | `memory_builder.py` | Builds memory block dict per tier and passes it to Brain |
 
 Tier is `reflex` or `mid` only. RAG injection is decided independently by `need` (derived from MemoryProbe), not by tier.
@@ -28,8 +28,12 @@ User utterance
 [A] ContextClassifier.classify()   ← LLM call (~1s)
 [B] MemoryProbe.probe()            ← No LLM call (~100ms)
     ├─ Layer 1.5: Glossary Match — ALWAYS runs (regex-only, ~ms)
-    ├─ Layer 1:   Quick Vector Search — gated by need_intent ∈ {past_fact, relationship}
-    └─ Layer 2:   Deep Search — only when Layer 1 missed AND (need_intent=past_fact OR past-reference pattern)
+    ├─ Layer 1:   Quick Retrieval — ALWAYS runs when retrieval_execution="always" (the default)
+    │              (vector / hybrid / dual_query / hybrid_evidence_fusion per search_mode)
+    │              "intent_gated" restores the old behavior: need_intent ∈ {past_fact, relationship}
+    └─ Layer 2:   Deep Search — only when Layer 1 missed AND the result could be injected
+                   (need_intent=past_fact, a past-reference pattern, or injection_policy in
+                    {retrieval_assisted, candidates}). Double-gated because it costs an LLM call
   ↓
 Gatekeeper.classify() merges results + decides final need
   ↓
@@ -42,6 +46,16 @@ session_state.apply_delta() → carried to NEXT turn's context
 ```
 
 StateUpdater runs **in parallel with response generation** via `asyncio.gather()` (buffered) or `asyncio.create_task()` (streaming), keeping it off the critical path. The current turn's `topic` uses session_state's previous value (1-turn lag, acceptable).
+
+**Running retrieval is not the same as injecting it** (`SYSTEM_CONFIG["memory_probe"]`):
+
+| Key | Default | Values |
+|---|---|---|
+| `retrieval_execution` | `always` | `always` = search every turn regardless of classifier intent / `intent_gated` = the old behavior |
+| `injection_policy` | `intent_gated` | `intent_gated` = decide injection from `need_intent` (old behavior) / `retrieval_assisted` = even when the classifier says null, promote to an injection candidate if **vector and BM25 both back the same card** (`retrieval_source="both"`) and return `retrieval.need_hint="past_fact"` (hybrid only) / `candidates` = inject whenever candidates exist, ignoring the classifier |
+
+Because retrieval runs every turn, `memory_probe.layers.vector` diagnostics are populated
+even on turns where nothing was injected. Use `need` to tell whether injection happened.
 
 Glossary scan is ungated because it is regex-only and ~ms; running it every turn keeps proper-noun / alias recognition stable across all `need_intent` values (including `null`).
 
@@ -72,7 +86,7 @@ Glossary scan is ungated because it is regex-only and ~ms; running it every turn
 - **Brain instance** (`brain`): For vector search against knowledge DB. When `None`, vector / deep are skipped.
 - **Memory manager** (`memory_manager`): For glossary lookup. When `None`, glossary is also skipped.
 - **history_msgs**: For glossary history scanning (`scan_depth` turns).
-- **need_intent**: Gating signal — `null` skips vector/deep but still runs glossary.
+- **need_intent**: The intent used for the injection decision. It also gates Layer 1 execution when `retrieval_execution="intent_gated"`.
 - **recent_headlines**: Headlines for `_check_headline_match` (used in Layer 2 trigger evaluation).
 
 ---
@@ -153,10 +167,10 @@ ContextClassifier emits a `need_intent` field alongside the tier scoring:
 
 | need_intent | Meaning | MemoryProbe behavior |
 |---|---|---|
-| `past_fact` | User refers to a specific past event / decision / conversation | Layer 1 (vector) + 1.5 (glossary) + conditional Layer 2 |
-| `glossary` | User asks about a term or proper noun definition | Layer 1.5 only (vector skipped) |
-| `relationship` | User asks about ongoing relationship / mood / habits | Layer 1 + 1.5 + conditional Layer 2 |
-| `null` | No long-term memory needed (greetings, small talk, forward design) | **Only Layer 1.5 (glossary) runs**; vector / deep skipped (status reflects glossary outcome) |
+| `past_fact` | User refers to a specific past event / decision / conversation | Layer 1 + 1.5 + conditional Layer 2. Injected |
+| `glossary` | User asks about a term or proper noun definition | Layer 1.5 is injected. Layer 1 still runs by default but is not injected |
+| `relationship` | User asks about ongoing relationship / mood / habits | Layer 1 + 1.5 + conditional Layer 2. Injected |
+| `null` | No long-term memory needed (greetings, small talk, forward design) | Layer 1.5 **and Layer 1** run under the default `retrieval_execution="always"`, but nothing is injected under `injection_policy="intent_gated"`. Under `intent_gated` execution, vector / deep are skipped |
 
 Final `need` decision:
 - `need_intent == null`                            → `need = null` (LLM said "not needed")
@@ -232,7 +246,7 @@ state_delta = {
 
 ## 5. Streaming Response (SSE)
 
-The `POST /chat/stream` endpoint returns Server-Sent Events for incremental delivery. Aimed at reducing perceived latency (TTFB).
+The typed `POST /api/v1/chat/stream` (official desktop UI) and the legacy `POST /chat/stream` (Streamlit compatibility) both return Server-Sent Events for incremental delivery, aimed at reducing perceived latency (TTFB). Both go through the same `ChatService.execute_stream()`.
 
 ### Event format
 

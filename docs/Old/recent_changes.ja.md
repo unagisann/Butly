@@ -1,5 +1,9 @@
 # Recent Changes
 
+> ⚠️ **凍結済み（2026-05-24 時点のスナップショット）。現行仕様の正ではありません。**
+> 現行の情報はルート [README.ja.md](../../README.ja.md) と [docs/reference/](../reference/) を参照してください。
+> 経緯は [Old の説明](README.ja.md) を参照。
+
 🌐 **日本語** | [English](recent_changes.md)
 
 ## モデルルーティング / Streaming ターンカウント修正 (2026-05-24)

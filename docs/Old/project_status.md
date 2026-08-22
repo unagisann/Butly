@@ -1,5 +1,9 @@
 # Project Status: Butly AI Agent Platform
 
+> ⚠️ **Frozen snapshot (2026-05-24). Not the source of truth.**
+> For current information see the root [README.md](../../README.md) and [docs/reference/](../reference/).
+> See [about Old](README.md) for context.
+
 🌐 [日本語](project_status.ja.md) | **English**
 
 > Last updated: 2026-05-24

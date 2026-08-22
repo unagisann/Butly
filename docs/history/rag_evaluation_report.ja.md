@@ -107,14 +107,14 @@ Colab上の実行手順や試行履歴を再掲するものではない。
 
 ```mermaid
 flowchart LR
-    Q[質問] --> X{検索を実行するか<br/>retrieval_execution}
-    X --> S[候補検索<br/>vector / BM25 / hybrid]
-    S --> R[候補の再順位付け<br/>Evidence rerank / Fusion]
-    R --> I{回答へ注入するか<br/>injection_policy}
-    I --> A[回答モデル]
-    A --> O[公式互換スコア]
-    A --> J[Semantic Judge]
-    R --> K[Recall@k / Hit@k]
+    Q["質問"] --> X{"検索を実行するか<br/>retrieval_execution"}
+    X --> S["候補検索<br/>vector / BM25 / hybrid"]
+    S --> R["候補の再順位付け<br/>Evidence rerank / Fusion"]
+    R --> I{"回答へ注入するか<br/>injection_policy"}
+    I --> A["回答モデル"]
+    A --> O["公式互換スコア"]
+    A --> J["Semantic Judge"]
+    R --> K["Recall@k / Hit@k"]
 ```
 
 検索順位の改善は`Recall@k`、最終回答の改善は公式互換スコアとSemantic Judgeで確認する。

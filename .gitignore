@@ -65,7 +65,10 @@ Thumbs.db
 housekeeper.log
 *.bak
 build_pyinstaller/
-old/
+# ルート直下の作業用 old/ だけを無視する。docs/Old/（凍結ドキュメント）は追跡する
+# — Windows は core.ignorecase=true なので、無印 `old/` だと `docs/Old/` まで巻き込む。
+/old/
+!/docs/Old/
 old_migration_backup/
 server.spec
 analysis.txt
