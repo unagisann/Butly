@@ -505,6 +505,23 @@ the run directory or dataset was moved.
 Resuming a reuse run refuses to execute if its pre-completed memory checkpoint
 is missing or incomplete, preventing accidental Replay/Sleeptime duplication.
 
+For a reader-ceiling control, add `--qa-memory-mode oracle`. This evaluation-only
+mode disables all normal memory/retrieval sources and injects only the original
+turns listed in each question's `evidence` field (never the gold answer). It
+requires independent QA, normalizes known legacy evidence-ID spellings, and
+records unresolved/malformed annotations without guessing replacement turns. A
+question with annotations but no resolvable turn fails. The mode and resolved
+evidence metadata remain in the run artifacts. It is intentionally CLI-only.
+
+```bash
+python -m evals.locomo.cli rerun-qa \
+  --source-run ./eval_runs/<independent-source-run-id> \
+  --run-id <oracle-run-id> \
+  --all-questions \
+  --qa-memory-mode oracle \
+  --profile /path/to/chat-and-judge-profile.yaml
+```
+
 ```bash
 # continue an interrupted run (skips completed sessions and questions)
 python -m evals.locomo.cli resume --run-dir ./eval_runs/<run-id>

@@ -139,6 +139,7 @@ async def rerun_qa_from_memory(
     question_limit: Optional[int] = None,
     all_questions: bool = False,
     qa_mode: str = "independent",
+    qa_memory_mode: str = "normal",
     locale: Optional[str] = None,
     model_name: Optional[str] = None,
     connection: Optional[str] = None,
@@ -201,6 +202,7 @@ async def rerun_qa_from_memory(
         sample_limit=None if selected_sample_ids else source_config.sample_limit,
         question_limit=resolved_question_limit,
         qa_mode=qa_mode,
+        qa_memory_mode=qa_memory_mode,
         # A retrieval-prep source is a valid canonical post-Sleeptime memory
         # baseline, but rerun-qa must always execute the full QA workflow.
         workflow="full",
@@ -344,7 +346,7 @@ async def _execute(
             f"run={workspace.run_id}; samples={len(conversations)}, "
             f"sessions={session_count}, questions={question_count}, "
             f"workflow={config.workflow}, qa_mode={config.qa_mode}, "
-            f"locale={config.locale}"
+            f"qa_memory_mode={config.qa_memory_mode}, locale={config.locale}"
         ),
     )
     runtime = workspace.create_runtime()
@@ -512,6 +514,8 @@ async def _execute(
                             connection=config.connection,
                             instances_dir=qa_workspace.instances_dir,
                             qa_mode=config.qa_mode,
+                            qa_memory_mode=config.qa_memory_mode,
+                            conversation=conversation,
                         )
                         await qa_runner.run(
                             sample_id=conversation.sample_id,
@@ -926,6 +930,22 @@ def _configure_instance(
             _merge_profile_section(
                 instance_config.setdefault(section, {}), overrides
             )
+    if config.qa_memory_mode == "oracle":
+        # Oracle Reader は評価用の読解上限。通常の分類・検索・保存済み記憶を
+        # 一切参照せず、question.evidence の原文だけを QARunner が注入する。
+        instance_config.setdefault("gatekeeper", {})["enabled"] = False
+        instance_config.setdefault("brain", {})["use_rag"] = False
+        oracle_levels = instance_config.setdefault("context_levels", {})
+        oracle_levels["preset"] = "custom"
+        oracle_levels.setdefault("levels", {}).update(
+            {
+                "key_memory": "off",
+                "glossary": "off",
+                "mid_term": "off",
+                "rag": "high",
+                "session_digest": "off",
+            }
+        )
     brain_config = instance_config.setdefault("brain", {})
     if brain_config.get("search_mode") == "hybrid_evidence_fusion":
         # independent QA clones are deleted after each question.  Keep the

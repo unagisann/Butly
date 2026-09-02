@@ -417,6 +417,31 @@ Colabでは`SOURCE_MEMORY_RUN_ID`へ元run IDを設定し、`RUN_ID`を新しい
 空文字のままなら通常のReplay → Sleeptime → QAを行う。sample/session範囲は元runの
 カード集合に固定され、question範囲だけを変更できる。
 
+### Oracle Reader（読解上限）
+
+`rerun-qa --qa-memory-mode oracle`は、検索・カード・RAW bundle・中期記憶・
+Key Memory・active node・glossaryを使わず、各設問の`question.evidence`が指す
+LoCoMo原文ターンだけを会話日時・話者・dialog ID付きで注入する評価専用モードである。
+gold answerは注入しない。通常runと同じ回答用System Instruction、chat model、
+公式互換スコア、任意のSemantic Judgeを使うため、通常RAGとの差は主に
+「正しい根拠を渡した後のreader能力」として解釈できる。
+
+```bash
+python -m evals.locomo.cli rerun-qa \
+  --source-run ./eval_runs/<independent-source-run-id> \
+  --run-id <oracle-run-id> \
+  --all-questions \
+  --qa-memory-mode oracle \
+  --profile /path/to/chat-and-judge-profile.yaml
+```
+
+Oracle Readerは`qa_mode=independent`専用である。複数IDの連結、`D:11:26`、
+`D30:05`のような公式dataset内の旧表記は正規化する。実在しないIDや不正fragmentは
+推測で別ターンへ置換せず診断へ記録し、解決できた根拠だけを注入する。根拠指定が
+あるのに1件も解決できない問は実行を停止する。`run_config.json`と各`qa_results.jsonl`行の
+`qa_memory_mode`、および`diagnostics.oracle_evidence`に解決ID・ターン数・文字数を
+記録する。これは評価用の対照実験であり、Web UIや通常会話APIには公開しない。
+
 ## Stage 3（memory_nodes）の ON/OFF 評価
 
 Stage 3 の効果測定は「完全に同じ knowledge card 集合の上で node 層の有無だけを

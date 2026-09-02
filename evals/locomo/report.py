@@ -70,6 +70,8 @@ def _render(
         f"- Chat model: {run_config.get('model_name') or 'default'}"
         f" (connection: {run_config.get('connection') or 'default'})",
         f"- QA mode: {run_config.get('qa_mode', 'legacy/unknown')}",
+        f"- QA memory mode: "
+        f"{run_config.get('qa_memory_mode', 'normal/legacy')}",
         f"- Memory source: "
         f"{run_config.get('memory_reused_from_run_id') or 'built in this run'}",
         f"- Prompt locale: {run_config.get('locale') or 'legacy/unknown'}",

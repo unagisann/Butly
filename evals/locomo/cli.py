@@ -8,7 +8,12 @@ import json
 from pathlib import Path
 from typing import Optional, Sequence
 
-from .config import ReplayConfig, SUPPORTED_EVALUATION_LOCALES, WORKFLOWS
+from .config import (
+    QA_MEMORY_MODES,
+    ReplayConfig,
+    SUPPORTED_EVALUATION_LOCALES,
+    WORKFLOWS,
+)
 from .progress import (
     EVALUATION_PROGRESS_MAX,
     JUDGING_PROGRESS_MAX,
@@ -122,6 +127,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("independent", "sequential"),
         default="independent",
         help="QA isolation for the new run (source must be independent)",
+    )
+    rerun_parser.add_argument(
+        "--qa-memory-mode",
+        choices=QA_MEMORY_MODES,
+        default="normal",
+        help=(
+            "normal uses Butly retrieval; oracle injects only the exact "
+            "dataset evidence turns and disables all normal memory retrieval"
+        ),
     )
     rerun_parser.add_argument(
         "--locale",
@@ -293,6 +307,7 @@ def _command_rerun_qa(args: argparse.Namespace) -> int:
             question_limit=args.question_limit,
             all_questions=args.all_questions,
             qa_mode=args.qa_mode,
+            qa_memory_mode=args.qa_memory_mode,
             locale=args.locale,
             model_name=args.model_name,
             connection=args.connection,

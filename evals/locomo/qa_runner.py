@@ -16,7 +16,11 @@ from .artifacts import (
     copy_latest_trace,
     resolve_retrieved_card_ids,
 )
-from .dataset import LocomoQuestion
+from .dataset import LocomoConversation, LocomoQuestion
+from .oracle_reader import (
+    OracleMemoryBlockBuilder,
+    resolve_oracle_evidence,
+)
 from .workspace import EvaluationWorkspace
 
 
@@ -144,6 +148,8 @@ class QARunner:
         workspace: EvaluationWorkspace,
         *,
         qa_mode: Literal["independent", "sequential"],
+        qa_memory_mode: Literal["normal", "oracle"] = "normal",
+        conversation: Optional[LocomoConversation] = None,
         model_name: Optional[str] = None,
         connection: Optional[str] = None,
         instances_dir: Optional[Path] = None,
@@ -160,6 +166,8 @@ class QARunner:
             else workspace.instances_dir
         )
         self.qa_mode = qa_mode
+        self.qa_memory_mode = qa_memory_mode
+        self.conversation = conversation
         self.log_path = workspace.results_dir / "qa_results.jsonl"
         self.retry_log_path = workspace.results_dir / "qa_retries.jsonl"
         self.retry_policy = retry_policy or QARetryPolicy()
@@ -228,6 +236,19 @@ class QARunner:
         instance_name: str,
         question: LocomoQuestion,
     ) -> dict:
+        oracle_evidence = None
+        if self.qa_memory_mode == "oracle":
+            if self.qa_mode != "independent" or self.conversation is None:
+                raise ValueError(
+                    "Oracle Reader requires independent QA and its conversation"
+                )
+            oracle_evidence = resolve_oracle_evidence(
+                self.conversation,
+                question,
+            )
+            self.runtime.mem_block_builder = OracleMemoryBlockBuilder(
+                oracle_evidence
+            )
         request = build_qa_request(
             question=question.question,
             instance_name=instance_name,
@@ -267,6 +288,7 @@ class QARunner:
             "sample_id": sample_id,
             "instance_name": instance_name,
             "qa_mode": self.qa_mode,
+            "qa_memory_mode": self.qa_memory_mode,
             "question_id": question.question_id,
             "question": question.question,
             "expected_answer": question.answer,
@@ -298,6 +320,11 @@ class QARunner:
                 "model": debug_info.get("model"),
                 "connection_id": debug_info.get("connection_id"),
                 "qa_retry": retry,
+                "oracle_evidence": (
+                    oracle_evidence.to_json_dict()
+                    if oracle_evidence is not None
+                    else None
+                ),
             },
             "error": None,
         }

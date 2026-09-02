@@ -29,6 +29,7 @@ def test_replay_config_roundtrip_preserves_all_limits_and_mode(tmp_path):
         session_limit=None,
         question_limit=None,
         qa_mode="independent",
+        qa_memory_mode="oracle",
         workflow="retrieval_prep",
         locale="ja",
         dataset_locale="ja",
@@ -40,6 +41,7 @@ def test_replay_config_roundtrip_preserves_all_limits_and_mode(tmp_path):
     assert restored.session_limit is None
     assert restored.question_limit is None
     assert restored.qa_mode == "independent"
+    assert restored.qa_memory_mode == "oracle"
     assert restored.workflow == "retrieval_prep"
     assert restored.locale == "ja"
     assert restored.dataset_locale == "ja"
@@ -82,6 +84,25 @@ def test_replay_config_rejects_unknown_mode(tmp_path):
             dataset_path=FIXTURE,
             output_dir=tmp_path,
             qa_mode="shared",
+        )
+
+
+def test_replay_config_rejects_unknown_qa_memory_mode(tmp_path):
+    with pytest.raises(ValueError, match="qa_memory_mode"):
+        ReplayConfig(
+            dataset_path=FIXTURE,
+            output_dir=tmp_path,
+            qa_memory_mode="gold_answer",
+        )
+
+
+def test_oracle_reader_requires_independent_qa(tmp_path):
+    with pytest.raises(ValueError, match="requires qa_mode='independent'"):
+        ReplayConfig(
+            dataset_path=FIXTURE,
+            output_dir=tmp_path,
+            qa_mode="sequential",
+            qa_memory_mode="oracle",
         )
 
 
@@ -465,6 +486,8 @@ def test_cli_rerun_qa_flags_are_parsed():
             "--run-id",
             "source-v16-no-time",
             "--all-questions",
+            "--qa-memory-mode",
+            "oracle",
             "--profile",
             "/tmp/no-time.yaml",
             "--locale",
@@ -480,6 +503,7 @@ def test_cli_rerun_qa_flags_are_parsed():
     assert args.question_limit is None
     assert args.profile == Path("/tmp/no-time.yaml")
     assert args.qa_mode == "independent"
+    assert args.qa_memory_mode == "oracle"
 
 
 @pytest.mark.parametrize(
