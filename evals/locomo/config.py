@@ -28,6 +28,7 @@ PROFILE_ROLE_SECTIONS = (
     "memory_probe",
 )
 QA_MODES = ("independent", "sequential")
+QA_MEMORY_MODES = ("normal", "oracle")
 WORKFLOWS = ("full", "retrieval_prep")
 DEFAULT_EVALUATION_LOCALE = "en"
 SUPPORTED_EVALUATION_LOCALES = ("en", "ja")
@@ -57,6 +58,7 @@ class ReplayConfig:
     session_limit: Optional[int] = None
     question_limit: Optional[int] = 1
     qa_mode: str = "independent"
+    qa_memory_mode: str = "normal"
     workflow: str = "full"
     locale: Optional[str] = None
     dataset_locale: Optional[str] = None
@@ -71,6 +73,14 @@ class ReplayConfig:
         _validate_optional_limit("question_limit", self.question_limit)
         if self.qa_mode not in QA_MODES:
             raise ValueError(f"qa_mode must be one of {QA_MODES}")
+        if self.qa_memory_mode not in QA_MEMORY_MODES:
+            raise ValueError(
+                f"qa_memory_mode must be one of {QA_MEMORY_MODES}"
+            )
+        if self.qa_memory_mode == "oracle" and self.qa_mode != "independent":
+            raise ValueError(
+                "qa_memory_mode='oracle' requires qa_mode='independent'"
+            )
         if self.workflow not in WORKFLOWS:
             raise ValueError(f"workflow must be one of {WORKFLOWS}")
         if self.workflow == "retrieval_prep" and self.qa_mode != "independent":
@@ -102,6 +112,7 @@ class ReplayConfig:
             "session_limit": self.session_limit,
             "question_limit": self.question_limit,
             "qa_mode": self.qa_mode,
+            "qa_memory_mode": self.qa_memory_mode,
             "workflow": self.workflow,
             "locale": self.locale,
             "dataset_locale": self.dataset_locale,
@@ -139,6 +150,7 @@ class ReplayConfig:
             session_limit=_optional_int(payload.get("session_limit")),
             question_limit=_optional_int(payload.get("question_limit", 1)),
             qa_mode=str(qa_mode),
+            qa_memory_mode=str(payload.get("qa_memory_mode") or "normal"),
             workflow=str(payload.get("workflow") or "full"),
             locale=_optional_text(payload.get("locale")),
             dataset_locale=_optional_text(payload.get("dataset_locale")),

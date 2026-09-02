@@ -16,6 +16,7 @@
 | [多人数コンテキスト計画](active/group_context_lanes_plan.ja.md) | Phase 1 実装済み（2026-07-08） | Phase 2 以降は未着手（フロントエンド土台・observability との兼ね合いで後回し） |
 | [LoCoMo 長期記憶評価計画](active/locomo_evaluation_plan.ja.md) | Phase 1〜4 完了 | Phase 5（実データ試験）のみ |
 | [記憶ストア正規化計画](active/memory_store_normalization_plan.ja.md) | 未着手（提案段階） | 全 Phase |
+| [RAW 注入の見直し計画](active/raw_injection_plan.ja.md) | v40・Oracle Reader v41 完了（2026-09-02） | provenance・ランキング仮説の介入評価 → Oracle Bundle → 段階別失敗分類 → AMemGym |
 
 ## 実装済み・アーカイブ（`archived/`）
 

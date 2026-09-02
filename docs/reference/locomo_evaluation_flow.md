@@ -433,6 +433,38 @@ In Colab, set `SOURCE_MEMORY_RUN_ID` to the source run ID and choose a new
 The sample/session scope stays fixed to the source card corpus; only question
 scope can change.
 
+### Oracle Reader (gold-evidence-only diagnostic)
+
+`rerun-qa --qa-memory-mode oracle` disables retrieval, cards, RAW bundles,
+mid-term memory, Key Memory, active nodes, and glossary injection. For each
+question it supplies only the original LoCoMo turns named by
+`question.evidence`, including their conversation date, speaker, and dialog ID.
+It never supplies the gold answer. The answer system instruction, chat model,
+official-compatible scorer, and optional semantic judge remain unchanged, so
+the gap from a normal RAG run provides a diagnostic estimate of retrieval and
+normal-injection headroom. It is not a strict reader ceiling: the annotated
+turns may not be sufficient, and useful neighboring turns are intentionally
+excluded.
+
+```bash
+python -m evals.locomo.cli rerun-qa \
+  --source-run ./eval_runs/<independent-source-run-id> \
+  --run-id <oracle-run-id> \
+  --all-questions \
+  --qa-memory-mode oracle \
+  --profile /path/to/chat-and-judge-profile.yaml
+```
+
+Oracle Reader requires `qa_mode=independent`. Legacy official-dataset spellings
+such as joined IDs, `D:11:26`, and `D30:05` are normalized. Nonexistent IDs and
+malformed fragments are recorded rather than guessed; resolvable evidence is
+still injected, while a question with annotations but no resolvable turn is a
+hard error. `run_config.json` and every
+`qa_results.jsonl` row record `qa_memory_mode`; the per-row
+`diagnostics.oracle_evidence` records resolved IDs, turn count, and character
+count. This is an evaluation-only control and is not exposed through the Web UI
+or normal chat API.
+
 ## Stage 3 (memory_nodes) ON/OFF evaluation
 
 Measuring Stage 3 uses a clone A/B that varies **only the node layer over the
@@ -688,6 +720,11 @@ elapsed-time estimate:
 - one answered question is one unit;
 - those units map to 0–90%;
 - scoring completes at 96%, and `summary.md` generation completes at 100%.
+
+The Chat model line in `summary.md` prefers the model and connection actually
+recorded in `qa_results.jsonl` diagnostics. Older runs without those fields
+fall back to explicit `run_config.json` overrides and then the saved profile's
+`chat` section.
 
 Units have equal weight, so wall-clock progress varies with model and session
 length. A resumed run includes checkpointed units in its initial percentage and

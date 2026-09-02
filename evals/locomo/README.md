@@ -48,6 +48,9 @@ stable diagnostic for comparing Butly runs on the same Japanese dataset; it is
 not numerically comparable with the official English LoCoMo score. The method,
 dataset locale, and compatibility flag are recorded in `scores.json` and
 `summary.md`.
+The summary's Chat model line uses the model and connection recorded by the
+actual QA call, falling back to explicit run overrides and then the profile's
+`chat` section for older artifacts.
 
 Butly-specific metrics (RAG trigger rates, retrieved cards, latency
 percentiles, tier / need_intent distributions, classifier fallback / intent
@@ -504,6 +507,25 @@ those roles created the already-reused memory during Sleeptime.
 the run directory or dataset was moved.
 Resuming a reuse run refuses to execute if its pre-completed memory checkpoint
 is missing or incomplete, preventing accidental Replay/Sleeptime duplication.
+
+For a gold-evidence-only control, add `--qa-memory-mode oracle`. This evaluation-only
+mode disables all normal memory/retrieval sources and injects only the original
+turns listed in each question's `evidence` field (never the gold answer). It
+requires independent QA, normalizes known legacy evidence-ID spellings, and
+records unresolved/malformed annotations without guessing replacement turns. A
+question with annotations but no resolvable turn fails. The mode and resolved
+evidence metadata remain in the run artifacts. It is intentionally CLI-only
+and should be treated as a diagnostic baseline, not a strict reader ceiling,
+because annotated turns can omit useful neighboring context.
+
+```bash
+python -m evals.locomo.cli rerun-qa \
+  --source-run ./eval_runs/<independent-source-run-id> \
+  --run-id <oracle-run-id> \
+  --all-questions \
+  --qa-memory-mode oracle \
+  --profile /path/to/chat-and-judge-profile.yaml
+```
 
 ```bash
 # continue an interrupted run (skips completed sessions and questions)

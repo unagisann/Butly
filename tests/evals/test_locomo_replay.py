@@ -329,6 +329,66 @@ def test_replay_sleeptime_qa_and_jsonl_outputs(tmp_path):
     assert progress.qa_completed == 1
 
 
+def test_oracle_reader_injects_only_gold_evidence_turns(tmp_path):
+    fake_provider = FakeProvider()
+    config = ReplayConfig(
+        dataset_path=FIXTURE,
+        output_dir=tmp_path,
+        run_id="oracle-reader-e2e",
+        sample_limit=1,
+        session_limit=2,
+        question_limit=1,
+        qa_mode="independent",
+        qa_memory_mode="oracle",
+    )
+
+    with patch(
+        "butly_core.llm.factory.ProviderFactory.create",
+        return_value=fake_provider,
+    ), patch("sleeptime.time.sleep", return_value=None):
+        result = asyncio.run(run_evaluation(config))
+
+    qa_rows = _read_jsonl(result.workspace.results_dir / "qa_results.jsonl")
+    assert len(qa_rows) == 1
+    assert qa_rows[0]["qa_memory_mode"] == "oracle"
+    assert qa_rows[0]["retrieved_card_ids"] == []
+    oracle_diagnostics = qa_rows[0]["diagnostics"]["oracle_evidence"]
+    assert oracle_diagnostics == {
+        "requested_dialog_ids": ["D1:3"],
+        "resolved_dialog_ids": ["D1:3"],
+        "turn_count": 1,
+        "chars": 232,
+        "missing_dialog_ids": [],
+        "malformed_annotations": [],
+    }
+    assert qa_rows[0]["diagnostics"]["rag"]["source_mode"] == "oracle"
+
+    memory_blocks = fake_provider.generate_contexts[0]["memory_blocks"]
+    assert "[D1:3] Maya: The first class is April 13." in memory_blocks[
+        "rag_context"
+    ]
+    assert "D1:1" not in memory_blocks["rag_context"]
+    assert memory_blocks["short_term"] == []
+    assert memory_blocks["mid_term"] == ""
+    assert memory_blocks["session_digest"] == ""
+    assert memory_blocks["rag_results_raw"] == []
+
+    instance_config = json.loads(
+        (
+            result.workspace.instances_dir
+            / "locomo_synthetic_conv_1"
+            / "config.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert instance_config["gatekeeper"]["enabled"] is False
+    assert instance_config["brain"]["use_rag"] is False
+    levels = instance_config["context_levels"]["levels"]
+    assert levels["key_memory"] == "off"
+    assert levels["mid_term"] == "off"
+    assert levels["session_digest"] == "off"
+    assert levels["rag"] == "high"
+
+
 def test_retrieval_prep_stops_after_sleeptime_and_writes_questions(tmp_path):
     fake_provider = FakeProvider()
     config = ReplayConfig(
