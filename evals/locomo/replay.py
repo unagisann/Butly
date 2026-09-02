@@ -931,7 +931,7 @@ def _configure_instance(
                 instance_config.setdefault(section, {}), overrides
             )
     if config.qa_memory_mode == "oracle":
-        # Oracle Reader は評価用の読解上限。通常の分類・検索・保存済み記憶を
+        # Oracle Reader は評価用のgold-evidence診断。通常の分類・検索・保存済み記憶を
         # 一切参照せず、question.evidence の原文だけを QARunner が注入する。
         instance_config.setdefault("gatekeeper", {})["enabled"] = False
         instance_config.setdefault("brain", {})["use_rag"] = False

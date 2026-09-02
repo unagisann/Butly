@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Optional
 
@@ -10,6 +11,9 @@ from butly_core.io_utils import atomic_write_text
 
 
 WORST_QUESTION_LIMIT = 10
+
+
+logger = logging.getLogger(__name__)
 
 
 class ReportError(ValueError):
@@ -25,6 +29,7 @@ def write_report(run_dir: Path) -> Path:
             f"scores.json not found under {run_path}; run the score command first"
         )
     run_config = _read_json(run_path / "run_config.json") or {}
+    chat_model = _resolve_chat_model(run_path, run_config)
     semantic_scores = _read_json(run_path / "semantic_scores.json")
     if semantic_scores is not None:
         from .semantic_judge_runner import semantic_scores_for_current_inputs
@@ -43,6 +48,7 @@ def write_report(run_dir: Path) -> Path:
             run_config,
             error_count,
             semantic_scores=semantic_scores,
+            chat_model=chat_model,
         ),
     )
     return summary_path
@@ -54,12 +60,24 @@ def _render(
     error_count: int,
     *,
     semantic_scores: Optional[dict] = None,
+    chat_model: Optional[dict[str, Optional[str]]] = None,
 ) -> str:
     official = scores.get("official", {})
     scoring = scores.get("scoring", {})
     auxiliary = scores.get("auxiliary", {})
     butly = scores.get("butly", {})
     questions = scores.get("questions", [])
+    chat_model = chat_model or {}
+    chat_model_name = (
+        chat_model.get("model_name")
+        or run_config.get("model_name")
+        or "unknown"
+    )
+    chat_connection = (
+        chat_model.get("connection")
+        or run_config.get("connection")
+        or "unknown"
+    )
 
     lines = [
         f"# LoCoMo Evaluation Summary — {scores.get('run_id', 'unknown')}",
@@ -67,8 +85,8 @@ def _render(
         f"- Generated: {scores.get('generated_at', 'unknown')}",
         f"- Questions scored: {scores.get('question_count', 0)}",
         f"- Dataset: {run_config.get('dataset_path', 'unknown')}",
-        f"- Chat model: {run_config.get('model_name') or 'default'}"
-        f" (connection: {run_config.get('connection') or 'default'})",
+        f"- Chat model: {chat_model_name}"
+        f" (connection: {chat_connection})",
         f"- QA mode: {run_config.get('qa_mode', 'legacy/unknown')}",
         f"- QA memory mode: "
         f"{run_config.get('qa_memory_mode', 'normal/legacy')}",
@@ -312,6 +330,77 @@ def _read_json(path: Path) -> Optional[dict]:
     if not path.is_file():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _resolve_chat_model(
+    run_path: Path,
+    run_config: dict,
+) -> dict[str, Optional[str]]:
+    """Resolve the model actually recorded by QA, then persisted config/profile."""
+    recorded = _read_recorded_chat_model(
+        run_path / "results" / "qa_results.jsonl"
+    )
+    model_name = recorded.get("model_name") or _optional_text(
+        run_config.get("model_name")
+    )
+    connection = recorded.get("connection") or _optional_text(
+        run_config.get("connection")
+    )
+
+    profile_path = _optional_text(run_config.get("profile_path"))
+    if profile_path and (model_name is None or connection is None):
+        from .config import ProfileError, load_profile
+
+        try:
+            profile = load_profile(Path(profile_path))
+        except (OSError, ProfileError) as exc:
+            logger.warning(
+                "Could not resolve report chat model from profile %s: %s",
+                profile_path,
+                exc,
+            )
+        else:
+            chat = profile.sections.get("chat") or {}
+            model_name = model_name or _optional_text(chat.get("model_name"))
+            connection = connection or _optional_text(chat.get("connection"))
+
+    return {"model_name": model_name, "connection": connection}
+
+
+def _read_recorded_chat_model(path: Path) -> dict[str, Optional[str]]:
+    if not path.is_file():
+        return {"model_name": None, "connection": None}
+    try:
+        with path.open(encoding="utf-8") as stream:
+            for line_number, line in enumerate(stream, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    logger.warning(
+                        "Ignoring invalid QA result at %s:%d: %s",
+                        path,
+                        line_number,
+                        exc,
+                    )
+                    continue
+                diagnostics = row.get("diagnostics") or {}
+                model_name = _optional_text(diagnostics.get("model"))
+                connection = _optional_text(diagnostics.get("connection_id"))
+                if model_name is not None or connection is not None:
+                    return {
+                        "model_name": model_name,
+                        "connection": connection,
+                    }
+    except OSError as exc:
+        logger.warning("Could not read QA model metadata from %s: %s", path, exc)
+    return {"model_name": None, "connection": None}
+
+
+def _optional_text(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _count_lines(path: Path) -> int:

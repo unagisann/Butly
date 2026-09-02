@@ -1,4 +1,4 @@
-"""Evaluation-only reader ceiling using LoCoMo's annotated evidence turns."""
+"""Evaluation-only gold-evidence diagnostic using annotated LoCoMo turns."""
 
 from __future__ import annotations
 

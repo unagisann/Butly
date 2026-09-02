@@ -417,14 +417,15 @@ Colabでは`SOURCE_MEMORY_RUN_ID`へ元run IDを設定し、`RUN_ID`を新しい
 空文字のままなら通常のReplay → Sleeptime → QAを行う。sample/session範囲は元runの
 カード集合に固定され、question範囲だけを変更できる。
 
-### Oracle Reader（読解上限）
+### Oracle Reader（gold-evidence-only診断）
 
 `rerun-qa --qa-memory-mode oracle`は、検索・カード・RAW bundle・中期記憶・
 Key Memory・active node・glossaryを使わず、各設問の`question.evidence`が指す
 LoCoMo原文ターンだけを会話日時・話者・dialog ID付きで注入する評価専用モードである。
 gold answerは注入しない。通常runと同じ回答用System Instruction、chat model、
 公式互換スコア、任意のSemantic Judgeを使うため、通常RAGとの差は主に
-「正しい根拠を渡した後のreader能力」として解釈できる。
+検索・通常注入側の改善余地を診断する基準になる。ただしgold注記が必要十分とは限らず、
+近傍発話も除くため、最適な読解コンテキストの厳密な上限ではない。
 
 ```bash
 python -m evals.locomo.cli rerun-qa \
@@ -680,6 +681,10 @@ Notebook側で出力を読み取る処理は不要。
 - QA 1 question = 1 unit
 - 上記を0〜90%へ換算
 - 採点完了で96%、`summary.md`生成完了で100%
+
+`summary.md`のChat model欄は、実行済み`qa_results.jsonl`の
+`diagnostics.model` / `connection_id`を最優先に表示する。旧runなど記録が無い場合だけ
+`run_config.json`の明示override、次に保存profileの`chat`設定へfallbackする。
 
 各unitは同じ重みなので、モデルやsession長によって実時間とのずれは生じる。
 `resume`ではcheckpoint済みunitを初期完了数へ含めるため、表示は中断前の位置に近い
