@@ -552,6 +552,26 @@ class TestRAGSourceMode:
         assert "旅行したのは二番目" in rag
         assert blocks["rag_raw_reference"]["files"] == ["s1.json", "s2.json"]
 
+    def test_neighbor_radius_is_applied_and_recorded(
+        self, memory_manager, mock_brain, base_dir
+    ):
+        self._write_raw_file(base_dir, "2023-05-08", "s0.json", "前の会話")
+        self._write_raw_file(base_dir, "2023-05-08", "s1.json", "根拠の会話")
+        self._write_raw_file(base_dir, "2023-05-08", "s2.json", "後の会話")
+        blocks = self._build(
+            memory_manager,
+            mock_brain,
+            base_dir,
+            mode="both",
+            mem_extra={"rag_raw_neighbor_radius": 1},
+        )
+
+        raw = blocks["rag_raw_reference"]
+        assert raw["neighbor_radius"] == 1
+        assert raw["files"] == ["s0.json", "s1.json", "s2.json"]
+        assert raw["inferred_neighbor_files"] == ["s0.json", "s2.json"]
+        assert raw["inferred_neighbor_file_count"] == 2
+
 
 # ===================================================================
 # コンテキスト順序制御テスト

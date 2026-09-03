@@ -2244,7 +2244,7 @@ def _render_evaluation_start_form(
                 value=bool(previous_request.get("context_rag", True)),
                 key="evaluation_context_rag",
             )
-        rag_cols = st.columns(4)
+        rag_cols = st.columns(5)
         with rag_cols[0]:
             rag_source_options = ["both", "cards", "raw"]
             rag_source_mode = st.selectbox(
@@ -2275,6 +2275,21 @@ def _render_evaluation_start_form(
                 key="evaluation_rag_raw_max_chars",
             )
         with rag_cols[3]:
+            rag_raw_neighbor_radius = st.number_input(
+                "RAW neighbor ±N",
+                min_value=0,
+                max_value=10,
+                value=int(
+                    previous_request.get("rag_raw_neighbor_radius", 0)
+                ),
+                step=1,
+                help=(
+                    "0で無効。1なら正確なsource_filesを優先した後、"
+                    "同一source_date内の前後1ファイルを追加します。"
+                ),
+                key="evaluation_rag_raw_neighbor_radius",
+            )
+        with rag_cols[4]:
             time_decay_rate = st.number_input(
                 "Time decay rate",
                 min_value=0.0,
@@ -2908,6 +2923,7 @@ def _render_evaluation_start_form(
             "rag_source_mode": rag_source_mode,
             "rag_raw_top_k": int(rag_raw_top_k),
             "rag_raw_max_chars": int(rag_raw_max_chars),
+            "rag_raw_neighbor_radius": int(rag_raw_neighbor_radius),
             "search_mode": search_mode,
             "retrieval_execution": retrieval_execution,
             "injection_policy": injection_policy,
@@ -4619,7 +4635,7 @@ def _render_dialogue_ab_form(
                 value=bool(previous.get("context_rag", True)),
                 key="dialogue_ab_context_rag",
             )
-        rag_cols = st.columns(4)
+        rag_cols = st.columns(5)
         with rag_cols[0]:
             rag_source_mode = st.selectbox(
                 "RAG source",
@@ -4647,6 +4663,19 @@ def _render_dialogue_ab_form(
                 key="dialogue_ab_rag_raw_max_chars",
             )
         with rag_cols[3]:
+            rag_raw_neighbor_radius = st.number_input(
+                "RAW neighbor ±N",
+                min_value=0,
+                max_value=10,
+                value=int(previous.get("rag_raw_neighbor_radius", 0)),
+                step=1,
+                help=(
+                    "0で無効。1なら正確なsource_filesを優先した後、"
+                    "同一source_date内の前後1ファイルを追加します。"
+                ),
+                key="dialogue_ab_rag_raw_neighbor_radius",
+            )
+        with rag_cols[4]:
             time_decay_rate = st.number_input(
                 "Time decay rate",
                 min_value=0.0,
@@ -5080,6 +5109,7 @@ def _render_dialogue_ab_form(
             "rag_source_mode": rag_source_mode,
             "rag_raw_top_k": int(rag_raw_top_k),
             "rag_raw_max_chars": int(rag_raw_max_chars),
+            "rag_raw_neighbor_radius": int(rag_raw_neighbor_radius),
             "stage3_enabled": stage3_enabled,
             "stage3_batch_size": int(stage3_batch_size),
             "stage3_bootstrap_max_cards": int(

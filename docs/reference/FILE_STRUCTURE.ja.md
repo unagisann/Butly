@@ -836,6 +836,7 @@ RAG (`rag_context`) は `need` に連動する独立判定で、tier ではな�
 | `rag_source_mode` | `"cards"` | RAG ブロックに何を注入するか: `"cards"`（カード summary/episode のみ）/ `"raw"`（当時の会話原文抜粋のみ）/ `"both"`（カード + 原文）。解決不能時はカード注入にフォールバック |
 | `rag_raw_max_chars` | 2500 | 原文抜粋の合計文字数上限（ファイル単位の greedy skip。`0` = 無制限）。実測で raw 過多は希釈ノイズになり、6000 より 2500 の方が精度・コストとも良かった。日本語は 1 文字あたりのトークン単価が英語の 3〜5 倍 |
 | `rag_raw_top_k` | 1 | 原文を展開する上位カード数。`1` = 最上位カードの原文のみ（残りはサマリ）＝弱い読み手での希釈・needle-in-haystack を避ける。`0`/負値で全カードの原文を greedy 注入。`source_files` を持たない旧カードや上位と同一チャンクの重複カードはスロットを消費しない |
+| `rag_raw_neighbor_radius` | 0 | 正確な `source_files` と同じ `source_date` にある前後 N ファイルを追加する。`0` = 無効、`1` = 前後1件。正確な provenance を全件先に文字数予算へ入れ、その後に推定近傍を追加する |
 
 - `build_system_instruction_from_blocks(blocks, memory_manager, use_google_search)` — **不変セクション**（system_instruction + Key_Memory）のみを結合して system_instruction 文字列を生成
 - `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / glossary / mid_term / RAG / session_digest / tier 情報 / Google 検索注意書き / Web 検索結果）を結合し、Provider が会話履歴の先頭に user メッセージとして注入する文字列を生成
@@ -858,7 +859,7 @@ RAG 候補カードを、生成元の RAW 会話 JSON へ逆引きしてプロ�
 `rag_source_mode` が raw を要求するときだけ遅延読み込みする。
 
 - `collect_source_refs(candidates, default_instance)` — `(instance, source_date, file_name)` をカードのスコア順で dedup 収集
-- `resolve_raw_reference(candidates, instances_dir, default_instance, max_chars, user_name, agent_name)` — `{"text", "files", "missing", "truncated", "chars"}` または `None` を返す。話者ラベルは `turn_meta` の帰属規則に従う（複数話者対応）
+- `resolve_raw_reference(candidates, instances_dir, default_instance, max_chars, user_name, agent_name, neighbor_radius)` — `{"text", "files", "missing", "truncated", "chars", "inferred_neighbor_files", "neighbor_radius"}` または `None` を返す。話者ラベルは `turn_meta` の帰属規則に従う（複数話者対応）
 
 ---
 

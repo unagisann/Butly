@@ -17,6 +17,7 @@
 | [LoCoMo 長期記憶評価計画](active/locomo_evaluation_plan.ja.md) | Phase 1〜4 完了 | Phase 5（実データ試験）のみ |
 | [記憶ストア正規化計画](active/memory_store_normalization_plan.ja.md) | 未着手（提案段階） | 全 Phase |
 | [RAW 注入の見直し計画](active/raw_injection_plan.ja.md) | v40・Oracle Reader v41 完了（2026-09-02） | provenance・ランキング仮説の介入評価 → Oracle Bundle → 段階別失敗分類 → AMemGym |
+| [記憶検索・RAW注入の本体反映計画](active/memory_retrieval_productization_plan.ja.md) | 計画策定（2026-09-04） | typed設定契約 → Fusion後reranker境界 → 本体API・正式Desktop UI → 観測とrollout |
 
 ## 実装済み・アーカイブ（`archived/`）
 

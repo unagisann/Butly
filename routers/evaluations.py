@@ -66,6 +66,7 @@ class EvaluationStartRequest(BaseModel):
     rag_source_mode: Literal["cards", "raw", "both"] = "both"
     rag_raw_top_k: int = Field(default=1, ge=0)
     rag_raw_max_chars: int = Field(default=2500, ge=0)
+    rag_raw_neighbor_radius: int = Field(default=0, ge=0, le=10)
     stage3_batch_size: int = Field(default=10, ge=1)
     stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)
     # --- 検索設定（検索改修計画 §3.5）。hybrid は eval で先行検証する ---
@@ -148,6 +149,7 @@ class DialogueABStartRequest(BaseModel):
     rag_source_mode: Literal["cards", "raw", "both"] = "both"
     rag_raw_top_k: int = Field(default=1, ge=0)
     rag_raw_max_chars: int = Field(default=2500, ge=0)
+    rag_raw_neighbor_radius: int = Field(default=0, ge=0, le=10)
     stage3_enabled: bool = True
     stage3_batch_size: int = Field(default=10, ge=1)
     stage3_bootstrap_max_cards: int = Field(default=2000, ge=1)

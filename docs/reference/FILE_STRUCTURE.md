@@ -551,11 +551,12 @@ RAG is tier-independent and decided by `need` only.
 | `rag_source_mode` | `"cards"` | what the RAG block injects: `"cards"` (summary/episode only) / `"raw"` (original conversation excerpts only) / `"both"` (cards + excerpts). Falls back to cards when nothing resolves. |
 | `rag_raw_max_chars` | 2500 | total char cap for the excerpts (greedy skip per file; `0` = unlimited). Measured: too much raw dilutes the answer — 2500 beat 6000 on both accuracy and prompt size. Japanese costs 3-5x more tokens per character than English |
 | `rag_raw_top_k` | 1 | how many top cards get raw expansion. `1` = only the single most relevant card's raw (the rest stay as summaries), avoiding needle-in-haystack dilution for weak readers; `0`/negative = every card's raw greedy up to the char cap. Old cards without `source_files` and duplicate same-chunk cards do not consume a slot. |
+| `rag_raw_neighbor_radius` | 0 | adds N files before and after every exact `source_files` reference within the same `source_date`. `0` disables it; `1` adds one neighbor on each side. Exact provenance is admitted to the character budget before inferred neighbors. |
 
 #### `raw_reference.py`
 Resolves RAG candidate cards back to the RAW conversation JSON they were built from (`source_files` → `memory_archive/2_knowledgeized/{source_date}/` with a `1_integrated/` fallback) and renders prompt-ready excerpts — parent-document retrieval: cards act as the search index, the original text carries the facts. Loaded lazily only when `rag_source_mode` requires raw.
 - `collect_source_refs(candidates, default_instance)` — dedup `(instance, source_date, file_name)` refs in card-score order.
-- `resolve_raw_reference(candidates, instances_dir, default_instance, max_chars, user_name, agent_name)` — returns `{"text", "files", "missing", "truncated", "chars"}` or `None`. Speaker labels follow `turn_meta` attribution (multi-speaker aware).
+- `resolve_raw_reference(candidates, instances_dir, default_instance, max_chars, user_name, agent_name, neighbor_radius)` — returns `{"text", "files", "missing", "truncated", "chars", "inferred_neighbor_files", "neighbor_radius"}` or `None`. Speaker labels follow `turn_meta` attribution (multi-speaker aware).
 
 **Glossary controls** (`SYSTEM_CONFIG["glossary"]`):
 | key | default | meaning |

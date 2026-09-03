@@ -122,7 +122,7 @@ inferred value replaces it and a warning is printed.
 |---|---|
 | `agent` | `agent_name` / `user_name` / `locale` |
 | `paths` | `db_name` / `system_instruction` / `key_memory` |
-| `memory` | `short_term_limit` / `use_summarized_mid_term` / `rag_source_mode` / `rag_raw_max_chars` / `rag_raw_top_k` / Stage 3's `knowledge_maturation_*` and `memory_node_*` |
+| `memory` | `short_term_limit` / `use_summarized_mid_term` / `rag_source_mode` / `rag_raw_max_chars` / `rag_raw_top_k` / `rag_raw_neighbor_radius` / Stage 3's `knowledge_maturation_*` and `memory_node_*` |
 | `brain` | `search_mode` / `search_limit` / `time_decay_rate` / `dynamic_threshold` / `readable_instances` / BM25, RRF, and Evidence Fusion parameters |
 | `memory_probe` | `retrieval_execution` / `injection_policy` / `vector_search_limit` / `vector_search_threshold` / `deep_search_enabled` |
 | `gatekeeper` | `tier_rc_threshold` / `tier_cn_threshold` |

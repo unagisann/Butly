@@ -217,7 +217,7 @@ update_targets = {"recent_snapshot": True}   # False で更新をスキップ
 | **スキーマ** | `knowledge_cards` テーブル（下記参照） |
 | **Embedding** | `title + tags + summary` を `AI_CONFIG["embedding"]["model_name"]` で埋め込み → BLOB保存。埋め込み前に **embedding プロファイル**の文書側 prefix を付与する（下記） |
 | **検索** | `ButlyBrain.search_memories()` がクエリ埋め込みとコサイン類似度でリランキング。クエリ側には**クエリ用 prefix** を付与する |
-| **Gatekeeper注入** | `need` が設定された時のみ（tier 非依存）、`MemoryProbe` の candidates から RAG ブロックを構築し LONG-TERM MEMORY として注入。注入ソースは `memory.rag_source_mode` で制御: `"cards"`（既定・カードのみ）/ `"raw"`（当時の会話原文のみ）/ `"both"`（カード + 原文）。raw/both では各カードの `source_files` から RAW 会話 JSON を遅延逆引きし、原文抜粋を合計 `memory.rag_raw_max_chars` 文字（既定 2500、0=無制限、超過ファイルは greedy skip）まで注入する（parent-document retrieval — カード=検索インデックス、事実の根拠=原文）。原文を展開するカード数は `memory.rag_raw_top_k`（既定 1＝最上位カードの原文のみ、残りはサマリ。0/負値で全カード）で絞る。解決不能時はカード注入にフォールバック |
+| **Gatekeeper注入** | `need` が設定された時のみ（tier 非依存）、`MemoryProbe` の candidates から RAG ブロックを構築し LONG-TERM MEMORY として注入。注入ソースは `memory.rag_source_mode` で制御: `"cards"`（既定・カードのみ）/ `"raw"`（当時の会話原文のみ）/ `"both"`（カード + 原文）。raw/both では各カードの `source_files` から RAW 会話 JSON を遅延逆引きし、原文抜粋を合計 `memory.rag_raw_max_chars` 文字（既定 2500、0=無制限、超過ファイルは greedy skip）まで注入する（parent-document retrieval — カード=検索インデックス、事実の根拠=原文）。原文を展開するカード数は `memory.rag_raw_top_k`（既定 1＝最上位カードの原文のみ、残りはサマリ。0/負値で全カード）で絞る。`memory.rag_raw_neighbor_radius`（既定 0＝無効）を 1 以上にすると、同一 `source_date` 内で各 `source_files` の前後 N ファイルも推定近傍として追加する。文字数予算には正確な provenance を全件先に入れ、推定近傍はその後に入れる。解決不能時はカード注入にフォールバック |
 | **後処理** | 処理済み JSON は `memory_archive/2_knowledgeized/{date}/` へ移動 |
 | **バックアップ** | `butly_core/db_backups/` にローテーション保存（世代数: `backup.generations`） |
 
