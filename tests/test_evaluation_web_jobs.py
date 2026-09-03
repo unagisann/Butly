@@ -56,6 +56,7 @@ def _request(**overrides):
         "rag_source_mode": "both",
         "rag_raw_top_k": 1,
         "rag_raw_max_chars": 2500,
+        "rag_raw_neighbor_radius": 0,
         "stage3_batch_size": 10,
         "stage3_bootstrap_max_cards": 2000,
         "role_models": {
@@ -91,6 +92,7 @@ def _dialogue_request(**overrides):
         "rag_source_mode": "both",
         "rag_raw_top_k": 1,
         "rag_raw_max_chars": 2500,
+        "rag_raw_neighbor_radius": 0,
         "stage3_enabled": True,
         "stage3_batch_size": 10,
         "stage3_bootstrap_max_cards": 2000,
@@ -424,12 +426,16 @@ class TestRerankerWebConfig:
             },
         }
 
-    def test_validate_rejects_hybrid_with_reranker(self, tmp_path):
+    def test_validate_accepts_hybrid_with_post_reranker(self, tmp_path):
         request = _request(search_mode="hybrid")
         request["role_models"]["reranker"] = self._reranker_role()
 
-        with pytest.raises(EvaluationJobError, match="requires search_mode=vector"):
-            validate_job_request(request, output_dir=tmp_path)
+        normalized = validate_job_request(request, output_dir=tmp_path)
+
+        assert normalized["search_mode"] == "hybrid"
+        assert normalized["role_models"]["reranker"]["model_name"] == (
+            "TEE/gemma4-31b"
+        )
 
     def test_validate_requires_connection_for_custom_reranker(
         self, tmp_path
@@ -905,6 +911,7 @@ def test_build_profile_matches_colab_stage3_controls():
             run_mode="stage3-on",
             context_mid_term=False,
             time_decay_rate=0.25,
+            rag_raw_neighbor_radius=1,
         )
     )
 
@@ -920,6 +927,7 @@ def test_build_profile_matches_colab_stage3_controls():
     }
     assert profile["context_levels"]["levels"]["mid_term"] == "off"
     assert profile["memory"]["rag_raw_top_k"] == 1
+    assert profile["memory"]["rag_raw_neighbor_radius"] == 1
     assert profile["memory"]["knowledge_maturation_enabled"] is True
     assert profile["sleeptime"]["update_targets"] == {
         "knowledge_maturation": True
@@ -1038,6 +1046,7 @@ class TestSearchSettingsInProfile:
             "bm25_max_df_ratio",
             "evidence_fusion_base_weight",
             "evidence_raw_chunk_chars",
+            "rag_raw_neighbor_radius",
         ):
             request.pop(key, None)
 
@@ -1053,6 +1062,7 @@ class TestSearchSettingsInProfile:
         assert normalized["bm25_max_df_ratio"] == pytest.approx(0.5)
         assert normalized["evidence_fusion_base_weight"] == pytest.approx(0.7)
         assert normalized["evidence_raw_chunk_chars"] == 1800
+        assert normalized["rag_raw_neighbor_radius"] == 0
 
     @pytest.mark.parametrize(
         ("overrides", "message"),
@@ -1073,6 +1083,10 @@ class TestSearchSettingsInProfile:
             (
                 {"evidence_raw_chunk_chars": 199},
                 "evidence_raw_chunk_chars must be between",
+            ),
+            (
+                {"rag_raw_neighbor_radius": 11},
+                "rag_raw_neighbor_radius must be at most 10",
             ),
         ],
     )
@@ -1142,6 +1156,7 @@ class TestDialogueABWebJob:
         assert normalized["vector_search_threshold"] == pytest.approx(0.4)
         assert normalized["deep_search_enabled"] is True
         assert normalized["time_decay_rate"] == pytest.approx(0.003)
+        assert normalized["rag_raw_neighbor_radius"] == 0
 
     def test_profile_uses_japanese_and_shared_base_policy(self):
         profile = build_dialogue_ab_profile_payload(_dialogue_request())
@@ -1156,6 +1171,14 @@ class TestDialogueABWebJob:
             "deep_search_enabled": True,
         }
         assert profile["memory"]["knowledge_maturation_enabled"] is True
+        assert profile["memory"]["rag_raw_neighbor_radius"] == 0
+
+    def test_profile_applies_raw_neighbor_radius(self):
+        profile = build_dialogue_ab_profile_payload(
+            _dialogue_request(rag_raw_neighbor_radius=1)
+        )
+
+        assert profile["memory"]["rag_raw_neighbor_radius"] == 1
 
     def test_profile_applies_configurable_hybrid_search(self):
         profile = build_dialogue_ab_profile_payload(

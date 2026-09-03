@@ -1,9 +1,9 @@
 """Optional reranking for retrieved knowledge-card candidates.
 
-The vector retriever remains the source of candidates.  This module only
+The configured retriever remains the source of candidates. This module only
 reorders a bounded candidate pool with either a local Cross-Encoder or the
 legacy LLM evaluator. It is deliberately fail-open: callers can fall back to
-the original vector order when inference or structured output is unavailable.
+the primary retriever order when inference or structured output is unavailable.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import math
 import re
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from butly_core.core.json_extract import extract_json_str
 from butly_core.llm.factory import ProviderFactory
@@ -28,6 +28,7 @@ DEFAULT_CANDIDATE_LIMIT = 20
 DEFAULT_MAX_CANDIDATE_CHARS = 1600
 DEFAULT_CROSS_ENCODER_BATCH_SIZE = 20
 RERANKER_ENGINES = ("llm", "cross_encoder")
+CandidateTextBuilder = Callable[[dict[str, Any], int], str]
 
 
 @dataclass(frozen=True)
@@ -293,10 +294,16 @@ class RerankerConfig:
 class LLMReranker:
     """Rank a vector candidate pool using strict structured output."""
 
-    def __init__(self, config: RerankerConfig, provider: Any = None) -> None:
+    def __init__(
+        self,
+        config: RerankerConfig,
+        provider: Any = None,
+        candidate_text_builder: Optional[CandidateTextBuilder] = None,
+    ) -> None:
         if config.engine != "llm":
             raise RerankerError("LLMReranker requires engine=llm")
         self.config = config
+        self.candidate_text_builder = candidate_text_builder or _candidate_content
         if provider is None:
             # Direct offline replay may enter without importing the main config
             # module, which is responsible for loading user Connections.
@@ -440,7 +447,7 @@ class LLMReranker:
             labelled.append(
                 {
                     "label": f"c{index:02d}",
-                    "content": _candidate_content(
+                    "content": self.candidate_text_builder(
                         row, self.config.max_candidate_chars
                     ),
                     "row": row,
@@ -490,12 +497,18 @@ def _load_cross_encoder_model(
 class CrossEncoderReranker:
     """Batch-score query/card pairs without generative model calls."""
 
-    def __init__(self, config: RerankerConfig, model: Any = None) -> None:
+    def __init__(
+        self,
+        config: RerankerConfig,
+        model: Any = None,
+        candidate_text_builder: Optional[CandidateTextBuilder] = None,
+    ) -> None:
         if config.engine != "cross_encoder":
             raise RerankerError(
                 "CrossEncoderReranker requires engine=cross_encoder"
             )
         self.config = config
+        self.candidate_text_builder = candidate_text_builder or _candidate_content
         self._loaded = (
             _LoadedCrossEncoder(model=model, lock=threading.Lock())
             if model is not None
@@ -522,7 +535,13 @@ class CrossEncoderReranker:
             raise RerankerError("reranker top_n must be a positive integer")
         top_n = min(top_n, len(candidates))
         pairs = [
-            (query, _candidate_content(row, self.config.max_candidate_chars))
+            (
+                query,
+                self.candidate_text_builder(
+                    row,
+                    self.config.max_candidate_chars,
+                ),
+            )
             for row in candidates
         ]
         started = time.perf_counter()
@@ -593,11 +612,20 @@ class CrossEncoderReranker:
         }
 
 
-def create_reranker(config: RerankerConfig) -> Any:
+def create_reranker(
+    config: RerankerConfig,
+    candidate_text_builder: Optional[CandidateTextBuilder] = None,
+) -> Any:
     """Create the configured reranker while preserving the legacy LLM path."""
     if config.engine == "cross_encoder":
-        return CrossEncoderReranker(config)
-    return LLMReranker(config)
+        return CrossEncoderReranker(
+            config,
+            candidate_text_builder=candidate_text_builder,
+        )
+    return LLMReranker(
+        config,
+        candidate_text_builder=candidate_text_builder,
+    )
 
 
 def _normalize_cross_encoder_scores(raw: Any, expected: int) -> list[float]:

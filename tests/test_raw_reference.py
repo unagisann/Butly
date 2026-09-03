@@ -174,6 +174,84 @@ class TestResolveRawReference:
         assert result["missing"] == []
         assert result["truncated"] is False
         assert result["chars"] == len(result["text"])
+        assert result["neighbor_radius"] == 0
+        assert result["inferred_neighbor_files"] == []
+
+    def test_neighbor_radius_adds_same_date_adjacent_files_after_exact_refs(
+        self, instances_dir
+    ):
+        for index in range(4):
+            _write_raw(
+                instances_dir,
+                "2023-05-08",
+                f"s{index}.json",
+                [{"role": "user", "parts": [f"会話{index}"]}],
+                f"2023-05-08T09:0{index}:00",
+            )
+
+        result = resolve_raw_reference(
+            [_card("a", "2023-05-08", ["s1.json", "s2.json"])],
+            instances_dir,
+            INST,
+            max_chars=6000,
+            neighbor_radius=1,
+        )
+
+        assert result["files"] == [
+            "s0.json",
+            "s1.json",
+            "s2.json",
+            "s3.json",
+        ]
+        assert result["inferred_neighbor_files"] == ["s0.json", "s3.json"]
+        assert result["neighbor_radius"] == 1
+
+    def test_neighbor_budget_keeps_all_exact_refs_before_inferred_files(
+        self, instances_dir
+    ):
+        _write_raw(
+            instances_dir,
+            "2023-05-08",
+            "a0.json",
+            [{"role": "user", "parts": ["近傍" * 1000]}],
+            "2023-05-08T09:00:00",
+        )
+        _write_raw(
+            instances_dir,
+            "2023-05-08",
+            "a1.json",
+            [{"role": "user", "parts": ["正確な根拠A"]}],
+            "2023-05-08T09:01:00",
+        )
+        _write_raw(
+            instances_dir,
+            "2023-06-09",
+            "b1.json",
+            [{"role": "user", "parts": ["正確な根拠B"]}],
+            "2023-06-09T09:01:00",
+        )
+        _write_raw(
+            instances_dir,
+            "2023-06-09",
+            "b2.json",
+            [{"role": "user", "parts": ["別の近傍" * 1000]}],
+            "2023-06-09T09:02:00",
+        )
+
+        result = resolve_raw_reference(
+            [
+                _card("a", "2023-05-08", ["a1.json"]),
+                _card("b", "2023-06-09", ["b1.json"]),
+            ],
+            instances_dir,
+            INST,
+            max_chars=300,
+            neighbor_radius=1,
+        )
+
+        assert result["files"] == ["a1.json", "b1.json"]
+        assert result["inferred_neighbor_files"] == []
+        assert result["truncated"] is True
 
     def test_top_k_injects_only_top_card_raw(self, instances_dir):
         """top_k=1 は最上位カードの原文だけを注入する（他はサマリで渡す想定）"""

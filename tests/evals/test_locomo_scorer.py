@@ -335,6 +335,9 @@ class TestScoreRun:
                             "chars": 500,
                             "truncated": False,
                             "top_k": 1,
+                            "neighbor_radius": 1,
+                            "inferred_neighbor_files": ["s0.json"],
+                            "inferred_neighbor_file_count": 1,
                         },
                     },
                 },
@@ -351,6 +354,9 @@ class TestScoreRun:
                             "files": [],
                             "chars": 0,
                             "truncated": False,
+                            "neighbor_radius": 0,
+                            "inferred_neighbor_files": [],
+                            "inferred_neighbor_file_count": 0,
                         },
                     },
                 },
@@ -368,6 +374,13 @@ class TestScoreRun:
         assert butly["raw_reference_truncated_rate"] == pytest.approx(0.0)
         # file_count は ok の行のみ（fallback_cards は None で除外）→ mean=1.0
         assert butly["raw_reference_files_mean"] == pytest.approx(1.0)
+        assert butly["raw_reference_neighbor_radius_distribution"] == {
+            "0": 1,
+            "1": 1,
+        }
+        assert butly["raw_reference_inferred_neighbor_files_mean"] == pytest.approx(
+            0.5
+        )
 
     def test_raw_reference_metrics_absent_for_cards_mode(self, tmp_path):
         """raw_reference 無し（cards モード・旧 run）でも集計が壊れない"""

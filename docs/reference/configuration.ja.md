@@ -2,7 +2,7 @@
 
 🌐 **日本語** | [English](configuration.md)
 
-> 最終更新: 2026-08-22
+> 最終更新: 2026-09-04
 
 Butly の設定は「**グローバル設定**（全インスタンス共通）」と
 「**インスタンス設定**（ペルソナ単位の上書き）」の 2 段構えです。
@@ -122,7 +122,7 @@ legacy global（`butly_core.config.AI_CONFIG`）の直接 mutation は、
 |---|---|
 | `agent` | `agent_name` / `user_name` / `locale` |
 | `paths` | `db_name` / `system_instruction` / `key_memory` |
-| `memory` | `short_term_limit` / `use_summarized_mid_term` / `rag_source_mode` / `rag_raw_max_chars` / `rag_raw_top_k` / Stage 3 の `knowledge_maturation_*` と `memory_node_*` |
+| `memory` | `short_term_limit` / `use_summarized_mid_term` / `rag_source_mode` / `rag_raw_max_chars` / `rag_raw_top_k` / `rag_raw_neighbor_radius` / Stage 3 の `knowledge_maturation_*` と `memory_node_*` |
 | `brain` | `search_mode` / `search_limit` / `time_decay_rate` / `dynamic_threshold` / `readable_instances` / BM25・RRF・Evidence Fusion のパラメータ |
 | `memory_probe` | `retrieval_execution` / `injection_policy` / `vector_search_limit` / `vector_search_threshold` / `deep_search_enabled` |
 | `gatekeeper` | `tier_rc_threshold` / `tier_cn_threshold` |
@@ -204,9 +204,10 @@ settings チェーンも通りません。
 |---|---|
 | `agent_profile` | `ai_name` / `locale` など。ペルソナの名乗り |
 | `user_profile` | `user_name` / `preferred_call` / `birthday` など |
-| `brain` | `search_limit` / `default_use_google_search` / `readable_instances` / `use_context_cache` |
+| `brain` | `search_limit` / `search_mode` / `evidence_fusion_base_weight` / `evidence_raw_chunk_chars` / `vector_candidates` / `bm25_candidates` / `readable_instances` |
 | `chat` | ロール上書き（`connection` + `model_name`） |
-| `memory` | `use_summarized_mid_term` / Stage 3 パラメータなど |
+| `memory` | `use_summarized_mid_term` / `rag_source_mode` / `rag_raw_max_chars` / `rag_raw_top_k` / `rag_raw_neighbor_radius` / Stage 3 パラメータなど |
+| `memory_probe` | `vector_search_limit` など検索実行・注入上限の上書き |
 | `sleeptime` | `max_digest_chars` / `max_relationship_chars` / `relationship_update_interval_days` / `update_targets` |
 | `gatekeeper` | `tier_rc_threshold` / `tier_cn_threshold` |
 | `context_levels` | プロンプト各ブロックの詳細度プリセット（[context_levels 仕様](context_levels.ja.md)） |
@@ -216,6 +217,24 @@ settings チェーンも通りません。
 
 `InstanceManager` が `config.json` / `system_instruction.txt` を書くときは
 `atomic_write_text` を使います（[コーディング規約](coding_conventions.ja.md)）。
+
+### 記憶検索設定API
+
+正式Desktop UIは次のtyped resourceを使い、設定ファイルを直接編集しません。
+
+- `GET/PATCH /api/v1/settings/memory-retrieval` — global override
+- `GET/PATCH /api/v1/instances/{name}/settings/memory-retrieval` — instance override
+
+応答は`defaults`、明示override、`effective`、キーごとの`origins`を分けて返します。
+instance PATCHの`null`は該当キーだけを削除してglobal値の継承へ戻します。`0`は値として
+保持され、`rag_raw_max_chars=0`は無制限、`rag_raw_top_k=0`は全候補を表します。
+
+公開範囲は`search_mode`、最終注入数、Fusion重み・Evidence passage文字数、vector / BM25
+候補数、RAW source・最大文字数・展開カード数・近傍半径です。不正enum、非有限値、範囲外、
+候補数が最終注入数より小さい組み合わせは保存前に422で拒否します。書き込みは既存JSONの
+他セクションを維持するread-modify-write + atomic replaceです。global更新はsettings cacheと
+legacy互換`SYSTEM_CONFIG`も同期し、instance configはチャット開始時に再読込されるため、
+いずれも次のチャットターンから再起動なしで反映されます。
 
 ---
 

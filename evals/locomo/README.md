@@ -171,8 +171,9 @@ conversation/checkpoint persistence, so retrying cannot duplicate a QA turn.
 `memory_probe`, and `context_levels` sections
 (e.g. `rag_source_mode: both` to inject original-conversation excerpts next to
 the RAG cards, `rag_raw_max_chars` to cap them, `rag_raw_top_k: 1` to give only
-the single most relevant card its raw (the rest stay summaries) instead of
-every retrieved card's raw, or `brain.time_decay_rate: 0.0` to disable recency
+the single most relevant card its raw (the rest stay summaries),
+`rag_raw_neighbor_radius: 1` to add the adjacent file on either side of exact
+provenance within the same source date, or `brain.time_decay_rate: 0.0` to disable recency
 weighting for a retrieval ablation) to the evaluation instance config — see
 `profiles/*.example.yaml`.
 

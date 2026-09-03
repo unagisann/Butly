@@ -451,15 +451,24 @@ class MemoryBlockBuilder:
                     "status": "ok",
                     "files": raw_ref["files"],
                     "file_count": len(raw_ref["files"]),
+                    "inferred_neighbor_files": raw_ref.get(
+                        "inferred_neighbor_files", []
+                    ),
+                    "inferred_neighbor_file_count": len(
+                        raw_ref.get("inferred_neighbor_files", [])
+                    ),
                     "missing": raw_ref["missing"],
                     "truncated": raw_ref["truncated"],
                     "chars": raw_ref["chars"],
                     "top_k": raw_ref.get("top_k"),
+                    "max_chars": raw_ref.get("max_chars"),
+                    "neighbor_radius": raw_ref.get("neighbor_radius", 0),
                 }
                 print(
                     f"[Gatekeeper] MemoryBlock: RAG raw reference "
                     f"{len(raw_ref['files'])} files / {raw_ref['chars']} chars "
-                    f"(mode={rag_mode}, top_k={raw_ref.get('top_k')})"
+                    f"(mode={rag_mode}, top_k={raw_ref.get('top_k')}, "
+                    f"neighbor_radius={raw_ref.get('neighbor_radius', 0)})"
                 )
             else:
                 # source_files 無し・ファイル欠落等で解決できない場合はカード注入
@@ -470,9 +479,16 @@ class MemoryBlockBuilder:
                     blocks["rag_raw_reference"] = {
                         "status": "fallback_cards",
                         "files": [],
+                        "inferred_neighbor_files": [],
+                        "inferred_neighbor_file_count": 0,
                         "missing": [],
                         "truncated": False,
                         "chars": 0,
+                        "max_chars": _inst_mem.get(
+                            "rag_raw_max_chars",
+                            _sys_mem.get("rag_raw_max_chars", 2500),
+                        ),
+                        "neighbor_radius": 0,
                     }
                     print(
                         "[Gatekeeper] MemoryBlock: RAW 参照を解決できず"
@@ -1017,6 +1033,14 @@ def _resolve_raw_block(
         top_k = int(top_k)
     except (TypeError, ValueError):
         top_k = 1
+    neighbor_radius = inst_mem.get(
+        "rag_raw_neighbor_radius",
+        sys_mem.get("rag_raw_neighbor_radius", 0),
+    )
+    try:
+        neighbor_radius = max(0, int(neighbor_radius))
+    except (TypeError, ValueError):
+        neighbor_radius = 0
     agent_conf = SYSTEM_CONFIG.get("agent", {})
     conf = override_config or {}
     agent_name = (conf.get("agent_profile") or {}).get("ai_name") or agent_conf.get(
@@ -1038,6 +1062,7 @@ def _resolve_raw_block(
             agent_name=agent_name,
             locale=locale,
             top_k=top_k,
+            neighbor_radius=neighbor_radius,
         )
     except Exception as e:
         print(f"[Gatekeeper] RAW 参照の解決に失敗: {e}")

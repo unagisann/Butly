@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Bot, Clock3, RefreshCw, WifiOff } from "lucide-react";
+import { Bot, Clock3, RefreshCw, Settings2, WifiOff } from "lucide-react";
 
 import type { InstanceSummary } from "../../api/generated";
 import type { ApiTransport } from "../../api/transport";
@@ -12,6 +12,7 @@ import { TraceGraph } from "./TraceGraph";
 import { MessageList } from "./MessageList";
 import { useCapabilities } from "./useCapabilities";
 import { useChatSession } from "./useChatSession";
+import { MemoryRetrievalSettingsDialog } from "../settings/MemoryRetrievalSettingsDialog";
 
 interface ChatPageProps {
   transport: ApiTransport;
@@ -66,6 +67,7 @@ export function ChatPage({
     connectionRevision,
   });
   const [debugEnabled, setDebugEnabled] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const lastInteraction = formatLastInteraction(session.lastInteractionAt, locale);
   const connected = connectionPhase === "connected";
   const debugAvailable = capabilities?.chat_debug.available ?? false;
@@ -107,6 +109,16 @@ export function ChatPage({
             {connected ? null : <WifiOff size={13} aria-hidden="true" />}
             {connected ? t("backend.ready") : t("backend.reconnecting")}
           </span>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            disabled={session.busy || !connected}
+            aria-label={t("settings.open")}
+            title={t("settings.open")}
+          >
+            <Settings2 size={17} aria-hidden="true" />
+          </button>
           <button
             className="icon-button"
             type="button"
@@ -233,6 +245,13 @@ export function ChatPage({
         />
       ) : (
         <div className="composer-skeleton" aria-label={t("backend.connecting")} />
+      )}
+      {settingsOpen && (
+        <MemoryRetrievalSettingsDialog
+          transport={transport}
+          instanceName={instance.name}
+          onClose={() => setSettingsOpen(false)}
+        />
       )}
     </section>
   );

@@ -236,11 +236,13 @@ LINE Messaging API の webhook。`ButlyRuntime` を直接呼ぶため legacy cha
 | `routers/instances.py` | `GET /api/v1/instances`（typed 一覧） / `GET /api/v1/instances/{name}/messages`（typed 履歴 + `last_interaction_at`。cursor pagination は記憶ストア正規化後） |
 | `routers/chat.py` | `POST /api/v1/chat`（non-stream fallback） / `POST /api/v1/chat/stream`（typed SSE: metadata → chunk* → done、失敗時 error 終端）/ request status・cancel。`ButlyRuntime` へ委譲する transport adapter |
 | `routers/preflight.py` | `GET /api/v1/preflight`。active chat / embedding role の Connection、Ollama model list、実 embedding を timeout 付きで検査し、秘密値を除いた結果を返す |
+| `routers/memory_retrieval.py` | 記憶検索設定のグローバル／インスタンス別 `GET`・`PATCH`。実効値・継承元を返し、永続化と検証を typed settings 層へ委譲する |
 | `schemas/common.py` | `ApiError` envelope |
 | `schemas/system.py` | health / readiness / app-info / capabilities の DTO |
 | `schemas/chat.py` | chat / message history / SSE event（discriminated union）/ debug summary / request status の contract schema |
 | `schemas/instances.py` | `InstanceSummary` / `InstanceListResponse` |
 | `schemas/preflight.py` | Connection / embedding preflight の公開 DTO |
+| `schemas/memory_retrieval.py` | 記憶検索設定の値・部分更新・継承元・レスポンス DTO。グローバルの `null` を拒否し、インスタンスの `null` は継承解除として扱う |
 | `schemas/trace.py` | Trace Graph の公開 DTO。Mermaid 文字列と status 別ノード数だけを返し、TraceNode の metadata は載せない（issue #51） |
 
 契約 artifact は `scripts/generate_openapi.sh` で再生成する: OpenAPI snapshot
@@ -267,6 +269,7 @@ JSON endpoint は OpenAPI 生成 client を使い、SSE framing だけを手書�
 | `src/app/` | top-level app shell と ready 後も継続する HTTP reachability state |
 | `src/features/instances/` | instance list / select と履歴切替 |
 | `src/features/chat/` | message、Markdown 描画、composer、画像、引用、stream、cancel / retry、debug panel、Trace Graph |
+| `src/features/settings/` | 記憶検索設定ダイアログ。実効値と継承元を表示し、基本／詳細、RAWの0値、インスタンス別継承を編集 |
 | `src/features/preflight/` | Connection / embedding の部分的 availability 表示と再検査 |
 | `src/i18n/` | 日本語 / 英語の typed UI 辞書と locale provider |
 | `src/styles.css` | responsive 2-pane layout、focus 表示 / reduced-motion を含む UI token |
@@ -324,6 +327,7 @@ pydantic-settings ベースの typed 設定層。**設定値の正はここ**。
 | `connections.py` | `LLMConnection`。id / env 名 / base_url / extra_headers を field_validator で検証 |
 | `instance.py` | `InstanceConfig`。現状は `extra="allow"` のプレースホルダ |
 | `bootstrap.py` | `apply_runtime_settings(data_dir)` — legacy global・`ConnectionRegistry`・Capability runtime へ反映 |
+| `memory_retrieval.py` | 記憶検索10項目のallowlist・既定値・厳格検証・global/instance解決・atomic PATCH・Trace用snapshot。instanceの`null`は該当overrideだけを削除する |
 
 `AI_CONFIG` / `SYSTEM_CONFIG` / `LLM_CONNECTIONS` / `LLM_CAPABILITY_OVERRIDES`
 プロパティは deepcopy を返すので、戻り値を書き換えてもキャッシュは汚れない。
@@ -491,6 +495,7 @@ LLM 呼び出しと RAG 検索のエンジン。Provider に依存しない中�
   - `_dual_query_search_diag(...)` — 元発話とGatekeeper検索文を既定各top15でvector検索し、カードIDで重複排除、等重みRRFで最大25件に融合する。呼び出し元へは要求されたtop-kだけ返し、検索文が無い／同一なら元発話vector順位へフォールバックする
   - `_hybrid_search_diag(...)` — BM25（FTS5/trigram）とベクトルの候補を**全インスタンス分集めてからグローバル順位を付け**、RRF で融合する。返す候補の `score` は **RRF スコア**で、cosine は `vector_score` / `raw_score` に退避する（下流が `score` 降順で並べ直しても融合順位が壊れないようにするため）
   - `_hybrid_evidence_fusion_search_diag(...)` — hybrid top-NをEpisode/RAW MaxP順位と融合する。質問embeddingを一段目と共有し、Evidence障害時はhybrid順位へ戻す
+  - `_finalize_retrieval(...)` — vector / dual query / hybrid / Evidence Fusion 共通のpost-reranker境界。Fusion後候補を渡し、成功時だけ最終順位を採用する。不正出力・例外時はprimary順位へfail-openし、各候補列と実効設定を診断へ残す
   - `_bm25_search_single(spec, instance_name, limit, brain_conf)` — 単一 DB の BM25 候補。索引が無ければ一度だけ生成し、それでも使えなければ空を返す（＝実質 vector へフォールバック）
   - `summarize_conversation(conversation_text, override_config)` — 会話テキストを要約（summary モデル使用）
   - `generate_knowledge_card(text, override_config)` — ナレッジカード JSON を生成（knowledge モデル使用）
@@ -508,8 +513,10 @@ MaxP採点、本文を保持しないSQLite embedding cache。productionはinsta
 任意のMemory Reranker。推奨のCross-EncoderはmMiniLMv2 / GTE multilingualの
 質問・カードペアを1バッチで採点し、任意の関連度しきい値で0〜3枚を選べる。
 比較再現用の旧LLM engineは一時ラベル付きJSONと厳格JSON Schemaを使う。
-どちらも元vector順位を保持し、実行失敗時に安全にvector順位へ戻せる診断情報を返す。
+どちらも入力されたprimary順位を保持し、実行失敗時に安全にその順位へ戻せる診断情報を返す。
 `RerankerConfig`はengine、候補数、文字数上限、batch size、device、しきい値を正規化する。
+候補本文は差し替え可能な`CandidateTextBuilder`境界で構築し、将来のRAW近傍bundle化を
+reranker engineから分離する。
 
 ---
 
@@ -836,6 +843,7 @@ RAG (`rag_context`) は `need` に連動する独立判定で、tier ではな�
 | `rag_source_mode` | `"cards"` | RAG ブロックに何を注入するか: `"cards"`（カード summary/episode のみ）/ `"raw"`（当時の会話原文抜粋のみ）/ `"both"`（カード + 原文）。解決不能時はカード注入にフォールバック |
 | `rag_raw_max_chars` | 2500 | 原文抜粋の合計文字数上限（ファイル単位の greedy skip。`0` = 無制限）。実測で raw 過多は希釈ノイズになり、6000 より 2500 の方が精度・コストとも良かった。日本語は 1 文字あたりのトークン単価が英語の 3〜5 倍 |
 | `rag_raw_top_k` | 1 | 原文を展開する上位カード数。`1` = 最上位カードの原文のみ（残りはサマリ）＝弱い読み手での希釈・needle-in-haystack を避ける。`0`/負値で全カードの原文を greedy 注入。`source_files` を持たない旧カードや上位と同一チャンクの重複カードはスロットを消費しない |
+| `rag_raw_neighbor_radius` | 0 | 正確な `source_files` と同じ `source_date` にある前後 N ファイルを追加する。`0` = 無効、`1` = 前後1件。正確な provenance を全件先に文字数予算へ入れ、その後に推定近傍を追加する |
 
 - `build_system_instruction_from_blocks(blocks, memory_manager, use_google_search)` — **不変セクション**（system_instruction + Key_Memory）のみを結合して system_instruction 文字列を生成
 - `build_context_prefix(blocks, memory_manager, use_google_search)` — **可変セクション**（現在時刻 / glossary / mid_term / RAG / session_digest / tier 情報 / Google 検索注意書き / Web 検索結果）を結合し、Provider が会話履歴の先頭に user メッセージとして注入する文字列を生成
@@ -858,7 +866,7 @@ RAG 候補カードを、生成元の RAW 会話 JSON へ逆引きしてプロ�
 `rag_source_mode` が raw を要求するときだけ遅延読み込みする。
 
 - `collect_source_refs(candidates, default_instance)` — `(instance, source_date, file_name)` をカードのスコア順で dedup 収集
-- `resolve_raw_reference(candidates, instances_dir, default_instance, max_chars, user_name, agent_name)` — `{"text", "files", "missing", "truncated", "chars"}` または `None` を返す。話者ラベルは `turn_meta` の帰属規則に従う（複数話者対応）
+- `resolve_raw_reference(candidates, instances_dir, default_instance, max_chars, user_name, agent_name, neighbor_radius)` — `{"text", "files", "missing", "truncated", "chars", "inferred_neighbor_files", "neighbor_radius"}` または `None` を返す。話者ラベルは `turn_meta` の帰属規則に従う（複数話者対応）
 
 ---
 

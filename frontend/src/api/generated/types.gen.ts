@@ -289,6 +289,13 @@ export type GatekeeperDebugSummary = {
     tier?: string | null;
 };
 
+export type GlobalMemoryRetrievalSettingsResponse = {
+    defaults: MemoryRetrievalValues;
+    effective: MemoryRetrievalValues;
+    global_override: MemoryRetrievalGlobalPatch;
+    origins: MemoryRetrievalOrigins;
+};
+
 export type HttpValidationError = {
     detail?: Array<ValidationError>;
 };
@@ -309,6 +316,15 @@ export type InstanceListResponse = {
     items?: Array<InstanceSummary>;
 };
 
+export type InstanceMemoryRetrievalSettingsResponse = {
+    defaults: MemoryRetrievalValues;
+    effective: MemoryRetrievalValues;
+    global_effective: MemoryRetrievalValues;
+    global_override: MemoryRetrievalGlobalPatch;
+    instance_override: MemoryRetrievalInstancePatch;
+    origins: MemoryRetrievalOrigins;
+};
+
 /**
  * instance 一覧の1件分。
  */
@@ -319,6 +335,64 @@ export type InstanceSummary = {
     name: string;
     updated_at?: string | null;
     user_display_name?: string | null;
+};
+
+/**
+ * Partial global update. Explicit null is invalid.
+ */
+export type MemoryRetrievalGlobalPatch = {
+    bm25_candidates?: number;
+    evidence_fusion_base_weight?: number;
+    evidence_raw_chunk_chars?: number;
+    rag_raw_max_chars?: number;
+    rag_raw_neighbor_radius?: number;
+    rag_raw_top_k?: number;
+    rag_source_mode?: 'cards' | 'raw' | 'both';
+    search_mode?: 'vector' | 'hybrid' | 'hybrid_evidence_fusion';
+    vector_candidates?: number;
+    vector_search_limit?: number;
+};
+
+/**
+ * Partial instance update. Null removes that instance override.
+ */
+export type MemoryRetrievalInstancePatch = {
+    bm25_candidates?: number | null;
+    evidence_fusion_base_weight?: number | null;
+    evidence_raw_chunk_chars?: number | null;
+    rag_raw_max_chars?: number | null;
+    rag_raw_neighbor_radius?: number | null;
+    rag_raw_top_k?: number | null;
+    rag_source_mode?: ('cards' | 'raw' | 'both') | null;
+    search_mode?: ('vector' | 'hybrid' | 'hybrid_evidence_fusion') | null;
+    vector_candidates?: number | null;
+    vector_search_limit?: number | null;
+};
+
+export type MemoryRetrievalOrigins = {
+    bm25_candidates: 'default' | 'global' | 'instance';
+    evidence_fusion_base_weight: 'default' | 'global' | 'instance';
+    evidence_raw_chunk_chars: 'default' | 'global' | 'instance';
+    rag_raw_max_chars: 'default' | 'global' | 'instance';
+    rag_raw_neighbor_radius: 'default' | 'global' | 'instance';
+    rag_raw_top_k: 'default' | 'global' | 'instance';
+    rag_source_mode: 'default' | 'global' | 'instance';
+    search_mode: 'default' | 'global' | 'instance';
+    vector_candidates: 'default' | 'global' | 'instance';
+    vector_search_limit: 'default' | 'global' | 'instance';
+};
+
+export type MemoryRetrievalValues = {
+    bm25_candidates: number;
+    evidence_fusion_base_weight: number;
+    evidence_raw_chunk_chars: number;
+    rag_raw_max_chars: number;
+    rag_raw_neighbor_radius: number;
+    rag_raw_top_k: number;
+    rag_source_mode: 'cards' | 'raw' | 'both';
+    search_mode: 'vector' | 'hybrid' | 'hybrid_evidence_fusion';
+    vector_candidates: number;
+    vector_search_limit: number;
 };
 
 /**
@@ -717,6 +791,76 @@ export type ListInstanceMessagesResponses = {
 
 export type ListInstanceMessagesResponse = ListInstanceMessagesResponses[keyof ListInstanceMessagesResponses];
 
+export type GetInstanceMemoryRetrievalSettingsData = {
+    body?: never;
+    path: {
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/instances/{name}/settings/memory-retrieval';
+};
+
+export type GetInstanceMemoryRetrievalSettingsErrors = {
+    /**
+     * Instance was not found
+     */
+    404: ApiError;
+    /**
+     * Invalid setting value
+     */
+    422: ApiError;
+    /**
+     * Backend is not ready
+     */
+    503: ApiError;
+};
+
+export type GetInstanceMemoryRetrievalSettingsError = GetInstanceMemoryRetrievalSettingsErrors[keyof GetInstanceMemoryRetrievalSettingsErrors];
+
+export type GetInstanceMemoryRetrievalSettingsResponses = {
+    /**
+     * Successful Response
+     */
+    200: InstanceMemoryRetrievalSettingsResponse;
+};
+
+export type GetInstanceMemoryRetrievalSettingsResponse = GetInstanceMemoryRetrievalSettingsResponses[keyof GetInstanceMemoryRetrievalSettingsResponses];
+
+export type PatchInstanceMemoryRetrievalSettingsData = {
+    body: MemoryRetrievalInstancePatch;
+    path: {
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/instances/{name}/settings/memory-retrieval';
+};
+
+export type PatchInstanceMemoryRetrievalSettingsErrors = {
+    /**
+     * Instance was not found
+     */
+    404: ApiError;
+    /**
+     * Invalid setting value
+     */
+    422: ApiError;
+    /**
+     * Backend is not ready
+     */
+    503: ApiError;
+};
+
+export type PatchInstanceMemoryRetrievalSettingsError = PatchInstanceMemoryRetrievalSettingsErrors[keyof PatchInstanceMemoryRetrievalSettingsErrors];
+
+export type PatchInstanceMemoryRetrievalSettingsResponses = {
+    /**
+     * Successful Response
+     */
+    200: InstanceMemoryRetrievalSettingsResponse;
+};
+
+export type PatchInstanceMemoryRetrievalSettingsResponse = PatchInstanceMemoryRetrievalSettingsResponses[keyof PatchInstanceMemoryRetrievalSettingsResponses];
+
 export type GetInstanceTraceData = {
     body?: never;
     path: {
@@ -810,6 +954,60 @@ export type GetReadinessResponses = {
 };
 
 export type GetReadinessResponse = GetReadinessResponses[keyof GetReadinessResponses];
+
+export type GetGlobalMemoryRetrievalSettingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/settings/memory-retrieval';
+};
+
+export type GetGlobalMemoryRetrievalSettingsErrors = {
+    /**
+     * Backend is not ready
+     */
+    503: ApiError;
+};
+
+export type GetGlobalMemoryRetrievalSettingsError = GetGlobalMemoryRetrievalSettingsErrors[keyof GetGlobalMemoryRetrievalSettingsErrors];
+
+export type GetGlobalMemoryRetrievalSettingsResponses = {
+    /**
+     * Successful Response
+     */
+    200: GlobalMemoryRetrievalSettingsResponse;
+};
+
+export type GetGlobalMemoryRetrievalSettingsResponse = GetGlobalMemoryRetrievalSettingsResponses[keyof GetGlobalMemoryRetrievalSettingsResponses];
+
+export type PatchGlobalMemoryRetrievalSettingsData = {
+    body: MemoryRetrievalGlobalPatch;
+    path?: never;
+    query?: never;
+    url: '/api/v1/settings/memory-retrieval';
+};
+
+export type PatchGlobalMemoryRetrievalSettingsErrors = {
+    /**
+     * Invalid setting value
+     */
+    422: ApiError;
+    /**
+     * Backend is not ready
+     */
+    503: ApiError;
+};
+
+export type PatchGlobalMemoryRetrievalSettingsError = PatchGlobalMemoryRetrievalSettingsErrors[keyof PatchGlobalMemoryRetrievalSettingsErrors];
+
+export type PatchGlobalMemoryRetrievalSettingsResponses = {
+    /**
+     * Successful Response
+     */
+    200: GlobalMemoryRetrievalSettingsResponse;
+};
+
+export type PatchGlobalMemoryRetrievalSettingsResponse = PatchGlobalMemoryRetrievalSettingsResponses[keyof PatchGlobalMemoryRetrievalSettingsResponses];
 
 export type ClientOptions = {
     baseUrl: `${string}://${string}` | (string & {});

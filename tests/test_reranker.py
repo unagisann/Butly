@@ -134,6 +134,30 @@ def test_reranker_prompt_bounds_text_and_treats_it_as_data():
     assert "untrusted data" in provider.prompt
 
 
+def test_reranker_candidate_text_builder_is_replaceable():
+    provider = _Provider(
+        lambda prompt: json.dumps(
+            {"ranked_labels": [json.loads(prompt.split("INPUT_DATA:\n", 1)[1])["candidates"][0]["label"]]}
+        )
+    )
+    observed = []
+
+    def build_candidate_text(row, max_chars):
+        observed.append((row["id"], max_chars))
+        return f"bundle:{row['id']}"[:max_chars]
+
+    reranker = LLMReranker(
+        RerankerConfig(model_name="test", connection="openai"),
+        provider=provider,
+        candidate_text_builder=build_candidate_text,
+    )
+    reranker.rerank("query", [{"id": "card-1", "title": "ignored"}], top_n=1)
+
+    payload = json.loads(provider.prompt.split("INPUT_DATA:\n", 1)[1])
+    assert observed == [("card-1", 1600)]
+    assert payload["candidates"][0]["content"] == "bundle:card-1"
+
+
 class _CrossEncoder:
     def __init__(self, scores):
         self.scores = scores
@@ -376,6 +400,141 @@ def test_brain_cross_encoder_threshold_can_inject_zero_cards(
     assert len(diag["effective_candidate_ids"]) == 20
     assert diag["reranker"]["selected_count"] == 0
     assert diag["reranker"]["engine"] == "cross_encoder"
+
+
+@pytest.mark.parametrize("mode", ["hybrid", "hybrid_evidence_fusion"])
+def test_brain_applies_post_reranker_after_primary_ranking(
+    tmp_path, monkeypatch, mode
+):
+    brain = ButlyBrain(tmp_path)
+    primary = [
+        {
+            "id": card_id,
+            "title": card_id,
+            "score": 1.0 / rank,
+            "source_instance": "shared",
+        }
+        for rank, card_id in enumerate(["a", "b", "c", "d"], start=1)
+    ]
+    observed = {}
+
+    def fake_primary(*_args, **kwargs):
+        observed["requested_limit"] = kwargs["limit"]
+        return {
+            "results": [dict(row) for row in primary],
+            "diagnostics": {
+                "mode": mode,
+                "fused_candidate_ids": ["a", "b", "c", "d"],
+            },
+        }
+
+    target = (
+        "_hybrid_search_diag"
+        if mode == "hybrid"
+        else "_hybrid_evidence_fusion_search_diag"
+    )
+    monkeypatch.setattr(brain, target, fake_primary)
+
+    class FakeReranker:
+        def rerank(self, _query, candidates, *, top_n):
+            observed["input"] = [row["id"] for row in candidates]
+            observed["top_n"] = top_n
+            reordered = [candidates[3], candidates[1], candidates[0], candidates[2]]
+            return {
+                "results": reordered,
+                "selected_ids": ["d", "b"],
+                "latency_ms": 5,
+                "token_usage": None,
+                "completion_metadata": None,
+            }
+
+    monkeypatch.setattr(brain, "_get_reranker", lambda _config: FakeReranker())
+    output = brain.quick_vector_search_diag(
+        "query",
+        "shared",
+        limit=2,
+        threshold=0.4,
+        override_config={
+            "brain": {"search_mode": mode},
+            "reranker": {
+                "model_name": "test",
+                "connection": "openai",
+                "candidate_limit": 4,
+            },
+        },
+    )
+
+    assert observed == {
+        "requested_limit": 4,
+        "input": ["a", "b", "c", "d"],
+        "top_n": 2,
+    }
+    assert [row["id"] for row in output["results"]] == ["d", "b"]
+    diagnostics = output["diagnostics"]
+    assert diagnostics["fused_candidate_ids"] == ["a", "b", "c", "d"]
+    assert diagnostics["reranked_candidate_ids"] == ["d", "b", "a", "c"]
+    assert diagnostics["effective_candidate_ids"] == ["d", "b", "a", "c"]
+    assert diagnostics["reranker"]["status"] == "completed"
+    assert all(row["source_instance"] == "shared" for row in output["results"])
+
+
+@pytest.mark.parametrize("invalid_kind", ["error", "empty", "unknown"])
+def test_post_reranker_failure_or_invalid_output_preserves_fused_order(
+    tmp_path, monkeypatch, invalid_kind
+):
+    brain = ButlyBrain(tmp_path)
+    primary = [
+        {"id": card_id, "title": card_id, "source_instance": "alpha"}
+        for card_id in ["a", "b", "c"]
+    ]
+    monkeypatch.setattr(
+        brain,
+        "_hybrid_evidence_fusion_search_diag",
+        lambda *_args, **_kwargs: {
+            "results": [dict(row) for row in primary],
+            "diagnostics": {
+                "mode": "hybrid_evidence_fusion",
+                "fused_candidate_ids": ["a", "b", "c"],
+            },
+        },
+    )
+
+    class InvalidReranker:
+        def rerank(self, _query, candidates, *, top_n):
+            if invalid_kind == "error":
+                raise RerankerError("unavailable", latency_ms=8)
+            if invalid_kind == "empty":
+                return {"results": [], "selected_ids": []}
+            return {
+                "results": list(candidates),
+                "selected_ids": ["not-a-candidate"],
+            }
+
+    monkeypatch.setattr(
+        brain,
+        "_get_reranker",
+        lambda _config: InvalidReranker(),
+    )
+    output = brain.quick_vector_search_diag(
+        "query",
+        "alpha",
+        limit=2,
+        threshold=0.4,
+        override_config={
+            "brain": {"search_mode": "hybrid_evidence_fusion"},
+            "reranker": {
+                "model_name": "test",
+                "connection": "openai",
+                "candidate_limit": 3,
+            },
+        },
+    )
+
+    assert [row["id"] for row in output["results"]] == ["a", "b"]
+    diagnostics = output["diagnostics"]
+    assert diagnostics["effective_candidate_ids"] == diagnostics["fused_candidate_ids"]
+    assert diagnostics["reranked_candidate_ids"] == []
+    assert diagnostics["reranker"]["fallback"] is True
 
 
 def test_evaluation_api_schemas_accept_reranker_for_run_and_replay():

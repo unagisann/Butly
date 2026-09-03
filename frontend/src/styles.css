@@ -1697,3 +1697,191 @@ details[open] > summary .summary-chevron {
 .trace-overlay-canvas svg {
   display: block;
 }
+
+.settings-backdrop {
+  position: fixed;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 2.5vh 2.5vw;
+  background: rgb(23 32 51 / 48%);
+  inset: 0;
+}
+
+.memory-settings-dialog {
+  display: flex;
+  width: min(680px, 100%);
+  max-height: 95vh;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.memory-settings-dialog > header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.8rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.settings-title-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  color: var(--accent-dark);
+  border-radius: 11px;
+  background: var(--accent-soft);
+}
+
+.memory-settings-dialog h2,
+.memory-settings-dialog header p {
+  margin: 0;
+}
+
+.memory-settings-dialog h2 {
+  font-size: 0.98rem;
+}
+
+.memory-settings-dialog header p {
+  margin-top: 0.1rem;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.memory-settings-body {
+  display: grid;
+  gap: 0.85rem;
+  min-height: 0;
+  padding: 0.9rem;
+  overflow-y: auto;
+}
+
+.settings-group {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+  padding: 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fcfcfe;
+}
+
+.settings-group > h3 {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.memory-setting-field {
+  display: grid;
+  align-content: start;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.memory-setting-field[data-inactive="true"] {
+  opacity: 0.63;
+}
+
+.memory-setting-label {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.memory-setting-label > label:first-child {
+  font-size: 0.74rem;
+  font-weight: 650;
+}
+
+.inherit-toggle,
+.unlimited-control label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--muted);
+  font-size: 0.61rem;
+  white-space: nowrap;
+}
+
+.inherit-toggle input,
+.unlimited-control label input {
+  margin: 0;
+}
+
+.memory-setting-field > input,
+.memory-setting-field > select,
+.unlimited-control > input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0.4rem 0.5rem;
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.memory-setting-field > small {
+  color: var(--muted);
+  font-size: 0.6rem;
+  line-height: 1.4;
+}
+
+.unlimited-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.settings-advanced > summary {
+  padding: 0.55rem 0.7rem;
+  color: var(--accent-dark);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--accent-soft);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.settings-advanced[open] > summary {
+  margin-bottom: 0.65rem;
+}
+
+.memory-settings-dialog > footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  padding: 0.7rem 0.9rem;
+  border-top: 1px solid var(--line);
+  background: var(--surface-muted);
+}
+
+.save-success {
+  margin-right: auto;
+  color: var(--success);
+  font-size: 0.7rem;
+  font-weight: 650;
+}
+
+@media (max-width: 680px) {
+  .settings-group {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-group > h3 {
+    grid-column: 1;
+  }
+}

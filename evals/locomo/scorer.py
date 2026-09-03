@@ -346,6 +346,11 @@ def _score_row(
         "raw_reference_files": raw_reference.get(
             "file_count", len(raw_reference.get("files") or []) or None
         ),
+        "raw_reference_neighbor_radius": raw_reference.get("neighbor_radius"),
+        "raw_reference_inferred_neighbor_files": raw_reference.get(
+            "inferred_neighbor_file_count",
+            len(raw_reference.get("inferred_neighbor_files") or []),
+        ),
         "prompt_tokens": token_usage.get("prompt_tokens"),
         "completion_tokens": token_usage.get("completion_tokens"),
         "total_prompt_tokens": token_usage_total.get("prompt_tokens"),
@@ -635,6 +640,16 @@ def _butly_aggregate(
                 e["raw_reference_files"]
                 for e in question_scores
                 if e.get("raw_reference_files") is not None
+            ]
+        ),
+        "raw_reference_neighbor_radius_distribution": _distribution(
+            question_scores, "raw_reference_neighbor_radius"
+        ),
+        "raw_reference_inferred_neighbor_files_mean": _mean(
+            [
+                e["raw_reference_inferred_neighbor_files"]
+                for e in question_scores
+                if e.get("raw_reference_inferred_neighbor_files") is not None
             ]
         ),
         # API 実測トークン数（provider の usage 由来。旧 run は None）

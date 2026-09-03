@@ -95,6 +95,9 @@ SYSTEM_CONFIG = {
         # 原文を展開する上位カード数（raw/both 時）。1 = 最上位カードの原文のみ、
         # 残りはサマリ。0 以下で全カードの原文を greedy 注入（従来の both 挙動）。
         "rag_raw_top_k": 1,
+        # source_files の前後にある同日 RAW を追加する半径。0 = 無効。
+        # 正確な provenance を先に予算へ入れ、推定近傍はその後へ追加する。
+        "rag_raw_neighbor_radius": 0,
         # --- Stage 3: Knowledge Maturation（content hash 式レビューキュー） ---
         # 旧キー (interval_days / window_days / max_cards / min_usage_count) は
         # 廃止。max_cards はインスタンス設定に残っていれば batch_size として

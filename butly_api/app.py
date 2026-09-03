@@ -28,7 +28,7 @@ from butly_api.context import ApiContext
 from butly_api.errors import register_error_handlers
 from butly_api.middleware import RequestIDMiddleware
 from butly_api.routers import chat as chat_router
-from butly_api.routers import instances, preflight, system
+from butly_api.routers import instances, memory_retrieval, preflight, system
 from butly_api.schemas import chat as chat_schemas
 from butly_api.schemas import instances as instance_schemas
 from butly_api.schemas import preflight as preflight_schemas
@@ -133,6 +133,7 @@ def create_app(
 
     app.include_router(system.router)
     app.include_router(instances.router)
+    app.include_router(memory_retrieval.router)
     app.include_router(chat_router.router)
     app.include_router(preflight.router)
     for router in extra_routers:

@@ -47,7 +47,8 @@ subprocessとして呼ぶ薄い管理層である。Replay、Sleeptime、QA、ch
 - 任意のMemory Reranker。推奨のローカルCross-Encoder
   （mMiniLMv2 / GTE multilingual）または比較用LLM Connectionを選び、候補数
   （既定20）、候補本文上限、batch size、任意の関連度しきい値を設定する。
-  vector候補を並べ替え、0〜3件を注入する（Hybrid / Dual Queryとは併用不可）
+  vector / hybrid / dual query / Evidence Fusionが作ったprimary候補を共通の後段で
+  並べ替え、0〜3件を注入する。未設定時はidentity、失敗時はprimary順位へ戻る
 - Embedding prefix 規約（既定 `auto` = モデル名から推定。
   詳細は [memory_lifecycle.ja.md](memory_lifecycle.ja.md#embedding-プロファイルモデル別の入力規約)）
 - generation temperatureとGatekeeper出力上限
@@ -91,6 +92,8 @@ runは同条件比較とみなさず、UIに警告を表示する。
 検索文を持たないため、元runのGatekeeper設定で検索文を生成する。
 本評価フォームでRerankerを有効にしたrunは、同じ処理がQA経路にも入り、公式／
 Semantic Judgeの回答品質と検索指標を同じrunで確認できる。
+本体の正式Desktop UIは検索・Fusion・RAW注入設定だけを公開し、rerankerモデルの
+選定はまだ行わない。評価UIのreranker欄は候補モデルを比較するための評価専用設定である。
 
 本評価フォームの`Search mode`でも`hybrid_evidence_fusion`を選べる。通常hybridの
 top N（既定20）だけをEpisode / RAWで遅延再評価し、既定0.70 / 0.30で順位融合して

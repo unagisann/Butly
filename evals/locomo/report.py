@@ -209,7 +209,11 @@ def _render(
         f"{_fmt_distribution(butly.get('raw_reference_status_distribution'))}"
         f" (files mean {_fmt(butly.get('raw_reference_files_mean'), digits=1)}, "
         f"chars mean {_fmt(butly.get('raw_reference_chars_mean'), digits=0)}, "
-        f"truncated rate {_fmt(butly.get('raw_reference_truncated_rate'))})",
+        f"truncated rate {_fmt(butly.get('raw_reference_truncated_rate'))}, "
+        f"neighbor radius "
+        f"{_fmt_distribution(butly.get('raw_reference_neighbor_radius_distribution'))}, "
+        f"inferred files mean "
+        f"{_fmt(butly.get('raw_reference_inferred_neighbor_files_mean'), digits=1)})",
         f"- Token usage (API-reported): prompt mean "
         f"{_fmt(butly.get('prompt_tokens_mean'), digits=0)} / total "
         f"{_fmt(butly.get('prompt_tokens_total'), digits=0)}, completion total "

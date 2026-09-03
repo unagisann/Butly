@@ -95,6 +95,60 @@ def _find_raw_file(instances_dir: Path, inst: str, date: str, name: str):
     return None
 
 
+def _expand_neighbor_refs(
+    refs: list,
+    instances_dir: Path,
+    radius: int,
+) -> tuple[list, set[tuple[str, str]]]:
+    """同一 source_date の隣接 RAW を正確な参照の後ろへ追加する。"""
+    if radius <= 0:
+        return list(refs), set()
+
+    expanded = list(refs)
+    seen = {(str(inst), str(name)) for inst, _, name in refs}
+    inferred: set[tuple[str, str]] = set()
+    date_files: dict[tuple[str, str], list[str]] = {}
+
+    for inst, date, name in refs:
+        if not _is_safe_component(inst) or not _is_safe_component(date):
+            continue
+        key = (inst, date)
+        if key not in date_files:
+            directory = (
+                instances_dir
+                / inst
+                / "memory_archive"
+                / "2_knowledgeized"
+                / date
+            )
+            date_files[key] = (
+                sorted(
+                    path.name
+                    for path in directory.glob("*.json")
+                    if path.is_file() and not path.name.startswith(".")
+                )
+                if directory.is_dir()
+                else []
+            )
+        names = date_files[key]
+        try:
+            position = names.index(name)
+        except ValueError:
+            continue
+        for distance in range(1, radius + 1):
+            for index in (position - distance, position + distance):
+                if not 0 <= index < len(names):
+                    continue
+                neighbor = names[index]
+                neighbor_key = (inst, neighbor)
+                if neighbor_key in seen:
+                    continue
+                seen.add(neighbor_key)
+                inferred.add(neighbor_key)
+                expanded.append((inst, date, neighbor))
+    return expanded, inferred
+
+
 def _render_file(
     data: dict,
     user_name: str,
@@ -133,6 +187,7 @@ def resolve_raw_reference(
     agent_name: str = "AI",
     locale: str = "ja",
     top_k: int | None = None,
+    neighbor_radius: int = 0,
 ):
     """候補カード群に対応する RAW 会話原文の抜粋を構築する。
 
@@ -151,20 +206,26 @@ def resolve_raw_reference(
         整形時の話者ラベル。複数話者ログは turn_meta の帰属規則に従う。
     top_k : int | None
         RAW を展開する上位カード数。None / 0 以下は全件（collect_source_refs 参照）。
+    neighbor_radius : int
+        `source_files`の前後にある同一`source_date`のRAWを追加する半径。
+        0は無効。正確な参照を先に文字数予算へ入れ、推定近傍は後から追加する。
 
     Returns
     -------
     dict | None
-        {"text": str, "files": list[str], "missing": list[str],
-         "truncated": bool, "chars": int, "top_k": int|None}
+         {"text": str, "files": list[str], "missing": list[str],
+         "truncated": bool, "chars": int, "top_k": int|None,
+         "max_chars": int, "neighbor_radius": int,
+         "inferred_neighbor_files": list[str]}
         参照可能な RAW が 1 件も無ければ None。
     """
     instances_dir = Path(instances_dir)
     refs = collect_source_refs(candidates, default_instance, top_k=top_k)
     if not refs:
         return None
+    refs, inferred = _expand_neighbor_refs(refs, instances_dir, neighbor_radius)
 
-    loaded = []  # [(date, name, data)] スコア順
+    loaded = []  # [(date, name, data, inferred)]。正確な参照→推定近傍の順
     missing = []
     for inst, date, name in refs:
         path = _find_raw_file(instances_dir, inst, date, name)
@@ -177,19 +238,19 @@ def resolve_raw_reference(
             missing.append(name)
             continue
         if isinstance(data, dict):
-            loaded.append((date, name, data))
+            loaded.append((date, name, data, (inst, name) in inferred))
         else:
             missing.append(name)
     if not loaded:
         return None
 
-    all_msgs = [m for _, _, d in loaded for m in d.get("messages", [])]
+    all_msgs = [m for _, _, d, _ in loaded for m in d.get("messages", [])]
     multi_speaker = turn_meta.has_multiple_speakers(all_msgs)
 
-    included = []  # [(date, name, text)]
+    included = []  # [(date, name, text, inferred)]
     total = 0
     truncated = False
-    for date, name, data in loaded:
+    for date, name, data, is_inferred in loaded:
         text = _render_file(
             data,
             user_name,
@@ -207,11 +268,11 @@ def resolve_raw_reference(
                     else "\n… (truncated at the character limit)"
                 )
                 text = text[:max_chars] + suffix
-                included.append((date, name, text))
+                included.append((date, name, text, is_inferred))
                 total += len(text)
             truncated = True
             continue
-        included.append((date, name, text))
+        included.append((date, name, text, is_inferred))
         total += len(text)
 
     if not included:
@@ -219,12 +280,17 @@ def resolve_raw_reference(
 
     # 表示は時系列順（source_date → ファイル名。ファイル名はタイムスタンプ由来）
     included.sort(key=lambda item: (item[0], item[1]))
-    body = "\n\n".join(text for _, _, text in included)
+    body = "\n\n".join(text for _, _, text, _ in included)
     return {
         "text": body,
-        "files": [name for _, name, _ in included],
+        "files": [name for _, name, _, _ in included],
+        "inferred_neighbor_files": [
+            name for _, name, _, is_inferred in included if is_inferred
+        ],
         "missing": missing,
         "truncated": truncated,
         "chars": len(body),
         "top_k": top_k,
+        "max_chars": max_chars,
+        "neighbor_radius": neighbor_radius,
     }

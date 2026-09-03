@@ -393,6 +393,9 @@ def build_profile_payload(request: dict[str, Any]) -> dict[str, Any]:
         "rag_source_mode": request.get("rag_source_mode") or "both",
         "rag_raw_max_chars": int(request.get("rag_raw_max_chars", 2500)),
         "rag_raw_top_k": int(request.get("rag_raw_top_k", 1)),
+        "rag_raw_neighbor_radius": int(
+            request.get("rag_raw_neighbor_radius", 0)
+        ),
     }
     search_mode = str(request.get("search_mode") or "vector")
     profile["brain"] = {
@@ -705,12 +708,14 @@ def validate_job_request(
             f"evaluation run already exists: {output_dir / run_id}"
         )
 
+    normalized.setdefault("rag_raw_neighbor_radius", 0)
     for name in (
         "sample_limit",
         "session_limit",
         "question_limit",
         "rag_raw_top_k",
         "rag_raw_max_chars",
+        "rag_raw_neighbor_radius",
         "stage3_batch_size",
         "stage3_bootstrap_max_cards",
     ):
@@ -723,6 +728,10 @@ def validate_job_request(
             raise EvaluationJobError(f"{name} must be at least 1")
         if name.endswith("_limit") and value < 1:
             raise EvaluationJobError(f"{name} must be at least 1 or null")
+    if normalized["rag_raw_neighbor_radius"] > 10:
+        raise EvaluationJobError(
+            "rag_raw_neighbor_radius must be at most 10"
+        )
 
     # --- 検索設定（検索改修計画 §3.5） ---
     for name, allowed, default in (
@@ -764,12 +773,6 @@ def validate_job_request(
             "reranker_max_candidate_chars must be between 100 and 10000"
         )
     normalized["reranker_max_candidate_chars"] = reranker_max_chars
-    if (
-        "reranker" in normalized["role_models"]
-        and normalized["search_mode"] != "vector"
-    ):
-        raise EvaluationJobError("reranker currently requires search_mode=vector")
-
     df_ratio = normalized.get("bm25_max_df_ratio", 0.5)
     if isinstance(df_ratio, bool) or not isinstance(df_ratio, (int, float)):
         raise EvaluationJobError("bm25_max_df_ratio must be a number")
@@ -966,6 +969,7 @@ def validate_dialogue_ab_request(
     for name, default, minimum in (
         ("rag_raw_top_k", 1, 0),
         ("rag_raw_max_chars", 2500, 0),
+        ("rag_raw_neighbor_radius", 0, 0),
         ("stage3_batch_size", 10, 1),
         ("stage3_bootstrap_max_cards", 2000, 1),
     ):
@@ -973,6 +977,10 @@ def validate_dialogue_ab_request(
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise EvaluationJobError(f"{name} must be at least {minimum}")
         normalized[name] = value
+    if normalized["rag_raw_neighbor_radius"] > 10:
+        raise EvaluationJobError(
+            "rag_raw_neighbor_radius must be at most 10"
+        )
 
     decay = normalized.get("time_decay_rate", 0.003)
     if isinstance(decay, bool) or not isinstance(decay, (int, float)):
@@ -1007,11 +1015,6 @@ def validate_dialogue_ab_request(
     normalized["role_models"] = _normalize_role_models(
         normalized.get("role_models")
     )
-    if (
-        "reranker" in normalized["role_models"]
-        and normalized["search_mode"] != "vector"
-    ):
-        raise EvaluationJobError("reranker currently requires search_mode=vector")
     _validate_evidence_fusion_settings(normalized)
     return normalized
 

@@ -49,6 +49,18 @@ function makeTransport(overrides: Partial<ApiTransport> = {}): ApiTransport {
     ping: vi.fn(async () => ({ ready: true, checks: [] })),
     listInstances: vi.fn(async () => []),
     getMessages: vi.fn(async () => ({ items: [] })),
+    getGlobalMemoryRetrievalSettings: vi.fn(async () => {
+      throw new Error("not used");
+    }),
+    patchGlobalMemoryRetrievalSettings: vi.fn(async () => {
+      throw new Error("not used");
+    }),
+    getInstanceMemoryRetrievalSettings: vi.fn(async () => {
+      throw new Error("not used");
+    }),
+    patchInstanceMemoryRetrievalSettings: vi.fn(async () => {
+      throw new Error("not used");
+    }),
     getTrace: vi.fn(async () => ({
       trace_id: "turn_1",
       mermaid: "flowchart TD\n    a[\"a\"]",

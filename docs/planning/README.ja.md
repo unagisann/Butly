@@ -27,6 +27,7 @@
 - [外部チャット連携 設計決定メモ](archived/external_chat_design_decisions.ja.md)
 - [Discord 連携実装計画](archived/discord_integration_plan.ja.md)
 - [LINE 連携実装計画](archived/line_integration_plan.ja.md)
+- [記憶検索・RAW注入の本体反映計画](archived/memory_retrieval_productization_plan.ja.md) — typed設定API、共通post-reranker境界、正式Desktop UI、Trace観測を実装（2026-09-04）
 
 ---
 
