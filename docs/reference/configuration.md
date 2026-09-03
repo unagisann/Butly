@@ -2,7 +2,7 @@
 
 [日本語](configuration.ja.md) | 🌐 **English**
 
-> Last updated: 2026-08-22
+> Last updated: 2026-09-04
 
 Butly's configuration has two tiers: **global settings** shared by every instance, and
 **instance settings** that override them per persona. Global settings are consolidating
@@ -205,9 +205,10 @@ Lives at `butly_core/instances/<name>/config.json` and overrides global settings
 |---|---|
 | `agent_profile` | `ai_name`, `locale`, etc. — how the persona identifies itself |
 | `user_profile` | `user_name` / `preferred_call` / `birthday`, etc. |
-| `brain` | `search_limit` / `default_use_google_search` / `readable_instances` / `use_context_cache` |
+| `brain` | `search_limit` / `search_mode` / `evidence_fusion_base_weight` / `evidence_raw_chunk_chars` / `vector_candidates` / `bm25_candidates` / `readable_instances` |
 | `chat` | Role overrides (`connection` + `model_name`) |
-| `memory` | `use_summarized_mid_term`, Stage 3 parameters, etc. |
+| `memory` | `use_summarized_mid_term` / `rag_source_mode` / `rag_raw_max_chars` / `rag_raw_top_k` / `rag_raw_neighbor_radius` / Stage 3 parameters, etc. |
+| `memory_probe` | Retrieval and final-injection overrides such as `vector_search_limit` |
 | `sleeptime` | `max_digest_chars` / `max_relationship_chars` / `relationship_update_interval_days` / `update_targets` |
 | `gatekeeper` | `tier_rc_threshold` / `tier_cn_threshold` |
 | `context_levels` | Verbosity presets for each prompt block (see [Context Levels](context_levels.md)) |
@@ -217,6 +218,24 @@ values by `_merge_config()`.
 
 When `InstanceManager` writes `config.json` or `system_instruction.txt` it uses
 `atomic_write_text` (see [Coding Conventions](coding_conventions.md)).
+
+### Memory-retrieval settings API
+
+The official desktop UI uses these typed resources instead of editing settings files directly:
+
+- `GET/PATCH /api/v1/settings/memory-retrieval` for global overrides
+- `GET/PATCH /api/v1/instances/{name}/settings/memory-retrieval` for instance overrides
+
+Responses separate `defaults`, explicit overrides, `effective` values, and per-key `origins`.
+An instance PATCH value of `null` removes only that key and restores global inheritance. Zero is
+preserved as a value: `rag_raw_max_chars=0` means unlimited and `rag_raw_top_k=0` means all candidates.
+
+The public contract covers search mode, final injection count, Fusion weight, Evidence passage size,
+vector/BM25 pool sizes, and RAW source, character limit, expanded-card count, and neighbor radius.
+Unknown enums, non-finite or out-of-range numbers, and candidate pools smaller than the final injection
+count are rejected with 422 before persistence. Updates preserve unrelated JSON sections and use atomic
+replacement. Global updates synchronize the settings cache and legacy `SYSTEM_CONFIG`; instance config
+is reloaded at chat preparation, so both take effect on the next turn without a process restart.
 
 ---
 

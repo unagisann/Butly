@@ -216,10 +216,25 @@ update_targets = {"recent_snapshot": True}   # False で更新をスキップ
 | **スキップ機能** | `skip_knowledge_generation = true` の場合、Stage 2 を完全にスキップ。RAWデータは 1_integrated に保持され、後日高性能モデルで一括処理可能 |
 | **スキーマ** | `knowledge_cards` テーブル（下記参照） |
 | **Embedding** | `title + tags + summary` を `AI_CONFIG["embedding"]["model_name"]` で埋め込み → BLOB保存。埋め込み前に **embedding プロファイル**の文書側 prefix を付与する（下記） |
-| **検索** | `ButlyBrain.search_memories()` がクエリ埋め込みとコサイン類似度でリランキング。クエリ側には**クエリ用 prefix** を付与する |
+| **検索** | `brain.search_mode`に応じてvector、vector+BM25 RRF、Hybrid+Evidence Fusionを選択する。FusionのHybrid/Base重みは`evidence_fusion_base_weight`（既定0.70）。クエリ側embeddingには**クエリ用 prefix**を付与する |
 | **Gatekeeper注入** | `need` が設定された時のみ（tier 非依存）、`MemoryProbe` の candidates から RAG ブロックを構築し LONG-TERM MEMORY として注入。注入ソースは `memory.rag_source_mode` で制御: `"cards"`（既定・カードのみ）/ `"raw"`（当時の会話原文のみ）/ `"both"`（カード + 原文）。raw/both では各カードの `source_files` から RAW 会話 JSON を遅延逆引きし、原文抜粋を合計 `memory.rag_raw_max_chars` 文字（既定 2500、0=無制限、超過ファイルは greedy skip）まで注入する（parent-document retrieval — カード=検索インデックス、事実の根拠=原文）。原文を展開するカード数は `memory.rag_raw_top_k`（既定 1＝最上位カードの原文のみ、残りはサマリ。0/負値で全カード）で絞る。`memory.rag_raw_neighbor_radius`（既定 0＝無効）を 1 以上にすると、同一 `source_date` 内で各 `source_files` の前後 N ファイルも推定近傍として追加する。文字数予算には正確な provenance を全件先に入れ、推定近傍はその後に入れる。解決不能時はカード注入にフォールバック |
 | **後処理** | 処理済み JSON は `memory_archive/2_knowledgeized/{date}/` へ移動 |
 | **バックアップ** | `butly_core/db_backups/` にローテーション保存（世代数: `backup.generations`） |
+
+#### 検索順位とpost-reranker
+
+Layer 1の検索は、候補生成 → 一次順位 → 任意のpost-reranker →
+`memory_probe.vector_search_limit`での最終選択に分かれます。一次順位はvectorならcosine +
+time decay、hybridならvector/BM25のRRF、`hybrid_evidence_fusion`ならさらにEpisode/RAW
+passage順位とのFusionです。`brain.vector_candidates` / `bm25_candidates`は候補poolであり、
+最終注入数とは別です。
+
+rerankerは既定OFFです。有効時は一次順位後の候補列だけを受け取り、候補本文生成は
+差し替え可能な`candidate_text_builder`境界に分離されています。成功時だけその順位を採用し、
+例外、空順序、候補欠落、未知IDでは一次順位へfail-openします。診断にはvector / BM25 /
+hybrid / Fusion / reranked / effectiveの候補ID、reranker状態・fallback・モデル・遅延・件数・
+エラー、実効設定snapshotを残します。RAW診断には実際の文字数、上限、ファイル数、近傍、
+truncationを残します。
 
 **knowledge_cards テーブルの主なカラム:**
 

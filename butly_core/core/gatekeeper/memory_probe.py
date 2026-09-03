@@ -357,6 +357,7 @@ class MemoryProbe:
             "reranked_candidate_ids", []
         )
         retrieval["reranker"] = diagnostics.get("reranker")
+        retrieval["settings"] = diagnostics.get("settings")
         retrieval["vector_candidate_ids"] = diagnostics.get("vector_candidate_ids", [])
         retrieval["original_candidate_ids"] = diagnostics.get(
             "original_candidate_ids", []

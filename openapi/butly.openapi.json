@@ -1066,6 +1066,31 @@
         "title": "GatekeeperDebugSummary",
         "type": "object"
       },
+      "GlobalMemoryRetrievalSettingsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "defaults": {
+            "$ref": "#/components/schemas/MemoryRetrievalValues"
+          },
+          "effective": {
+            "$ref": "#/components/schemas/MemoryRetrievalValues"
+          },
+          "global_override": {
+            "$ref": "#/components/schemas/MemoryRetrievalGlobalPatch"
+          },
+          "origins": {
+            "$ref": "#/components/schemas/MemoryRetrievalOrigins"
+          }
+        },
+        "required": [
+          "defaults",
+          "global_override",
+          "effective",
+          "origins"
+        ],
+        "title": "GlobalMemoryRetrievalSettingsResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1116,6 +1141,39 @@
           }
         },
         "title": "InstanceListResponse",
+        "type": "object"
+      },
+      "InstanceMemoryRetrievalSettingsResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "defaults": {
+            "$ref": "#/components/schemas/MemoryRetrievalValues"
+          },
+          "effective": {
+            "$ref": "#/components/schemas/MemoryRetrievalValues"
+          },
+          "global_effective": {
+            "$ref": "#/components/schemas/MemoryRetrievalValues"
+          },
+          "global_override": {
+            "$ref": "#/components/schemas/MemoryRetrievalGlobalPatch"
+          },
+          "instance_override": {
+            "$ref": "#/components/schemas/MemoryRetrievalInstancePatch"
+          },
+          "origins": {
+            "$ref": "#/components/schemas/MemoryRetrievalOrigins"
+          }
+        },
+        "required": [
+          "defaults",
+          "global_override",
+          "global_effective",
+          "instance_override",
+          "effective",
+          "origins"
+        ],
+        "title": "InstanceMemoryRetrievalSettingsResponse",
         "type": "object"
       },
       "InstanceSummary": {
@@ -1180,6 +1238,418 @@
           "name"
         ],
         "title": "InstanceSummary",
+        "type": "object"
+      },
+      "MemoryRetrievalGlobalPatch": {
+        "additionalProperties": false,
+        "description": "Partial global update. Explicit null is invalid.",
+        "properties": {
+          "bm25_candidates": {
+            "maximum": 100.0,
+            "minimum": 3.0,
+            "title": "Bm25 Candidates",
+            "type": "integer"
+          },
+          "evidence_fusion_base_weight": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Evidence Fusion Base Weight",
+            "type": "number"
+          },
+          "evidence_raw_chunk_chars": {
+            "maximum": 10000.0,
+            "minimum": 200.0,
+            "title": "Evidence Raw Chunk Chars",
+            "type": "integer"
+          },
+          "rag_raw_max_chars": {
+            "maximum": 50000.0,
+            "minimum": 0.0,
+            "title": "Rag Raw Max Chars",
+            "type": "integer"
+          },
+          "rag_raw_neighbor_radius": {
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Rag Raw Neighbor Radius",
+            "type": "integer"
+          },
+          "rag_raw_top_k": {
+            "maximum": 20.0,
+            "minimum": 0.0,
+            "title": "Rag Raw Top K",
+            "type": "integer"
+          },
+          "rag_source_mode": {
+            "enum": [
+              "cards",
+              "raw",
+              "both"
+            ],
+            "title": "Rag Source Mode",
+            "type": "string"
+          },
+          "search_mode": {
+            "enum": [
+              "vector",
+              "hybrid",
+              "hybrid_evidence_fusion"
+            ],
+            "title": "Search Mode",
+            "type": "string"
+          },
+          "vector_candidates": {
+            "maximum": 100.0,
+            "minimum": 3.0,
+            "title": "Vector Candidates",
+            "type": "integer"
+          },
+          "vector_search_limit": {
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Vector Search Limit",
+            "type": "integer"
+          }
+        },
+        "title": "MemoryRetrievalGlobalPatch",
+        "type": "object"
+      },
+      "MemoryRetrievalInstancePatch": {
+        "additionalProperties": false,
+        "description": "Partial instance update. Null removes that instance override.",
+        "properties": {
+          "bm25_candidates": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 3.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bm25 Candidates"
+          },
+          "evidence_fusion_base_weight": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Fusion Base Weight"
+          },
+          "evidence_raw_chunk_chars": {
+            "anyOf": [
+              {
+                "maximum": 10000.0,
+                "minimum": 200.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Raw Chunk Chars"
+          },
+          "rag_raw_max_chars": {
+            "anyOf": [
+              {
+                "maximum": 50000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rag Raw Max Chars"
+          },
+          "rag_raw_neighbor_radius": {
+            "anyOf": [
+              {
+                "maximum": 10.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rag Raw Neighbor Radius"
+          },
+          "rag_raw_top_k": {
+            "anyOf": [
+              {
+                "maximum": 20.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rag Raw Top K"
+          },
+          "rag_source_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "cards",
+                  "raw",
+                  "both"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rag Source Mode"
+          },
+          "search_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "vector",
+                  "hybrid",
+                  "hybrid_evidence_fusion"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Search Mode"
+          },
+          "vector_candidates": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 3.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Candidates"
+          },
+          "vector_search_limit": {
+            "anyOf": [
+              {
+                "maximum": 10.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Search Limit"
+          }
+        },
+        "title": "MemoryRetrievalInstancePatch",
+        "type": "object"
+      },
+      "MemoryRetrievalOrigins": {
+        "additionalProperties": false,
+        "properties": {
+          "bm25_candidates": {
+            "enum": [
+              "default",
+              "global",
+              "instance"
+            ],
+            "title": "Bm25 Candidates",
+            "type": "string"
+          },
+          "evidence_fusion_base_weight": {
+            "enum": [
+              "default",
+              "global",
+              "instance"
+            ],
+            "title": "Evidence Fusion Base Weight",
+            "type": "string"
+          },
+          "evidence_raw_chunk_chars": {
+            "enum": [
+              "default",
+              "global",
+              "instance"
+            ],
+            "title": "Evidence Raw Chunk Chars",
+            "type": "string"
+          },
+          "rag_raw_max_chars": {
+            "enum": [
+              "default",
+              "global",
+              "instance"
+            ],
+            "title": "Rag Raw Max Chars",
+            "type": "string"
+          },
+          "rag_raw_neighbor_radius": {
+            "enum": [
+              "default",
+              "global",
+              "instance"
+            ],
+            "title": "Rag Raw Neighbor Radius",
+            "type": "string"
+          },
+          "rag_raw_top_k": {
+            "enum": [
+              "default",
+              "global",
+              "instance"
+            ],
+            "title": "Rag Raw Top K",
+            "type": "string"
+          },
+          "rag_source_mode": {
+            "enum": [
+              "default",
+              "global",
+              "instance"
+            ],
+            "title": "Rag Source Mode",
+            "type": "string"
+          },
+          "search_mode": {
+            "enum": [
+              "default",
+              "global",
+              "instance"
+            ],
+            "title": "Search Mode",
+            "type": "string"
+          },
+          "vector_candidates": {
+            "enum": [
+              "default",
+              "global",
+              "instance"
+            ],
+            "title": "Vector Candidates",
+            "type": "string"
+          },
+          "vector_search_limit": {
+            "enum": [
+              "default",
+              "global",
+              "instance"
+            ],
+            "title": "Vector Search Limit",
+            "type": "string"
+          }
+        },
+        "required": [
+          "search_mode",
+          "vector_search_limit",
+          "evidence_fusion_base_weight",
+          "evidence_raw_chunk_chars",
+          "vector_candidates",
+          "bm25_candidates",
+          "rag_source_mode",
+          "rag_raw_top_k",
+          "rag_raw_max_chars",
+          "rag_raw_neighbor_radius"
+        ],
+        "title": "MemoryRetrievalOrigins",
+        "type": "object"
+      },
+      "MemoryRetrievalValues": {
+        "additionalProperties": false,
+        "properties": {
+          "bm25_candidates": {
+            "maximum": 100.0,
+            "minimum": 3.0,
+            "title": "Bm25 Candidates",
+            "type": "integer"
+          },
+          "evidence_fusion_base_weight": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Evidence Fusion Base Weight",
+            "type": "number"
+          },
+          "evidence_raw_chunk_chars": {
+            "maximum": 10000.0,
+            "minimum": 200.0,
+            "title": "Evidence Raw Chunk Chars",
+            "type": "integer"
+          },
+          "rag_raw_max_chars": {
+            "maximum": 50000.0,
+            "minimum": 0.0,
+            "title": "Rag Raw Max Chars",
+            "type": "integer"
+          },
+          "rag_raw_neighbor_radius": {
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Rag Raw Neighbor Radius",
+            "type": "integer"
+          },
+          "rag_raw_top_k": {
+            "maximum": 20.0,
+            "minimum": 0.0,
+            "title": "Rag Raw Top K",
+            "type": "integer"
+          },
+          "rag_source_mode": {
+            "enum": [
+              "cards",
+              "raw",
+              "both"
+            ],
+            "title": "Rag Source Mode",
+            "type": "string"
+          },
+          "search_mode": {
+            "enum": [
+              "vector",
+              "hybrid",
+              "hybrid_evidence_fusion"
+            ],
+            "title": "Search Mode",
+            "type": "string"
+          },
+          "vector_candidates": {
+            "maximum": 100.0,
+            "minimum": 3.0,
+            "title": "Vector Candidates",
+            "type": "integer"
+          },
+          "vector_search_limit": {
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Vector Search Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "search_mode",
+          "vector_search_limit",
+          "evidence_fusion_base_weight",
+          "evidence_raw_chunk_chars",
+          "vector_candidates",
+          "bm25_candidates",
+          "rag_source_mode",
+          "rag_raw_top_k",
+          "rag_raw_max_chars",
+          "rag_raw_neighbor_radius"
+        ],
+        "title": "MemoryRetrievalValues",
         "type": "object"
       },
       "Message": {
@@ -2097,6 +2567,148 @@
         ]
       }
     },
+    "/api/v1/instances/{name}/settings/memory-retrieval": {
+      "get": {
+        "operationId": "get_instance_memory_retrieval_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceMemoryRetrievalSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Instance was not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid setting value"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Backend is not ready"
+          }
+        },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
+        "summary": "Get instance memory retrieval settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "patch": {
+        "operationId": "patch_instance_memory_retrieval_settings",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryRetrievalInstancePatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InstanceMemoryRetrievalSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Instance was not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid setting value"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Backend is not ready"
+          }
+        },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
+        "summary": "Update instance memory retrieval settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
     "/api/v1/instances/{name}/trace": {
       "get": {
         "description": "直近 1 ターンの回答生成フローを Mermaid flowchart として返す（issue #51）。Gatekeeper / RAG / Context Assembly / Provider / LLM / Memory Write を active・skipped・fallback・error で塗り分ける。developer mode 専用で、TraceNode の metadata（原文クエリ・検索候補など）は返さない。",
@@ -2273,6 +2885,96 @@
         "summary": "Readiness check",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/api/v1/settings/memory-retrieval": {
+      "get": {
+        "operationId": "get_global_memory_retrieval_settings",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlobalMemoryRetrievalSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Backend is not ready"
+          }
+        },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
+        "summary": "Get global memory retrieval settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "patch": {
+        "operationId": "patch_global_memory_retrieval_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryRetrievalGlobalPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GlobalMemoryRetrievalSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Invalid setting value"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Backend is not ready"
+          }
+        },
+        "security": [
+          {
+            "DesktopToken": []
+          }
+        ],
+        "summary": "Update global memory retrieval settings",
+        "tags": [
+          "settings"
         ]
       }
     }

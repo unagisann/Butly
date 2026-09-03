@@ -2,18 +2,26 @@ import {
   cancelChatRequest,
   getCapabilities,
   getChatRequestStatus,
+  getGlobalMemoryRetrievalSettings,
+  getInstanceMemoryRetrievalSettings,
   getInstanceTrace,
   getPreflight,
   getReadiness,
   listInstanceMessages,
   listInstances,
+  patchGlobalMemoryRetrievalSettings,
+  patchInstanceMemoryRetrievalSettings,
 } from "./generated";
 import type {
   CapabilitiesResponse,
   ChatDoneEvent,
   ChatRequest,
   ChatRequestStatus,
+  GlobalMemoryRetrievalSettingsResponse,
   InstanceSummary,
+  InstanceMemoryRetrievalSettingsResponse,
+  MemoryRetrievalGlobalPatch,
+  MemoryRetrievalInstancePatch,
   TraceGraphResponse,
   MessagePage,
   PreflightResponse,
@@ -29,6 +37,22 @@ export interface ApiTransport {
   ping(signal?: AbortSignal): Promise<ReadinessResponse>;
   listInstances(signal?: AbortSignal): Promise<InstanceSummary[]>;
   getMessages(instanceName: string, signal?: AbortSignal): Promise<MessagePage>;
+  getGlobalMemoryRetrievalSettings(
+    signal?: AbortSignal,
+  ): Promise<GlobalMemoryRetrievalSettingsResponse>;
+  patchGlobalMemoryRetrievalSettings(
+    patch: MemoryRetrievalGlobalPatch,
+    signal?: AbortSignal,
+  ): Promise<GlobalMemoryRetrievalSettingsResponse>;
+  getInstanceMemoryRetrievalSettings(
+    instanceName: string,
+    signal?: AbortSignal,
+  ): Promise<InstanceMemoryRetrievalSettingsResponse>;
+  patchInstanceMemoryRetrievalSettings(
+    instanceName: string,
+    patch: MemoryRetrievalInstancePatch,
+    signal?: AbortSignal,
+  ): Promise<InstanceMemoryRetrievalSettingsResponse>;
   getTrace(
     instanceName: string,
     direction?: "TD" | "LR",
@@ -118,6 +142,54 @@ class HttpApiTransport implements ApiTransport {
       signal,
     });
     return unwrap(result, "Message history response was empty.");
+  }
+
+  async getGlobalMemoryRetrievalSettings(
+    signal?: AbortSignal,
+  ): Promise<GlobalMemoryRetrievalSettingsResponse> {
+    const result = await getGlobalMemoryRetrievalSettings({
+      client: this.client,
+      signal,
+    });
+    return unwrap(result, "Global memory retrieval settings response was empty.");
+  }
+
+  async patchGlobalMemoryRetrievalSettings(
+    patch: MemoryRetrievalGlobalPatch,
+    signal?: AbortSignal,
+  ): Promise<GlobalMemoryRetrievalSettingsResponse> {
+    const result = await patchGlobalMemoryRetrievalSettings({
+      client: this.client,
+      body: patch,
+      signal,
+    });
+    return unwrap(result, "Global memory retrieval settings response was empty.");
+  }
+
+  async getInstanceMemoryRetrievalSettings(
+    instanceName: string,
+    signal?: AbortSignal,
+  ): Promise<InstanceMemoryRetrievalSettingsResponse> {
+    const result = await getInstanceMemoryRetrievalSettings({
+      client: this.client,
+      path: { name: instanceName },
+      signal,
+    });
+    return unwrap(result, "Instance memory retrieval settings response was empty.");
+  }
+
+  async patchInstanceMemoryRetrievalSettings(
+    instanceName: string,
+    patch: MemoryRetrievalInstancePatch,
+    signal?: AbortSignal,
+  ): Promise<InstanceMemoryRetrievalSettingsResponse> {
+    const result = await patchInstanceMemoryRetrievalSettings({
+      client: this.client,
+      path: { name: instanceName },
+      body: patch,
+      signal,
+    });
+    return unwrap(result, "Instance memory retrieval settings response was empty.");
   }
 
   async getTrace(

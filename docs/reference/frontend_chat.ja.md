@@ -32,6 +32,24 @@ sidecar の process 状態と HTTP 到達性は別に扱う。ready 後も API �
 通信失敗時は composer を無効化して再接続操作を表示する。instance や入力途中の
 内容は、一時的な切断だけでは破棄しない。
 
+### 記憶検索設定
+
+Chat headerの設定ボタンから、選択中instanceの「記憶検索」dialogを開きます。基本設定は
+検索方式、最終注入カード数、注入内容、RAW最大文字数、RAWへ展開するカード数、同日RAW
+近傍です。詳細設定にはFusion Hybrid/Base重み、Evidence passage文字数、vector / BM25
+候補数を置きます。
+
+各項目は「このインスタンスで上書き」を明示した場合だけinstance値として保存し、解除すると
+PATCHで`null`を送りglobal継承へ戻します。画面はeffective値と継承元を表示します。
+Fusion以外ではFusion欄、cards注入ではRAW欄、vector検索ではBM25候補欄をdisabledにしますが、
+既存の保存値は消しません。RAW上限の`0`は通常入力ではなく「無制限」toggleで設定し、単位は
+文字数であることと肥大化の警告を表示します。近傍は`なし` / `±1`…`±10`を表示し、保存値は
+非負の半径です。
+
+取得・保存には`GET/PATCH /api/v1/instances/{name}/settings/memory-retrieval`を使います。
+保存後は応答を正としてstateを再構築し、backendエラー時は成功表示を出しません。global resource
+は`GET/PATCH /api/v1/settings/memory-retrieval`です。
+
 ## Chat API
 
 履歴は `GET /api/v1/instances/{name}/messages`、通常応答は

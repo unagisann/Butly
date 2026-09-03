@@ -461,6 +461,7 @@ class MemoryBlockBuilder:
                     "truncated": raw_ref["truncated"],
                     "chars": raw_ref["chars"],
                     "top_k": raw_ref.get("top_k"),
+                    "max_chars": raw_ref.get("max_chars"),
                     "neighbor_radius": raw_ref.get("neighbor_radius", 0),
                 }
                 print(
@@ -483,6 +484,10 @@ class MemoryBlockBuilder:
                         "missing": [],
                         "truncated": False,
                         "chars": 0,
+                        "max_chars": _inst_mem.get(
+                            "rag_raw_max_chars",
+                            _sys_mem.get("rag_raw_max_chars", 2500),
+                        ),
                         "neighbor_radius": 0,
                     }
                     print(

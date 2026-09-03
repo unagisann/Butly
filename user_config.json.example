@@ -26,7 +26,11 @@
         "",
         "■ APIキーは設定画面(LLMプロバイダー タブ)から保存できます。",
         "■ reasoning_effort等の対応可否はprovider metadata / 観測cache / manual overrideで解決。",
-        "  モデル名のprefixだけでは判定しません。"
+        "  モデル名のprefixだけでは判定しません。",
+        "",
+        "■ 記憶検索設定は正式Desktop UIまたは /api/v1/settings/memory-retrieval から変更できます。",
+        "  rag_raw_max_chars は文字数上限です。memory.max_raw_tokens とは別物です。",
+        "  rag_raw_max_chars=0 は無制限、rag_raw_top_k=0 は全候補を意味します。"
     ],
 
     "LLM_PROVIDERS": {
@@ -241,7 +245,15 @@
             "summary_char_limit": 200,
             "readable_instances": ["self"],
             "dynamic_threshold": 0.6,
-            "default_use_google_search": false
+            "default_use_google_search": false,
+            "search_mode": "vector",
+            "evidence_fusion_base_weight": 0.7,
+            "evidence_raw_chunk_chars": 1800,
+            "vector_candidates": 20,
+            "bm25_candidates": 20
+        },
+        "memory_probe": {
+            "vector_search_limit": 3
         },
         "backup": {
             "generations": 7,

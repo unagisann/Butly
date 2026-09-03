@@ -40,6 +40,24 @@ Sidecar process state and HTTP reachability are separate. The UI continues to
 probe the API after readiness, disables the composer on transport failure, and
 offers reconnection without discarding the selected instance or draft.
 
+### Memory-retrieval settings
+
+The chat-header settings button opens a dialog for the selected instance. Basic controls cover search mode,
+final card count, injected content, maximum RAW characters, cards expanded to RAW, and same-date RAW
+neighbors. Advanced controls cover the Fusion Hybrid/Base weight, Evidence passage characters, and vector
+and BM25 pool sizes.
+
+A value is stored on the instance only when “Override for this instance” is enabled. Disabling it sends
+`null` and restores global inheritance. The dialog displays effective values and their source. Fusion fields
+are disabled outside Fusion mode, RAW fields are disabled for cards-only injection, and the BM25 pool is
+disabled in vector mode, without deleting preserved values. A zero RAW character limit is available only
+through an explicit Unlimited toggle and is labeled as a character—not token—budget with a growth warning.
+Neighbor choices are displayed as None / ±1 … ±10 while the persisted value is a non-negative radius.
+
+The dialog reads and writes `GET/PATCH /api/v1/instances/{name}/settings/memory-retrieval`. It rebuilds
+local state from the successful backend response and never leaves an optimistic success state after an
+error. The global resource is `GET/PATCH /api/v1/settings/memory-retrieval`.
+
 ## Chat API
 
 History uses `GET /api/v1/instances/{name}/messages`, non-streaming fallback uses

@@ -3,6 +3,7 @@ import json
 import sqlite3
 import math
 import time
+from collections import Counter
 import numpy as np
 from pathlib import Path
 from datetime import datetime
@@ -21,6 +22,9 @@ from butly_core.core.evidence_fusion import (
 from butly_core.llm.embedding_profiles import (
     QUERY,
     apply_prefix as apply_embedding_prefix,
+)
+from butly_core.settings.memory_retrieval import (
+    runtime_memory_retrieval_snapshot,
 )
 
 # ★設定ファイルのインポート
@@ -362,6 +366,14 @@ class ButlyBrain:
         if override_config and "brain" in override_config:
             brain_conf.update(override_config["brain"])
         embedding_conf = self._resolve_embedding_conf(override_config)
+        reranker_config, reranker_config_error = self._resolve_reranker_config(
+            override_config
+        )
+        post_rank_limit = (
+            max(limit, reranker_config.candidate_limit)
+            if reranker_config is not None
+            else limit
+        )
 
         target_instances = self._resolve_target_instances(instance_name, brain_conf)
 
@@ -370,91 +382,62 @@ class ButlyBrain:
                 user_input,
                 retrieval_query,
                 target_instances,
-                limit=limit,
+                limit=post_rank_limit,
                 threshold=threshold,
                 brain_conf=brain_conf,
                 embedding_conf=embedding_conf,
             )
-            raw_reranker = (override_config or {}).get("reranker")
-            if raw_reranker and not (
-                isinstance(raw_reranker, dict)
-                and raw_reranker.get("enabled") is False
-            ):
-                output["diagnostics"]["reranker"] = {
-                    "enabled": True,
-                    "status": "unsupported",
-                    "fallback": True,
-                    "error": "reranker currently supports vector search only",
-                }
-            return output
+            return self._finalize_retrieval(
+                user_input,
+                output,
+                limit=limit,
+                override_config=override_config,
+                reranker_config=reranker_config,
+                reranker_config_error=reranker_config_error,
+            )
 
         if brain_conf.get("search_mode") == "hybrid_evidence_fusion":
             output = self._hybrid_evidence_fusion_search_diag(
                 user_input,
                 target_instances,
                 default_instance=instance_name,
-                limit=limit,
+                limit=post_rank_limit,
                 threshold=threshold,
                 brain_conf=brain_conf,
                 embedding_conf=embedding_conf,
                 query_embedding=query_embedding,
             )
-            raw_reranker = (override_config or {}).get("reranker")
-            if raw_reranker and not (
-                isinstance(raw_reranker, dict)
-                and raw_reranker.get("enabled") is False
-            ):
-                output["diagnostics"]["reranker"] = {
-                    "enabled": True,
-                    "status": "unsupported",
-                    "fallback": True,
-                    "error": (
-                        "reranker cannot be combined with "
-                        "hybrid_evidence_fusion"
-                    ),
-                }
-            return output
+            return self._finalize_retrieval(
+                user_input,
+                output,
+                limit=limit,
+                override_config=override_config,
+                reranker_config=reranker_config,
+                reranker_config_error=reranker_config_error,
+            )
 
         if brain_conf.get("search_mode") == "hybrid":
             output = self._hybrid_search_diag(
                 user_input,
                 target_instances,
-                limit=limit,
+                limit=post_rank_limit,
                 threshold=threshold,
                 brain_conf=brain_conf,
                 embedding_conf=embedding_conf,
                 query_embedding=query_embedding,
             )
-            raw_reranker = (override_config or {}).get("reranker")
-            if raw_reranker and not (
-                isinstance(raw_reranker, dict)
-                and raw_reranker.get("enabled") is False
-            ):
-                diagnostics = output["diagnostics"]
-                diagnostics["effective_candidate_ids"] = list(
-                    diagnostics.get("fused_candidate_ids") or []
-                )
-                diagnostics["reranker"] = {
-                    "enabled": True,
-                    "status": "unsupported",
-                    "fallback": True,
-                    "error": "reranker currently supports vector search only",
-                }
-            return output
+            return self._finalize_retrieval(
+                user_input,
+                output,
+                limit=limit,
+                override_config=override_config,
+                reranker_config=reranker_config,
+                reranker_config_error=reranker_config_error,
+            )
 
         t0 = time.time()
         # 上位 limit 件だけを返す一方、A/B とリコール計測のために候補列
         # （hybrid 側の vector_candidates と同じ深さ）まで順位を残す
-        reranker_config = None
-        reranker_config_error = None
-        try:
-            from butly_core.core.reranker import RerankerConfig
-
-            reranker_config = RerankerConfig.from_mapping(
-                (override_config or {}).get("reranker")
-            )
-        except Exception as exc:
-            reranker_config_error = str(exc)
         if reranker_config is not None:
             candidate_limit = max(limit, reranker_config.candidate_limit)
         else:
@@ -485,73 +468,6 @@ class ButlyBrain:
 
         all_results.sort(key=lambda x: x.get("score", 0), reverse=True)
         candidates = all_results[:candidate_limit]
-        effective_candidates = candidates
-        effective_limit = min(limit, len(candidates))
-        reranker_diag = None
-        if reranker_config_error is not None:
-            reranker_diag = {
-                "enabled": True,
-                "status": "error",
-                "fallback": True,
-                "error": reranker_config_error,
-            }
-        elif reranker_config is not None:
-            reranker_diag = {
-                "enabled": True,
-                "status": "error",
-                "fallback": True,
-                "engine": reranker_config.engine,
-                "model_name": reranker_config.model_name,
-                "connection": reranker_config.connection,
-                "score_threshold": reranker_config.score_threshold,
-                "candidate_count": len(candidates),
-                "selected_count": 0,
-            }
-            if not candidates:
-                reranker_diag.update(
-                    {
-                        "status": "skipped",
-                        "fallback": False,
-                        "reason": "no_candidates",
-                        "latency_ms": 0,
-                    }
-                )
-            else:
-                try:
-                    reranker = self._get_reranker(reranker_config)
-                    reranked = reranker.rerank(
-                        user_input,
-                        candidates,
-                        top_n=min(limit, len(candidates)),
-                    )
-                    effective_candidates = reranked["results"]
-                    effective_limit = len(reranked["selected_ids"])
-                    reranker_diag.update(
-                        {
-                            "status": "completed",
-                            "fallback": False,
-                            "selected_count": len(reranked["selected_ids"]),
-                            "selected_candidate_ids": reranked["selected_ids"],
-                            "scores": reranked.get("scores") or [],
-                            "latency_ms": reranked["latency_ms"],
-                            "token_usage": reranked["token_usage"],
-                            "completion_metadata": reranked[
-                                "completion_metadata"
-                            ],
-                        }
-                    )
-                except Exception as exc:
-                    reranker_diag.update(
-                        {
-                            "error": str(exc),
-                            "latency_ms": getattr(exc, "latency_ms", None),
-                            "token_usage": getattr(exc, "token_usage", None),
-                            "completion_metadata": getattr(
-                                exc, "completion_metadata", None
-                            ),
-                        }
-                    )
-        top = effective_candidates[:effective_limit]
 
         all_raw_scores.sort(reverse=True)
         all_final_scores.sort(reverse=True)
@@ -572,17 +488,197 @@ class ButlyBrain:
             "vector_candidate_ids": candidate_ids,
             "bm25_candidate_ids": [],
             "fused_candidate_ids": candidate_ids,
-            "effective_candidate_ids": [
-                str(r.get("id")) for r in effective_candidates
-            ],
             "latency_ms": int((time.time() - t0) * 1000),
         }
-        if reranker_diag is not None:
-            diagnostics["reranked_candidate_ids"] = [
-                str(r.get("id")) for r in effective_candidates
-            ]
+        return self._finalize_retrieval(
+            user_input,
+            {"results": candidates, "diagnostics": diagnostics},
+            limit=limit,
+            override_config=override_config,
+            reranker_config=reranker_config,
+            reranker_config_error=reranker_config_error,
+        )
+
+    @staticmethod
+    def _resolve_reranker_config(override_config):
+        try:
+            from butly_core.core.reranker import RerankerConfig
+
+            return (
+                RerankerConfig.from_mapping(
+                    (override_config or {}).get("reranker")
+                ),
+                None,
+            )
+        except Exception as exc:
+            return None, str(exc)
+
+    @staticmethod
+    def _candidate_identity(row: dict) -> tuple[str, str]:
+        return str(row.get("source_instance") or ""), str(row.get("id"))
+
+    def _validate_reranker_output(
+        self,
+        candidates: list[dict],
+        reranked: dict,
+        reranker_config,
+    ) -> tuple[list[dict], list[str]]:
+        from butly_core.core.reranker import RerankerError
+
+        if not isinstance(reranked, dict):
+            raise RerankerError("reranker returned a non-mapping result")
+        rows = reranked.get("results")
+        selected_ids = reranked.get("selected_ids")
+        if not isinstance(rows, list) or not rows:
+            raise RerankerError("reranker returned an empty result order")
+        if not isinstance(selected_ids, list):
+            raise RerankerError("reranker selected_ids must be a list")
+        if any(not isinstance(row, dict) for row in rows):
+            raise RerankerError("reranker results must contain mappings")
+        input_ids = Counter(self._candidate_identity(row) for row in candidates)
+        output_ids = Counter(self._candidate_identity(row) for row in rows)
+        if input_ids != output_ids:
+            raise RerankerError(
+                "reranker result order must contain every input candidate exactly once"
+            )
+        normalized_selected_ids = [str(value) for value in selected_ids]
+        candidate_ids = {str(row.get("id")) for row in candidates}
+        if (
+            len(normalized_selected_ids) != len(set(normalized_selected_ids))
+            or any(value not in candidate_ids for value in normalized_selected_ids)
+        ):
+            raise RerankerError(
+                "reranker selected_ids must be unique input candidate IDs"
+            )
+        if (
+            not selected_ids
+            and not (
+                reranker_config.engine == "cross_encoder"
+                and reranker_config.score_threshold is not None
+            )
+        ):
+            raise RerankerError("reranker returned no selected candidates")
+        return rows, normalized_selected_ids
+
+    def _finalize_retrieval(
+        self,
+        query: str,
+        output: dict,
+        *,
+        limit: int,
+        override_config: dict = None,
+        reranker_config=None,
+        reranker_config_error: str = None,
+    ) -> dict:
+        candidates = list(output.get("results") or [])
+        diagnostics = dict(output.get("diagnostics") or {})
+        pre_reranker_ids = [str(row.get("id")) for row in candidates]
+        configured_fused_ids = list(
+            diagnostics.get("fused_candidate_ids") or pre_reranker_ids
+        )
+        diagnostics["settings"] = runtime_memory_retrieval_snapshot(
+            SYSTEM_CONFIG,
+            override_config,
+        )
+        diagnostics["settings"]["vector_search_limit"] = limit
+        diagnostics.setdefault("reranked_candidate_ids", [])
+
+        if reranker_config_error is not None:
+            diagnostics["effective_candidate_ids"] = configured_fused_ids
+            diagnostics["reranker"] = {
+                "enabled": True,
+                "status": "error",
+                "fallback": True,
+                "model_name": None,
+                "latency_ms": None,
+                "selected_count": 0,
+                "error": reranker_config_error,
+            }
+            return {"results": candidates[:limit], "diagnostics": diagnostics}
+
+        if reranker_config is None:
+            diagnostics["effective_candidate_ids"] = configured_fused_ids
+            return {"results": candidates[:limit], "diagnostics": diagnostics}
+
+        diagnostics["fused_candidate_ids"] = pre_reranker_ids
+        reranker_diag = {
+            "enabled": True,
+            "status": "error",
+            "fallback": True,
+            "engine": reranker_config.engine,
+            "model_name": reranker_config.model_name,
+            "connection": reranker_config.connection,
+            "score_threshold": reranker_config.score_threshold,
+            "candidate_count": len(candidates),
+            "selected_count": 0,
+            "latency_ms": None,
+            "error": None,
+        }
+        if not candidates:
+            reranker_diag.update(
+                {
+                    "status": "skipped",
+                    "fallback": False,
+                    "reason": "no_candidates",
+                    "latency_ms": 0,
+                }
+            )
+            diagnostics["effective_candidate_ids"] = []
             diagnostics["reranker"] = reranker_diag
-        return {"results": top, "diagnostics": diagnostics}
+            return {"results": [], "diagnostics": diagnostics}
+
+        effective_candidates = candidates
+        effective_limit = min(limit, len(candidates))
+        try:
+            reranker = self._get_reranker(reranker_config)
+            reranked = reranker.rerank(
+                query,
+                candidates,
+                top_n=effective_limit,
+            )
+            effective_candidates, selected_ids = self._validate_reranker_output(
+                candidates,
+                reranked,
+                reranker_config,
+            )
+            effective_limit = len(selected_ids)
+            reranker_diag.update(
+                {
+                    "status": "completed",
+                    "fallback": False,
+                    "selected_count": len(selected_ids),
+                    "selected_candidate_ids": selected_ids,
+                    "scores": reranked.get("scores") or [],
+                    "latency_ms": reranked.get("latency_ms"),
+                    "token_usage": reranked.get("token_usage"),
+                    "completion_metadata": reranked.get(
+                        "completion_metadata"
+                    ),
+                }
+            )
+        except Exception as exc:
+            reranker_diag.update(
+                {
+                    "error": str(exc),
+                    "latency_ms": getattr(exc, "latency_ms", None),
+                    "token_usage": getattr(exc, "token_usage", None),
+                    "completion_metadata": getattr(
+                        exc,
+                        "completion_metadata",
+                        None,
+                    ),
+                }
+            )
+        effective_ids = [str(row.get("id")) for row in effective_candidates]
+        diagnostics["reranked_candidate_ids"] = (
+            effective_ids if reranker_diag["status"] == "completed" else []
+        )
+        diagnostics["effective_candidate_ids"] = effective_ids
+        diagnostics["reranker"] = reranker_diag
+        return {
+            "results": effective_candidates[:effective_limit],
+            "diagnostics": diagnostics,
+        }
 
     def _get_reranker(self, config):
         """Create the selected local or provider-backed reranker."""

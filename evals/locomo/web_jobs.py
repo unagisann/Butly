@@ -773,12 +773,6 @@ def validate_job_request(
             "reranker_max_candidate_chars must be between 100 and 10000"
         )
     normalized["reranker_max_candidate_chars"] = reranker_max_chars
-    if (
-        "reranker" in normalized["role_models"]
-        and normalized["search_mode"] != "vector"
-    ):
-        raise EvaluationJobError("reranker currently requires search_mode=vector")
-
     df_ratio = normalized.get("bm25_max_df_ratio", 0.5)
     if isinstance(df_ratio, bool) or not isinstance(df_ratio, (int, float)):
         raise EvaluationJobError("bm25_max_df_ratio must be a number")
@@ -1021,11 +1015,6 @@ def validate_dialogue_ab_request(
     normalized["role_models"] = _normalize_role_models(
         normalized.get("role_models")
     )
-    if (
-        "reranker" in normalized["role_models"]
-        and normalized["search_mode"] != "vector"
-    ):
-        raise EvaluationJobError("reranker currently requires search_mode=vector")
     _validate_evidence_fusion_settings(normalized)
     return normalized
 

@@ -219,10 +219,25 @@ thin wrapper that calls `get_recent_snapshot()`.
 | **Skip feature** | When `skip_knowledge_generation = true`, Stage 2 is skipped entirely. RAW data remains in 1_integrated for later batch processing with a higher-capability model |
 | **Schema** | `knowledge_cards` table (see below) |
 | **Embedding** | `title + tags + summary` embedded via `AI_CONFIG["embedding"]["model_name"]` → stored as BLOB. The **embedding profile**'s document prefix is applied first (see below) |
-| **Search** | `ButlyBrain.search_memories()` re-ranks by cosine similarity between query and embedding_blob. The query side gets the **query prefix** |
+| **Search** | `brain.search_mode` selects vector, vector+BM25 RRF, or Hybrid+Evidence Fusion. Fusion's Hybrid/Base weight is `evidence_fusion_base_weight` (default 0.70). Query embeddings receive the **query prefix** |
 | **Injected by Gatekeeper** | Whenever `need` is set (tier-independent): RAG block built from MemoryProbe candidates, injected as LONG-TERM MEMORY block. The injected source is controlled by `memory.rag_source_mode`: `"cards"` (default, cards only) / `"raw"` (original conversation excerpts only) / `"both"` (cards + excerpts). For raw/both, each card's `source_files` is lazily resolved back to the RAW conversation JSON and excerpts are injected up to `memory.rag_raw_max_chars` characters in total (default 2500, 0 = unlimited, oversized files are greedy-skipped) — parent-document retrieval: cards act as the search index, the original text carries the facts. `memory.rag_raw_top_k` limits how many top cards get raw (default 1 = only the most relevant card's raw, the rest as summaries; 0/negative = every card). When `memory.rag_raw_neighbor_radius` is at least 1 (default 0 = disabled), N files before and after each exact `source_files` reference within the same `source_date` are added as inferred neighbors. Exact provenance is admitted to the character budget first; inferred neighbors follow. Falls back to card injection when nothing can be resolved |
 | **Post-processing** | Processed JSONs moved to `memory_archive/2_knowledgeized/{date}/` |
 | **Backup** | Rotation backup saved to `butly_core/db_backups/` (generations: `backup.generations`) |
+
+#### Retrieval ranking and the post-reranker
+
+Layer 1 is split into candidate generation, primary ranking, an optional post-reranker, and final selection
+by `memory_probe.vector_search_limit`. The primary order is cosine plus time decay for vector mode,
+vector/BM25 RRF for hybrid mode, and an additional Episode/RAW passage fusion for
+`hybrid_evidence_fusion`. `brain.vector_candidates` and `bm25_candidates` size the pool; they are not the
+final injection count.
+
+The reranker is off by default. When enabled it receives only the post-primary-ranking candidate list, and
+candidate text construction is separated behind a replaceable `candidate_text_builder`. Its order is used
+only on success; exceptions, an empty order, missing candidates, or unknown IDs fail open to the primary
+order. Diagnostics retain vector, BM25, hybrid, Fusion, reranked, and effective candidate IDs together with
+reranker status, fallback, model, latency, counts, error, and the effective-settings snapshot. RAW
+diagnostics include actual characters, limit, file count, neighbor radius, and truncation.
 
 **knowledge_cards table — key columns:**
 

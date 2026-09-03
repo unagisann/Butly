@@ -51,8 +51,10 @@ The start form covers:
 - an optional Memory Reranker: either the recommended local Cross-Encoder
   (mMiniLMv2 or GTE multilingual) or a comparison-only LLM Connection, plus
   candidate-pool size (20 by default), per-candidate cap, batch size, and an
-  optional relevance threshold; it injects zero to three reordered vector
-  candidates (not combinable with Hybrid or Dual Query in version 1);
+  optional relevance threshold; a shared post-stage reorders the primary
+  candidates produced by vector, hybrid, dual query, or Evidence Fusion and
+  injects zero to three. No configuration is identity; failure restores the
+  primary order;
 - the embedding prefix convention (defaults to `auto`, inferred from the model
   name — see
   [memory_lifecycle.md](memory_lifecycle.md#embedding-profiles-per-model-input-conventions));
@@ -105,6 +107,9 @@ Because the latter has no QA-time saved query, `dual_query` generates one with
 the source run's Gatekeeper settings. Enabling the same reranker in a full LoCoMo run puts it in the QA
 retrieval path, so final official/semantic answer quality and retrieval metrics
 remain attributable in one run.
+The official Desktop UI exposes retrieval, Fusion, and RAW-injection settings,
+but does not select a reranker model yet. The reranker controls here remain an
+evaluation-only surface for comparing candidate models.
 
 The full-run `Search mode` also offers `hybrid_evidence_fusion`. It lazily
 rescores only the normal hybrid top N (20 by default), combines hybrid and

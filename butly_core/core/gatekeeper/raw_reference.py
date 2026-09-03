@@ -213,9 +213,10 @@ def resolve_raw_reference(
     Returns
     -------
     dict | None
-        {"text": str, "files": list[str], "missing": list[str],
+         {"text": str, "files": list[str], "missing": list[str],
          "truncated": bool, "chars": int, "top_k": int|None,
-         "neighbor_radius": int, "inferred_neighbor_files": list[str]}
+         "max_chars": int, "neighbor_radius": int,
+         "inferred_neighbor_files": list[str]}
         参照可能な RAW が 1 件も無ければ None。
     """
     instances_dir = Path(instances_dir)
@@ -290,5 +291,6 @@ def resolve_raw_reference(
         "truncated": truncated,
         "chars": len(body),
         "top_k": top_k,
+        "max_chars": max_chars,
         "neighbor_radius": neighbor_radius,
     }

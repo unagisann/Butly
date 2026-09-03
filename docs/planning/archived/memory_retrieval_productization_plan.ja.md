@@ -1,8 +1,21 @@
 # 記憶検索・RAW注入の本体反映計画
 
-> **ステータス: 計画策定（未実装）。** LoCoMoで整備したHybrid Evidence Fusionと
-> RAW注入設定をButly本体へ持ち込み、後段rerankerを将来追加できる境界までを対象とする。
-> 起票: 2026-09-04
+> **ステータス: 実装完了（2026-09-04）。** LoCoMoで整備したHybrid Evidence Fusionと
+> RAW注入設定をButly本体へ反映し、後段rerankerを将来追加できる共通境界まで実装した。
+> 起票・完了: 2026-09-04
+
+## 実装結果
+
+- 記憶検索10項目をdefaults／global／instance／effective／originに分けて解決し、
+  global・instance別のtyped GET/PATCH APIとatomic persistenceを追加した。
+- vector／dual query／hybrid／Evidence Fusionのprimary候補を共通post-rerankerへ渡し、
+  未設定identity、不正出力・例外時fail-open、候補列診断を統一した。rerankerは既定OFFのまま。
+- 正式Desktop UIへインスタンス別の基本／詳細フォーム、継承解除、RAWの0値、依存fieldの
+  disabled表示、backend応答を正とする保存処理を追加した。
+- Traceへ実効設定snapshot、RAWの実文字数・上限・ファイル・truncationを残し、
+  OpenAPI、生成client、設定例、日英の正本文書、unit／contract／UIテストを同期した。
+- グローバル既定`search_mode=vector`とFusion重み`0.70`は維持した。実instanceのopt-inと
+  全体既定の昇格判断は、利用者が対象を選んだ後の運用・観測事項として本変更には含めない。
 
 ## 0. 結論
 
@@ -49,11 +62,11 @@ vector / BM25 / hybrid → Evidence Fusion 70/30 → post-reranker (既定OFF) �
 
 関連する既存計画・評価記録:
 
-- [検索改修計画](retrieval_hybrid_search_plan.ja.md)
-- [RAW注入の見直し計画](raw_injection_plan.ja.md)
+- [検索改修計画](../active/retrieval_hybrid_search_plan.ja.md)
+- [RAW注入の見直し計画](../active/raw_injection_plan.ja.md)
 - [RAG評価・改善レポート](../../history/rag_evaluation_report.ja.md)
-- [正式フロントエンド移行計画](frontend_migration_plan.ja.md)
-- [pydantic-settings設定統合計画](pydantic_settings_plan.ja.md)
+- [正式フロントエンド移行計画](../active/frontend_migration_plan.ja.md)
+- [pydantic-settings設定統合計画](../active/pydantic_settings_plan.ja.md)
 
 ## 2. 目標
 

@@ -426,12 +426,16 @@ class TestRerankerWebConfig:
             },
         }
 
-    def test_validate_rejects_hybrid_with_reranker(self, tmp_path):
+    def test_validate_accepts_hybrid_with_post_reranker(self, tmp_path):
         request = _request(search_mode="hybrid")
         request["role_models"]["reranker"] = self._reranker_role()
 
-        with pytest.raises(EvaluationJobError, match="requires search_mode=vector"):
-            validate_job_request(request, output_dir=tmp_path)
+        normalized = validate_job_request(request, output_dir=tmp_path)
+
+        assert normalized["search_mode"] == "hybrid"
+        assert normalized["role_models"]["reranker"]["model_name"] == (
+            "TEE/gemma4-31b"
+        )
 
     def test_validate_requires_connection_for_custom_reranker(
         self, tmp_path

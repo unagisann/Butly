@@ -81,6 +81,12 @@ def test_contract_schemas_are_published(spec):
         "PreflightResponse",
         "EmbeddingPreflight",
         "ChatRequestStatus",
+        "MemoryRetrievalValues",
+        "MemoryRetrievalOrigins",
+        "MemoryRetrievalGlobalPatch",
+        "MemoryRetrievalInstancePatch",
+        "GlobalMemoryRetrievalSettingsResponse",
+        "InstanceMemoryRetrievalSettingsResponse",
     ]:
         assert name in schemas, f"components.schemas に {name} がない"
 
@@ -111,6 +117,24 @@ def test_phase2_chat_lifecycle_operations_are_published(spec):
     assert "cancellable" in status["properties"]
     embedding = spec["components"]["schemas"]["EmbeddingPreflight"]
     assert "dimension" in embedding["properties"]
+
+
+def test_memory_retrieval_settings_operations_are_published(spec):
+    paths = spec["paths"]
+    global_path = "/api/v1/settings/memory-retrieval"
+    instance_path = "/api/v1/instances/{name}/settings/memory-retrieval"
+    assert paths[global_path]["get"]["operationId"] == (
+        "get_global_memory_retrieval_settings"
+    )
+    assert paths[global_path]["patch"]["operationId"] == (
+        "patch_global_memory_retrieval_settings"
+    )
+    assert paths[instance_path]["get"]["operationId"] == (
+        "get_instance_memory_retrieval_settings"
+    )
+    assert paths[instance_path]["patch"]["operationId"] == (
+        "patch_instance_memory_retrieval_settings"
+    )
 
 
 def test_api_error_requires_all_envelope_keys(spec):
