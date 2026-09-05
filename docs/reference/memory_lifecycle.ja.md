@@ -397,6 +397,29 @@ instances/{name}/
 
 ## Embedding プロファイル（モデル別の入力規約）
 
+### 通常チャット・評価 QA の一時的な埋め込み障害
+
+Brain と Evidence Fusion のクエリ／文書埋め込みは共通の
+`butly_core/llm/embedding_retry.py` を使う。HTTP 429 / 500 / 502 / 503 / 504 は
+最大 3 試行（追加 2 回）。待機は 1 秒、2 秒に各 0～0.25 秒の jitter を加える。
+既定値は `butly_core/settings/defaults.py:RUNTIME_EMBEDDING_RETRY` が正本。
+1 件の埋め込みあたりアプリ側の追加待機は最大 3.5 秒で、SDK 内部の再試行や
+通信時間、複数文書の処理時間を含むターン全体のタイムアウトではない。
+認証・入力不正などの恒久エラーは再試行しない。
+
+回復すれば元の検索処理を続行し、回復しなければ既存の検索フォールバックへ戻る。
+Fusion のクエリで一時エラーの試行上限に達した場合は、Brain で同じクエリを
+再生成せず BM25 へ戻る。Fusion の文書側で一時エラーが回復しない場合も、残りの
+文書への API 呼び出しを打ち切って元の hybrid 順位を使う。失敗ベクトルはキャッシュしない。
+
+`embedding` / `evidence_embedding` のトレース metadata に `attempts`、`retry_count`、
+`rate_limit_count`、`retry_wait_ms`、`retry_exhausted` を記録する。リトライと
+フォールバックは warning ログにも残す。正式評価では、ジョブの完了だけでなく
+検索フォールバックの有無も確認する。Sleeptime の長めのバックオフと
+埋め込み失敗時のカード保存禁止は従来どおり。
+
+### 入力規約
+
 検索用 embedding モデルの多くは、クエリ側と文書側で別の prefix を要求する。付け忘れると
 埋め込みが 1 つの円錐に潰れ、cosine の識別力が失われる（実測: prefix 無しの nomic では
 **カード同士の cosine 平均 0.756 > 質問と正解カードの cosine 平均 0.733** ＝無関係なカード
