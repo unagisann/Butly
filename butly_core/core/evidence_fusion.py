@@ -27,6 +27,7 @@ from butly_core.llm.embedding_profiles import apply_prefix
 from butly_core.llm.embedding_profiles import fingerprint as embedding_fingerprint
 from butly_core.llm.embedding_profiles import resolve_profile
 from butly_core.llm.factory import ProviderFactory
+from butly_core.llm.embedding_retry import embed_with_retry, transient_embedding_status
 from butly_core.trace.collector import record_llm_call, usage_metadata
 
 
@@ -219,8 +220,11 @@ def default_embedder(
         prefixed = apply_prefix(text, embedding_config, kind)
         started = time.monotonic()
         error = None
+        retry_diag = {}
         try:
-            vector = provider.embed(prefixed, config=embedding_config)
+            vector = embed_with_retry(
+                lambda: provider.embed(prefixed, config=embedding_config), retry_diag
+            )
             if vector is None:
                 raise EvidenceFusionError(
                     "embedding provider returned no vector"
@@ -237,7 +241,7 @@ def default_embedder(
                 duration_ms=int((time.monotonic() - started) * 1000),
                 prompt_chars=len(prefixed),
                 error=error,
-                metadata=usage_metadata(provider),
+                metadata={**(usage_metadata(provider) or {}), **retry_diag},
             )
 
     return embed
@@ -539,6 +543,8 @@ class RuntimeEvidenceFusion:
                     )
                     score = cosine(query_vector, vector)
                 except Exception as exc:
+                    if transient_embedding_status(exc) is not None:
+                        return self._fallback(original_ids, top_n, started, exc)
                     document_errors[f"{type(exc).__name__}: {exc}"[:500]] += 1
                     continue
                 if score is not None and (
@@ -621,6 +627,7 @@ class RuntimeEvidenceFusion:
         started: float,
         error: Any,
     ) -> dict[str, Any]:
+        logger.warning("Evidence Fusion fallback: %s", type(error).__name__)
         return {
             "status": "fallback",
             "fallback": True,

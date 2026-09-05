@@ -400,6 +400,30 @@ instances/{name}/
 
 ## Embedding profiles (per-model input conventions)
 
+### Transient embedding failures in chat and evaluation QA
+
+Brain and Evidence Fusion share `butly_core/llm/embedding_retry.py` for query and
+document embeddings. HTTP 429 / 500 / 502 / 503 / 504 receive at most three attempts
+(two retries), waiting 1 then 2 seconds plus 0–0.25 seconds of jitter per wait.
+Defaults live in `settings/defaults.py:RUNTIME_EMBEDDING_RETRY`. The maximum added
+application backoff is 3.5 seconds per embedding; this is not a turn timeout and
+excludes SDK retries, network time, and processing multiple documents. Permanent
+authentication and input errors are not retried.
+
+Recovery continues the original search; terminal failures use existing fallbacks.
+When a transient Fusion query failure exhausts attempts, Brain does not request
+the same embedding again and falls back to BM25. A terminal transient document
+failure stops remaining evidence API calls and preserves the original hybrid
+ranking. Failed vectors are never cached.
+
+Trace metadata for `embedding` and `evidence_embedding` includes `attempts`,
+`retry_count`, `rate_limit_count`, `retry_wait_ms`, and `retry_exhausted`. Retries
+and search fallbacks also emit warning logs. Formal evaluations should check
+retrieval fallbacks in addition to job completion. Sleeptime keeps its longer
+backoff and refusal to save cards without embeddings.
+
+### Input conventions
+
 Most retrieval embedding models require different prefixes on the query side and the
 document side. Omitting them collapses every vector into one cone and destroys cosine
 discrimination (measured: with nomic and no prefixes, **card-to-card cosine averaged

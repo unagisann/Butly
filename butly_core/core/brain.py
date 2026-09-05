@@ -3,6 +3,7 @@ import json
 import sqlite3
 import math
 import time
+import logging
 from collections import Counter
 import numpy as np
 from pathlib import Path
@@ -10,6 +11,7 @@ from datetime import datetime
 from typing import Optional
 
 from butly_core.trace.collector import record_llm_call
+from butly_core.llm.embedding_retry import embed_with_retry, transient_embedding_status
 from butly_core.core.chronos import resolve_now
 from butly_core.core.json_extract import extract_json_str
 from butly_core.core import hybrid_search
@@ -37,6 +39,9 @@ except ImportError:
     sys.path.append(str(Path(__file__).resolve().parent.parent))
     from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
     from butly_core import prompts
+
+
+logger = logging.getLogger(__name__)
 
 
 def _count_retrieval_sources(rows: list) -> dict:
@@ -173,9 +178,12 @@ class ButlyBrain:
         # cosine の識別力が落ちるため、モデルに応じた prefix を必ず通す。
         text = apply_embedding_prefix(text, embedding_conf, kind)
         t0 = time.time()
+        retry_diag = {}
         try:
             provider = self._get_provider(embedding_conf)
-            result = provider.embed(text, config=embedding_conf)
+            result = embed_with_retry(
+                lambda: provider.embed(text, config=embedding_conf), retry_diag
+            )
             from butly_core.trace.collector import usage_metadata
 
             record_llm_call(
@@ -184,11 +192,12 @@ class ButlyBrain:
                 connection_id=embedding_conf.get("connection", ""),
                 duration_ms=int((time.time() - t0) * 1000),
                 prompt_chars=len(text) if text else 0,
-                metadata=usage_metadata(provider),
+                metadata={**(usage_metadata(provider) or {}), **retry_diag},
             )
             return result
         except Exception as e:
-            print(f"[Brain] Embedding Error: {e}")
+            logger.warning("Brain embedding unavailable; using search fallback: %s",
+                           type(e).__name__)
             record_llm_call(
                 purpose="embedding",
                 model=embedding_conf.get("model_name", ""),
@@ -196,6 +205,7 @@ class ButlyBrain:
                 duration_ms=int((time.time() - t0) * 1000),
                 prompt_chars=len(text) if text else 0,
                 error=str(e),
+                metadata={**retry_diag, "fallback": True},
             )
             return None
 
@@ -1146,6 +1156,7 @@ class ButlyBrain:
             )
             return {"results": reordered[:limit], "diagnostics": diagnostics}
         except Exception as exc:
+            logger.warning("Evidence Fusion fallback: %s", type(exc).__name__)
             if base_output is None:
                 base_output = self._hybrid_search_diag(
                     user_input,
@@ -1154,6 +1165,8 @@ class ButlyBrain:
                     threshold=threshold,
                     brain_conf=brain_conf,
                     embedding_conf=embedding_conf,
+                    # Do not repeat an exhausted query embedding in Brain.
+                    query_embedding=([] if transient_embedding_status(exc) else None),
                 )
             results = list(base_output.get("results") or [])
             diagnostics = dict(base_output.get("diagnostics") or {})

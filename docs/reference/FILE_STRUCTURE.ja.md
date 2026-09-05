@@ -1046,6 +1046,12 @@ LLM 呼び出し層の例外。`EmbeddingError` / `EmbeddingNotSupported` / `Emb
 `embed()` は失敗を `None` ではなく例外で伝える契約になっている（`None` を返すと 429 が正常系
 として扱われ、リトライに届かないままベクトル欠損カードが保存される）。
 
+### `butly_core/llm/embedding_retry.py`
+
+Brain と Evidence Fusion の実行時埋め込みで共用する短い指数バックオフ。
+明示的な一時 HTTP エラーだけを再試行し、jitter・試行上限・呼び出し単位の
+診断情報を提供する。既定値は `settings/defaults.py:RUNTIME_EMBEDDING_RETRY`。
+
 ---
 
 ### `butly_core/llm/protocols/`

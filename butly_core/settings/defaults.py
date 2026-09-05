@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+RUNTIME_EMBEDDING_RETRY = {
+    "max_attempts": 3,
+    "initial_delay_seconds": 1.0,
+    "max_delay_seconds": 2.0,
+    "jitter_seconds": 0.25,
+}
+
 AI_CONFIG = {
     "chat": {
         "connection": "google",
