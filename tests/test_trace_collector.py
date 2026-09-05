@@ -199,7 +199,9 @@ class TestRecordPoints:
         assert calls[0]["error"] is None
 
     def test_brain_embedding_records(self, collection, tmp_path):
+        from butly_core.config import AI_CONFIG
         from butly_core.core.brain import ButlyBrain
+        from butly_core.llm.embedding_profiles import QUERY, apply_prefix
 
         brain = ButlyBrain(tmp_path)
         provider = MagicMock()
@@ -207,9 +209,12 @@ class TestRecordPoints:
         with patch.object(brain, "_get_provider", return_value=provider):
             assert brain.get_embedding("テキスト") == [0.1, 0.2]
 
+        # prompt_chars は実際に送った文字列の長さ。プロファイルが prefix を
+        # 付けるモデル (gemini-embedding-2 等) では素のテキストより長くなる。
+        sent = apply_prefix("テキスト", AI_CONFIG.get("embedding", {}), QUERY)
         calls = [c for c in get_collected() if c["purpose"] == "embedding"]
         assert len(calls) == 1
-        assert calls[0]["prompt_chars"] == len("テキスト")
+        assert calls[0]["prompt_chars"] == len(sent)
 
     def test_brain_embedding_records_error(self, collection, tmp_path):
         from butly_core.core.brain import ButlyBrain

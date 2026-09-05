@@ -20,6 +20,7 @@ from butly_core.llm.connections import (
     get_registry,
     register_connection,
 )
+from butly_core.llm.errors import EmbeddingNotSupported
 from butly_core.llm.protocols.openai_compat import OpenAICompatAdapter
 
 
@@ -148,12 +149,16 @@ class TestEmbedAcrossConnections:
         args, kwargs = mock_openai_client.embeddings.create.call_args
         assert kwargs["model"] == "text-embedding-3-large"
 
-    def test_xai_embed_returns_none(self):
-        """xAI は embeddings_supported=False なので client に触れず None を返す。"""
+    def test_xai_embed_raises_not_supported(self):
+        """xAI は embeddings_supported=False なので client に触れず例外を出す。
+
+        None を返すと呼び出し側が「ベクトル無しで保存」してしまうため、
+        設定ミスは必ず例外で気づかせる。
+        """
         adapter = OpenAICompatAdapter(connection=get_connection("xai"))
         # client は未設定 (もし呼ばれたら例外になる)
-        result = adapter.embed("text")
-        assert result is None
+        with pytest.raises(EmbeddingNotSupported):
+            adapter.embed("text")
 
     def test_ollama_embed_uses_default(self, mock_openai_client):
         adapter = OpenAICompatAdapter(connection=get_connection("ollama"))

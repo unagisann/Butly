@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
-from dotenv import load_dotenv
 import numpy as np
 
 from butly_core.core.json_extract import extract_json_array, extract_json_str
@@ -17,6 +16,7 @@ from butly_core.llm.embedding_profiles import (
     DOCUMENT,
     apply_prefix as apply_embedding_prefix,
 )
+from butly_core.llm.errors import EmbeddingUnavailable
 
 # ★設定ファイルのインポート
 try:
@@ -241,22 +241,34 @@ class ButlySleeptime:
         return AI_CONFIG["embedding"]
 
     def generate_embedding(self, text, instance_name=None, kind=DOCUMENT):
+        """埋め込みを 1 件生成する。取得できなければ EmbeddingUnavailable。
+
+        None を返さないのは、呼び出し側が「ベクトル無しでも保存する」判断を
+        できないようにするため。ベクトル欠損カードは RAG から永久に見えず、
+        RAW も処理済みへ移動されるため気づけない。
+        """
+        from butly_core.llm.factory import ProviderFactory
+
+        emb_conf = self.resolve_embedding_conf(instance_name)
+        # 書き込み側は文書 (search_document:)、検索側はクエリ
+        # (search_query:) と prefix が異なる。揃っていないと保存済み
+        # ベクトルとクエリベクトルが別空間になる。
+        text = apply_embedding_prefix(text, emb_conf, kind)
         try:
-            from butly_core.llm.factory import ProviderFactory
-            emb_conf = self.resolve_embedding_conf(instance_name)
-            # 書き込み側は文書 (search_document:)、検索側はクエリ
-            # (search_query:) と prefix が異なる。揃っていないと保存済み
-            # ベクトルとクエリベクトルが別空間になる。
-            text = apply_embedding_prefix(text, emb_conf, kind)
             # Phase 2: dict 全体 (connection + model_name) を Factory に渡す
             provider = ProviderFactory.create(emb_conf)
-
-            result = self._robust_api_call(lambda: provider.embed(text, config=emb_conf))
+            result = self._robust_api_call(
+                lambda: provider.embed(text, config=emb_conf)
+            )
             self._track_llm_usage(provider)
-            return result
         except Exception as e:
-            print(f"[Embedding Error] {e}")
-            return None
+            raise EmbeddingUnavailable(f"embedding 生成に失敗: {e}") from e
+        if not result:
+            raise EmbeddingUnavailable(
+                "embedding 生成に失敗: リトライ上限まで応答が得られなかった "
+                f"(model={emb_conf.get('model_name', '?')})"
+            )
+        return result
 
     def _get_next_id(self, db_type, date_str, instance_db_path):
         conn = sqlite3.connect(instance_db_path)
@@ -380,14 +392,42 @@ class ButlySleeptime:
             return [], "no_cards"
         return cards, "ok"
 
+    def card_summary_text(self, card):
+        """DB に書く summary 本文。Unclassified は分類不能理由を前置きする。
+
+        埋め込み文面と保存文面を必ず同じにするため、両方からここを通す。
+        """
+        summary_text = card["summary"]
+        if card["category"] == "Unclassified" and "reason" in card:
+            summary_text = f"【分類不能理由: {card['reason']}】\n{summary_text}"
+        return summary_text
+
+    def build_card_embedding(self, card, db_type):
+        """カード 1 枚分のベクトルを返す。失敗時は EmbeddingUnavailable。"""
+        from butly_core.core.card_content import (
+            build_embed_text,
+            coerce_card_fields,
+        )
+
+        card = coerce_card_fields(card)
+        text = build_embed_text(
+            card["title"], card["tags"], self.card_summary_text(card)
+        )
+        return self.generate_embedding(text, instance_name=db_type)
+
     def insert_knowledge(
         self, card, db_id, db_type, raw_ref, instance_db_path,
-        source_date=None, source_files=None,
+        source_date=None, source_files=None, embedding=None,
     ):
         """カードを knowledge_cards へ登録する。
 
         source_date: 元会話の日付 (YYYY-MM-DD)。time decay の基準になる。
         source_files: 生成に使った RAW ファイル名のリスト（遡及参照用）。
+        embedding: 生成済みベクトル。未指定ならここで生成する。
+
+        ベクトルを取得できない場合は EmbeddingUnavailable を送出し、**INSERT
+        しない**。ベクトル無しで保存すると RAG から永久に見えないカードが残り、
+        RAW は処理済みへ移動されるため欠損に気づけない。
         """
         from butly_core.core.card_content import (
             coerce_card_fields,
@@ -398,16 +438,25 @@ class ButlySleeptime:
         # モデルが summary/tags を配列で返すことがある。そのまま bind すると
         # sqlite が落ちてカードが 1 枚まるごと失われるため、必ず文字列へ寄せる。
         card = coerce_card_fields(card)
+        summary_text = self.card_summary_text(card)
+
+        # ベクトル生成は DB 接続を開く前に済ませる（API 待ちの間 sqlite の
+        # コネクションを掴んだままにしない。失敗時はここで抜ける）。
+        if embedding is None:
+            embedding = self.build_card_embedding(card, db_type)
+        if embedding is None or len(embedding) == 0:
+            raise EmbeddingUnavailable(f"embedding が空 (card={db_id})")
+        try:
+            embedding_blob = np.array(embedding, dtype=np.float32).tobytes()
+        except (TypeError, ValueError) as e:
+            raise EmbeddingUnavailable(
+                f"embedding を BLOB へ変換できない (card={db_id}): {e}"
+            ) from e
 
         conn = sqlite3.connect(instance_db_path)
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # Unclassified の場合は理由を要約に含める
-        summary_text = card['summary']
-        if card['category'] == "Unclassified" and 'reason' in card:
-            summary_text = f"【分類不能理由: {card['reason']}】\n{summary_text}"
 
         # Stage 3 レビューキュー用の版識別子（共通 helper 経由。§5.2）
         content_hash = compute_content_hash({
@@ -419,18 +468,6 @@ class ButlySleeptime:
             "source_date": source_date,
         })
         queued_at = utc_now_stamp()
-
-        # Embedding生成
-        content_to_embed = f"Title: {card['title']}\nTags: {card['tags']}\nSummary: {summary_text}"
-        embedding_list = self.generate_embedding(content_to_embed, instance_name=db_type)
-        
-        # BLOB変換 (float32)
-        embedding_blob = None
-        if embedding_list:
-            try:
-                embedding_blob = np.array(embedding_list, dtype=np.float32).tobytes()
-            except Exception as e:
-                print(f"[Embedding Conv Error] {e}")
 
         try:
             # embedding (TEXT) は NULL にし、embedding_blob (BLOB) に保存
@@ -449,18 +486,23 @@ class ButlySleeptime:
                 content_hash, queued_at,
             ))
             conn.commit()
-            if embedding_blob:
-                # どの model/profile で書いたベクトルかを DB に刻む。
-                # 起動時チェックが設定と突き合わせ、差し替えを検知する。
-                record_embedding_meta(
-                    instance_db_path, self.resolve_embedding_conf(db_type)
-                )
-            return True
         except Exception as e:
             print(f"[DB Error] {e}")
             return False
         finally:
             conn.close()
+
+        # どの model/profile で書いたベクトルかを DB に刻む。起動時チェックが
+        # 設定と突き合わせ、差し替えを検知する。commit 後に分けてあるのは、
+        # ここで落ちても保存済みカードは有効だから（以前は同じ try 内にあり、
+        # 素性の記録に失敗しただけで INSERT が失敗扱いになっていた）。
+        try:
+            record_embedding_meta(
+                instance_db_path, self.resolve_embedding_conf(db_type)
+            )
+        except Exception as e:
+            print(f"[Embedding] embedding_meta の記録に失敗: {e}")
+        return True
 
     def run(self):
         for instance_path in sorted(self.instances_dir.iterdir()):
@@ -1961,6 +2003,8 @@ class ButlySleeptime:
         日付ごとにまとめてAIにナレッジ抽出させる。
         処理完了後、JSONファイルは 2_knowledgeized フォルダへ移動する。
         失敗チャンクの RAW は移動せず残す（次回パスで再試行される）。
+        埋め込みが取れなかったチャンクも同じ扱い（reason="embedding_unavailable"）。
+        ベクトル無しで保存すると RAG から見えないカードが残るため、保存しない。
 
         Returns:
             {"chunks": int, "failed_chunks": int, "cards_created": int,
@@ -2108,33 +2152,60 @@ class ButlySleeptime:
                 if status == "ok":
                     print(f"[{db_type}] Generated {len(cards)} knowledge cards.")
                     chunk_file_names = [f.name for f in files_in_batch]
-                    for card in cards:
-                        db_id = self._get_next_id(db_type, date_str, instance_db_path)
-                        card_files, granularity = self.resolve_card_source_files(
-                            card, chunk_file_names
+                    # チャンク分のベクトルを先にまとめて作る。1 枚ずつ
+                    # INSERT しながら生成すると、途中で埋め込み API が落ちた
+                    # とき「先頭数枚だけ保存済み」の状態で RAW を残すことに
+                    # なり、次回パスで同じカードが二重登録される。
+                    try:
+                        embeddings = [
+                            self.build_card_embedding(card, db_type)
+                            for card in cards
+                        ]
+                    except EmbeddingUnavailable as e:
+                        embeddings = None
+                        stats["failed_chunks"] += 1
+                        stats["failures"].append(
+                            {
+                                "date": date_str,
+                                "chunk": chunk_idx + 1,
+                                "reason": "embedding_unavailable",
+                                "detail": str(e)[:200],
+                            }
                         )
-                        stats[f"source_files_{granularity}"] += 1
-                        # 生成数ではなく実際に保存できた数を数える。以前は
-                        # INSERT が落ちてもカウントされ、カードが消えたことに
-                        # 気づけなかった（RAW は処理済みへ移動される）。
-                        if self.insert_knowledge(
-                            card, db_id, db_type,
-                            f"{date_str}_raw_combined", instance_db_path,
-                            source_date=date_str,
-                            source_files=card_files,
-                        ):
-                            stats["cards_created"] += 1
-                        else:
-                            stats["insert_failures"] += 1
-                            stats["failures"].append(
-                                {
-                                    "date": date_str,
-                                    "chunk": chunk_idx + 1,
-                                    "reason": "insert_failed",
-                                    "card_title": str(card.get("title", ""))[:80],
-                                }
+                        print(
+                            f"[{db_type}] embedding 取得失敗 for {date_str} "
+                            f"chunk {chunk_idx+1} — カードは保存せず "
+                            f"RAW を保持し次回再試行: {e}"
+                        )
+                    if embeddings is not None:
+                        for card, embedding in zip(cards, embeddings):
+                            db_id = self._get_next_id(db_type, date_str, instance_db_path)
+                            card_files, granularity = self.resolve_card_source_files(
+                                card, chunk_file_names
                             )
-                    all_processed_files.extend(files_in_batch)
+                            stats[f"source_files_{granularity}"] += 1
+                            # 生成数ではなく実際に保存できた数を数える。以前は
+                            # INSERT が落ちてもカウントされ、カードが消えたことに
+                            # 気づけなかった（RAW は処理済みへ移動される）。
+                            if self.insert_knowledge(
+                                card, db_id, db_type,
+                                f"{date_str}_raw_combined", instance_db_path,
+                                source_date=date_str,
+                                source_files=card_files,
+                                embedding=embedding,
+                            ):
+                                stats["cards_created"] += 1
+                            else:
+                                stats["insert_failures"] += 1
+                                stats["failures"].append(
+                                    {
+                                        "date": date_str,
+                                        "chunk": chunk_idx + 1,
+                                        "reason": "insert_failed",
+                                        "card_title": str(card.get("title", ""))[:80],
+                                    }
+                                )
+                        all_processed_files.extend(files_in_batch)
                 elif status == "no_cards":
                     # 正当な「抽出対象なし」— 再処理し続けないよう処理済み扱いで移動
                     print(f"[{db_type}] ナレッジ抽出対象なし for {date_str} chunk {chunk_idx+1}")

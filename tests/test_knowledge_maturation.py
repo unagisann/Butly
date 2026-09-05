@@ -349,7 +349,7 @@ class TestContentHashWriters:
         ButlyDatabase(db_path=p)
 
         hk = _sl.ButlySleeptime.__new__(_sl.ButlySleeptime)
-        hk.generate_embedding = lambda *a, **k: None
+        hk.generate_embedding = lambda *a, **k: [0.1, 0.2]
         card = {
             "category": "Tech",
             "title": "t",

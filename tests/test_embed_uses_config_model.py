@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from butly_core.llm.connections import get_connection
+from butly_core.llm.errors import EmbeddingError, EmbeddingUnavailable
 from butly_core.llm.factory import ProviderFactory
 from butly_core.llm.protocols.openai_compat import OpenAICompatAdapter
 from butly_core.llm.providers.openai import OpenAIProvider
@@ -161,3 +162,111 @@ class TestGeminiEmbedConfig:
         # config.py の現在のデフォルト
         from butly_core.config import AI_CONFIG
         assert kwargs["model"] == AI_CONFIG["embedding"]["model_name"]
+
+
+# ===================================================================
+# 429 を握り潰さない（RESOURCE_EXHAUSTED がリトライへ届く）
+# ===================================================================
+
+class TestEmbedErrorsPropagate:
+    """embed() は失敗を None ではなく例外で返す。
+
+    None を返していた頃は、429 (RESOURCE_EXHAUSTED) が正常系として扱われ、
+    sleeptime の指数バックオフに届かないまま、ベクトル無しのカードが
+    保存されていた。
+    """
+
+    def test_openai_compat_embed_raises_on_api_error(self, mock_client):
+        adapter = OpenAICompatAdapter(connection=get_connection("openai"))
+        adapter._client = mock_client
+        mock_client.embeddings.create.side_effect = RuntimeError(
+            "429 RESOURCE_EXHAUSTED"
+        )
+
+        with pytest.raises(RuntimeError, match="429"):
+            adapter.embed("text", config={"model_name": "text-embedding-3-small"})
+
+    def test_openai_compat_embed_raises_on_empty_data(self, mock_client):
+        adapter = OpenAICompatAdapter(connection=get_connection("openai"))
+        adapter._client = mock_client
+        mock_client.embeddings.create.return_value = MagicMock(data=[])
+
+        with pytest.raises(EmbeddingError):
+            adapter.embed("text", config={"model_name": "text-embedding-3-small"})
+
+
+class TestSleeptimeEmbeddingRetry:
+    def _sleeptime(self, tmp_path, monkeypatch, conf):
+        from sleeptime import ButlySleeptime
+
+        st = ButlySleeptime(
+            base_dir=tmp_path, instances_dir=tmp_path / "instances"
+        )
+        monkeypatch.setattr(st, "resolve_embedding_conf", lambda name=None: conf)
+        monkeypatch.setattr("sleeptime.time.sleep", lambda s: None)
+        return st
+
+    def test_429_is_retried_then_succeeds(self, tmp_path, monkeypatch):
+        attempts = {"n": 0}
+
+        def fake_create(conf):
+            provider = MagicMock()
+
+            def _embed(text, config=None):
+                attempts["n"] += 1
+                if attempts["n"] < 3:
+                    raise RuntimeError("429 RESOURCE_EXHAUSTED")
+                return [0.1, 0.2]
+
+            provider.embed.side_effect = _embed
+            return provider
+
+        monkeypatch.setattr(
+            "butly_core.llm.factory.ProviderFactory.create", fake_create
+        )
+        st = self._sleeptime(
+            tmp_path, monkeypatch, {"model_name": "gemini-embedding-2"}
+        )
+
+        assert st.generate_embedding("text") == [0.1, 0.2]
+        assert attempts["n"] == 3
+
+    def test_retry_exhausted_raises(self, tmp_path, monkeypatch):
+        def fake_create(conf):
+            provider = MagicMock()
+            provider.embed.side_effect = RuntimeError("429 RESOURCE_EXHAUSTED")
+            return provider
+
+        monkeypatch.setattr(
+            "butly_core.llm.factory.ProviderFactory.create", fake_create
+        )
+        st = self._sleeptime(
+            tmp_path, monkeypatch, {"model_name": "gemini-embedding-2"}
+        )
+
+        with pytest.raises(EmbeddingUnavailable):
+            st.generate_embedding("text")
+
+    def test_non_retriable_error_raises_immediately(self, tmp_path, monkeypatch):
+        attempts = {"n": 0}
+
+        def fake_create(conf):
+            provider = MagicMock()
+
+            def _embed(text, config=None):
+                attempts["n"] += 1
+                raise ValueError("invalid model")
+
+            provider.embed.side_effect = _embed
+            return provider
+
+        monkeypatch.setattr(
+            "butly_core.llm.factory.ProviderFactory.create", fake_create
+        )
+        st = self._sleeptime(
+            tmp_path, monkeypatch, {"model_name": "gemini-embedding-2"}
+        )
+
+        with pytest.raises(EmbeddingUnavailable):
+            st.generate_embedding("text")
+        assert attempts["n"] == 1

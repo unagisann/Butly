@@ -10,6 +10,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from butly_core.llm.errors import EmbeddingNotSupported
 from butly_core.llm.providers.xai import XaiProvider, _NON_VISION_PREFIXES
 
 
@@ -41,12 +42,12 @@ class TestXaiSupportsVision:
 # ===================================================================
 
 class TestXaiEmbed:
-    """xAI embedding テスト: 常に None を返す。"""
+    """xAI embedding テスト: 非対応なので例外を送出する。"""
 
-    def test_embed_returns_none(self):
+    def test_embed_raises_not_supported(self):
         provider = XaiProvider()
-        result = provider.embed("some text")
-        assert result is None
+        with pytest.raises(EmbeddingNotSupported):
+            provider.embed("some text")
 
 
 # ===================================================================

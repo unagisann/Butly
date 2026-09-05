@@ -15,6 +15,7 @@ import pytest
 
 from butly_core.core.brain import ButlyBrain, _decay_basis_datetime
 from butly_core.core.database import ButlyDatabase
+from butly_core.llm.errors import EmbeddingUnavailable
 from sleeptime import ButlySleeptime
 
 
@@ -277,7 +278,7 @@ class TestInsertKnowledgeSourceColumns:
             instances_dir=tmp_path / "butly_core" / "instances",
         )
         monkeypatch.setattr(
-            sleeptime, "generate_embedding", lambda text, instance_name=None: None
+            sleeptime, "generate_embedding", lambda text, instance_name=None: [0.1, 0.2]
         )
         card = {
             "category": "Life",
@@ -296,6 +297,41 @@ class TestInsertKnowledgeSourceColumns:
                 "SELECT source_date, source_files FROM knowledge_cards"
             ).fetchone()
         assert row == (None, None)
+
+    def test_insert_skipped_when_embedding_unavailable(self, tmp_path, monkeypatch):
+        """ベクトルが取れないカードは保存しない。
+
+        以前は embedding_blob=NULL で INSERT していたため、RAG から永久に
+        見えないカードが残り、RAW は処理済みへ移動されて気づけなかった。
+        """
+        db_path = _make_instance_db(tmp_path)
+        sleeptime = ButlySleeptime(
+            base_dir=tmp_path,
+            instances_dir=tmp_path / "butly_core" / "instances",
+        )
+
+        def _boom(text, instance_name=None):
+            raise EmbeddingUnavailable("429")
+
+        monkeypatch.setattr(sleeptime, "generate_embedding", _boom)
+        card = {
+            "category": "Life",
+            "title": "t",
+            "tags": "",
+            "ai_importance": 1,
+            "humanity_importance": 1,
+            "summary": "s",
+            "episode": "e",
+        }
+        with pytest.raises(EmbeddingUnavailable):
+            sleeptime.insert_knowledge(
+                card, "id_001", "test_inst", "ref", str(db_path)
+            )
+
+        with sqlite3.connect(db_path) as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM knowledge_cards"
+            ).fetchone()[0] == 0
 
 
 class TestVectorSearchDecayUsesSourceDate:

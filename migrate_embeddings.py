@@ -24,11 +24,38 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 from butly_core.config import AI_CONFIG, SYSTEM_CONFIG
+from butly_core.core.card_content import build_embed_text
 from butly_core.core.embedding_check import record_embedding_meta
 from butly_core.llm.embedding_profiles import DOCUMENT
 from butly_core.llm.embedding_profiles import apply_prefix as apply_embedding_prefix
 from butly_core.llm.embedding_profiles import describe as describe_embedding
 from butly_core.llm.factory import ProviderFactory
+
+
+RETRYABLE_MARKERS = ("429", "RESOURCE_EXHAUSTED", "503", "500", "UNAVAILABLE")
+
+
+def embed_with_retry(provider, content, emb_conf, retries: int = 5, base_delay: int = 5):
+    """レート制限 (429) を指数バックオフで再試行する。
+
+    再試行しても駄目なら例外を送出する。ここで None を返すと、その 1 枚だけ
+    旧空間のベクトルが残ったまま「移行済み」の見た目になる。
+    """
+    last_error = None
+    for attempt in range(retries):
+        try:
+            return provider.embed(content, config=emb_conf)
+        except Exception as e:  # SDK の例外階層が provider ごとに違う
+            last_error = e
+            if not any(m in str(e) for m in RETRYABLE_MARKERS):
+                raise
+            wait = base_delay * (2 ** attempt)
+            print(
+                f"  [Retry] {type(e).__name__}: {e} — {wait}s 待機 "
+                f"({attempt + 1}/{retries})"
+            )
+            time.sleep(wait)
+    raise RuntimeError(f"リトライ上限に到達: {last_error}")
 
 
 def get_db_path(instance_name: str) -> Path:
@@ -94,14 +121,16 @@ def migrate_instance(instance_name: str, batch_size: int = 10, dry_run: bool = F
         batch = rows[i : i + batch_size]
         for row in batch:
             card_id = row["id"]
-            content = f"Title: {row['title']}\nTags: {row['tags']}\nSummary: {row['summary']}"
+            # 文面は Sleeptime の保存経路と同じ helper で作る（分岐すると
+            # 保存済みベクトルと再生成ベクトルが別空間になる）。
+            content = build_embed_text(row["title"], row["tags"], row["summary"])
             # 書き込み側は文書 prefix。Sleeptime の保存経路と同じ規約を通す。
             content = apply_embedding_prefix(content, emb_conf, DOCUMENT)
 
             try:
-                embedding = provider.embed(content, config=emb_conf)
-                if embedding is None:
-                    print(f"  [{card_id}] embed() returned None — skipping")
+                embedding = embed_with_retry(provider, content, emb_conf)
+                if not embedding:
+                    print(f"  [{card_id}] embed() returned no vector — skipping")
                     failed += 1
                     continue
 
@@ -124,8 +153,16 @@ def migrate_instance(instance_name: str, batch_size: int = 10, dry_run: bool = F
             time.sleep(1)
 
     conn.close()
-    if updated:
+    if updated and not failed:
         record_embedding_meta(db_path, emb_conf)
+    elif failed:
+        # 1 枚でも失敗が残っていると DB は新旧ベクトルの混在。ここで
+        # embedding_meta を新設定で上書きすると、起動時の profile 不一致
+        # 警告まで消えて混在に気づけなくなる。
+        print(
+            f"[Migration] WARNING: {failed} 件が未移行のため embedding_meta は "
+            f"更新しない。失敗分を解消してから再実行すること。"
+        )
     print(f"[Migration] 完了: {updated} updated, {failed} failed (total {total})")
 
 

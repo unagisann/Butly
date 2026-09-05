@@ -110,6 +110,11 @@ class BaseProvider(ABC):
     def embed(self, text: str, config: Optional[dict] = None) -> Optional[List[float]]:
         """ベクトル埋め込み生成。RAG 検索のインデックス化に使用。
 
+        失敗時は **例外を送出する**（None を返さない）。None を返すと呼び出し側で
+        レート制限と「正常だがベクトル無し」を区別できず、リトライが効かないまま
+        欠損が保存される。`butly_core.llm.errors` の EmbeddingError 系か、
+        SDK の例外がそのまま上がる。
+
         Parameters
         ----------
         text : str

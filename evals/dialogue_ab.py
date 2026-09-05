@@ -18,6 +18,7 @@ import time
 import unicodedata
 from typing import Any, Optional
 
+from butly_core.core.card_content import build_embed_text
 from butly_core.chat.types import ChatRequest
 from butly_core.core.embedding_check import record_embedding_meta
 from evals.locomo.artifacts import (
@@ -884,10 +885,9 @@ def _reembed_cards(
             "SELECT id, title, tags, summary FROM knowledge_cards"
         ).fetchall()
         for row in rows:
-            content = (
-                f"Title: {row['title']}\nTags: {row['tags']}\n"
-                f"Summary: {row['summary']}"
-            )
+            # Sleeptime の保存経路と同じ helper を使う（文面が分岐すると
+            # 再埋め込み後のベクトルが本番と別空間になる）。
+            content = build_embed_text(row["title"], row["tags"], row["summary"])
             vector = provider.embed(
                 apply_prefix(content, conf, DOCUMENT), config=conf
             )
