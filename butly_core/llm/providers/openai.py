@@ -37,7 +37,7 @@ def _get_client():
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "OpenAI API キーが見つかりません。APIkey.env に OPENAI_API_KEY を設定してください。"
+            "OpenAI API キーが見つかりません。.env に OPENAI_API_KEY を設定してください。"
         )
 
     base_url = os.environ.get("OPENAI_BASE_URL")

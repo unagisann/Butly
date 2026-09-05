@@ -22,11 +22,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 def _ensure_api_key():
     """API キーが利用可能かチェックし、なければスキップ"""
     from dotenv import load_dotenv
-    for env_file in [PROJECT_ROOT / ".env", PROJECT_ROOT / "APIkey.env"]:
-        if env_file.exists():
-            load_dotenv(dotenv_path=env_file, override=True)
-    if not os.getenv("GOOGLE_API_KEY"):
-        pytest.skip("GOOGLE_API_KEY が設定されていないためスキップ")
+    env_file = PROJECT_ROOT / ".env"
+    if env_file.exists():
+        load_dotenv(dotenv_path=env_file, override=True)
+    if not (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")):
+        pytest.skip("Gemini API キーが設定されていないためスキップ")
 
 
 @pytest.mark.integration

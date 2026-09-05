@@ -110,7 +110,7 @@ class RootSettings(BaseSettings):
     Load order (low → high precedence):
       1. BaseModel defaults (this file + ai.py + system.py)
       2. user_config.json (project root)
-      3. .env / APIkey.env (API keys)
+      3. .env (API keys only; legacy APIkey.env is not read)
       4. environment variables (BUTLY_AI__CHAT__MODEL_NAME etc.)
 
     Instance overlays via `Settings.with_instance(name)` at runtime.
@@ -118,7 +118,7 @@ class RootSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="BUTLY_",
         env_nested_delimiter="__",
-        env_file=(".env", "APIkey.env"),
+        env_file=".env",
         env_file_encoding="utf-8",
         json_file="user_config.json",
         extra="ignore",  # Tolerate `_AI_CONFIG_*_example` etc. at root.

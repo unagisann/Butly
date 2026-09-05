@@ -171,11 +171,13 @@ through the settings chain.
 
 - `main.py:_load_env_from_data_dir()` reads `<data_dir>/.env` at startup and pushes it
   into the environment with `os.environ.setdefault()` (never overwriting existing values)
-- Providers (`gemini.py`, `_openai_compat.py`, `brain.py`, `sleeptime.py`) also fall back
-  to `load_dotenv()`
+- Providers (`gemini.py` and `_openai_compat.py`) fall back to the repository-root `.env`
+  only for entrypoints such as the evaluation CLI that do not pass through `main.py`.
+  The legacy `APIkey.env` is not loaded
 - A connection's `api_key_env` / `api_key_fallback_envs` decide which variable names are read
 
-`.env.example` is the template. **Never commit `.env` or `APIkey.env`** — both are gitignored.
+`.env.example` is the template. **Never commit `.env`**; it is gitignored. The legacy
+`APIkey.env` remains gitignored as sensitive data, but is no longer read at runtime.
 
 ### The `BUTLY_*` variables that do work (all read `os.environ` directly)
 

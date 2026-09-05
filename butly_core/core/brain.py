@@ -8,7 +8,6 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
-from dotenv import load_dotenv
 
 from butly_core.trace.collector import record_llm_call
 from butly_core.core.chronos import resolve_now

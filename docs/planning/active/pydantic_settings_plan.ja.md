@@ -176,7 +176,7 @@ class RootSettings(BaseSettings):
     ロード順 (優先度 低→高):
       1. BaseModel デフォルト値 (このファイル + ai.py + system.py)
       2. user_config.json (project root)
-      3. .env / APIkey.env (API キー類のみ)
+      3. .env (API キー類のみ。旧 APIkey.env は参照しない)
       4. 環境変数 (BUTLY_AI__CHAT__MODEL_NAME 等)
 
     instance config はランタイムで `Settings.with_instance(name)` で重ねる。
@@ -184,7 +184,7 @@ class RootSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="BUTLY_",
         env_nested_delimiter="__",
-        env_file=(".env", "APIkey.env"),
+        env_file=".env",
         env_file_encoding="utf-8",
         json_file="user_config.json",
         extra="ignore",   # 未知のトップレベルキーは無視 (旧 _AI_CONFIG_*_example 等を許容)

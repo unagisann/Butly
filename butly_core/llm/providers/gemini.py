@@ -48,16 +48,13 @@ def _get_client() -> genai.Client:
     """Gemini API クライアントを取得する（API キー自動解決）。"""
     from pathlib import Path
 
-    env_files = ["APIkey.env", ".env"]
-    for env_name in env_files:
-        env_path = Path(__file__).resolve().parents[3] / env_name
-        if env_path.exists():
-            load_dotenv(env_path)
-            break
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "Gemini API キーが見つかりません。APIkey.env に GEMINI_API_KEY を設定してください。"
+            "Gemini API キーが見つかりません。.env に GEMINI_API_KEY を設定してください。"
         )
     return genai.Client(api_key=api_key)
 

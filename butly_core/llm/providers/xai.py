@@ -48,7 +48,7 @@ def _get_client():
     api_key = os.environ.get("XAI_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "xAI API キーが見つかりません。APIkey.env または UI から XAI_API_KEY を設定してください。"
+            "xAI API キーが見つかりません。.env または UI から XAI_API_KEY を設定してください。"
         )
 
     base_url = os.environ.get("XAI_BASE_URL", _XAI_DEFAULT_BASE_URL)
