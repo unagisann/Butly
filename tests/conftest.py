@@ -40,16 +40,16 @@ def pytest_configure(config):
 def has_api_key() -> bool:
     """API キーが利用可能かどうかを返す"""
     from dotenv import load_dotenv
-    for env_file in [PROJECT_ROOT / ".env", PROJECT_ROOT / "APIkey.env"]:
-        if env_file.exists():
-            load_dotenv(dotenv_path=env_file, override=True)
-    return bool(os.getenv("GOOGLE_API_KEY"))
+    env_file = PROJECT_ROOT / ".env"
+    if env_file.exists():
+        load_dotenv(dotenv_path=env_file, override=True)
+    return bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
 
 
 def skip_without_api_key(has_api_key):
     """API キーがない場合にテストをスキップするヘルパー"""
     if not has_api_key:
-        pytest.skip("GOOGLE_API_KEY が設定されていないためスキップ")
+        pytest.skip("Gemini API キーが設定されていないためスキップ")
 
 
 # ===================================================================

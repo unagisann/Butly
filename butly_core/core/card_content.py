@@ -88,6 +88,21 @@ def coerce_card_fields(card: Mapping[str, Any]) -> dict:
     return normalized
 
 
+def build_embed_text(title: Any, tags: Any, summary: Any) -> str:
+    """カードを埋め込むときの本文。
+
+    Stage 2 の保存経路と migrate_embeddings.py の再埋め込み経路で必ず同じ
+    文面を使う。ここが分岐すると、保存済みベクトルと再生成ベクトルが別空間に
+    なり、しかも次元が同じなので embedding_check でも気づけない。
+    prefix (プロファイル規約) はこの文面の外側で付ける。
+    """
+    return (
+        f"Title: {coerce_card_text(title)}\n"
+        f"Tags: {coerce_card_text(tags, separator=', ')}\n"
+        f"Summary: {coerce_card_text(summary)}"
+    )
+
+
 def canonical_card_content(card: Mapping[str, Any]) -> str:
     """カードの意味内容を固定順 JSON 文字列に正規化する。"""
     try:

@@ -10,6 +10,7 @@ Embedding モデルごとの「入力規約」をプロファイルとして持�
   - E5 系 (multilingual-e5-*) : ``query: `` / ``passage: ``
   - BGE (en v1.5)            : クエリ側のみ instruction を付ける
   - Qwen3-Embedding          : クエリ側のみ ``Instruct: ...\\nQuery: ``
+  - gemini-embedding-2       : ``task: ... | query: `` / ``title: ... | text: ``
 
 prefix を付け忘れると埋め込みが 1 つの円錐に潰れ、cosine の識別力が失われる
 （実測: prefix 無しの nomic ではカード同士の cosine 平均 0.756 に対し、質問と
@@ -128,8 +129,24 @@ BUILTIN_EMBEDDING_PROFILES: tuple[EmbeddingProfile, ...] = (
         dim=3072,
         match=("gemini-embedding",),
         notes=(
-            "Gemini embedding。prefix ではなく task_type パラメータで "
+            "Gemini embedding (001 系)。prefix ではなく task_type パラメータで "
             "クエリ/文書を区別する仕様のため prefix は付けない。"
+        ),
+    ),
+    EmbeddingProfile(
+        id="gemini-embedding-2",
+        dim=3072,
+        query_prefix="task: question answering | query: ",
+        document_prefix="title: none | text: ",
+        match=("gemini-embedding-2",),
+        notes=(
+            "gemini-embedding-2。001 と違い task_type パラメータを受け付けず、"
+            "タスク指示をテキスト側に埋める仕様 "
+            "(https://ai.google.dev/gemini-api/docs/embeddings)。"
+            "クエリ側の task 名は用途で差し替え可 "
+            "(search result / question answering / fact checking / "
+            "code retrieval)。文書側は title を持たないので "
+            "公式の推奨どおり 'title: none' を使う。"
         ),
     ),
     EmbeddingProfile(

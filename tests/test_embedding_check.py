@@ -223,11 +223,26 @@ class TestEmbeddingMeta:
         _make_instance_db(tmp_path / "alpha", dim=3072)
 
         s = check_embeddings(
-            tmp_path, embedding_conf={"model_name": "gemini-embedding-2"}
+            tmp_path, embedding_conf={"model_name": "gemini-embedding-001"}
         )
 
         assert s["profile_mismatch"] is False
         assert s["actions"] == []
+
+    def test_unstamped_db_flagged_for_gemini_embedding_2(self, tmp_path):
+        """gemini-embedding-2 は prefix 規約を持つので未記録 DB は疑う。
+
+        次元が 3072 で 001 と同じため、dim 比較では差し替えを検知できない。
+        prefix 無しで書かれた既存ベクトルは別空間なので再埋め込みが要る。
+        """
+        _make_instance_db(tmp_path / "alpha", dim=3072)
+
+        s = check_embeddings(
+            tmp_path, embedding_conf={"model_name": "gemini-embedding-2"}
+        )
+
+        assert s["profile_mismatch"] is True
+        assert s["actions"]
 
     def test_empty_db_not_flagged(self, tmp_path):
         """カードがまだ無い DB は疑わない。"""

@@ -27,23 +27,19 @@ logger = logging.getLogger(__name__)
 
 
 def _find_env_path() -> Optional[str]:
-    """APIkey.env / .env を探す。
+    """リポジトリルートの .env を探す。
 
     読み込み先の統一方針:
       1. main.py の DATA_DIR/.env（routers/settings.py が書き込む先）
-      2. repo root の APIkey.env（レガシー）
-      3. repo root の .env
+      2. repo root の .env
 
     実行時の DATA_DIR は main.py で決まり、dev 環境ではリポジトリルートと同じ。
     Provider ファイルからの相対パスでルートを推定し、同じ場所を探す。
     """
     # _openai_compat.py は butly_core/llm/ にあるので parents[2] = repo root
     repo_root = Path(__file__).resolve().parents[2]
-    for env_name in ("APIkey.env", ".env"):
-        env_path = repo_root / env_name
-        if env_path.exists():
-            return str(env_path)
-    return None
+    env_path = repo_root / ".env"
+    return str(env_path) if env_path.exists() else None
 
 
 def load_env_file():

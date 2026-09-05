@@ -171,11 +171,13 @@ settings チェーンも通りません。
 
 - `main.py:_load_env_from_data_dir()` が起動時に `<data_dir>/.env` を読み、
   `os.environ.setdefault()` で環境変数へ流し込む（既存の環境変数は上書きしない）
-- provider 側（`gemini.py` / `_openai_compat.py` / `brain.py` / `sleeptime.py`）も
-  `load_dotenv()` でフォールバック読み込みする
+- provider 側（`gemini.py` / `_openai_compat.py`）も、評価 CLI など
+  `main.py` を通らない起動経路のためにリポジトリルートの `.env` だけを
+  フォールバック読み込みする。旧 `APIkey.env` は読み込まない
 - Connection 定義の `api_key_env` / `api_key_fallback_envs` が参照する環境変数名を決める
 
-雛形は `.env.example`。**`.env` / `APIkey.env` はコミットしない。** gitignore 済みです。
+雛形は `.env.example`。**`.env` はコミットしない。** gitignore 済みです。
+旧 `APIkey.env` も秘密情報として gitignore は維持しますが、実行時には参照しません。
 
 ### 実際に効いている `BUTLY_*`（すべて `os.environ` 直読み）
 

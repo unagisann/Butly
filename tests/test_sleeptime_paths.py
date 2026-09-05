@@ -1,9 +1,11 @@
 """ButlySleeptime の隔離パス注入に対する回帰テスト。"""
 
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from butly_core.llm.errors import EmbeddingUnavailable
 from sleeptime import ButlySleeptime
 
 
@@ -410,6 +412,74 @@ def test_stage2_failed_chunk_keeps_raw_and_reports(tmp_path, monkeypatch):
     assert not list(knowledgeized.rglob("session_*.json"))
 
 
+def test_stage2_embedding_failure_keeps_raw_and_saves_nothing(tmp_path, monkeypatch):
+    """埋め込みが取れないチャンクはカードを保存せず RAW を残す。
+
+    以前は embedding_blob=NULL のカードを保存したうえで RAW を処理済みへ
+    移動していたため、RAG から見えないカードが静かに残った (429 の実害)。
+    """
+    sleeptime, instance_dir, integrated = _instance_with_integrated_turn(tmp_path)
+    monkeypatch.setattr("sleeptime.time.sleep", lambda s: None)
+    cards = [
+        {
+            "category": "Life", "title": f"card{i}", "tags": "hobby",
+            "ai_importance": 3, "humanity_importance": 3,
+            "summary": "s", "episode": "e",
+        }
+        for i in range(3)
+    ]
+    monkeypatch.setattr(
+        sleeptime, "ask_gemini_to_summarize", lambda text, db: (cards, "ok")
+    )
+
+    calls = {"n": 0}
+
+    def _embed(text, instance_name=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise EmbeddingUnavailable("429 RESOURCE_EXHAUSTED")
+        return [0.1, 0.2]
+
+    monkeypatch.setattr(sleeptime, "generate_embedding", _embed)
+
+    stats = sleeptime.stage_2_knowledgeize(instance_dir.name, instance_dir.name)
+
+    assert stats["failed_chunks"] == 1
+    assert stats["cards_created"] == 0
+    assert stats["insert_failures"] == 0
+    assert stats["failures"][0]["reason"] == "embedding_unavailable"
+    # 1 枚目も保存されない（部分保存のまま再試行すると重複カードになる）
+    db_path = instance_dir / "butly_memory.db"
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM knowledge_cards").fetchone()[0] == 0
+    # RAW は次回パスで再試行できるよう 1_integrated に残る
+    assert len(list(integrated.glob("session_*.json"))) == 1
+
+
+def test_stage2_stores_embedding_blob(tmp_path, monkeypatch):
+    sleeptime, instance_dir, integrated = _instance_with_integrated_turn(tmp_path)
+    monkeypatch.setattr("sleeptime.time.sleep", lambda s: None)
+    monkeypatch.setattr(
+        sleeptime, "generate_embedding", lambda text, instance_name=None: [0.1, 0.2]
+    )
+    card = {
+        "category": "Life", "title": "Pottery", "tags": "hobby",
+        "ai_importance": 3, "humanity_importance": 3,
+        "summary": "Caroline started pottery.", "episode": "She enjoyed it.",
+    }
+    monkeypatch.setattr(
+        sleeptime, "ask_gemini_to_summarize", lambda text, db: ([card], "ok")
+    )
+
+    sleeptime.stage_2_knowledgeize(instance_dir.name, instance_dir.name)
+
+    with sqlite3.connect(instance_dir / "butly_memory.db") as conn:
+        blob = conn.execute(
+            "SELECT embedding_blob FROM knowledge_cards"
+        ).fetchone()[0]
+    assert blob is not None
+
+
 def test_stage2_no_cards_archives_raw(tmp_path, monkeypatch):
     sleeptime, instance_dir, integrated = _instance_with_integrated_turn(tmp_path)
     monkeypatch.setattr("sleeptime.time.sleep", lambda s: None)
@@ -431,7 +501,9 @@ def test_stage2_no_cards_archives_raw(tmp_path, monkeypatch):
 def test_stage2_ok_counts_cards(tmp_path, monkeypatch):
     sleeptime, instance_dir, integrated = _instance_with_integrated_turn(tmp_path)
     monkeypatch.setattr("sleeptime.time.sleep", lambda s: None)
-    monkeypatch.setattr(sleeptime, "generate_embedding", lambda text, instance_name=None: None)
+    monkeypatch.setattr(
+        sleeptime, "generate_embedding", lambda text, instance_name=None: [0.1, 0.2]
+    )
     card = {
         "category": "Life", "title": "Pottery", "tags": "hobby",
         "ai_importance": 3, "humanity_importance": 3,

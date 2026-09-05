@@ -27,6 +27,7 @@ from butly_core.llm.base import BaseProvider
 from butly_core.llm.canonical import CanonicalGenerationRequest, request_from_config
 from butly_core.llm.capabilities import get_capability_resolver
 from butly_core.llm.connections import Connection
+from butly_core.llm.errors import EmbeddingError, EmbeddingNotSupported
 from butly_core.llm.model_registry import ModelRef
 from butly_core.llm.protocols.openai_chat import (
     OpenAIChatCompletionsRequestAdapter,
@@ -271,19 +272,21 @@ class OpenAICompatAdapter(BaseProvider):
 
     def embed(self, text: str, config: Optional[dict] = None) -> Optional[List[float]]:
         if not self.connection.embeddings_supported:
-            print(
+            raise EmbeddingNotSupported(
                 f"[{self._log_tag()}] {self.connection.display_label} does not "
                 f"provide embedding API. Use another provider for embedding."
             )
-            return None
-        try:
-            model = self._resolve_embedding_model(config)
-            resp = self.client.embeddings.create(model=model, input=text)
-            self._set_last_token_usage(compat.extract_token_usage(resp))
-            return resp.data[0].embedding
-        except Exception as e:
-            print(f"[{self._log_tag()}] Embed Error: {e}")
-            return None
+        # 例外は握り潰さずそのまま送出する。レート制限を None に変えると
+        # 呼び出し側のリトライに届かず、ベクトル無しで保存されてしまう。
+        model = self._resolve_embedding_model(config)
+        resp = self.client.embeddings.create(model=model, input=text)
+        self._set_last_token_usage(compat.extract_token_usage(resp))
+        if not resp.data:
+            raise EmbeddingError(
+                f"[{self._log_tag()}] embeddings.create returned no data "
+                f"(model={model})"
+            )
+        return resp.data[0].embedding
 
     def classify(self, prompt: str, config: dict) -> str:
         """分類呼び出し。エラー時は例外を送出する。

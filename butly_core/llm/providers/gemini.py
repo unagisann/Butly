@@ -33,6 +33,7 @@ from butly_core.llm.canonical import (
 )
 from butly_core.llm.capabilities import get_capability_resolver
 from butly_core.llm.connections import get_connection
+from butly_core.llm.errors import EmbeddingError
 from butly_core.llm.model_registry import ModelRef
 
 logger = logging.getLogger(__name__)
@@ -48,16 +49,13 @@ def _get_client() -> genai.Client:
     """Gemini API クライアントを取得する（API キー自動解決）。"""
     from pathlib import Path
 
-    env_files = ["APIkey.env", ".env"]
-    for env_name in env_files:
-        env_path = Path(__file__).resolve().parents[3] / env_name
-        if env_path.exists():
-            load_dotenv(env_path)
-            break
+    env_path = Path(__file__).resolve().parents[3] / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "Gemini API キーが見つかりません。APIkey.env に GEMINI_API_KEY を設定してください。"
+            "Gemini API キーが見つかりません。.env に GEMINI_API_KEY を設定してください。"
         )
     return genai.Client(api_key=api_key)
 
@@ -259,15 +257,20 @@ class GeminiProvider(BaseProvider):
         model_name = (config or {}).get("model_name") or AI_CONFIG["embedding"][
             "model_name"
         ]
-        try:
-            response = self.client.models.embed_content(
-                model=model_name,
-                contents=text,
+        # 例外は握り潰さずそのまま送出する。429 (RESOURCE_EXHAUSTED) を None に
+        # 変えると sleeptime の指数バックオフに届かず、ベクトル無しのカードが
+        # 静かに保存される。classify() と同じ方針。
+        response = self.client.models.embed_content(
+            model=model_name,
+            contents=text,
+        )
+        embeddings = getattr(response, "embeddings", None)
+        if not embeddings:
+            raise EmbeddingError(
+                f"[GeminiProvider] embed_content returned no embeddings "
+                f"(model={model_name})"
             )
-            return response.embeddings[0].values
-        except Exception as e:
-            print(f"[GeminiProvider] Embed Error: {e}")
-            return None
+        return embeddings[0].values
 
     def classify(self, prompt: str, config: dict) -> str:
         """軽量モデルでテキスト分類 / キーワード抽出を行う（同期）。

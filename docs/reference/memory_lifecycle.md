@@ -414,8 +414,19 @@ each other than a question was to its own answer, so ranking could not work).
 | `e5` | `query: ` | `passage: ` | multilingual-e5-* and other E5 models |
 | `bge-instruct` | instruction | none | bge-large/base/small-en |
 | `qwen3-embedding` | instruction | none | Qwen3-Embedding |
+| `gemini-embedding-2` | `task: question answering \| query: ` | `title: none \| text: ` | gemini-embedding-2 (default model) |
 | `bge-m3` / `gemini` / `openai` / `mxbai` | none | none | models that need no prefix |
 | `plain` | none | none | unknown models (fallback) |
+
+Unlike `gemini-embedding-001`, `gemini-embedding-2` **does not accept the `task_type`
+parameter** — the task instruction goes into the text itself, so it is expressed through the
+same prefix mechanism as every other model
+([Gemini API: Embeddings](https://ai.google.dev/gemini-api/docs/embeddings)). The query-side
+task name can be swapped per use case (`search result` / `question answering` /
+`fact checking` / `code retrieval`). Documents carry no title here, so we use the
+documented `title: none` fallback and leave the body's `Title:` line untouched. The
+**document format is identical across tasks**, so the query-side task name can be changed or
+A/B tested without re-embedding.
 
 **Resolution order** (`resolve_profile`):
 
@@ -439,5 +450,13 @@ Example (works in instance config and eval profiles alike):
 startup check (`embedding_check.log_startup_check`) compares it against the current config
 and warns on any difference. **Matching dimensions are not enough** — changing the
 convention (e.g. nomic without prefixes → with prefixes) produces a different space. After
-swapping, run `python migrate_embeddings.py --all` to re-embed.
+swapping, run `python migrate_embeddings.py --all` to re-embed. Re-embedding retries 429s with
+exponential backoff and refuses to update `embedding_meta` while any card is left unmigrated,
+so a mixed old/new DB keeps warning instead of looking clean.
+
+**Cards without a vector are not saved.** Stage 2 builds every vector for a chunk up front; if
+any embedding fails, no card from that chunk is inserted and the RAW file stays in
+`1_integrated` for the next pass (`failures[].reason = "embedding_unavailable"`). Previously a
+failed embedding was stored as `embedding_blob = NULL` while the RAW was moved to the processed
+folder, silently leaving cards that RAG could never see.
 | Tier classification | `AI_CONFIG["gatekeeper"]["model_name"]` | ContextClassifier 3-score output |

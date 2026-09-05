@@ -11,7 +11,7 @@
 | ファイル | 役割 |
 |---|---|
 | `main.py` | FastAPI アプリの互換 entrypoint（app 構築は `butly_api.create_app()` に委譲） |
-| `app.py` | Streamlit Web UI（FastAPI バックエンド経由で動作） |
+| `app.py` | Streamlit Web UI（FastAPI バックエンド経由）。設定・評価フォームは fragment、送信単位の入力は form、読み取りAPIは短時間キャッシュで全画面rerunを抑制 |
 | `data/ja_dialogue_ab_prompts_v1.json` | 日本語の本番対話A/B用memory seed 10件・プロンプト30件 |
 | `dependencies.py` | ルーター間共有のグローバル状態・ヘルパー |
 | `sleeptime.py` | 記憶自動整理スクリプト（単体実行 & APIから呼び出し可） |
@@ -45,8 +45,8 @@ Streamlit 製 Web UI。インスタンス選択・チャット送信・過去ロ
 **画面構成:**
 - `render_home_screen()` — ホーム。インスタンス一覧・新規作成
 - `render_chat_screen()` — チャット画面。`POST /chat` で応答取得、デバッグ表示
-- `render_settings_screen()` — グローバル設定、汎用Connection/APIキー管理、プロバイダー→モデルの二段階選択、モデル一覧の明示更新
-- `render_evaluation_screen()` — LoCoMo評価フォーム、ジョブ停止・再開・ログ、run履歴・問題別スコア比較
+- `render_settings_screen()` — 選択中セクションだけを描画するfragment。グローバル設定、汎用Connection/APIキー管理、プロバイダー→モデルの二段階選択、モデル一覧の明示更新を提供。独立入力はform submitまでrerunしない
+- `render_evaluation_screen()` — LoCoMo評価フォーム、ジョブ停止・再開・ログ、run履歴・問題別スコア比較。新規LoCoMo／対話A/Bフォームはfragmentとして分離
 - `render_instance_settings_screen()` — インスタンス個別の性格設定・config 編集。モデル上書きもConnection→モデルの順に選択
 - `_render_connection_manager()` — built-in / ユーザー定義Connectionの一覧、秘密値を再表示しないAPIキー保存・解除、疎通テスト、テンプレート追加、参照保護付き削除
 - `_model_selector()` — ロールごとにConnectionを先に選び、そのConnectionのモデル候補または直接入力したモデルIDを `ModelChoice` として返す
@@ -1033,11 +1033,18 @@ Connection + API送信時model ID単位のCapability Resolver。
 Embedding モデル別の入力規約（クエリ/文書 prefix）のレジストリ。付け忘れると埋め込みが 1 つの円錐に潰れて cosine の識別力が失われるため、モデル名から規約を引ける形にしてある。`config.py` から import せず循環を避ける。詳細は [memory_lifecycle.ja.md](memory_lifecycle.ja.md#embedding-プロファイルモデル別の入力規約)。
 
 - `EmbeddingProfile` (dataclass): `id` / `query_prefix` / `document_prefix` / `dim` / `match`（model_name の部分一致パターン）
-- `BUILTIN_EMBEDDING_PROFILES` — `nomic` / `e5` / `bge-instruct` / `bge-m3` / `qwen3-embedding` / `openai` / `gemini` / `mxbai` / `plain`
+- `BUILTIN_EMBEDDING_PROFILES` — `nomic` / `e5` / `bge-instruct` / `bge-m3` / `qwen3-embedding` / `openai` / `gemini` / `gemini-embedding-2` / `mxbai` / `plain`
 - `resolve_profile(embedding_conf)` — 明示 prefix → `profile` キー → model_name 推定 → `plain` の順で解決
 - `apply_prefix(text, conf, kind)` — `QUERY` / `DOCUMENT` に応じた prefix 付与（二重付与ガード付き）
 - `fingerprint(conf)` — `{model_name, profile, dim}`。`embedding_meta` との突き合わせに使う
 - `list_profiles()` / `get_profile(id)` / `register_profile(profile)` / `known_dims()` / `describe(conf)`
+
+---
+
+### `butly_core/llm/errors.py`
+LLM 呼び出し層の例外。`EmbeddingError` / `EmbeddingNotSupported` / `EmbeddingUnavailable`。
+`embed()` は失敗を `None` ではなく例外で伝える契約になっている（`None` を返すと 429 が正常系
+として扱われ、リトライに届かないままベクトル欠損カードが保存される）。
 
 ---
 
@@ -1068,7 +1075,7 @@ Gemini API プロバイダー。コンテキストキャッシュ・画像アッ
 ### `butly_core/llm/_openai_compat.py`
 OpenAI 互換プロバイダー (OpenAI / Ollama / xAI) で共通利用するヘルパー関数群。継承ではなく import して使う設計。
 
-- `load_env_file()` — APIkey.env / .env を探してロード
+- `load_env_file()` — リポジトリルートの `.env` だけを探してロード
 - `is_reasoning_model(model_name)` — 旧直接helper呼び出し互換用のo1/o3/o4判定。通常のProvider経路はCapability Resolverを使用
 - `resolve_position(context)` — system_instruction の配置位置を解決（context_levels → context_order → "top"）
 - `resolve_system_instruction(context)` / `resolve_context_prefix(context)` — Gatekeeper の build 関数を呼び出す

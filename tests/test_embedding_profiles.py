@@ -40,7 +40,8 @@ class TestInferProfile:
             ("qwen3-embedding-8b", "qwen3-embedding"),
             ("text-embedding-3-large", "openai-large"),
             ("text-embedding-3-small", "openai"),
-            ("gemini-embedding-2", "gemini"),
+            ("gemini-embedding-2", "gemini-embedding-2"),
+            ("gemini-embedding-001", "gemini"),
             ("text-embedding-004", "gemini-004"),
         ],
     )
@@ -275,4 +276,35 @@ class TestSleeptimeAppliesDocumentPrefix:
         assert captured == [
             "search_document: camping in June",
             "search_query: camping in June",
+        ]
+
+    def test_gemini_embedding_2_task_instructions(self, tmp_path, monkeypatch):
+        """gemini-embedding-2 は task 指示をテキストに埋める（task_type 不可）。
+
+        https://ai.google.dev/gemini-api/docs/embeddings —
+        001 と違い task_type パラメータを受け付けないので、規約は prefix 側で持つ。
+        """
+        from butly_core.core.brain import ButlyBrain
+
+        conf = {"model_name": "gemini-embedding-2"}
+        captured = []
+
+        def fake_create(c):
+            provider = MagicMock()
+            provider.embed.side_effect = lambda text, config=None: (
+                captured.append(text) or [0.1]
+            )
+            return provider
+
+        monkeypatch.setattr(
+            "butly_core.llm.factory.ProviderFactory.create", fake_create
+        )
+
+        st = self._sleeptime(tmp_path, monkeypatch, conf)
+        st.generate_embedding("Title: Camping\nTags: trip\nSummary: June 2023")
+        ButlyBrain(tmp_path).get_embedding("いつキャンプに行った？", conf)
+
+        assert captured == [
+            "title: none | text: Title: Camping\nTags: trip\nSummary: June 2023",
+            "task: question answering | query: いつキャンプに行った？",
         ]

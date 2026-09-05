@@ -410,8 +410,17 @@ instances/{name}/
 | `e5` | `query: ` | `passage: ` | multilingual-e5-* 等 E5 系 |
 | `bge-instruct` | instruction 文 | なし | bge-large/base/small-en |
 | `qwen3-embedding` | instruction 文 | なし | Qwen3-Embedding |
+| `gemini-embedding-2` | `task: question answering \| query: ` | `title: none \| text: ` | gemini-embedding-2（既定モデル） |
 | `bge-m3` / `gemini` / `openai` / `mxbai` | なし | なし | prefix 不要のモデル |
 | `plain` | なし | なし | 規約不明のモデル（既定） |
+
+`gemini-embedding-2` は `gemini-embedding-001` と違い **`task_type` パラメータを受け付けない**。
+タスク指示はテキスト側に埋め込む仕様なので、他モデルと同じ prefix 機構で表現している
+（[Gemini API: Embeddings](https://ai.google.dev/gemini-api/docs/embeddings)）。
+クエリ側の task 名は用途で差し替えられる（`search result` / `question answering` /
+`fact checking` / `code retrieval`）。文書側は `title:` を持たないので公式推奨の
+`title: none` を使い、本文の `Title:` 行はそのまま残す。**文書側の書式はどの task でも
+共通**なので、クエリ側の task 名だけなら再埋め込み無しで差し替え・A/B できる。
 
 **解決順序**（`resolve_profile`）:
 
@@ -434,5 +443,13 @@ instances/{name}/
 `model_name` / `profile` / `dim` を記録する。起動時チェック（`embedding_check.log_startup_check`）が
 現在の設定と突き合わせ、食い違えば警告する。**次元が同じでも規約が変われば別空間**になる
 （例: nomic を prefix 無しから有りへ）ため、次元だけでなくプロファイルも比較する。
-差し替えたら `python migrate_embeddings.py --all` で再生成する。
+差し替えたら `python migrate_embeddings.py --all` で再生成する。再生成は 429 を指数バックオフで
+再試行し、1 件でも未移行が残ったら `embedding_meta` を更新しない（新旧ベクトルの混在を
+警告のまま残す）。
+
+**ベクトルを取れなかったカードは保存しない**: Stage 2 はチャンク分のベクトルを先に全件
+生成し、途中で失敗したらそのチャンクのカードを 1 枚も INSERT せず、RAW を `1_integrated` に
+残して次回パスで再試行する（`failures[].reason = "embedding_unavailable"`）。以前は
+embedding が取れないと `embedding_blob = NULL` のまま保存し、RAW は処理済みへ移動していた
+ため、RAG から永久に見えないカードが静かに残っていた。
 | Tier 判定 | `AI_CONFIG["gatekeeper"]["model_name"]` | ContextClassifier 3スコア出力 |

@@ -48,7 +48,6 @@ def _load_env(data_dir: Path) -> None:
     candidates = [
         data_dir / ".env",
         Path(__file__).resolve().parent / ".env",
-        Path(__file__).resolve().parent / "APIkey.env",
     ]
     for env_path in candidates:
         if not env_path.exists():
