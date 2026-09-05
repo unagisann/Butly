@@ -163,9 +163,23 @@ _CONNECTION_ICONS = {
     "nanogpt-sub": "💎",
 }
 _MODEL_CANDIDATE_CACHE_TTL_SECONDS = 600
+_UI_READ_CACHE_TTL_SECONDS = 30
 
 
-@st.cache_data(ttl=_MODEL_CANDIDATE_CACHE_TTL_SECONDS)
+@st.cache_data(ttl=_UI_READ_CACHE_TTL_SECONDS, show_spinner=False)
+def _cached_api_json(api_url: str, path: str) -> dict:
+    """Return a short-lived copy of read-only Web Console API data."""
+    import requests
+
+    response = requests.get(f"{api_url}{path}", timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError(f"API response must be an object: {path}")
+    return payload
+
+
+@st.cache_data(ttl=_MODEL_CANDIDATE_CACHE_TTL_SECONDS, show_spinner=False)
 def _get_role_candidates(
     api_url: str,
     role: str,
@@ -229,7 +243,7 @@ def _get_selector_candidates(
     return _get_role_candidates(api_url, role, selected_connection)
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def _get_connections(api_url: str) -> list:
     """Connection metadata for provider-first model selection."""
     try:
@@ -264,7 +278,7 @@ def _get_connections(api_url: str) -> list:
         return []
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=300, show_spinner=False)
 def _get_connection_templates(api_url: str) -> list:
     try:
         import requests as _req
@@ -575,112 +589,112 @@ def _render_connection_manager(api_url: str) -> list:
                         st.caption(
                             f"🔗 `{api_key_env}` は {shared} で共有されます。"
                         )
-                    key_cols = st.columns([6, 1, 1])
                     key_widget = f"connection_secret_{connection_id}"
-                    with key_cols[0]:
-                        api_key = st.text_input(
-                            (
-                                f"{api_key_env} "
-                                + (
-                                    "（設定済み）"
-                                    if connection.get("api_key_set")
-                                    else "（未設定）"
-                                )
-                            ),
-                            type="password",
-                            value="",
-                            key=key_widget,
-                            placeholder="新しいAPIキーを入力",
-                        )
-                    with key_cols[1]:
-                        if st.button(
-                            "🔑 保存",
-                            key=f"save_secret_{connection_id}",
-                            width="stretch",
-                        ):
-                            if not api_key:
-                                st.warning("APIキーを入力してください。")
-                            else:
-                                try:
-                                    response = requests.post(
-                                        (
-                                            f"{api_url}/settings/connections/"
-                                            f"{connection_id}/api_key"
-                                        ),
-                                        json={"api_key": api_key},
-                                        timeout=5,
+                    with st.form(f"connection_secret_form_{connection_id}"):
+                        key_cols = st.columns([6, 1, 1])
+                        with key_cols[0]:
+                            api_key = st.text_input(
+                                (
+                                    f"{api_key_env} "
+                                    + (
+                                        "（設定済み）"
+                                        if connection.get("api_key_set")
+                                        else "（未設定）"
                                     )
-                                    if response.ok:
-                                        st.session_state.pop(key_widget, None)
-                                        st.cache_data.clear()
-                                        st.success("APIキーを保存しました。")
-                                        st.rerun()
-                                    else:
-                                        st.error(_api_error_detail(response))
-                                except Exception as exc:
-                                    st.error(f"保存エラー: {exc}")
-                    with key_cols[2]:
-                        if st.button(
-                            "解除",
-                            key=f"clear_secret_{connection_id}",
-                            disabled=not connection.get("api_key_set"),
-                            width="stretch",
-                        ):
+                                ),
+                                type="password",
+                                value="",
+                                key=key_widget,
+                                placeholder="新しいAPIキーを入力",
+                            )
+                        with key_cols[1]:
+                            save_api_key = st.form_submit_button(
+                                "🔑 保存",
+                                width="stretch",
+                            )
+                        with key_cols[2]:
+                            clear_api_key = st.form_submit_button(
+                                "解除",
+                                disabled=not connection.get("api_key_set"),
+                                width="stretch",
+                            )
+                    if save_api_key:
+                        if not api_key:
+                            st.warning("APIキーを入力してください。")
+                        else:
                             try:
-                                response = requests.delete(
+                                response = requests.post(
                                     (
                                         f"{api_url}/settings/connections/"
                                         f"{connection_id}/api_key"
                                     ),
+                                    json={"api_key": api_key},
                                     timeout=5,
                                 )
                                 if response.ok:
+                                    st.session_state.pop(key_widget, None)
                                     st.cache_data.clear()
-                                    st.success("APIキーを解除しました。")
+                                    st.success("APIキーを保存しました。")
                                     st.rerun()
                                 else:
                                     st.error(_api_error_detail(response))
                             except Exception as exc:
-                                st.error(f"解除エラー: {exc}")
+                                st.error(f"保存エラー: {exc}")
+                    if clear_api_key:
+                        try:
+                            response = requests.delete(
+                                (
+                                    f"{api_url}/settings/connections/"
+                                    f"{connection_id}/api_key"
+                                ),
+                                timeout=5,
+                            )
+                            if response.ok:
+                                st.cache_data.clear()
+                                st.success("APIキーを解除しました。")
+                                st.rerun()
+                            else:
+                                st.error(_api_error_detail(response))
+                        except Exception as exc:
+                            st.error(f"解除エラー: {exc}")
                 else:
                     st.caption("🔓 APIキー不要")
 
                 if not connection.get("is_builtin"):
-                    delete_cols = st.columns([5, 2, 1])
-                    with delete_cols[1]:
-                        force_delete = st.checkbox(
-                            "参照中でも強制",
-                            key=f"force_delete_{connection_id}",
-                            help=(
-                                "参照中のモデル設定が壊れる可能性があります。"
-                                "通常は先にモデル割り当てを変更してください。"
-                            ),
-                        )
-                    with delete_cols[2]:
-                        if st.button(
-                            "🗑️ 削除",
-                            key=f"delete_conn_{connection_id}",
-                            width="stretch",
-                        ):
-                            try:
-                                response = requests.delete(
-                                    (
-                                        f"{api_url}/settings/connections/"
-                                        f"{connection_id}"
-                                    ),
-                                    params={"force": force_delete},
-                                    timeout=5,
-                                )
-                                if response.ok:
-                                    st.cache_data.clear()
-                                    st.success(
-                                        f"{connection_id} を削除しました。"
-                                    )
-                                    st.rerun()
-                                else:
-                                    st.error(_api_error_detail(response))
-                            except Exception as exc:
-                                st.error(f"削除エラー: {exc}")
+                    with st.form(f"delete_connection_form_{connection_id}"):
+                        delete_cols = st.columns([5, 2, 1])
+                        with delete_cols[1]:
+                            force_delete = st.checkbox(
+                                "参照中でも強制",
+                                key=f"force_delete_{connection_id}",
+                                help=(
+                                    "参照中のモデル設定が壊れる可能性があります。"
+                                    "通常は先にモデル割り当てを変更してください。"
+                                ),
+                            )
+                        with delete_cols[2]:
+                            delete_connection = st.form_submit_button(
+                                "🗑️ 削除",
+                                width="stretch",
+                            )
+                    if delete_connection:
+                        try:
+                            response = requests.delete(
+                                (
+                                    f"{api_url}/settings/connections/"
+                                    f"{connection_id}"
+                                ),
+                                params={"force": force_delete},
+                                timeout=5,
+                            )
+                            if response.ok:
+                                st.cache_data.clear()
+                                st.success(f"{connection_id} を削除しました。")
+                                st.rerun()
+                            else:
+                                st.error(_api_error_detail(response))
+                        except Exception as exc:
+                            st.error(f"削除エラー: {exc}")
 
     with st.expander("➕ Connectionを追加"):
         templates = _get_connection_templates(api_url)
@@ -706,39 +720,41 @@ def _render_connection_manager(api_url: str) -> list:
         if template.get("notes"):
             st.info(template["notes"])
 
-        form_cols = st.columns(2)
-        with form_cols[0]:
-            new_id = st.text_input(
-                "Connection ID",
-                value=template.get("id", ""),
-                key=f"new_conn_id_{widget_suffix}",
-                help="小文字英数字で開始し、英数字・_・-を使用できます。",
+        with st.form(f"add_connection_form_{widget_suffix}"):
+            form_cols = st.columns(2)
+            with form_cols[0]:
+                new_id = st.text_input(
+                    "Connection ID",
+                    value=template.get("id", ""),
+                    key=f"new_conn_id_{widget_suffix}",
+                    help="小文字英数字で開始し、英数字・_・-を使用できます。",
+                )
+                new_label = st.text_input(
+                    "表示名",
+                    value=template.get("label", ""),
+                    key=f"new_conn_label_{widget_suffix}",
+                )
+            with form_cols[1]:
+                new_base_url = st.text_input(
+                    "Base URL",
+                    value=template.get("base_url", ""),
+                    key=f"new_conn_base_url_{widget_suffix}",
+                    placeholder="https://example.com/v1",
+                )
+                new_api_key_env = st.text_input(
+                    "APIキー環境変数名",
+                    value=template.get("api_key_env", ""),
+                    key=f"new_conn_api_env_{widget_suffix}",
+                    placeholder="EXAMPLE_API_KEY",
+                )
+            new_embeddings = st.checkbox(
+                "Embeddings対応",
+                value=bool(template.get("embeddings_supported", False)),
+                key=f"new_conn_embeddings_{widget_suffix}",
             )
-            new_label = st.text_input(
-                "表示名",
-                value=template.get("label", ""),
-                key=f"new_conn_label_{widget_suffix}",
-            )
-        with form_cols[1]:
-            new_base_url = st.text_input(
-                "Base URL",
-                value=template.get("base_url", ""),
-                key=f"new_conn_base_url_{widget_suffix}",
-                placeholder="https://example.com/v1",
-            )
-            new_api_key_env = st.text_input(
-                "APIキー環境変数名",
-                value=template.get("api_key_env", ""),
-                key=f"new_conn_api_env_{widget_suffix}",
-                placeholder="EXAMPLE_API_KEY",
-            )
-        new_embeddings = st.checkbox(
-            "Embeddings対応",
-            value=bool(template.get("embeddings_supported", False)),
-            key=f"new_conn_embeddings_{widget_suffix}",
-        )
+            add_connection = st.form_submit_button("💾 Connectionを追加")
 
-        if st.button("💾 Connectionを追加", key="add_connection"):
+        if add_connection:
             payload = {
                 "id": new_id.strip(),
                 "protocol": template.get("protocol", "openai_compat"),
@@ -829,17 +845,10 @@ if "api_base_url" not in st.session_state:
 if "api_connection_error" not in st.session_state:
     st.session_state.api_connection_error = None
 
-try:
-    available_instances = fetch_instance_names(st.session_state.api_base_url)
-    st.session_state.api_connection_error = None
-except Exception as _e_inst:
-    available_instances = []
-    st.session_state.api_connection_error = str(_e_inst)
+available_instances = []
 
 if "current_instance" not in st.session_state:
-    st.session_state.current_instance = (
-        available_instances[0] if available_instances else None
-    )
+    st.session_state.current_instance = None
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "is_holiday" not in st.session_state:
@@ -904,28 +913,22 @@ def is_gemini_provider(model_name: str) -> bool:
 
 def get_active_chat_model(api_url: str, instance_name: str) -> str:
     """現在のインスタンスの chat model_name を取得する。"""
-    import requests as _requests
-
     # 1. インスタンス固有config
     try:
-        resp = _requests.get(f"{api_url}/instances/{instance_name}/config", timeout=5)
-        if resp.ok:
-            inst_cfg = resp.json()
-            inst_model = inst_cfg.get("chat", {}).get("model_name", "")
-            if inst_model:
-                return inst_model
+        inst_cfg = _cached_api_json(api_url, f"/instances/{instance_name}/config")
+        inst_model = inst_cfg.get("chat", {}).get("model_name", "")
+        if inst_model:
+            return inst_model
     except Exception:
         pass
     # 2. グローバルconfig
     try:
-        resp = _requests.get(f"{api_url}/config", timeout=5)
-        if resp.ok:
-            global_cfg = resp.json()
-            return (
-                global_cfg.get("AI_CONFIG", {})
-                .get("chat", {})
-                .get("model_name", "gemini-3.5-flash")
-            )
+        global_cfg = _cached_api_json(api_url, "/config")
+        return (
+            global_cfg.get("AI_CONFIG", {})
+            .get("chat", {})
+            .get("model_name", "gemini-3.5-flash")
+        )
     except Exception:
         pass
     return "gemini-3.5-flash"  # 最終フォールバック
@@ -982,12 +985,11 @@ def render_home_screen():
     st.divider()
 
     # locale 取得（テンプレート選択に使用）
-    import requests as _req_home
-
     try:
-        _home_cfg = _req_home.get(
-            f"{st.session_state.api_base_url}/config", timeout=5
-        ).json()
+        _home_cfg = _cached_api_json(
+            st.session_state.api_base_url,
+            "/config",
+        )
     except Exception:
         _home_cfg = {"SYSTEM_CONFIG": {}}
     _home_locale = (
@@ -1181,8 +1183,9 @@ def render_home_screen():
 
 
 # ==========================================
-# ⚙️ 設定画面 (タブ3構成) - Butly Client準拠
+# ⚙️ 設定画面 (3セクション構成) - Butly Client準拠
 # ==========================================
+@st.fragment
 def render_settings_screen():
     col1, col2 = st.columns([1, 8])
     with col1:
@@ -1191,20 +1194,30 @@ def render_settings_screen():
     with col2:
         st.markdown('<h1 class="app-title">⚙️ 設定</h1>', unsafe_allow_html=True)
 
-    tab1, tab2, tab3 = st.tabs(["🏠 基本設定", "📝 プロンプト", "🤖 LLMプロバイダー"])
+    sections = ["🏠 基本設定", "📝 プロンプト", "🤖 LLMプロバイダー"]
+    section = st.segmented_control(
+        "設定セクション",
+        options=sections,
+        default=sections[0],
+        key="settings_console_section",
+        label_visibility="collapsed",
+        width="stretch",
+    )
 
     # ========================
-    # タブ1: 基本設定
+    # セクション1: 基本設定
     # ========================
-    with tab1:
+    if section == sections[0]:
         st.subheader("🔗 API接続先 (サーバーアドレス)")
         st.caption("ラズパイなどのバックエンドサーバのアドレスを入力してください。")
-        new_url = st.text_input(
-            "サーバアドレス (URL)",
-            value=st.session_state.api_base_url,
-            placeholder="http://127.0.0.1:8000",
-        )
-        if st.button("💾 接続先を保存", key="save_url"):
+        with st.form("settings_api_url_form"):
+            new_url = st.text_input(
+                "サーバアドレス (URL)",
+                value=st.session_state.api_base_url,
+                placeholder="http://127.0.0.1:8000",
+            )
+            save_url = st.form_submit_button("💾 接続先を保存")
+        if save_url:
             normalized_url = normalize_api_url(new_url)
             st.session_state.api_base_url = normalized_url
             st.session_state.api_connection_error = None
@@ -1213,26 +1226,36 @@ def render_settings_screen():
 
         st.divider()
         st.subheader("🏖️ Holiday Mode (休暇設定)")
-        st.session_state.is_holiday = st.toggle(
-            "🏖️ 休暇モードを有効にする", value=st.session_state.is_holiday
-        )
-        st.caption("有効にすると、AIは今日が休日であると認識して応答します。")
-
-        st.divider()
-        st.subheader("🔧 System Toggles")
-        st.session_state.debug_mode = st.toggle(
-            "🐛 Debug Mode", value=st.session_state.debug_mode
-        )
         if "streaming_enabled" not in st.session_state:
             st.session_state.streaming_enabled = True
-        st.session_state.streaming_enabled = st.toggle(
-            "⚡ Streaming (応答を逐次表示)",
-            value=st.session_state.streaming_enabled,
-            help="OFF にすると従来の一括返却モードになります。",
-        )
+        with st.form("settings_runtime_toggles_form"):
+            is_holiday = st.toggle(
+                "🏖️ 休暇モードを有効にする",
+                value=st.session_state.is_holiday,
+            )
+            st.caption("有効にすると、AIは今日が休日であると認識して応答します。")
+
+            st.divider()
+            st.subheader("🔧 System Toggles")
+            debug_mode = st.toggle(
+                "🐛 Debug Mode",
+                value=st.session_state.debug_mode,
+            )
+            streaming_enabled = st.toggle(
+                "⚡ Streaming (応答を逐次表示)",
+                value=st.session_state.streaming_enabled,
+                help="OFF にすると従来の一括返却モードになります。",
+            )
+            save_runtime_toggles = st.form_submit_button("💾 動作設定を適用")
+        if save_runtime_toggles:
+            st.session_state.is_holiday = is_holiday
+            st.session_state.debug_mode = debug_mode
+            st.session_state.streaming_enabled = streaming_enabled
+            st.success("動作設定を適用しました。")
 
         if st.button("🗑️ Clear Cache"):
             st.cache_resource.clear()
+            st.cache_data.clear()
             st.success("Cache cleared!")
 
         st.divider()
@@ -1241,7 +1264,7 @@ def render_settings_screen():
 
         _lang_api_url = st.session_state.api_base_url
         try:
-            _lang_cfg = _req_lang.get(f"{_lang_api_url}/config", timeout=5).json()
+            _lang_cfg = _cached_api_json(_lang_api_url, "/config")
         except Exception:
             _lang_cfg = {"SYSTEM_CONFIG": {}}
         _lang_agent_s = _lang_cfg.get("SYSTEM_CONFIG", {}).get("agent", {})
@@ -1253,14 +1276,16 @@ def render_settings_screen():
             if _current_locale in _locale_keys
             else 0
         )
-        _selected_locale = st.selectbox(
-            "Language / 言語",
-            options=_locale_keys,
-            index=_locale_index,
-            format_func=lambda x: _locale_options.get(x, x),
-            key="tab1_locale",
-        )
-        if st.button("💾 言語設定を保存", key="save_locale_tab1"):
+        with st.form("settings_locale_form"):
+            _selected_locale = st.selectbox(
+                "Language / 言語",
+                options=_locale_keys,
+                index=_locale_index,
+                format_func=lambda x: _locale_options.get(x, x),
+                key="tab1_locale",
+            )
+            save_locale = st.form_submit_button("💾 言語設定を保存")
+        if save_locale:
             _lang_cfg.setdefault("SYSTEM_CONFIG", {}).setdefault("agent", {})[
                 "locale"
             ] = _selected_locale
@@ -1269,6 +1294,7 @@ def render_settings_screen():
                     f"{_lang_api_url}/config", json=_lang_cfg, timeout=5
                 )
                 if _r.ok:
+                    _cached_api_json.clear()
                     st.success("言語設定を保存しました。")
                 else:
                     st.error(f"保存エラー: {_r.text}")
@@ -1276,9 +1302,9 @@ def render_settings_screen():
                 st.error(f"サーバー接続エラー: {_e}")
 
     # ========================
-    # タブ2: プロンプト編集
+    # セクション2: プロンプト編集
     # ========================
-    with tab2:
+    elif section == sections[1]:
         st.subheader("📝 グローバルプロンプト編集")
         st.caption(
             "各インスタンス共通のタイムコンテキストなどのグローバルプロンプトを編集できます。"
@@ -1287,31 +1313,30 @@ def render_settings_screen():
 
         api_url = st.session_state.api_base_url
         try:
-            resp = requests.get(f"{api_url}/prompts", timeout=5)
-            if resp.ok:
-                raw_prompts = resp.json()
-                for key, val in raw_prompts.items():
-                    with st.expander(f"📌 {key}"):
+            raw_prompts = _cached_api_json(api_url, "/prompts")
+            for key, val in raw_prompts.items():
+                with st.expander(f"📌 {key}"):
+                    with st.form(f"settings_prompt_form_{key}"):
                         new_val = st.text_area(
                             key, value=val, height=200, key=f"prompt_{key}"
                         )
-                        if st.button("💾 保存", key=f"save_prompt_{key}"):
-                            update_resp = requests.post(
-                                f"{api_url}/prompts", json={key: new_val}, timeout=5
-                            )
-                            if update_resp.ok:
-                                st.success(f"{key} を保存しました。")
-                            else:
-                                st.error(f"保存エラー: {update_resp.text}")
-            else:
-                st.error("プロンプト情報の取得に失敗しました。")
+                        save_prompt = st.form_submit_button("💾 保存")
+                    if save_prompt:
+                        update_resp = requests.post(
+                            f"{api_url}/prompts", json={key: new_val}, timeout=5
+                        )
+                        if update_resp.ok:
+                            _cached_api_json.clear()
+                            st.success(f"{key} を保存しました。")
+                        else:
+                            st.error(f"保存エラー: {update_resp.text}")
         except Exception as e:
             st.error(f"サーバー接続エラー: {e}")
 
     # ========================
-    # タブ3: LLMプロバイダー設定
+    # セクション3: LLMプロバイダー設定
     # ========================
-    with tab3:
+    else:
         import requests
 
         api_url = st.session_state.api_base_url
@@ -1324,25 +1349,24 @@ def render_settings_screen():
         # LLM Connectionではない検索サービス用キーは独立して管理する。
         with st.expander("🔎 Ollama Web Search APIキー"):
             try:
-                status_response = requests.get(
-                    f"{api_url}/settings/api_key_status",
-                    timeout=5,
+                api_key_status = _cached_api_json(
+                    api_url,
+                    "/settings/api_key_status",
                 )
-                search_key_set = bool(
-                    status_response.ok
-                    and status_response.json().get("ollama_web_search")
-                )
+                search_key_set = bool(api_key_status.get("ollama_web_search"))
             except Exception:
                 search_key_set = False
             st.caption("✅ 設定済み" if search_key_set else "❌ 未設定")
             search_key_widget = "provider_ollama_ws_key"
-            ollama_ws_key = st.text_input(
-                "Ollama WebSearch API Key",
-                type="password",
-                value="",
-                key=search_key_widget,
-            )
-            if st.button("💾 保存", key="save_ollama_ws_key"):
+            with st.form("ollama_web_search_key_form"):
+                ollama_ws_key = st.text_input(
+                    "Ollama WebSearch API Key",
+                    type="password",
+                    value="",
+                    key=search_key_widget,
+                )
+                save_ollama_ws_key = st.form_submit_button("💾 保存")
+            if save_ollama_ws_key:
                 if not ollama_ws_key:
                     st.warning("キーを入力してください。")
                 else:
@@ -1357,6 +1381,7 @@ def render_settings_screen():
                         )
                         if response.ok:
                             st.session_state.pop(search_key_widget, None)
+                            _cached_api_json.clear()
                             st.success("APIキーを保存しました。")
                             st.rerun()
                         else:
@@ -1371,38 +1396,37 @@ def render_settings_screen():
 
         # 現在の設定を取得
         try:
-            cfg_resp = requests.get(f"{api_url}/config", timeout=5)
-            provider_cfg = (
-                cfg_resp.json()
-                if cfg_resp.ok
-                else {"AI_CONFIG": {}, "SYSTEM_CONFIG": {}}
-            )
+            provider_cfg = _cached_api_json(api_url, "/config")
         except Exception:
             provider_cfg = {"AI_CONFIG": {}, "SYSTEM_CONFIG": {}}
 
         # 保存済みの接続先を初期値にする（別PCの Ollama を指したまま維持する）
         try:
-            saved_ollama = requests.get(
-                f"{api_url}/settings/ollama_url", timeout=5
-            ).json()
+            saved_ollama = _cached_api_json(api_url, "/settings/ollama_url")
         except Exception:
             saved_ollama = {}
         current_ollama_url = saved_ollama.get("url") or "http://localhost:11434"
 
-        ollama_url = st.text_input(
-            "接続先URL",
-            value=current_ollama_url,
-            placeholder="http://localhost:11434",
-            key="ollama_url",
-            help=(
-                "別PCのOllamaを使う場合は http://<ホスト>:11434 を指定して保存します。"
-                "保存先は DATA_DIR/.env の OLLAMA_BASE_URL で、再起動は不要です。"
-            ),
-        )
+        with st.form("ollama_connection_form"):
+            ollama_url = st.text_input(
+                "接続先URL",
+                value=current_ollama_url,
+                placeholder="http://localhost:11434",
+                key="ollama_url",
+                help=(
+                    "別PCのOllamaを使う場合は http://<ホスト>:11434 を指定して保存します。"
+                    "保存先は DATA_DIR/.env の OLLAMA_BASE_URL で、再起動は不要です。"
+                ),
+            )
+            ollama_actions = st.columns(2)
+            with ollama_actions[0]:
+                save_ollama_url = st.form_submit_button("💾 接続先を保存")
+            with ollama_actions[1]:
+                test_ollama = st.form_submit_button("🔍 接続テスト")
         if saved_ollama.get("source") == "default":
             st.caption("未保存（既定の localhost を使用中）")
 
-        if st.button("💾 接続先を保存", key="save_ollama_url"):
+        if save_ollama_url:
             try:
                 resp = requests.post(
                     f"{api_url}/settings/ollama_url",
@@ -1410,13 +1434,14 @@ def render_settings_screen():
                     timeout=10,
                 )
                 if resp.ok:
+                    _cached_api_json.clear()
                     st.success("接続先を保存しました。")
                     st.rerun()
                 else:
                     st.error(_api_error_detail(resp))
             except Exception as e:
                 st.error(f"保存エラー: {e}")
-        if st.button("🔍 接続テスト", key="test_ollama"):
+        if test_ollama:
             try:
                 resp = requests.post(
                     f"{api_url}/settings/ollama_test",
@@ -1490,32 +1515,42 @@ def render_settings_screen():
         st.caption(
             "バックグラウンドロールの生成パラメータを設定します（Chat の Temperature はインスタンス設定から変更できます）。"
         )
-        _TEMP_ROLES = {
-            "summary": "Summary (要約)",
-            "gatekeeper": "Gatekeeper (Tier判定)",
-            "knowledge": "Knowledge (知識蒸留)",
-        }
-        _TEMP_DEFAULTS = {"summary": 0.3, "gatekeeper": 0.0, "knowledge": 0.7}
-        for _t_role, _t_label in _TEMP_ROLES.items():
-            _mc = provider_ai_cfg.get(_t_role, {})
-            _cur_temp = float(
-                _mc.get("generation_config", {}).get(
-                    "temperature", _TEMP_DEFAULTS[_t_role]
+        with st.form("provider_model_settings_form"):
+            _TEMP_ROLES = {
+                "summary": "Summary (要約)",
+                "gatekeeper": "Gatekeeper (Tier判定)",
+                "knowledge": "Knowledge (知識蒸留)",
+            }
+            _TEMP_DEFAULTS = {
+                "summary": 0.3,
+                "gatekeeper": 0.0,
+                "knowledge": 0.7,
+            }
+            for _t_role, _t_label in _TEMP_ROLES.items():
+                _mc = provider_ai_cfg.get(_t_role, {})
+                _cur_temp = float(
+                    _mc.get("generation_config", {}).get(
+                        "temperature", _TEMP_DEFAULTS[_t_role]
+                    )
                 )
+                _new_temp = st.slider(
+                    _t_label,
+                    0.0,
+                    2.0,
+                    value=_cur_temp,
+                    step=0.1,
+                    key=f"provider_temp_{_t_role}",
+                )
+                provider_ai_cfg.setdefault(_t_role, {}).setdefault(
+                    "generation_config",
+                    {},
+                )["temperature"] = _new_temp
+            save_provider_models = st.form_submit_button(
+                "💾 モデル設定を保存",
+                type="primary",
             )
-            _new_temp = st.slider(
-                _t_label,
-                0.0,
-                2.0,
-                value=_cur_temp,
-                step=0.1,
-                key=f"provider_temp_{_t_role}",
-            )
-            provider_ai_cfg.setdefault(_t_role, {}).setdefault("generation_config", {})[
-                "temperature"
-            ] = _new_temp
 
-        if st.button("💾 モデル設定を保存", type="primary", key="save_provider_models"):
+        if save_provider_models:
             # 空白ガード
             empty_roles = [
                 role
@@ -1542,6 +1577,7 @@ def render_settings_screen():
                         f"{api_url}/config", json=provider_cfg, timeout=5
                     )
                     if save_resp.ok:
+                        _cached_api_json.clear()
                         st.success("モデル設定を保存しました。")
                     else:
                         st.error(f"保存エラー: {save_resp.text}")
@@ -1556,13 +1592,15 @@ def render_settings_screen():
             "Embeddingモデルを変更した場合、既存の記憶データベースのベクトルを再生成する必要があります。"
         )
 
-        reindex_target = st.selectbox(
-            "対象インスタンス",
-            ["__all__"] + available_instances,
-            format_func=lambda x: "全インスタンス" if x == "__all__" else x,
-            key="reindex_target",
-        )
-        if st.button("🔄 再生成を実行", key="run_reindex"):
+        with st.form("reindex_embeddings_form"):
+            reindex_target = st.selectbox(
+                "対象インスタンス",
+                ["__all__"] + available_instances,
+                format_func=lambda x: "全インスタンス" if x == "__all__" else x,
+                key="reindex_target",
+            )
+            run_reindex = st.form_submit_button("🔄 再生成を実行")
+        if run_reindex:
             try:
                 resp = requests.post(
                     f"{api_url}/settings/reindex_embeddings",
@@ -1701,6 +1739,7 @@ def _evaluation_next_run_id(previous_run_id: str, existing_run_ids: list) -> str
     return candidate
 
 
+@st.cache_data(ttl=10, show_spinner=False)
 def _evaluation_get(api_url: str, path: str) -> dict:
     import requests
 
@@ -1863,6 +1902,7 @@ def _evaluation_embedding_profile(
     return None if selected == "auto" else selected
 
 
+@st.fragment
 def _render_evaluation_start_form(
     api_url: str,
     evaluation_config: dict,
@@ -2651,11 +2691,9 @@ def _render_evaluation_start_form(
                 )
 
     try:
-        provider_response = requests.get(f"{api_url}/config", timeout=5)
-        provider_config = (
-            provider_response.json().get("AI_CONFIG", {})
-            if provider_response.ok
-            else {}
+        provider_config = _cached_api_json(api_url, "/config").get(
+            "AI_CONFIG",
+            {},
         )
     except Exception:
         provider_config = {}
@@ -2957,6 +2995,7 @@ def _render_evaluation_start_form(
             )
             if response.ok:
                 job = response.json()
+                _evaluation_get.clear()
                 st.session_state.evaluation_selected_job = job["job_id"]
                 st.session_state.evaluation_pending_run_id = (
                     _evaluation_next_run_id(
@@ -4504,6 +4543,7 @@ def _render_evaluation_history(api_url: str, runs: list) -> None:
     st.dataframe(question_rows, width="stretch", hide_index=True)
 
 
+@st.fragment
 def _render_dialogue_ab_form(
     api_url: str,
     evaluation_config: dict,
@@ -4921,11 +4961,9 @@ def _render_dialogue_ab_form(
                 )
 
     try:
-        provider_response = requests.get(f"{api_url}/config", timeout=5)
-        provider_config = (
-            provider_response.json().get("AI_CONFIG", {})
-            if provider_response.ok
-            else {}
+        provider_config = _cached_api_json(api_url, "/config").get(
+            "AI_CONFIG",
+            {},
         )
     except Exception:
         provider_config = {}
@@ -5159,6 +5197,7 @@ def _render_dialogue_ab_form(
             return
 
         job = response.json()
+        _evaluation_get.clear()
         st.session_state.evaluation_selected_job = job["job_id"]
         st.session_state.dialogue_ab_pending_run_id = _evaluation_next_run_id(
             str(job["run_id"]),
@@ -5775,6 +5814,7 @@ def render_card_edit_screen():
 # ==========================================
 # 🛠 インスタンス設定画面 (Instance Settings Screen)
 # ==========================================
+@st.fragment
 def render_instance_settings_screen():
     instance_name = st.session_state.current_instance
 
@@ -5795,17 +5835,13 @@ def render_instance_settings_screen():
 
     # Load Configs
     try:
-        cfg_resp = requests.get(
-            f"{api_url}/instances/{instance_name}/config", timeout=5
+        config = _cached_api_json(
+            api_url,
+            f"/instances/{instance_name}/config",
         )
-        config = cfg_resp.json() if cfg_resp.ok else {}
-        prm_resp = requests.get(
-            f"{api_url}/instances/{instance_name}/prompts", timeout=5
-        )
-        prompts = (
-            prm_resp.json()
-            if prm_resp.ok
-            else {"system_instruction": "", "key_memory": ""}
+        prompts = _cached_api_json(
+            api_url,
+            f"/instances/{instance_name}/prompts",
         )
     except Exception as e:
         st.error(f"API接続エラー: {e}")
@@ -6868,6 +6904,7 @@ def render_instance_settings_screen():
                         timeout=5,
                     )
                     if cfg_resp.ok:
+                        _cached_api_json.clear()
                         st.success("スキャン設定を保存しました。")
                     else:
                         st.error(f"保存エラー: {cfg_resp.text}")
@@ -7064,6 +7101,7 @@ def render_instance_settings_screen():
             )
 
             if c_resp.ok and p_resp.ok:
+                _cached_api_json.clear()
                 st.success("設定を保存しました。")
                 time.sleep(1)
                 navigate_to("chat")

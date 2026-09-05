@@ -22,8 +22,13 @@ rendered, so hidden forms do not fetch model candidates or run history.
 | LoCoMo history / compare | Saved-run metrics, two-to-eight-run comparison, question deltas |
 
 The two-second Jobs refresh runs inside a Streamlit fragment and does not rerun
-the evaluation forms. Model candidates are cached for ten minutes and are
-refetched only through the explicit **Refresh model list** action.
+the evaluation forms. Model candidates are cached for ten minutes per role and
+Connection and fetched when a previously unseen Connection is selected. The
+explicit **Refresh model list** action invalidates those caches. The new
+LoCoMo and Japanese-dialogue forms are separate fragments as well, so changing
+a field does not rerun the full page or refetch the instance list. Evaluation
+configuration and run lists use a ten-second cache that is invalidated as soon
+as a new job starts.
 
 The start form covers:
 

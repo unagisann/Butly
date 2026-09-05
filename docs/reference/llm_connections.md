@@ -142,7 +142,11 @@ restart is needed.
 5. Run the connection test and confirm that the model catalog is reachable.
 
 The password field is always empty on load. Butly displays only whether a key
-is configured and never reads a stored key back into the UI.
+is configured and never reads a stored key back into the UI. Independently
+submitted values such as API keys, new Connections, and the Ollama URL live in
+Streamlit forms, so typing does not rerun the screen. The Settings screen is a
+fragment; provider-to-model changes rerender only that fragment, and unselected
+sections do not execute or fetch their section-specific APIs.
 
 ### Select provider, then model
 
